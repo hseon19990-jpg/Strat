@@ -200,6 +200,7 @@ def init_db():
         INSERT OR IGNORE INTO settings VALUES ('total_bot_orders','0');
         INSERT OR IGNORE INTO settings VALUES ('total_bot_users','0');
         INSERT OR IGNORE INTO settings VALUES ('asiacell_text','⚠️ الشحن التلقائي عبر اسيا سيل غير متاح حالياً.\nيرجى التواصل مع المالك.');
+        INSERT OR IGNORE INTO settings VALUES ('captcha_enabled','0');
         """)
     # إضافة عمود verified للمستخدمين القدامى
     try:
@@ -359,8 +360,9 @@ def owner_settings_kb():
          InlineKeyboardButton("📋 أكواد ترويجية", callback_data="os:list_promos")],
         [InlineKeyboardButton("📲 تعديل نص اسيا سيل", callback_data="os:edit_asiacell"),
          InlineKeyboardButton("📢 رسالة جماعية", callback_data="os:broadcast")],
-        [InlineKeyboardButton("📊 إحصائيات", callback_data="os:stats"),
-         InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
+        [InlineKeyboardButton("🔐 تفعيل/تعطيل التحقق", callback_data="os:toggle_captcha"),
+         InlineKeyboardButton("📊 إحصائيات", callback_data="os:stats")],
+        [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
     ]
     return InlineKeyboardMarkup(rows)
 
@@ -460,7 +462,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db_user = get_or_create_user(user.id, user.username or "", user.full_name or "", invited_by)
     is_own = (user.id == OWNER_ID)
 
-    # المستخدم القديم (موجود قبل التحديث) أو متحقق مسبقاً → أظهر القائمة مباشرة
+    # مستخدم موجود سابقاً أو متحقق مسبقاً → القائمة مباشرة
     if not is_new_user or db_user.get("verified", 0):
         if not db_user.get("verified", 0):
             set_user_verified(user.id)
@@ -474,7 +476,22 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # مستخدم جديد فعلاً: التحقق الرياضي (مرة واحدة فقط)
+    # مستخدم جديد فعلاً: تحقق هل التحقق الرياضي مفعّل
+    captcha_on = int(get_setting("captcha_enabled") or "0")
+    if not captcha_on:
+        # التحقق معطّل → دخول مباشر وتسجيل كمتحقق
+        set_user_verified(user.id)
+        context.user_data["state"] = "main_menu"
+        pts = db_user["points"]
+        welcome = get_setting("welcome_message") or "أهلاً بك!"
+        await update.message.reply_text(
+            f"👋 *أهلاً بك!*\n\n{welcome}\n\n💰 رصيدك: {pts} نقطة",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=main_menu_kb(is_own)
+        )
+        return
+
+    # التحقق مفعّل → سؤال رياضي للمستخدمين الجدد فقط
     prob, ans = generate_math()
     context.user_data.clear()
     context.user_data["state"] = "verify_math"
@@ -1846,6 +1863,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"سيتم الإرسال لـ {total} مستخدم.\n\n"
             f"أرسل الرسالة الآن (يدعم HTML):",
             parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    if data == "os:toggle_captcha" and is_own:
+        current = int(get_setting("captcha_enabled") or "0")
+        new_val = "0" if current else "1"
+        set_setting("captcha_enabled", new_val)
+        status = "مفعّل ✅" if new_val == "1" else "معطّل ❌"
+        await q.edit_message_text(
+            f"🔐 *التحقق الرياضي الآن: {status}*\n\n"
+            f"{'سيظهر السؤال للمستخدمين الجدد عند /start' if new_val == '1' else 'لن يظهر أي سؤال للمستخدمين الجدد'}",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=owner_settings_kb()
         )
         return
 
