@@ -949,7 +949,44 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             context.user_data["state"] = "main_menu"
             return
-        channel = text.lstrip("@")
+        channel = text.strip().lstrip("@")
+        channel_id = f"@{channel}"
+
+        # ── التحقق من أن البوت مشرف في القناة/الكروب ──
+        try:
+            bot_member = await context.bot.get_chat_member(channel_id, context.bot.id)
+            is_admin = bot_member.status in ("administrator", "creator")
+        except Exception as e:
+            err = str(e).lower()
+            if "chat not found" in err or "invalid" in err:
+                await update.message.reply_text(
+                    f"⚠️ *القناة @{channel} غير موجودة أو الرابط خاطئ.*\n\n"
+                    f"تأكد من اسم القناة وأعد الإرسال:",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            else:
+                await update.message.reply_text(
+                    f"⚠️ *البوت ليس مشرفاً في @{channel}*\n\n"
+                    f"📋 *خطوات الإضافة:*\n"
+                    f"1️⃣ افتح إعدادات القناة/الكروب\n"
+                    f"2️⃣ اذهب إلى *المشرفون*\n"
+                    f"3️⃣ أضف البوت كمشرف\n"
+                    f"4️⃣ أعد إرسال اسم القناة هنا",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            return
+
+        if not is_admin:
+            await update.message.reply_text(
+                f"❌ *البوت ليس مشرفاً في @{channel}*\n\n"
+                f"📋 *خطوات الإضافة:*\n"
+                f"1️⃣ افتح إعدادات القناة/الكروب\n"
+                f"2️⃣ اذهب إلى *المشرفون*\n"
+                f"3️⃣ أضف البوت كمشرف\n"
+                f"4️⃣ أعد إرسال اسم القناة هنا",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
         deduct_points(user.id, cost)
         code = next_order_code(user.id)
         ft_label = "إجباري سريع" if fund_type == "mandatory" else "داخلي بطيء"
