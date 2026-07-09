@@ -187,6 +187,12 @@ def init_db():
             PRIMARY KEY (code, user_id)
         );
 
+        CREATE TABLE IF NOT EXISTS exchange_star_packages (
+            id     INTEGER PRIMARY KEY AUTOINCREMENT,
+            stars  INTEGER NOT NULL,
+            active INTEGER DEFAULT 1
+        );
+
         INSERT OR IGNORE INTO settings VALUES ('daily_gift_points','50');
         INSERT OR IGNORE INTO settings VALUES ('referral_points','30');
         INSERT OR IGNORE INTO settings VALUES ('star_to_points','250');
@@ -352,6 +358,7 @@ def owner_settings_kb():
          InlineKeyboardButton("🔗 تعديل نقاط الدعوة", callback_data="os:edit_referral")],
         [InlineKeyboardButton("⭐ سعر النجمة شحن", callback_data="os:edit_star_rate"),
          InlineKeyboardButton("🏆 سعر نجمة الجوائز", callback_data="os:edit_exchange_rate")],
+        [InlineKeyboardButton("📦 باقات الاستبدال بنجوم", callback_data="os:manage_star_packages")],
         [InlineKeyboardButton("📱 سعر رقم تيلغرام", callback_data="os:edit_number_cost"),
          InlineKeyboardButton("💌 رسالة الترحيب", callback_data="os:edit_welcome")],
         [InlineKeyboardButton("📡 إدارة قنوات الاشتراك", callback_data="os:manage_channels"),
@@ -1253,6 +1260,28 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
+    # ── إضافة باقة استبدال نجوم (مالك) ──
+    if is_own and state == "os_await_pkg_stars":
+        try:
+            stars = int(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً.")
+            return
+        if stars <= 0:
+            await update.message.reply_text("⚠️ يجب أن يكون أكبر من صفر.")
+            return
+        with db_conn() as c:
+            c.execute("INSERT INTO exchange_star_packages (stars) VALUES (?)", (stars,))
+        rate = int(get_setting("exchange_star_rate") or "100")
+        cost = stars * rate
+        await update.message.reply_text(
+            f"✅ *تمت إضافة الباقة بنجاح!*\n\n⭐ {stars} نجمة = {cost} نقطة",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=owner_settings_kb()
+        )
+        context.user_data["state"] = "main_menu"
+        return
+
     # إذا لا يوجد حالة معروفة، عرض القائمة
     await update.message.reply_text("🏠 القائمة الرئيسية:", reply_markup=main_menu_kb(is_own))
 
@@ -1468,13 +1497,45 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "exchange:stars":
         rate = int(get_setting("exchange_star_rate") or "100")
-        context.user_data["state"] = "await_exchange_stars_count"
+        with db_conn() as c:
+            packages = c.execute("SELECT * FROM exchange_star_packages WHERE active=1 ORDER BY stars").fetchall()
+        if not packages:
+            await q.edit_message_text(
+                "⚠️ لا توجد باقات استبدال متاحة حالياً.\nتواصل مع المالك لإضافة باقات.",
+                reply_markup=back_kb("exchange_points")
+            )
+            return
+        rows = []
+        for pkg in packages:
+            stars = pkg["stars"]
+            cost = stars * rate
+            rows.append([InlineKeyboardButton(f"⭐ {stars} نجمة = {cost} نقطة", callback_data=f"exchange:pkg:{stars}")])
+        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="exchange_points")])
         await q.edit_message_text(
             f"⭐ *استبدال نقاط بنجوم*\n\n"
             f"💡 سعر النجمة الواحدة: {rate} نقطة\n\n"
-            f"كم عدد النجوم التي تريدها؟ أرسل عدداً:",
+            f"اختر الباقة المطلوبة:",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=back_kb("exchange_points")
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
+        return
+
+    if data.startswith("exchange:pkg:"):
+        stars = int(data.split(":")[2])
+        rate = int(get_setting("exchange_star_rate") or "100")
+        cost = stars * rate
+        db_user = get_user(user.id)
+        pts = db_user["points"] if db_user else 0
+        context.user_data["exchange_stars"] = stars
+        context.user_data["exchange_cost"]  = cost
+        context.user_data["state"] = "confirm_exchange_stars"
+        await q.edit_message_text(
+            f"⭐ *تأكيد الاستبدال:*\n\n"
+            f"⭐ عدد النجوم: {stars}\n"
+            f"💰 التكلفة: {cost} نقطة\n"
+            f"💎 رصيدك: {pts} نقطة\n\n"
+            f"أرسل *نعم* للتأكيد أو *لا* للإلغاء",
+            parse_mode=ParseMode.MARKDOWN
         )
         return
 
@@ -1894,6 +1955,73 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=owner_settings_kb()
         )
+        return
+
+    # ── إدارة باقات الاستبدال بنجوم (مالك) ──
+    if data == "os:manage_star_packages" and is_own:
+        with db_conn() as c:
+            packages = c.execute("SELECT * FROM exchange_star_packages ORDER BY stars").fetchall()
+        rate = int(get_setting("exchange_star_rate") or "100")
+        lines = ["📦 *باقات الاستبدال بنجوم:*\n"]
+        for pkg in packages:
+            status = "✅" if pkg["active"] else "❌"
+            cost = pkg["stars"] * rate
+            lines.append(f"{status} {pkg['stars']} نجمة = {cost} نقطة")
+        rows = []
+        for pkg in packages:
+            tog = "❌ تعطيل" if pkg["active"] else "✅ تفعيل"
+            rows.append([
+                InlineKeyboardButton(f"⭐ {pkg['stars']} نجمة", callback_data="noop"),
+                InlineKeyboardButton(tog, callback_data=f"os_tog_pkg:{pkg['id']}:{0 if pkg['active'] else 1}"),
+                InlineKeyboardButton("🗑", callback_data=f"os_del_pkg:{pkg['id']}")
+            ])
+        rows.append([InlineKeyboardButton("➕ إضافة باقة", callback_data="os_add_pkg")])
+        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
+        msg = "\n".join(lines) if len(packages) > 0 else "⭐ لا توجد باقات بعد. اضغط ➕ لإضافة باقة."
+        await q.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN,
+                                   reply_markup=InlineKeyboardMarkup(rows))
+        return
+
+    if data == "os_add_pkg" and is_own:
+        context.user_data["state"] = "os_await_pkg_stars"
+        await q.edit_message_text("⭐ *إضافة باقة جديدة*\n\nأرسل عدد النجوم (مثال: 15):",
+                                   parse_mode=ParseMode.MARKDOWN)
+        return
+
+    if data.startswith("os_tog_pkg:") and is_own:
+        parts = data.split(":")
+        pkg_id = int(parts[1])
+        val = int(parts[2])
+        with db_conn() as c:
+            c.execute("UPDATE exchange_star_packages SET active=? WHERE id=?", (val, pkg_id))
+            packages = c.execute("SELECT * FROM exchange_star_packages ORDER BY stars").fetchall()
+        await q.answer("✅ تم التحديث")
+        rate = int(get_setting("exchange_star_rate") or "100")
+        lines = ["📦 *باقات الاستبدال بنجوم:*\n"]
+        for pkg in packages:
+            status = "✅" if pkg["active"] else "❌"
+            cost = pkg["stars"] * rate
+            lines.append(f"{status} {pkg['stars']} نجمة = {cost} نقطة")
+        rows = []
+        for pkg in packages:
+            tog = "❌ تعطيل" if pkg["active"] else "✅ تفعيل"
+            rows.append([
+                InlineKeyboardButton(f"⭐ {pkg['stars']} نجمة", callback_data="noop"),
+                InlineKeyboardButton(tog, callback_data=f"os_tog_pkg:{pkg['id']}:{0 if pkg['active'] else 1}"),
+                InlineKeyboardButton("🗑", callback_data=f"os_del_pkg:{pkg['id']}")
+            ])
+        rows.append([InlineKeyboardButton("➕ إضافة باقة", callback_data="os_add_pkg")])
+        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
+        msg = "\n".join(lines) if len(packages) > 0 else "⭐ لا توجد باقات بعد."
+        await q.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN,
+                                   reply_markup=InlineKeyboardMarkup(rows))
+        return
+
+    if data.startswith("os_del_pkg:") and is_own:
+        pkg_id = int(data.split(":")[1])
+        with db_conn() as c:
+            c.execute("DELETE FROM exchange_star_packages WHERE id=?", (pkg_id,))
+        await q.answer("🗑 تم الحذف")
         return
 
     if data == "noop":
