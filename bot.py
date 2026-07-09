@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-بوت تيلغرام متكامل مع منصة SMMMAIN.COM
+بوت تيلغرام متكامل مع منصة SMMMAIN.COM وموقع JustAnotherPanel
 المتغيرات المطلوبة في Railway:
-  BOT_TOKEN       - توكن البوت
-  OWNER_ID        - ايدي المالك
-  API_KEY         - مفتاح API لموقع SMMMAIN.COM
-  ADMIN_GROUP_ID  - ايدي الكروب الذي تصله الطلبات
+  BOT_TOKEN                  - توكن البوت
+  OWNER_ID                   - ايدي المالك
+  API_KEY                    - مفتاح API لموقع SMMMAIN.COM (الموقع 1)
+  JUSTANOTHERPANEL_API_KEY   - مفتاح API لموقع JustAnotherPanel.com (الموقع 2)
+  ADMIN_GROUP_ID             - ايدي الكروب الذي تصله الطلبات
 """
 
 import os
@@ -63,6 +64,17 @@ API_KEY        = os.getenv("API_KEY", "")
 ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID", "0"))
 API_URL        = "https://smmmain.com/api/v2"
 
+JUSTANOTHERPANEL_API_KEY = os.getenv("JUSTANOTHERPANEL_API_KEY", "")
+JUSTANOTHERPANEL_API_URL = "https://justanotherpanel.com/api/v2"
+
+# ────────────────────────────────────────────────────────────
+#  المواقع (المصادر) المتاحة لسحب الخدمات منها
+# ────────────────────────────────────────────────────────────
+PANEL_MAP = {
+    1: {"name": "SMMMAIN",         "key": API_KEY,                  "url": API_URL},
+    2: {"name": "JustAnotherPanel", "key": JUSTANOTHERPANEL_API_KEY, "url": JUSTANOTHERPANEL_API_URL},
+}
+
 # ────────────────────────────────────────────────────────────
 #  قاعدة البيانات
 # ────────────────────────────────────────────────────────────
@@ -106,6 +118,7 @@ def init_db():
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             category        TEXT,
             api_service_id  INTEGER,
+            panel           INTEGER DEFAULT 1,
             name_ar         TEXT,
             description     TEXT,
             min_qty         INTEGER,
@@ -221,6 +234,12 @@ def init_db():
             c.execute("ALTER TABLE users ADD COLUMN verified INTEGER DEFAULT 0")
     except Exception:
         pass
+    # إضافة عمود panel (الموقع المصدر) للخدمات القديمة
+    try:
+        with db_conn() as c:
+            c.execute("ALTER TABLE services ADD COLUMN panel INTEGER DEFAULT 1")
+    except Exception:
+        pass
 
 def get_setting(key: str) -> str:
     with db_conn() as c:
@@ -287,27 +306,28 @@ def next_order_code(user_id: int) -> str:
 # ────────────────────────────────────────────────────────────
 #  واجهة SMMMAIN API
 # ────────────────────────────────────────────────────────────
-def smm_request(action: str, **params) -> dict:
-    payload = {"key": API_KEY, "action": action, **params}
+def smm_request(action: str, panel: int = 1, **params) -> dict:
+    site = PANEL_MAP.get(int(panel), PANEL_MAP[1])
+    payload = {"key": site["key"], "action": action, **params}
     try:
-        r = requests.post(API_URL, data=payload, timeout=15)
+        r = requests.post(site["url"], data=payload, timeout=15)
         return r.json()
     except Exception as e:
         return {"error": str(e)}
 
-def smm_service_info(service_id: int) -> dict:
-    res = smm_request("services")
+def smm_service_info(service_id: int, panel: int = 1) -> dict:
+    res = smm_request("services", panel=panel)
     if isinstance(res, list):
         for s in res:
             if str(s.get("service")) == str(service_id):
                 return s
     return {}
 
-def smm_create_order(service_id: int, link: str, quantity: int) -> dict:
-    return smm_request("add", service=service_id, link=link, quantity=quantity)
+def smm_create_order(service_id: int, link: str, quantity: int, panel: int = 1) -> dict:
+    return smm_request("add", panel=panel, service=service_id, link=link, quantity=quantity)
 
-def smm_order_status(order_id: str) -> dict:
-    return smm_request("status", order=order_id)
+def smm_order_status(order_id: str, panel: int = 1) -> dict:
+    return smm_request("status", panel=panel, order=order_id)
 
 # ────────────────────────────────────────────────────────────
 #  مساعدات رياضية
@@ -356,6 +376,33 @@ def main_menu_kb(is_owner=False):
     if is_owner:
         rows.append([InlineKeyboardButton("⚙️ إعدادات المالك", callback_data="owner_settings")])
     return InlineKeyboardMarkup(rows)
+
+def _render_service_list():
+    """يبني نص وأزرار قائمة الخدمات (يُستخدم من العرض والتفعيل/التعطيل)."""
+    with db_conn() as c:
+        svcs = c.execute("SELECT * FROM services ORDER BY category, id").fetchall()
+    if not svcs:
+        return "📋 لا توجد خدمات مضافة.", None
+    lines = ["📋 *قائمة الخدمات:*\n"]
+    for s in svcs:
+        status = "✅" if s["active"] else "❌"
+        site_name = PANEL_MAP.get(s["panel"] or 1, PANEL_MAP[1])["name"]
+        lines.append(
+            f"{status} [{s['id']}] *{s['name_ar']}*\n"
+            f"الفئة: {CATEGORY_MAP.get(s['category'], s['category'])} | الموقع: {site_name} | Min:{s['min_qty']} Max:{s['max_qty']}\n"
+        )
+    rows = []
+    for s in svcs:
+        tog = "❌ تعطيل" if s["active"] else "✅ تفعيل"
+        rows.append([
+            InlineKeyboardButton(f"{s['name_ar'][:20]}", callback_data="noop"),
+            InlineKeyboardButton("✏️ تعديل", callback_data=f"os_edit_svc:{s['id']}"),
+            InlineKeyboardButton(tog, callback_data=f"os_tog_svc:{s['id']}:{1 if not s['active'] else 0}"),
+            InlineKeyboardButton("🗑", callback_data=f"os_del_svc:{s['id']}")
+        ])
+    rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
+    return "\n".join(lines), rows
+
 
 def owner_settings_kb():
     rows = [
@@ -641,7 +688,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.user_data["state"] = "main_menu"
                 await update.message.reply_text("🏠 القائمة الرئيسية:", reply_markup=main_menu_kb(is_own))
                 return
-            api_res = smm_create_order(svc["api_service_id"], link, qty)
+            api_res = smm_create_order(svc["api_service_id"], link, qty, panel=svc.get("panel", 1))
             if "error" in api_res or not api_res.get("order"):
                 add_points(user.id, cost)
                 err_msg = api_res.get("error", "خطأ غير معروف من الموقع")
@@ -1042,9 +1089,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("⚠️ أرسل رقماً.")
             return
-        info = smm_service_info(api_id)
+        panel = context.user_data.get("new_svc_panel", 1)
+        info = smm_service_info(api_id, panel=panel)
         if not info:
-            await update.message.reply_text("⚠️ لم يتم العثور على الخدمة في الموقع. تأكد من الرقم.")
+            site_name = PANEL_MAP.get(panel, PANEL_MAP[1])["name"]
+            await update.message.reply_text(f"⚠️ لم يتم العثور على الخدمة في موقع {site_name}. تأكد من الرقم.")
             return
         context.user_data["new_svc_api_id"] = api_id
         context.user_data["new_svc_info"]   = info
@@ -1395,6 +1444,79 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
+    # ── تعديل خدمة موجودة (مالك) ──
+    if is_own and state == "os_edit_await_name":
+        sid = context.user_data.get("edit_svc_id")
+        with db_conn() as c:
+            c.execute("UPDATE services SET name_ar=? WHERE id=?", (text, sid))
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(f"✅ تم تحديث اسم الخدمة إلى: *{text}*", parse_mode=ParseMode.MARKDOWN,
+                                         reply_markup=owner_settings_kb())
+        return
+
+    if is_own and state == "os_edit_await_min":
+        try:
+            mn = int(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً.")
+            return
+        sid = context.user_data.get("edit_svc_id")
+        with db_conn() as c:
+            c.execute("UPDATE services SET min_qty=? WHERE id=?", (mn, sid))
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(f"✅ تم تحديث الحد الأدنى إلى: {mn}", reply_markup=owner_settings_kb())
+        return
+
+    if is_own and state == "os_edit_await_max":
+        try:
+            mx = int(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً.")
+            return
+        sid = context.user_data.get("edit_svc_id")
+        with db_conn() as c:
+            c.execute("UPDATE services SET max_qty=? WHERE id=?", (mx, sid))
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(f"✅ تم تحديث الحد الأعلى إلى: {mx}", reply_markup=owner_settings_kb())
+        return
+
+    if is_own and state == "os_edit_await_price":
+        try:
+            price = float(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً.")
+            return
+        sid = context.user_data.get("edit_svc_id")
+        with db_conn() as c:
+            c.execute("UPDATE services SET price_per_point=? WHERE id=?", (price, sid))
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(f"✅ تم تحديث السعر إلى: {price} نقطة/1000 وحدة", reply_markup=owner_settings_kb())
+        return
+
+    if is_own and state == "os_edit_await_apiid":
+        try:
+            api_id = int(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً.")
+            return
+        sid   = context.user_data.get("edit_svc_id")
+        panel = context.user_data.get("edit_svc_panel", 1)
+        info = smm_service_info(api_id, panel=panel)
+        if not info:
+            site_name = PANEL_MAP.get(panel, PANEL_MAP[1])["name"]
+            await update.message.reply_text(f"⚠️ لم يتم العثور على الخدمة في موقع {site_name}. تأكد من الرقم.")
+            return
+        with db_conn() as c:
+            c.execute("UPDATE services SET api_service_id=?, panel=? WHERE id=?", (api_id, panel, sid))
+        context.user_data["state"] = "main_menu"
+        site_name = PANEL_MAP.get(panel, PANEL_MAP[1])["name"]
+        await update.message.reply_text(
+            f"✅ تم ربط الخدمة برقم *{api_id}* من موقع {site_name}.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=owner_settings_kb()
+        )
+        return
+
     # إذا لا يوجد حالة معروفة، عرض القائمة
     await update.message.reply_text("🏠 القائمة الرئيسية:", reply_markup=main_menu_kb(is_own))
 
@@ -1403,17 +1525,20 @@ async def _save_service(update, context, price: float):
     """حفظ الخدمة الجديدة بعد تحديد جميع القيم"""
     cat    = context.user_data.get("new_svc_cat", "followers")
     api_id = context.user_data.get("new_svc_api_id")
+    panel  = context.user_data.get("new_svc_panel", 1)
     name   = context.user_data.get("new_svc_name")
     mn     = context.user_data.get("new_svc_min", 0)
     mx     = context.user_data.get("new_svc_max", 0)
     desc   = context.user_data.get("new_svc_desc", "")
     with db_conn() as c:
         c.execute(
-            "INSERT INTO services (category,api_service_id,name_ar,description,min_qty,max_qty,price_per_point) VALUES (?,?,?,?,?,?,?)",
-            (cat, api_id, name, desc, mn, mx, price)
+            "INSERT INTO services (category,api_service_id,panel,name_ar,description,min_qty,max_qty,price_per_point) VALUES (?,?,?,?,?,?,?,?)",
+            (cat, api_id, panel, name, desc, mn, mx, price)
         )
+    site_name = PANEL_MAP.get(panel, PANEL_MAP[1])["name"]
     await update.message.reply_text(
         f"✅ تمت إضافة الخدمة *'{name}'* بنجاح!\n\n"
+        f"🌐 الموقع: {site_name}\n"
         f"📉 الحد الأدنى: {mn}\n"
         f"📈 الحد الأعلى: {mx}\n"
         f"💰 السعر: {price} نقطة/1000 وحدة",
@@ -1533,7 +1658,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await q.edit_message_text("❌ نقاطك غير كافية.", reply_markup=main_menu_kb(is_own))
                 context.user_data["state"] = "main_menu"
                 return
-            api_res = smm_create_order(svc["api_service_id"], link, qty)
+            api_res = smm_create_order(svc["api_service_id"], link, qty, panel=svc.get("panel", 1))
             if "error" in api_res or not api_res.get("order"):
                 add_points(user.id, cost)
                 err_msg = api_res.get("error", "خطأ غير معروف من الموقع")
@@ -1949,9 +2074,25 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("os_cat:") and is_own:
         cat = data.split(":")[1]
         context.user_data["new_svc_cat"] = cat
-        context.user_data["state"] = "os_await_api_id"
+        rows = [
+            [InlineKeyboardButton(f"1️⃣ {PANEL_MAP[1]['name']}", callback_data="os_panel:1")],
+            [InlineKeyboardButton(f"2️⃣ {PANEL_MAP[2]['name']}", callback_data="os_panel:2")],
+            [InlineKeyboardButton("🔙 رجوع", callback_data="os:add_service")],
+        ]
         await q.edit_message_text(
-            f"📌 الفئة: {CATEGORY_MAP.get(cat, cat)}\n\nأرسل *رقم الخدمة* في موقع SMMMAIN:",
+            f"📌 الفئة: {CATEGORY_MAP.get(cat, cat)}\n\nاختر *الموقع* الذي تريد إضافة الخدمة منه:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
+        return
+
+    if data.startswith("os_panel:") and is_own:
+        panel = int(data.split(":")[1])
+        context.user_data["new_svc_panel"] = panel
+        context.user_data["state"] = "os_await_api_id"
+        site_name = PANEL_MAP.get(panel, PANEL_MAP[1])["name"]
+        await q.edit_message_text(
+            f"🌐 الموقع: {site_name}\n\nأرسل *رقم الخدمة* في هذا الموقع:",
             parse_mode=ParseMode.MARKDOWN
         )
         return
@@ -2000,17 +2141,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # نحتاج update.message لكن هنا callback — نرسل رسالة جديدة
         cat    = context.user_data.get("new_svc_cat", "followers")
         api_id = context.user_data.get("new_svc_api_id")
+        panel  = context.user_data.get("new_svc_panel", 1)
         name   = context.user_data.get("new_svc_name")
         mn     = context.user_data.get("new_svc_min", 0)
         mx_val = context.user_data.get("new_svc_max", 0)
         desc   = context.user_data.get("new_svc_desc", "")
         with db_conn() as c:
             c.execute(
-                "INSERT INTO services (category,api_service_id,name_ar,description,min_qty,max_qty,price_per_point) VALUES (?,?,?,?,?,?,?)",
-                (cat, api_id, name, desc, mn, mx_val, price)
+                "INSERT INTO services (category,api_service_id,panel,name_ar,description,min_qty,max_qty,price_per_point) VALUES (?,?,?,?,?,?,?,?)",
+                (cat, api_id, panel, name, desc, mn, mx_val, price)
             )
+        site_name = PANEL_MAP.get(panel, PANEL_MAP[1])["name"]
         await q.edit_message_text(
             f"✅ تمت إضافة الخدمة *'{name}'* بنجاح!\n\n"
+            f"🌐 الموقع: {site_name}\n"
             f"📉 الحد الأدنى: {mn}\n"
             f"📈 الحد الأعلى: {mx_val}\n"
             f"💰 السعر: {price} نقطة/1000 وحدة",
@@ -2020,25 +2164,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "os:list_services" and is_own:
-        with db_conn() as c:
-            svcs = c.execute("SELECT * FROM services ORDER BY category, id").fetchall()
-        if not svcs:
-            await q.edit_message_text("📋 لا توجد خدمات مضافة.", reply_markup=owner_settings_kb())
+        text_, rows = _render_service_list()
+        if rows is None:
+            await q.edit_message_text(text_, reply_markup=owner_settings_kb())
             return
-        lines = ["📋 *قائمة الخدمات:*\n"]
-        for s in svcs:
-            status = "✅" if s["active"] else "❌"
-            lines.append(f"{status} [{s['id']}] *{s['name_ar']}*\nالفئة: {CATEGORY_MAP.get(s['category'], s['category'])} | Min:{s['min_qty']} Max:{s['max_qty']}\n")
-        rows = []
-        for s in svcs:
-            tog = "❌ تعطيل" if s["active"] else "✅ تفعيل"
-            rows.append([
-                InlineKeyboardButton(f"{s['name_ar'][:20]}", callback_data="noop"),
-                InlineKeyboardButton(tog, callback_data=f"os_tog_svc:{s['id']}:{1 if not s['active'] else 0}"),
-                InlineKeyboardButton("🗑", callback_data=f"os_del_svc:{s['id']}")
-            ])
-        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
-        await q.edit_message_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN,
+        await q.edit_message_text(text_, parse_mode=ParseMode.MARKDOWN,
                                    reply_markup=InlineKeyboardMarkup(rows))
         return
 
@@ -2046,26 +2176,80 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _, sid, val = data.split(":")
         with db_conn() as c:
             c.execute("UPDATE services SET active=? WHERE id=?", (int(val), int(sid)))
-            svcs = c.execute("SELECT * FROM services ORDER BY category, id").fetchall()
         await q.answer("✅ تم التحديث")
-        if not svcs:
-            await q.edit_message_text("📋 لا توجد خدمات مضافة.", reply_markup=owner_settings_kb())
+        text_, rows = _render_service_list()
+        if rows is None:
+            await q.edit_message_text(text_, reply_markup=owner_settings_kb())
             return
-        lines = ["📋 *قائمة الخدمات:*\n"]
-        for s in svcs:
-            status = "✅" if s["active"] else "❌"
-            lines.append(f"{status} [{s['id']}] *{s['name_ar']}*\nالفئة: {CATEGORY_MAP.get(s['category'], s['category'])} | Min:{s['min_qty']} Max:{s['max_qty']}\n")
-        rows = []
-        for s in svcs:
-            tog = "❌ تعطيل" if s["active"] else "✅ تفعيل"
-            rows.append([
-                InlineKeyboardButton(f"{s['name_ar'][:20]}", callback_data="noop"),
-                InlineKeyboardButton(tog, callback_data=f"os_tog_svc:{s['id']}:{1 if not s['active'] else 0}"),
-                InlineKeyboardButton("🗑", callback_data=f"os_del_svc:{s['id']}")
-            ])
-        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
-        await q.edit_message_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN,
+        await q.edit_message_text(text_, parse_mode=ParseMode.MARKDOWN,
                                    reply_markup=InlineKeyboardMarkup(rows))
+        return
+
+    # ── تعديل خدمة ──
+    if data.startswith("os_edit_svc:") and is_own:
+        sid = int(data.split(":")[1])
+        with db_conn() as c:
+            svc = c.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
+        if not svc:
+            await q.answer("⚠️ الخدمة غير موجودة")
+            return
+        site_name = PANEL_MAP.get(svc["panel"] or 1, PANEL_MAP[1])["name"]
+        rows = [
+            [InlineKeyboardButton("✏️ الاسم", callback_data=f"os_edit_field:{sid}:name"),
+             InlineKeyboardButton("📉 الحد الأدنى", callback_data=f"os_edit_field:{sid}:min")],
+            [InlineKeyboardButton("📈 الحد الأعلى", callback_data=f"os_edit_field:{sid}:max"),
+             InlineKeyboardButton("💰 السعر", callback_data=f"os_edit_field:{sid}:price")],
+            [InlineKeyboardButton("🌐 الموقع ورقم الخدمة", callback_data=f"os_edit_field:{sid}:source")],
+            [InlineKeyboardButton("🔙 رجوع", callback_data="os:list_services")],
+        ]
+        await q.edit_message_text(
+            f"✏️ *تعديل الخدمة:* {svc['name_ar']}\n\n"
+            f"🌐 الموقع الحالي: {site_name} (رقم {svc['api_service_id']})\n"
+            f"📉 الحد الأدنى: {svc['min_qty']}\n"
+            f"📈 الحد الأعلى: {svc['max_qty']}\n"
+            f"💰 السعر: {svc['price_per_point']} نقطة/1000\n\n"
+            f"اختر ما تريد تعديله:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
+        return
+
+    if data.startswith("os_edit_field:") and is_own:
+        _, sid, field = data.split(":")
+        context.user_data["edit_svc_id"] = int(sid)
+        prompts = {
+            "name":  ("✏️ أرسل *الاسم الجديد بالعربية* للخدمة:", "os_edit_await_name"),
+            "min":   ("📉 أرسل *الحد الأدنى* الجديد:", "os_edit_await_min"),
+            "max":   ("📈 أرسل *الحد الأعلى* الجديد:", "os_edit_await_max"),
+            "price": ("💰 أرسل *السعر* الجديد (نقطة/1000 وحدة):", "os_edit_await_price"),
+        }
+        if field == "source":
+            rows = [
+                [InlineKeyboardButton(f"1️⃣ {PANEL_MAP[1]['name']}", callback_data=f"os_edit_panel:{sid}:1")],
+                [InlineKeyboardButton(f"2️⃣ {PANEL_MAP[2]['name']}", callback_data=f"os_edit_panel:{sid}:2")],
+                [InlineKeyboardButton("🔙 رجوع", callback_data=f"os_edit_svc:{sid}")],
+            ]
+            await q.edit_message_text(
+                "🌐 اختر *الموقع الجديد* الذي تريد ربط الخدمة به:",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup(rows)
+            )
+            return
+        msg, state_name = prompts[field]
+        context.user_data["state"] = state_name
+        await q.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN)
+        return
+
+    if data.startswith("os_edit_panel:") and is_own:
+        _, sid, panel = data.split(":")
+        context.user_data["edit_svc_id"] = int(sid)
+        context.user_data["edit_svc_panel"] = int(panel)
+        context.user_data["state"] = "os_edit_await_apiid"
+        site_name = PANEL_MAP.get(int(panel), PANEL_MAP[1])["name"]
+        await q.edit_message_text(
+            f"🌐 الموقع: {site_name}\n\nأرسل *رقم الخدمة الجديد* في هذا الموقع:",
+            parse_mode=ParseMode.MARKDOWN
+        )
         return
 
     if data.startswith("os_del_svc:") and is_own:
@@ -2304,22 +2488,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ── رصيد موقع الرشق (مالك) ──
+    # ── رصيد مواقع الرشق (مالك) ──
     if data == "os:site_balance" and is_own:
-        await q.edit_message_text("⏳ جارٍ الاستعلام عن رصيدك في الموقع...")
-        res = smm_request("balance")
-        if "error" in res:
-            await q.edit_message_text(
-                f"❌ تعذّر الاتصال بالموقع:\n{res['error']}",
-                reply_markup=back_kb("owner_settings")
-            )
-            return
-        balance  = res.get("balance", "غير معروف")
-        currency = res.get("currency", "USD")
+        await q.edit_message_text("⏳ جارٍ الاستعلام عن رصيدك في المواقع...")
+        lines = ["💵 *رصيد حساباتك في مواقع الرشق:*\n"]
+        for panel_id, site in PANEL_MAP.items():
+            res = smm_request("balance", panel=panel_id)
+            if "error" in res:
+                lines.append(f"❌ *{site['name']}*: تعذّر الاتصال ({res['error']})")
+                continue
+            balance  = res.get("balance", "غير معروف")
+            currency = res.get("currency", "USD")
+            lines.append(f"🌐 *{site['name']}*: {balance} {currency}")
         await q.edit_message_text(
-            f"💵 *رصيد حسابك في موقع الرشق:*\n\n"
-            f"💰 {balance} {currency}\n\n"
-            f"_(موقع: smmmain.com)_",
+            "\n".join(lines),
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=back_kb("owner_settings")
         )
