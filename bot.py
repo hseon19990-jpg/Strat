@@ -1852,8 +1852,34 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("os_del_svc:") and is_own:
         sid = int(data.split(":")[1])
         with db_conn() as c:
+            svc = c.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
+        if not svc:
+            await q.answer("⚠️ الخدمة غير موجودة")
+            return
+        await q.edit_message_text(
+            f"🗑 *تأكيد الحذف:*\n\n"
+            f"هل أنت متأكد من حذف الخدمة:\n"
+            f"*{svc['name_ar']}*؟\n\n"
+            f"⚠️ لا يمكن التراجع عن هذا الإجراء!",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ نعم، احذف", callback_data=f"os_confirm_del:{sid}"),
+                 InlineKeyboardButton("❌ إلغاء", callback_data="os:list_services")]
+            ])
+        )
+        return
+
+    if data.startswith("os_confirm_del:") and is_own:
+        sid = int(data.split(":")[1])
+        with db_conn() as c:
+            svc = c.execute("SELECT name_ar FROM services WHERE id=?", (sid,)).fetchone()
             c.execute("DELETE FROM services WHERE id=?", (sid,))
-        await q.answer("🗑 تم الحذف")
+        name = svc["name_ar"] if svc else "الخدمة"
+        await q.edit_message_text(
+            f"✅ تم حذف الخدمة *'{name}'* بنجاح.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=owner_settings_kb()
+        )
         return
 
     if data == "os:edit_gift" and is_own:
