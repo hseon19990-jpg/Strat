@@ -612,7 +612,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"✅ الكمية: {qty} | التكلفة: {cost} نقطة\n\n"
             f"📎 أرسل *رابط* الحساب/القناة/البوست:",
-            parse_mode=ParseMode.MARKDOWN
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 رجوع (تغيير الكمية)", callback_data="smm_back:qty")]
+            ])
         )
         return
 
@@ -1375,8 +1378,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not svc:
             await q.edit_message_text("⚠️ الخدمة غير موجودة.", reply_markup=back_kb())
             return
+        cat = svc["category"]
         context.user_data["smm_svc_db_id"] = svc_id
         context.user_data["smm_svc"] = dict(svc)
+        context.user_data["smm_cat"] = cat
         context.user_data["state"] = "await_smm_qty"
         await q.edit_message_text(
             f"🔹 *{svc['name_ar']}*\n\n"
@@ -1384,7 +1389,51 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📈 الحد الأعلى: {svc['max_qty']}\n"
             f"💰 السعر: {svc['price_per_point']} نقطة / 1000 وحدة\n\n"
             f"🔢 أرسل *الكمية* المطلوبة:",
-            parse_mode=ParseMode.MARKDOWN
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 رجوع", callback_data=f"cat:{cat}")]
+            ])
+        )
+        return
+
+    # ── رجوع داخل مسار SMM ──
+    if data == "smm_back:qty":
+        # رجوع لخطوة الكمية — أعد عرض بطاقة الخدمة
+        svc = context.user_data.get("smm_svc", {})
+        if not svc:
+            await q.edit_message_text("⚠️ انتهت الجلسة. ابدأ من جديد.", reply_markup=main_menu_kb(is_own))
+            return
+        cat = context.user_data.get("smm_cat", svc.get("category", ""))
+        context.user_data["state"] = "await_smm_qty"
+        await q.edit_message_text(
+            f"🔹 *{svc['name_ar']}*\n\n"
+            f"📉 الحد الأدنى: {svc['min_qty']}\n"
+            f"📈 الحد الأعلى: {svc['max_qty']}\n"
+            f"💰 السعر: {svc['price_per_point']} نقطة / 1000 وحدة\n\n"
+            f"🔢 أرسل *الكمية* المطلوبة:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 رجوع", callback_data=f"cat:{cat}")]
+            ])
+        )
+        return
+
+    if data == "smm_back:link":
+        # رجوع لخطوة الرابط — أعد عرض طلب الرابط مع الكمية المحفوظة
+        svc  = context.user_data.get("smm_svc", {})
+        qty  = context.user_data.get("smm_qty", 0)
+        cost = context.user_data.get("smm_cost", 0)
+        if not svc:
+            await q.edit_message_text("⚠️ انتهت الجلسة. ابدأ من جديد.", reply_markup=main_menu_kb(is_own))
+            return
+        context.user_data["state"] = "await_smm_link"
+        await q.edit_message_text(
+            f"✅ الكمية: {qty} | التكلفة: {cost} نقطة\n\n"
+            f"📎 أرسل *رابط* الحساب/القناة/البوست:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 رجوع (تغيير الكمية)", callback_data="smm_back:qty")]
+            ])
         )
         return
 
