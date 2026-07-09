@@ -583,7 +583,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("✅ تأكيد الطلب", callback_data="confirm_order:yes"),
-                 InlineKeyboardButton("❌ إلغاء", callback_data="confirm_order:no")]
+                 InlineKeyboardButton("❌ إلغاء", callback_data="confirm_order:no")],
+                [InlineKeyboardButton("🔙 رجوع (تغيير الرابط)", callback_data="smm_back:link")]
             ])
         )
         return
