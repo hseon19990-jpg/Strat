@@ -42,7 +42,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"OK - Bot is running!")
     def log_message(self, format, *args):
-        pass  # إخفاء سجلات HTTP
+        pass
 
 def run_health_server():
     port = int(os.getenv("PORT", "8080"))
@@ -77,79 +77,80 @@ def init_db():
     with db_conn() as c:
         c.executescript("""
         CREATE TABLE IF NOT EXISTS users (
-            user_id     INTEGER PRIMARY KEY,
-            username    TEXT,
-            full_name   TEXT,
-            points      INTEGER DEFAULT 0,
-            invited_by  INTEGER DEFAULT 0,
+            user_id      INTEGER PRIMARY KEY,
+            username     TEXT,
+            full_name    TEXT,
+            points       INTEGER DEFAULT 0,
+            invited_by   INTEGER DEFAULT 0,
             total_orders INTEGER DEFAULT 0,
-            joined_at   TEXT DEFAULT (date('now')),
-            bot_user_num INTEGER
+            joined_at    TEXT DEFAULT (date('now')),
+            bot_user_num INTEGER,
+            verified     INTEGER DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS orders (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id     INTEGER,
-            service_id  INTEGER,
-            link        TEXT,
-            quantity    INTEGER,
-            cost_points INTEGER DEFAULT 0,
-            cost_stars  INTEGER DEFAULT 0,
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id      INTEGER,
+            service_id   INTEGER,
+            link         TEXT,
+            quantity     INTEGER,
+            cost_points  INTEGER DEFAULT 0,
+            cost_stars   INTEGER DEFAULT 0,
             api_order_id TEXT DEFAULT '',
-            status      TEXT DEFAULT 'pending',
-            order_code  TEXT,
-            created_at  TEXT DEFAULT (datetime('now'))
+            status       TEXT DEFAULT 'pending',
+            order_code   TEXT,
+            created_at   TEXT DEFAULT (datetime('now'))
         );
 
         CREATE TABLE IF NOT EXISTS services (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            category    TEXT,
-            api_service_id INTEGER,
-            name_ar     TEXT,
-            description TEXT,
-            min_qty     INTEGER,
-            max_qty     INTEGER,
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            category        TEXT,
+            api_service_id  INTEGER,
+            name_ar         TEXT,
+            description     TEXT,
+            min_qty         INTEGER,
+            max_qty         INTEGER,
             price_per_point REAL,
-            active      INTEGER DEFAULT 1
+            active          INTEGER DEFAULT 1
         );
 
         CREATE TABLE IF NOT EXISTS settings (
-            key         TEXT PRIMARY KEY,
-            value       TEXT
+            key   TEXT PRIMARY KEY,
+            value TEXT
         );
 
         CREATE TABLE IF NOT EXISTS daily_gifts (
-            user_id     INTEGER PRIMARY KEY,
-            last_claim  TEXT
+            user_id    INTEGER PRIMARY KEY,
+            last_claim TEXT
         );
 
         CREATE TABLE IF NOT EXISTS channel_funding (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id     INTEGER,
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id          INTEGER,
             channel_username TEXT,
-            funding_type TEXT,
-            cost_points INTEGER,
-            active      INTEGER DEFAULT 1,
-            created_at  TEXT DEFAULT (datetime('now'))
+            funding_type     TEXT,
+            cost_points      INTEGER,
+            active           INTEGER DEFAULT 1,
+            created_at       TEXT DEFAULT (datetime('now'))
         );
 
         CREATE TABLE IF NOT EXISTS star_transactions (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id     INTEGER,
-            stars       INTEGER,
-            points_given INTEGER,
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id             INTEGER,
+            stars               INTEGER,
+            points_given        INTEGER,
             telegram_payment_id TEXT,
-            status      TEXT DEFAULT 'completed',
-            created_at  TEXT DEFAULT (datetime('now'))
+            status              TEXT DEFAULT 'completed',
+            created_at          TEXT DEFAULT (datetime('now'))
         );
 
         CREATE TABLE IF NOT EXISTS point_transfers (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            from_user   INTEGER,
-            to_user     INTEGER,
-            points      INTEGER,
-            fee         INTEGER,
-            created_at  TEXT DEFAULT (datetime('now'))
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            from_user  INTEGER,
+            to_user    INTEGER,
+            points     INTEGER,
+            fee        INTEGER,
+            created_at TEXT DEFAULT (datetime('now'))
         );
 
         CREATE TABLE IF NOT EXISTS prize_exchanges (
@@ -163,21 +164,33 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS mandatory_channels (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
             channel_username TEXT,
-            channel_title TEXT,
-            owner_user_id INTEGER DEFAULT 0,
-            funding_type TEXT DEFAULT 'mandatory',
-            active      INTEGER DEFAULT 1
+            channel_title    TEXT,
+            owner_user_id    INTEGER DEFAULT 0,
+            funding_type     TEXT DEFAULT 'mandatory',
+            active           INTEGER DEFAULT 1
+        );
+
+        CREATE TABLE IF NOT EXISTS promo_codes (
+            code       TEXT PRIMARY KEY,
+            max_uses   INTEGER DEFAULT 1,
+            used_count INTEGER DEFAULT 0,
+            points     INTEGER DEFAULT 0,
+            active     INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS promo_uses (
+            code    TEXT,
+            user_id INTEGER,
+            PRIMARY KEY (code, user_id)
         );
 
         INSERT OR IGNORE INTO settings VALUES ('daily_gift_points','50');
         INSERT OR IGNORE INTO settings VALUES ('referral_points','30');
         INSERT OR IGNORE INTO settings VALUES ('star_to_points','250');
-        INSERT OR IGNORE INTO settings VALUES ('stars_25_cost','2500');
-        INSERT OR IGNORE INTO settings VALUES ('stars_15_cost','1500');
-        INSERT OR IGNORE INTO settings VALUES ('stars_50_cost','5000');
-        INSERT OR IGNORE INTO settings VALUES ('stars_100_cost','10000');
+        INSERT OR IGNORE INTO settings VALUES ('exchange_star_rate','100');
         INSERT OR IGNORE INTO settings VALUES ('telegram_number_cost','5000');
         INSERT OR IGNORE INTO settings VALUES ('transfer_fee_percent','1');
         INSERT OR IGNORE INTO settings VALUES ('mandatory_channel_cost','200');
@@ -186,7 +199,14 @@ def init_db():
         INSERT OR IGNORE INTO settings VALUES ('owner_contact','');
         INSERT OR IGNORE INTO settings VALUES ('total_bot_orders','0');
         INSERT OR IGNORE INTO settings VALUES ('total_bot_users','0');
+        INSERT OR IGNORE INTO settings VALUES ('asiacell_text','⚠️ الشحن التلقائي عبر اسيا سيل غير متاح حالياً.\nيرجى التواصل مع المالك.');
         """)
+    # إضافة عمود verified للمستخدمين القدامى
+    try:
+        with db_conn() as c:
+            c.execute("ALTER TABLE users ADD COLUMN verified INTEGER DEFAULT 0")
+    except Exception:
+        pass
 
 def get_setting(key: str) -> str:
     with db_conn() as c:
@@ -207,14 +227,22 @@ def get_or_create_user(user_id: int, username: str, full_name: str, invited_by: 
         total = int(get_setting("total_bot_users") or "0") + 1
         set_setting("total_bot_users", str(total))
         c.execute(
-            "INSERT INTO users (user_id, username, full_name, invited_by, bot_user_num) VALUES (?,?,?,?,?)",
+            "INSERT INTO users (user_id, username, full_name, invited_by, bot_user_num, verified) VALUES (?,?,?,?,?,0)",
             (user_id, username, full_name, invited_by, total)
         )
-        # مكافأة من دعا
         if invited_by and invited_by != user_id:
             rp = int(get_setting("referral_points") or "30")
             c.execute("UPDATE users SET points=points+? WHERE user_id=?", (rp, invited_by))
         return dict(c.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone())
+
+def set_user_verified(user_id: int):
+    with db_conn() as c:
+        c.execute("UPDATE users SET verified=1 WHERE user_id=?", (user_id,))
+
+def is_user_verified(user_id: int) -> bool:
+    with db_conn() as c:
+        row = c.execute("SELECT verified FROM users WHERE user_id=?", (user_id,)).fetchone()
+        return bool(row and row["verified"])
 
 def add_points(user_id: int, pts: int):
     with db_conn() as c:
@@ -234,7 +262,6 @@ def get_user(user_id: int) -> dict | None:
         return dict(row) if row else None
 
 def next_order_code(user_id: int) -> str:
-    """كود الطلب: user_order_number - bot_user_number - total_bot_orders"""
     with db_conn() as c:
         u = c.execute("SELECT bot_user_num, total_orders FROM users WHERE user_id=?", (user_id,)).fetchone()
         new_user_orders = (u["total_orders"] or 0) + 1
@@ -272,13 +299,13 @@ def smm_order_status(order_id: str) -> dict:
 #  مساعدات رياضية
 # ────────────────────────────────────────────────────────────
 CATEGORY_MAP = {
-    "followers":   "رشق متابعين",
-    "views":       "رشق مشاهدات",
-    "interactions":"رشق تفاعلات",
-    "story_views": "رشق مشاهدات ستوري",
-    "start_bot":   "بدء بوت",
-    "boost":       "تعزيز قناة أو كروب",
-    "post_stars":  "نجوم على بوست قناة",
+    "followers":    "رشق متابعين",
+    "views":        "رشق مشاهدات",
+    "interactions": "رشق تفاعلات",
+    "story_views":  "رشق مشاهدات ستوري",
+    "start_bot":    "بدء بوت",
+    "boost":        "تعزيز قناة أو كروب",
+    "post_stars":   "نجوم على بوست قناة",
 }
 
 def generate_math():
@@ -309,7 +336,8 @@ def main_menu_kb(is_owner=False):
          InlineKeyboardButton("💎 شحن نقاط", callback_data="charge_points")],
         [InlineKeyboardButton("🏆 استبدال نقاط بجوائز", callback_data="exchange_points"),
          InlineKeyboardButton("↔️ تحويل النقاط", callback_data="transfer_points")],
-        [InlineKeyboardButton("ℹ️ معلوماتي", callback_data="my_info")],
+        [InlineKeyboardButton("🎟 استخدام كود", callback_data="use_promo"),
+         InlineKeyboardButton("ℹ️ معلوماتي", callback_data="my_info")],
     ]
     if is_owner:
         rows.append([InlineKeyboardButton("⚙️ إعدادات المالك", callback_data="owner_settings")])
@@ -321,12 +349,16 @@ def owner_settings_kb():
          InlineKeyboardButton("📋 قائمة الخدمات", callback_data="os:list_services")],
         [InlineKeyboardButton("🎁 تعديل الهدية اليومية", callback_data="os:edit_gift"),
          InlineKeyboardButton("🔗 تعديل نقاط الدعوة", callback_data="os:edit_referral")],
-        [InlineKeyboardButton("⭐ سعر النجمة", callback_data="os:edit_star_rate"),
-         InlineKeyboardButton("🏆 أسعار الجوائز", callback_data="os:edit_prizes")],
+        [InlineKeyboardButton("⭐ سعر النجمة شحن", callback_data="os:edit_star_rate"),
+         InlineKeyboardButton("🏆 سعر نجمة الجوائز", callback_data="os:edit_exchange_rate")],
         [InlineKeyboardButton("📱 سعر رقم تيلغرام", callback_data="os:edit_number_cost"),
          InlineKeyboardButton("💌 رسالة الترحيب", callback_data="os:edit_welcome")],
         [InlineKeyboardButton("📡 إدارة قنوات الاشتراك", callback_data="os:manage_channels"),
          InlineKeyboardButton("❌ إلغاء صفقة", callback_data="os:cancel_order")],
+        [InlineKeyboardButton("🎟 إنشاء كود ترويجي", callback_data="os:create_promo"),
+         InlineKeyboardButton("📋 أكواد ترويجية", callback_data="os:list_promos")],
+        [InlineKeyboardButton("📲 تعديل نص اسيا سيل", callback_data="os:edit_asiacell"),
+         InlineKeyboardButton("📢 رسالة جماعية", callback_data="os:broadcast")],
         [InlineKeyboardButton("📊 إحصائيات", callback_data="os:stats"),
          InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
     ]
@@ -341,12 +373,19 @@ def charge_points_kb():
 
 def charge_stars_kb():
     rate = int(get_setting("star_to_points") or "250")
-    return InlineKeyboardMarkup([
+    quick_amounts = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000]
+    quick_rows = []
+    for i in range(0, len(quick_amounts), 5):
+        row = [InlineKeyboardButton(f"{n} ⭐", callback_data=f"charge:quick:{n}") for n in quick_amounts[i:i+5]]
+        quick_rows.append(row)
+    rows = [
         [InlineKeyboardButton(f"1 ⭐ = {rate} نقطة", callback_data="charge:info")],
+    ] + quick_rows + [
         [InlineKeyboardButton("🔢 شحن عدد نقاط معين", callback_data="charge:by_points"),
          InlineKeyboardButton("⭐ شحن بعدد نجوم معين", callback_data="charge:by_stars")],
         [InlineKeyboardButton("🔙 رجوع", callback_data="charge_points")],
-    ])
+    ]
+    return InlineKeyboardMarkup(rows)
 
 def exchange_kb():
     return InlineKeyboardMarkup([
@@ -364,22 +403,6 @@ def fund_channel_kb():
 
 def back_kb(target="main_menu"):
     return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data=target)]])
-
-def exchange_stars_kb():
-    costs = {
-        "15":  int(get_setting("stars_15_cost")  or "1500"),
-        "25":  int(get_setting("stars_25_cost")  or "2500"),
-        "50":  int(get_setting("stars_50_cost")  or "5000"),
-        "100": int(get_setting("stars_100_cost") or "10000"),
-    }
-    rows = [
-        [InlineKeyboardButton(f"15 ⭐ مقابل {costs['15']} نقطة",  callback_data="buy_stars:15")],
-        [InlineKeyboardButton(f"25 ⭐ مقابل {costs['25']} نقطة",  callback_data="buy_stars:25")],
-        [InlineKeyboardButton(f"50 ⭐ مقابل {costs['50']} نقطة",  callback_data="buy_stars:50")],
-        [InlineKeyboardButton(f"100 ⭐ مقابل {costs['100']} نقطة", callback_data="buy_stars:100")],
-        [InlineKeyboardButton("🔙 رجوع", callback_data="exchange_points")],
-    ]
-    return InlineKeyboardMarkup(rows)
 
 # ────────────────────────────────────────────────────────────
 #  إرسال إشعار للكروب
@@ -429,8 +452,22 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     args = context.args
     invited_by = int(args[0]) if args and args[0].isdigit() else 0
-    get_or_create_user(user.id, user.username or "", user.full_name or "", invited_by)
+    db_user = get_or_create_user(user.id, user.username or "", user.full_name or "", invited_by)
+    is_own = (user.id == OWNER_ID)
 
+    # إذا كان المستخدم قد تحقق مسبقاً، أظهر القائمة مباشرة
+    if db_user.get("verified", 0):
+        context.user_data["state"] = "main_menu"
+        pts = db_user["points"]
+        welcome = get_setting("welcome_message") or "أهلاً بك!"
+        await update.message.reply_text(
+            f"👋 *أهلاً بك مجدداً!*\n\n{welcome}\n\n💰 رصيدك: {pts} نقطة",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=main_menu_kb(is_own)
+        )
+        return
+
+    # أول دخول: التحقق الرياضي (مرة واحدة فقط)
     prob, ans = generate_math()
     context.user_data.clear()
     context.user_data["state"] = "verify_math"
@@ -461,6 +498,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         if ans == correct:
             context.user_data["state"] = "main_menu"
+            set_user_verified(user.id)
             db_user = get_user(user.id)
             pts = db_user["points"] if db_user else 0
             welcome = get_setting("welcome_message") or "أهلاً بك!"
@@ -532,16 +570,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             qty  = context.user_data.get("smm_qty", 0)
             cost = context.user_data.get("smm_cost", 0)
             link = context.user_data.get("smm_link", "")
-            # خصم النقاط أولاً
             if not deduct_points(user.id, cost):
                 await update.message.reply_text("❌ نقاطك غير كافية.")
                 context.user_data["state"] = "main_menu"
                 await update.message.reply_text("🏠 القائمة الرئيسية:", reply_markup=main_menu_kb(is_own))
                 return
-            # إرسال الطلب لـ API
             api_res = smm_create_order(svc["api_service_id"], link, qty)
             if "error" in api_res or not api_res.get("order"):
-                # إعادة النقاط في حالة فشل API
                 add_points(user.id, cost)
                 err_msg = api_res.get("error", "خطأ غير معروف من الموقع")
                 await update.message.reply_text(
@@ -577,7 +612,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"📌 الكود: {code}"
             )
         elif text == "لا":
-            # لا نعيد نقاطاً لأنها لم تُخصم بعد
             await update.message.reply_text("❌ تم إلغاء الطلب.", reply_markup=main_menu_kb(is_own))
         context.user_data["state"] = "main_menu"
         return
@@ -690,8 +724,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         rate  = int(get_setting("star_to_points") or "250")
         stars = math.ceil(pts / rate)
-        context.user_data["charge_stars"]  = stars
-        context.user_data["charge_pts"]    = stars * rate
+        context.user_data["charge_stars"] = stars
+        context.user_data["charge_pts"]   = stars * rate
         context.user_data["state"] = "confirm_charge_stars"
         await update.message.reply_text(
             f"💡 للحصول على {pts} نقطة تحتاج *{stars} ⭐*\n"
@@ -712,8 +746,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         rate = int(get_setting("star_to_points") or "250")
         pts  = stars * rate
-        context.user_data["charge_stars"]  = stars
-        context.user_data["charge_pts"]    = pts
+        context.user_data["charge_stars"] = stars
+        context.user_data["charge_pts"]   = pts
         context.user_data["state"] = "confirm_charge_stars"
         await update.message.reply_text(
             f"💡 *{stars} ⭐ = {pts} نقطة*\n\n"
@@ -735,6 +769,114 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         else:
             await update.message.reply_text("❌ تم الإلغاء.", reply_markup=main_menu_kb(is_own))
+        context.user_data["state"] = "main_menu"
+        return
+
+    # ── استبدال نقاط بنجوم ──
+    if state == "await_exchange_stars_count":
+        try:
+            stars = int(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً.")
+            return
+        if stars <= 0:
+            await update.message.reply_text("⚠️ يجب أن يكون الرقم أكبر من صفر.")
+            return
+        rate = int(get_setting("exchange_star_rate") or "100")
+        cost = stars * rate
+        db_user = get_user(user.id)
+        pts = db_user["points"] if db_user else 0
+        context.user_data["exchange_stars"] = stars
+        context.user_data["exchange_cost"]  = cost
+        context.user_data["state"] = "confirm_exchange_stars"
+        await update.message.reply_text(
+            f"⭐ *تأكيد الاستبدال:*\n\n"
+            f"⭐ عدد النجوم: {stars}\n"
+            f"💰 التكلفة: {cost} نقطة\n"
+            f"💎 رصيدك: {pts} نقطة\n\n"
+            f"أرسل *نعم* للتأكيد أو *لا* للإلغاء",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    if state == "confirm_exchange_stars":
+        if text == "نعم":
+            stars = context.user_data.get("exchange_stars", 0)
+            cost  = context.user_data.get("exchange_cost", 0)
+            if not deduct_points(user.id, cost):
+                await update.message.reply_text("❌ نقاطك غير كافية.", reply_markup=main_menu_kb(is_own))
+                context.user_data["state"] = "main_menu"
+                return
+            code = next_order_code(user.id)
+            with db_conn() as c:
+                c.execute(
+                    "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,status) VALUES (?,?,?,?,'pending')",
+                    (user.id, "stars", str(stars), cost)
+                )
+            await update.message.reply_text(
+                f"✅ *تمت العملية بنجاح!*\n\n"
+                f"⭐ طلب {stars} نجمة مسجل\n"
+                f"💰 التكلفة: {cost} نقطة\n\n"
+                f"📌 *كود عمليتك: `{code}`*\nسيتواصل معك المالك قريباً.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=main_menu_kb(is_own)
+            )
+            await notify_group(
+                context.application,
+                f"⭐ <b>طلب شراء نجوم (جائزة)</b>\n"
+                f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
+                f"⭐ {stars} نجمة مقابل {cost} نقطة\n"
+                f"📌 {code}"
+            )
+        else:
+            await update.message.reply_text("❌ تم الإلغاء.", reply_markup=main_menu_kb(is_own))
+        context.user_data["state"] = "main_menu"
+        return
+
+    # ── استخدام كود ترويجي ──
+    if state == "await_promo_code":
+        code = text.strip().upper()
+        with db_conn() as c:
+            promo = c.execute("SELECT * FROM promo_codes WHERE code=? AND active=1", (code,)).fetchone()
+        if not promo:
+            await update.message.reply_text(
+                "❌ الكود غير موجود أو منتهي الصلاحية.",
+                reply_markup=main_menu_kb(is_own)
+            )
+            context.user_data["state"] = "main_menu"
+            return
+        # تحقق إذا استخدمه مسبقاً
+        with db_conn() as c:
+            used = c.execute("SELECT 1 FROM promo_uses WHERE code=? AND user_id=?", (code, user.id)).fetchone()
+        if used:
+            await update.message.reply_text(
+                "⚠️ لقد استخدمت هذا الكود مسبقاً.",
+                reply_markup=main_menu_kb(is_own)
+            )
+            context.user_data["state"] = "main_menu"
+            return
+        if promo["used_count"] >= promo["max_uses"]:
+            await update.message.reply_text(
+                "⚠️ هذا الكود وصل للحد الأقصى من الاستخدامات.",
+                reply_markup=main_menu_kb(is_own)
+            )
+            context.user_data["state"] = "main_menu"
+            return
+        # تطبيق الكود
+        pts_given = promo["points"]
+        add_points(user.id, pts_given)
+        with db_conn() as c:
+            c.execute("UPDATE promo_codes SET used_count=used_count+1 WHERE code=?", (code,))
+            c.execute("INSERT INTO promo_uses (code, user_id) VALUES (?,?)", (code, user.id))
+        db_user = get_user(user.id)
+        await update.message.reply_text(
+            f"🎉 *تم تفعيل الكود بنجاح!*\n\n"
+            f"🎟 الكود: `{code}`\n"
+            f"✅ حصلت على *{pts_given} نقطة*\n"
+            f"💰 رصيدك الآن: {db_user['points']} نقطة",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=main_menu_kb(is_own)
+        )
         context.user_data["state"] = "main_menu"
         return
 
@@ -823,36 +965,71 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_own and state == "os_await_name_ar":
         context.user_data["new_svc_name"] = text
         info = context.user_data.get("new_svc_info", {})
+        mn   = info.get("min", 0)
+        # عرض الحد الأدنى مع زر الاستخدام
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"✅ استخدم ({mn})", callback_data=f"os_use_min:{mn}")]
+        ])
         await update.message.reply_text(
-            f"الحد الأدنى ({info.get('min',0)}) - الحد الأعلى ({info.get('max',0)})\n"
-            f"أرسل: *حد_أدنى حد_أعلى سعر_نقطة* (مفصولة بمسافة)\n"
-            f"مثال: 100 10000 0.5",
-            parse_mode=ParseMode.MARKDOWN
+            f"📉 *الحد الأدنى من الموقع: {mn}*\n\nاضغط الزر لاستخدامه أو أرسل رقماً مختلفاً:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=kb
         )
-        context.user_data["state"] = "os_await_svc_params"
+        context.user_data["state"] = "os_await_min"
         return
 
-    if is_own and state == "os_await_svc_params":
-        parts = text.split()
-        if len(parts) != 3:
-            await update.message.reply_text("⚠️ أرسل ثلاثة أرقام مفصولة بمسافة: حد_أدنى حد_أعلى سعر_نقطة")
-            return
+    if is_own and state == "os_await_min":
         try:
-            mn, mx, price = int(parts[0]), int(parts[1]), float(parts[2])
+            mn = int(text)
         except ValueError:
-            await update.message.reply_text("⚠️ تأكد من صحة الأرقام.")
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً.")
             return
-        cat = context.user_data.get("new_svc_cat", "followers")
-        with db_conn() as c:
-            c.execute(
-                "INSERT INTO services (category,api_service_id,name_ar,min_qty,max_qty,price_per_point) VALUES (?,?,?,?,?,?)",
-                (cat, context.user_data.get("new_svc_api_id"), context.user_data.get("new_svc_name"), mn, mx, price)
-            )
+        context.user_data["new_svc_min"] = mn
+        info = context.user_data.get("new_svc_info", {})
+        mx   = info.get("max", 0)
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"✅ استخدم ({mx})", callback_data=f"os_use_max:{mx}")]
+        ])
         await update.message.reply_text(
-            f"✅ تمت إضافة الخدمة '{context.user_data.get('new_svc_name')}' بنجاح!",
-            reply_markup=owner_settings_kb()
+            f"📈 *الحد الأعلى من الموقع: {mx}*\n\nاضغط الزر لاستخدامه أو أرسل رقماً مختلفاً:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=kb
         )
-        context.user_data["state"] = "main_menu"
+        context.user_data["state"] = "os_await_max"
+        return
+
+    if is_own and state == "os_await_max":
+        try:
+            mx = int(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً.")
+            return
+        context.user_data["new_svc_max"] = mx
+        info = context.user_data.get("new_svc_info", {})
+        rate = float(info.get("rate", 0))
+        # كل سنت = 1000 نقطة → كل دولار = 100000 نقطة
+        # السعر لكل وحدة = rate * 100 نقطة
+        suggested = round(rate * 100, 1)
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"✅ استخدم ({suggested} نقطة/وحدة)", callback_data=f"os_use_price:{suggested}")]
+        ])
+        await update.message.reply_text(
+            f"💰 *السعر المقترح: {suggested} نقطة لكل وحدة*\n"
+            f"_(محسوب: {rate}$ × 100 = {suggested} نقطة/وحدة)_\n\n"
+            f"اضغط الزر لاستخدامه أو أرسل رقماً مختلفاً:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=kb
+        )
+        context.user_data["state"] = "os_await_price"
+        return
+
+    if is_own and state == "os_await_price":
+        try:
+            price = float(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً.")
+            return
+        await _save_service(update, context, price)
         return
 
     if is_own and state == "os_await_gift_val":
@@ -884,17 +1061,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ أرسل رقماً.")
             return
         set_setting("star_to_points", str(val))
-        await update.message.reply_text(f"✅ سعر النجمة = {val} نقطة.", reply_markup=owner_settings_kb())
+        await update.message.reply_text(f"✅ سعر النجمة (شحن) = {val} نقطة.", reply_markup=owner_settings_kb())
         context.user_data["state"] = "main_menu"
         return
 
-    if is_own and state == "os_await_prizes":
-        lines = text.strip().splitlines()
-        for line in lines:
-            parts = line.split(":")
-            if len(parts) == 2:
-                set_setting(parts[0].strip(), parts[1].strip())
-        await update.message.reply_text("✅ تم تحديث أسعار الجوائز.", reply_markup=owner_settings_kb())
+    if is_own and state == "os_await_exchange_rate":
+        try:
+            val = int(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً.")
+            return
+        set_setting("exchange_star_rate", str(val))
+        await update.message.reply_text(f"✅ سعر نجمة الجوائز = {val} نقطة.", reply_markup=owner_settings_kb())
         context.user_data["state"] = "main_menu"
         return
 
@@ -915,6 +1093,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
+    if is_own and state == "os_await_asiacell_text":
+        set_setting("asiacell_text", text)
+        await update.message.reply_text("✅ تم تحديث نص اسيا سيل.", reply_markup=owner_settings_kb())
+        context.user_data["state"] = "main_menu"
+        return
+
     if is_own and state == "os_await_cancel_order":
         code = text.strip()
         with db_conn() as c:
@@ -929,8 +1113,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"⚠️ *تأكيد إلغاء الطلب:*\n\n"
             f"📌 الكود: {code}\n"
             f"👤 المستخدم ID: {order['user_id']}\n"
-            f"💰 التكلفة: {order['cost_points']} نقطة\n"
-            f"⭐ النجوم: {order['cost_stars']}\n\n"
+            f"💰 التكلفة: {order['cost_points']} نقطة\n\n"
             f"أرسل *نعم* للإلغاء وإعادة الرصيد أو *لا* للتراجع",
             parse_mode=ParseMode.MARKDOWN
         )
@@ -941,7 +1124,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             order  = context.user_data.get("cancel_order", {})
             uid    = order.get("user_id")
             pts    = order.get("cost_points", 0)
-            stars  = order.get("cost_stars", 0)
             o_code = order.get("order_code")
             with db_conn() as c:
                 c.execute("UPDATE orders SET status='cancelled' WHERE order_code=?", (o_code,))
@@ -971,8 +1153,110 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
+    # ── إنشاء كود ترويجي ──
+    if is_own and state == "os_await_promo_code_text":
+        code = text.strip().upper()
+        if len(code) < 3:
+            await update.message.reply_text("⚠️ الكود يجب أن يكون 3 أحرف على الأقل.")
+            return
+        with db_conn() as c:
+            existing = c.execute("SELECT 1 FROM promo_codes WHERE code=?", (code,)).fetchone()
+        if existing:
+            await update.message.reply_text("⚠️ هذا الكود موجود مسبقاً. أرسل كوداً آخر.")
+            return
+        context.user_data["new_promo_code"] = code
+        context.user_data["state"] = "os_await_promo_uses"
+        await update.message.reply_text(f"✅ الكود: `{code}`\n\nكم عدد المستخدمين الذين يمكنهم استخدامه؟",
+                                        parse_mode=ParseMode.MARKDOWN)
+        return
+
+    if is_own and state == "os_await_promo_uses":
+        try:
+            uses = int(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً.")
+            return
+        if uses <= 0:
+            await update.message.reply_text("⚠️ يجب أن يكون أكبر من صفر.")
+            return
+        context.user_data["new_promo_uses"] = uses
+        context.user_data["state"] = "os_await_promo_points"
+        await update.message.reply_text(f"✅ الحد الأقصى: {uses} مستخدم\n\nكم عدد النقاط لكل مستخدم؟")
+        return
+
+    if is_own and state == "os_await_promo_points":
+        try:
+            pts = int(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً.")
+            return
+        if pts <= 0:
+            await update.message.reply_text("⚠️ يجب أن يكون أكبر من صفر.")
+            return
+        code  = context.user_data.get("new_promo_code")
+        uses  = context.user_data.get("new_promo_uses")
+        with db_conn() as c:
+            c.execute("INSERT INTO promo_codes (code, max_uses, points) VALUES (?,?,?)", (code, uses, pts))
+        await update.message.reply_text(
+            f"✅ *تم إنشاء الكود بنجاح!*\n\n"
+            f"🎟 الكود: `{code}`\n"
+            f"👥 الحد الأقصى: {uses} مستخدم\n"
+            f"💰 النقاط لكل مستخدم: {pts}",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=owner_settings_kb()
+        )
+        context.user_data["state"] = "main_menu"
+        return
+
+    # ── رسالة جماعية ──
+    if is_own and state == "os_await_broadcast":
+        broadcast_text = text
+        with db_conn() as c:
+            users = c.execute("SELECT user_id FROM users").fetchall()
+        sent = 0
+        failed = 0
+        for u_row in users:
+            try:
+                await context.bot.send_message(u_row["user_id"], broadcast_text, parse_mode=ParseMode.HTML)
+                sent += 1
+            except Exception:
+                failed += 1
+        await update.message.reply_text(
+            f"📢 *تم إرسال الرسالة الجماعية*\n\n✅ نجح: {sent}\n❌ فشل: {failed}",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=owner_settings_kb()
+        )
+        context.user_data["state"] = "main_menu"
+        return
+
     # إذا لا يوجد حالة معروفة، عرض القائمة
     await update.message.reply_text("🏠 القائمة الرئيسية:", reply_markup=main_menu_kb(is_own))
+
+
+async def _save_service(update, context, price: float):
+    """حفظ الخدمة الجديدة بعد تحديد جميع القيم"""
+    cat    = context.user_data.get("new_svc_cat", "followers")
+    api_id = context.user_data.get("new_svc_api_id")
+    name   = context.user_data.get("new_svc_name")
+    mn     = context.user_data.get("new_svc_min", 0)
+    mx     = context.user_data.get("new_svc_max", 0)
+    info   = context.user_data.get("new_svc_info", {})
+    desc   = info.get("name", "")
+    with db_conn() as c:
+        c.execute(
+            "INSERT INTO services (category,api_service_id,name_ar,description,min_qty,max_qty,price_per_point) VALUES (?,?,?,?,?,?,?)",
+            (cat, api_id, name, desc, mn, mx, price)
+        )
+    await update.message.reply_text(
+        f"✅ تمت إضافة الخدمة *'{name}'* بنجاح!\n\n"
+        f"📉 الحد الأدنى: {mn}\n"
+        f"📈 الحد الأعلى: {mx}\n"
+        f"💰 السعر: {price} نقطة/وحدة",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=owner_settings_kb()
+    )
+    context.user_data["state"] = "main_menu"
+
 
 # ────────────────────────────────────────────────────────────
 #  معالج Callback
@@ -986,7 +1270,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── القائمة الرئيسية ──
     if data == "main_menu":
-        # مسح الحالة عند الرجوع للقائمة الرئيسية لتجنب تعليق المستخدم في حالة قديمة
         context.user_data["state"] = "main_menu"
         db_user = get_user(user.id)
         pts = db_user["points"] if db_user else 0
@@ -1096,7 +1379,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "charge:stars":
         rate = get_setting("star_to_points") or "250"
         await q.edit_message_text(
-            f"⭐ *الشحن عبر النجوم*\n\n💡 سعر النجمة الواحدة = {rate} نقطة\n\nاختر طريقة الشحن:",
+            f"⭐ *الشحن عبر النجوم*\n\n💡 سعر النجمة الواحدة = {rate} نقطة\n\nاختر الكمية أو الطريقة:",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=charge_stars_kb()
         )
@@ -1104,6 +1387,25 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "charge:info":
         await q.answer("هذا مجرد عرض للسعر.", show_alert=False)
+        return
+
+    # ── شحن سريع بعدد محدد من النجوم ──
+    if data.startswith("charge:quick:"):
+        stars = int(data.split(":")[2])
+        rate  = int(get_setting("star_to_points") or "250")
+        pts   = stars * rate
+        await q.edit_message_text(
+            f"⭐ *{stars} نجمة = {pts} نقطة*\n\nجارٍ تحضير الفاتورة...",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        await context.bot.send_invoice(
+            chat_id=user.id,
+            title="شحن نقاط",
+            description=f"شراء {pts} نقطة مقابل {stars} نجمة",
+            payload=f"charge_stars:{stars}:{user.id}",
+            currency="XTR",
+            prices=[LabeledPrice("نجوم", stars)],
+        )
         return
 
     if data == "charge:by_points":
@@ -1125,13 +1427,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "charge:asiacell":
+        asiacell_txt = get_setting("asiacell_text") or "⚠️ الشحن التلقائي عبر اسيا سيل غير متاح حالياً.\nيرجى التواصل مع المالك."
         owner_contact = get_setting("owner_contact") or ""
-        txt = "⚠️ الشحن التلقائي عبر اسيا سيل غير متاح حالياً.\nيرجى التواصل مع المالك."
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("💬 تواصل مع المالك", url=owner_contact)] if owner_contact else [],
-            [InlineKeyboardButton("🔙 رجوع", callback_data="charge_points")],
-        ])
-        await q.edit_message_text(txt, reply_markup=kb)
+        kb_rows = []
+        if owner_contact:
+            kb_rows.append([InlineKeyboardButton("💬 تواصل مع المالك", url=owner_contact)])
+        kb_rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="charge_points")])
+        await q.edit_message_text(asiacell_txt, reply_markup=InlineKeyboardMarkup(kb_rows))
         return
 
     # ── استبدال نقاط ──
@@ -1141,47 +1443,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "exchange:stars":
-        await q.edit_message_text("⭐ *استبدال نقاط بنجوم:*\nاختر الكمية:",
-                                   parse_mode=ParseMode.MARKDOWN, reply_markup=exchange_stars_kb())
-        return
-
-    if data.startswith("buy_stars:"):
-        stars_count = int(data.split(":")[1])
-        key  = f"stars_{stars_count}_cost"
-        cost = int(get_setting(key) or "0")
-        if cost == 0:
-            await q.edit_message_text("⚠️ السعر غير محدد من المالك.", reply_markup=back_kb("exchange_points"))
-            return
-        db_user = get_user(user.id)
-        if db_user["points"] < cost:
-            await q.edit_message_text(
-                f"❌ نقاطك غير كافية! تحتاج {cost} نقطة ولديك {db_user['points']} نقطة.",
-                reply_markup=back_kb("exchange_points")
-            )
-            return
-        if not deduct_points(user.id, cost):
-            await q.edit_message_text("❌ حدث خطأ في خصم النقاط.", reply_markup=back_kb("exchange_points"))
-            return
-        code = next_order_code(user.id)
-        with db_conn() as c:
-            c.execute(
-                "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,status) VALUES (?,?,?,?,'pending')",
-                (user.id, "stars", str(stars_count), cost)
-            )
+        rate = int(get_setting("exchange_star_rate") or "100")
+        context.user_data["state"] = "await_exchange_stars_count"
         await q.edit_message_text(
-            f"✅ *تمت العملية بنجاح!*\n\n"
-            f"⭐ طلب {stars_count} نجمة مسجل\n"
-            f"💰 التكلفة: {cost} نقطة\n\n"
-            f"📌 *كود عمليتك: `{code}`*\nاحفظه قد تحتاجه لاحقاً.",
+            f"⭐ *استبدال نقاط بنجوم*\n\n"
+            f"💡 سعر النجمة الواحدة: {rate} نقطة\n\n"
+            f"كم عدد النجوم التي تريدها؟ أرسل عدداً:",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=back_kb()
-        )
-        await notify_group(
-            context.application,
-            f"⭐ <b>طلب شراء نجوم</b>\n"
-            f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
-            f"⭐ {stars_count} نجمة مقابل {cost} نقطة\n"
-            f"📌 {code}"
+            reply_markup=back_kb("exchange_points")
         )
         return
 
@@ -1217,6 +1486,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
             f"💰 {cost} نقطة\n"
             f"📌 {code}"
+        )
+        return
+
+    # ── استخدام كود ترويجي ──
+    if data == "use_promo":
+        context.user_data["state"] = "await_promo_code"
+        await q.edit_message_text(
+            "🎟 *استخدام كود ترويجي*\n\nأرسل الكود:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=back_kb()
         )
         return
 
@@ -1303,6 +1582,70 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # ── أزرار inline لاختيار القيم عند إضافة خدمة ──
+    if data.startswith("os_use_min:") and is_own:
+        mn = int(data.split(":")[1])
+        context.user_data["new_svc_min"] = mn
+        info = context.user_data.get("new_svc_info", {})
+        mx   = info.get("max", 0)
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"✅ استخدم ({mx})", callback_data=f"os_use_max:{mx}")]
+        ])
+        await q.edit_message_text(
+            f"✅ الحد الأدنى: {mn}\n\n"
+            f"📈 *الحد الأعلى من الموقع: {mx}*\n\nاضغط الزر لاستخدامه أو أرسل رقماً مختلفاً:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=kb
+        )
+        context.user_data["state"] = "os_await_max"
+        return
+
+    if data.startswith("os_use_max:") and is_own:
+        mx = int(data.split(":")[1])
+        context.user_data["new_svc_max"] = mx
+        info = context.user_data.get("new_svc_info", {})
+        rate = float(info.get("rate", 0))
+        suggested = round(rate * 100, 1)
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"✅ استخدم ({suggested} نقطة/وحدة)", callback_data=f"os_use_price:{suggested}")]
+        ])
+        await q.edit_message_text(
+            f"✅ الحد الأعلى: {mx}\n\n"
+            f"💰 *السعر المقترح: {suggested} نقطة/وحدة*\n"
+            f"_(محسوب: {rate}$ × 100)_\n\n"
+            f"اضغط الزر لاستخدامه أو أرسل رقماً مختلفاً:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=kb
+        )
+        context.user_data["state"] = "os_await_price"
+        return
+
+    if data.startswith("os_use_price:") and is_own:
+        price = float(data.split(":")[1])
+        context.user_data["state"] = "main_menu"
+        # نحتاج update.message لكن هنا callback — نرسل رسالة جديدة
+        cat    = context.user_data.get("new_svc_cat", "followers")
+        api_id = context.user_data.get("new_svc_api_id")
+        name   = context.user_data.get("new_svc_name")
+        mn     = context.user_data.get("new_svc_min", 0)
+        mx_val = context.user_data.get("new_svc_max", 0)
+        info   = context.user_data.get("new_svc_info", {})
+        desc   = info.get("name", "")
+        with db_conn() as c:
+            c.execute(
+                "INSERT INTO services (category,api_service_id,name_ar,description,min_qty,max_qty,price_per_point) VALUES (?,?,?,?,?,?,?)",
+                (cat, api_id, name, desc, mn, mx_val, price)
+            )
+        await q.edit_message_text(
+            f"✅ تمت إضافة الخدمة *'{name}'* بنجاح!\n\n"
+            f"📉 الحد الأدنى: {mn}\n"
+            f"📈 الحد الأعلى: {mx_val}\n"
+            f"💰 السعر: {price} نقطة/وحدة",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=owner_settings_kb()
+        )
+        return
+
     if data == "os:list_services" and is_own:
         with db_conn() as c:
             svcs = c.execute("SELECT * FROM services ORDER BY category, id").fetchall()
@@ -1332,7 +1675,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             c.execute("UPDATE services SET active=? WHERE id=?", (int(val), int(sid)))
             svcs = c.execute("SELECT * FROM services ORDER BY category, id").fetchall()
         await q.answer("✅ تم التحديث")
-        # إعادة بناء القائمة مباشرة بدون استدعاء handle_callback تجنباً للتكرار
         if not svcs:
             await q.edit_message_text("📋 لا توجد خدمات مضافة.", reply_markup=owner_settings_kb())
             return
@@ -1375,29 +1717,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "os:edit_star_rate" and is_own:
         context.user_data["state"] = "os_await_star_rate"
         cur = get_setting("star_to_points") or "250"
-        await q.edit_message_text(f"⭐ سعر النجمة الحالي: {cur} نقطة\n\nأرسل القيمة الجديدة:")
+        await q.edit_message_text(f"⭐ سعر النجمة (شحن) الحالي: {cur} نقطة\n\nأرسل القيمة الجديدة:")
         return
 
-    if data == "os:edit_prizes" and is_own:
-        context.user_data["state"] = "os_await_prizes"
-        c15  = get_setting("stars_15_cost")
-        c25  = get_setting("stars_25_cost")
-        c50  = get_setting("stars_50_cost")
-        c100 = get_setting("stars_100_cost")
-        await q.edit_message_text(
-            f"🏆 *تعديل أسعار الجوائز:*\n\n"
-            f"الأسعار الحالية:\n"
-            f"15 نجمة = {c15} نقطة\n"
-            f"25 نجمة = {c25} نقطة\n"
-            f"50 نجمة = {c50} نقطة\n"
-            f"100 نجمة = {c100} نقطة\n\n"
-            f"أرسل على الشكل (سطر لكل قيمة):\n"
-            f"`stars_15_cost:1500`\n"
-            f"`stars_25_cost:2500`\n"
-            f"`stars_50_cost:5000`\n"
-            f"`stars_100_cost:10000`",
-            parse_mode=ParseMode.MARKDOWN
-        )
+    if data == "os:edit_exchange_rate" and is_own:
+        context.user_data["state"] = "os_await_exchange_rate"
+        cur = get_setting("exchange_star_rate") or "100"
+        await q.edit_message_text(f"🏆 سعر نجمة الجوائز الحالي: {cur} نقطة\n\nأرسل القيمة الجديدة:")
         return
 
     if data == "os:edit_number_cost" and is_own:
@@ -1410,6 +1736,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "os_await_welcome"
         cur = get_setting("welcome_message") or ""
         await q.edit_message_text(f"💌 رسالة الترحيب الحالية:\n{cur}\n\nأرسل الرسالة الجديدة:")
+        return
+
+    if data == "os:edit_asiacell" and is_own:
+        context.user_data["state"] = "os_await_asiacell_text"
+        cur = get_setting("asiacell_text") or ""
+        await q.edit_message_text(f"📲 النص الحالي لاسيا سيل:\n\n{cur}\n\nأرسل النص الجديد:")
         return
 
     if data == "os:cancel_order" and is_own:
@@ -1448,16 +1780,80 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("📡 أرسل يوزرنيم القناة (مثال: @channel):")
         return
 
+    # ── الأكواد الترويجية (مالك) ──
+    if data == "os:create_promo" and is_own:
+        context.user_data["state"] = "os_await_promo_code_text"
+        await q.edit_message_text(
+            "🎟 *إنشاء كود ترويجي جديد*\n\nأرسل الكود المراد إنشاؤه (أحرف وأرقام فقط):",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    if data == "os:list_promos" and is_own:
+        with db_conn() as c:
+            promos = c.execute("SELECT * FROM promo_codes ORDER BY created_at DESC").fetchall()
+        if not promos:
+            await q.edit_message_text("📋 لا توجد أكواد ترويجية.", reply_markup=owner_settings_kb())
+            return
+        lines = ["📋 *الأكواد الترويجية:*\n"]
+        rows  = []
+        for p in promos:
+            status = "✅" if p["active"] else "❌"
+            lines.append(
+                f"{status} `{p['code']}` — {p['points']} نقطة — {p['used_count']}/{p['max_uses']} استخدام"
+            )
+            tog = "❌ تعطيل" if p["active"] else "✅ تفعيل"
+            rows.append([
+                InlineKeyboardButton(p["code"], callback_data="noop"),
+                InlineKeyboardButton(tog, callback_data=f"os_tog_promo:{p['code']}:{0 if p['active'] else 1}"),
+                InlineKeyboardButton("🗑", callback_data=f"os_del_promo:{p['code']}")
+            ])
+        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
+        await q.edit_message_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN,
+                                   reply_markup=InlineKeyboardMarkup(rows))
+        return
+
+    if data.startswith("os_tog_promo:") and is_own:
+        parts = data.split(":")
+        code  = parts[1]
+        val   = int(parts[2])
+        with db_conn() as c:
+            c.execute("UPDATE promo_codes SET active=? WHERE code=?", (val, code))
+        await q.answer("✅ تم التحديث")
+        return
+
+    if data.startswith("os_del_promo:") and is_own:
+        code = data.split(":")[1]
+        with db_conn() as c:
+            c.execute("DELETE FROM promo_codes WHERE code=?", (code,))
+        await q.answer("🗑 تم الحذف")
+        return
+
+    # ── رسالة جماعية ──
+    if data == "os:broadcast" and is_own:
+        context.user_data["state"] = "os_await_broadcast"
+        with db_conn() as c:
+            total = c.execute("SELECT COUNT(*) as cnt FROM users").fetchone()["cnt"]
+        await q.edit_message_text(
+            f"📢 *رسالة جماعية*\n\n"
+            f"سيتم الإرسال لـ {total} مستخدم.\n\n"
+            f"أرسل الرسالة الآن (يدعم HTML):",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
     if data == "os:stats" and is_own:
         with db_conn() as c:
-            total_users  = c.execute("SELECT COUNT(*) as cnt FROM users").fetchone()["cnt"]
-            total_orders = c.execute("SELECT COUNT(*) as cnt FROM orders").fetchone()["cnt"]
-            total_pts    = c.execute("SELECT SUM(points) as s FROM users").fetchone()["s"] or 0
+            total_users   = c.execute("SELECT COUNT(*) as cnt FROM users").fetchone()["cnt"]
+            total_orders  = c.execute("SELECT COUNT(*) as cnt FROM orders").fetchone()["cnt"]
+            total_pts     = c.execute("SELECT SUM(points) as s FROM users").fetchone()["s"] or 0
+            total_promos  = c.execute("SELECT COUNT(*) as cnt FROM promo_codes WHERE active=1").fetchone()["cnt"]
         await q.edit_message_text(
             f"📊 *إحصائيات البوت:*\n\n"
             f"👥 إجمالي المستخدمين: {total_users}\n"
             f"📦 إجمالي الطلبات: {total_orders}\n"
-            f"💰 إجمالي النقاط في البوت: {total_pts}",
+            f"💰 إجمالي النقاط في البوت: {total_pts}\n"
+            f"🎟 أكواد ترويجية نشطة: {total_promos}",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=owner_settings_kb()
         )
@@ -1470,167 +1866,79 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #  Telegram Stars — Pre-Checkout
 # ────────────────────────────────────────────────────────────
 async def pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.pre_checkout_query
+    query   = update.pre_checkout_query
     payload = query.invoice_payload
 
-    # التحقق من صحة الـ payload وتطابق المستخدم
     valid = False
     if payload.startswith("charge_stars:"):
         parts = payload.split(":")
         if len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
-            expected_stars = int(parts[1])
-            uid_in_payload = int(parts[2])
-            # تأكد أن المستخدم هو نفسه الذي طلب الفاتورة وأن المبلغ متطابق
-            if uid_in_payload == query.from_user.id and query.total_amount == expected_stars:
+            expected_stars  = int(parts[1])
+            uid_in_payload  = int(parts[2])
+            actual_stars    = query.total_amount
+            if query.from_user.id == uid_in_payload and actual_stars == expected_stars:
                 valid = True
 
     if valid:
         await query.answer(ok=True)
     else:
-        await query.answer(ok=False, error_message="حدث خطأ في التحقق من الدفع. يرجى المحاولة مجدداً.")
+        await query.answer(ok=False, error_message="حدث خطأ في التحقق من الدفع.")
 
+# ────────────────────────────────────────────────────────────
+#  Telegram Stars — Successful Payment
+# ────────────────────────────────────────────────────────────
 async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user    = update.effective_user
     payment = update.message.successful_payment
     payload = payment.invoice_payload
-    paid_stars = payment.total_amount   # المبلغ الفعلي الذي دفعه المستخدم
+    user    = update.effective_user
+    is_own  = (user.id == OWNER_ID)
 
     if payload.startswith("charge_stars:"):
         parts = payload.split(":")
-        if len(parts) != 3 or not parts[1].isdigit() or not parts[2].isdigit():
-            logger.error(f"Invalid payment payload: {payload}")
-            return
-        expected_stars = int(parts[1])
-        uid_in_payload = int(parts[2])
-
-        # تحقق مزدوج: المستخدم متطابق والمبلغ متطابق
-        if uid_in_payload != user.id or paid_stars != expected_stars:
-            logger.warning(
-                f"Payment mismatch! user={user.id} payload_uid={uid_in_payload} "
-                f"paid={paid_stars} expected={expected_stars}"
-            )
-            await update.message.reply_text("⚠️ خطأ في التحقق من الدفع. تواصل مع المالك.")
-            return
-
+        stars = int(parts[1])
         rate  = int(get_setting("star_to_points") or "250")
-        pts   = paid_stars * rate          # نستخدم paid_stars الفعلية وليس الـ payload
+        pts   = stars * rate
         add_points(user.id, pts)
-        code = next_order_code(user.id)
         with db_conn() as c:
             c.execute(
                 "INSERT INTO star_transactions (user_id,stars,points_given,telegram_payment_id) VALUES (?,?,?,?)",
-                (user.id, paid_stars, pts, payment.telegram_payment_charge_id)
+                (user.id, stars, pts, payment.telegram_payment_charge_id)
             )
         db_user = get_user(user.id)
         await update.message.reply_text(
-            f"✅ *تمت عملية الشحن بنجاح!*\n\n"
-            f"⭐ النجوم المدفوعة: {paid_stars}\n"
-            f"💰 النقاط المضافة: {pts}\n"
-            f"💎 رصيدك الآن: {db_user['points']} نقطة\n\n"
-            f"📌 *كود عمليتك هو: `{code}`*\nاحفظه قد تحتاجه لاحقاً.",
+            f"✅ *تم الشحن بنجاح!*\n\n"
+            f"⭐ النجوم: {stars}\n"
+            f"✨ النقاط المضافة: {pts}\n"
+            f"💰 رصيدك الآن: {db_user['points']} نقطة",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=main_menu_kb(user.id == OWNER_ID)
+            reply_markup=main_menu_kb(is_own)
         )
         await notify_group(
             context.application,
             f"⭐ <b>شحن نجوم ناجح</b>\n"
             f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
-            f"⭐ {paid_stars} نجمة → {pts} نقطة\n"
-            f"📌 {code}"
+            f"⭐ {stars} نجمة → {pts} نقطة"
         )
 
 # ────────────────────────────────────────────────────────────
-#  /broadcast (للمالك)
-# ────────────────────────────────────────────────────────────
-async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_ID:
-        return
-    msg = " ".join(context.args)
-    if not msg:
-        await update.message.reply_text("⚠️ أرسل الرسالة بعد الأمر: /broadcast رسالتك")
-        return
-    with db_conn() as c:
-        users = c.execute("SELECT user_id FROM users").fetchall()
-    success, fail = 0, 0
-    for u in users:
-        try:
-            await context.bot.send_message(u["user_id"], msg)
-            success += 1
-        except Exception:
-            fail += 1
-    await update.message.reply_text(f"✅ أُرسلت إلى {success} مستخدم، فشل: {fail}")
-
-# ────────────────────────────────────────────────────────────
-#  /addpoints (للمالك)
-# ────────────────────────────────────────────────────────────
-async def cmd_addpoints(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_ID:
-        return
-    args = context.args
-    if len(args) != 2:
-        await update.message.reply_text("⚠️ الاستخدام: /addpoints <user_id> <points>")
-        return
-    try:
-        uid, pts = int(args[0]), int(args[1])
-    except ValueError:
-        await update.message.reply_text("⚠️ أرسل أرقاماً صحيحة.")
-        return
-    add_points(uid, pts)
-    await update.message.reply_text(f"✅ تمت إضافة {pts} نقطة للمستخدم {uid}.")
-    try:
-        await context.bot.send_message(uid, f"🎉 أضاف لك المالك {pts} نقطة!")
-    except Exception:
-        pass
-
-# ────────────────────────────────────────────────────────────
-#  /status (للمالك — فحص حالة طلب API)
-# ────────────────────────────────────────────────────────────
-async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_ID:
-        return
-    if not context.args:
-        await update.message.reply_text("⚠️ الاستخدام: /status <order_code>")
-        return
-    code = context.args[0]
-    with db_conn() as c:
-        order = c.execute("SELECT * FROM orders WHERE order_code=?", (code,)).fetchone()
-    if not order:
-        await update.message.reply_text("⚠️ كود الطلب غير موجود.")
-        return
-    api_status = {}
-    if order["api_order_id"]:
-        api_status = smm_order_status(order["api_order_id"])
-    await update.message.reply_text(
-        f"📊 *حالة الطلب:*\n\n"
-        f"📌 الكود: {code}\n"
-        f"👤 المستخدم: {order['user_id']}\n"
-        f"🔗 الرابط: {order['link']}\n"
-        f"🔢 الكمية: {order['quantity']}\n"
-        f"💰 التكلفة: {order['cost_points']} نقطة\n"
-        f"🔖 الحالة: {order['status']}\n"
-        f"📡 حالة API: {api_status.get('status', 'N/A')}\n"
-        f"📅 التاريخ: {order['created_at']}",
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-# ────────────────────────────────────────────────────────────
-#  تشغيل البوت
+#  Main
 # ────────────────────────────────────────────────────────────
 def main():
     init_db()
     start_health_server()
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    app.add_handler(CommandHandler("start",      cmd_start))
-    app.add_handler(CommandHandler("broadcast",  cmd_broadcast))
-    app.add_handler(CommandHandler("addpoints",  cmd_addpoints))
-    app.add_handler(CommandHandler("status",     cmd_status))
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND & filters.UpdateType.MESSAGE,
+        handle_text
+    ))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(PreCheckoutQueryHandler(pre_checkout))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    logger.info("✅ البوت يعمل...")
+    logger.info("🤖 Bot started!")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
