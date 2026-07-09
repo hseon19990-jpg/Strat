@@ -361,6 +361,8 @@ def owner_settings_kb():
         [InlineKeyboardButton("📦 باقات الاستبدال بنجوم", callback_data="os:manage_star_packages")],
         [InlineKeyboardButton("📱 سعر رقم تيلغرام", callback_data="os:edit_number_cost"),
          InlineKeyboardButton("💌 رسالة الترحيب", callback_data="os:edit_welcome")],
+        [InlineKeyboardButton("📢 سعر تمويل إجباري", callback_data="os:edit_mandatory_cost"),
+         InlineKeyboardButton("🔄 سعر تمويل داخلي", callback_data="os:edit_internal_cost")],
         [InlineKeyboardButton("📡 إدارة قنوات الاشتراك", callback_data="os:manage_channels"),
          InlineKeyboardButton("❌ إلغاء صفقة", callback_data="os:cancel_order")],
         [InlineKeyboardButton("🎟 إنشاء كود ترويجي", callback_data="os:create_promo"),
@@ -1174,6 +1176,28 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         set_setting("exchange_star_rate", str(val))
         await update.message.reply_text(f"✅ سعر نجمة الجوائز = {val} نقطة.", reply_markup=owner_settings_kb())
+        context.user_data["state"] = "main_menu"
+        return
+
+    if is_own and state == "os_await_mandatory_cost":
+        try:
+            val = int(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً.")
+            return
+        set_setting("mandatory_channel_cost", str(val))
+        await update.message.reply_text(f"✅ سعر تمويل القناة الإجباري = {val} نقطة.", reply_markup=owner_settings_kb())
+        context.user_data["state"] = "main_menu"
+        return
+
+    if is_own and state == "os_await_internal_cost":
+        try:
+            val = int(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً.")
+            return
+        set_setting("internal_channel_cost", str(val))
+        await update.message.reply_text(f"✅ سعر تمويل القناة الداخلي = {val} نقطة.", reply_markup=owner_settings_kb())
         context.user_data["state"] = "main_menu"
         return
 
@@ -2023,6 +2047,28 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "os_await_asiacell_text"
         cur = get_setting("asiacell_text") or ""
         await q.edit_message_text(f"📲 النص الحالي لاسيا سيل:\n\n{cur}\n\nأرسل النص الجديد:")
+        return
+
+    if data == "os:edit_mandatory_cost" and is_own:
+        cur = get_setting("mandatory_channel_cost") or "200"
+        context.user_data["state"] = "os_await_mandatory_cost"
+        await q.edit_message_text(
+            f"📢 *سعر تمويل القناة الإجباري السريع*\n\n"
+            f"السعر الحالي: {cur} نقطة\n\n"
+            f"أرسل السعر الجديد بالنقاط:",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    if data == "os:edit_internal_cost" and is_own:
+        cur = get_setting("internal_channel_cost") or "100"
+        context.user_data["state"] = "os_await_internal_cost"
+        await q.edit_message_text(
+            f"🔄 *سعر تمويل القناة الداخلي البطيء*\n\n"
+            f"السعر الحالي: {cur} نقطة\n\n"
+            f"أرسل السعر الجديد بالنقاط:",
+            parse_mode=ParseMode.MARKDOWN
+        )
         return
 
     if data == "os:cancel_order" and is_own:
