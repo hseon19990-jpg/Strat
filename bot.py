@@ -18,7 +18,7 @@ import logging
 from datetime import datetime, date
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
-    LabeledPrice, PreCheckoutQuery
+    LabeledPrice, PreCheckoutQuery, BotCommand, BotCommandScopeChat
 )
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
@@ -509,6 +509,20 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👋 *أهلاً بك!*\n\n🔐 للدخول للبوت، أجب على هذه المسألة البسيطة:\n\n"
         f"❓  *{prob} = ؟*",
         parse_mode=ParseMode.MARKDOWN
+    )
+
+# ────────────────────────────────────────────────────────────
+#  /admin — لوحة المالك المباشرة
+# ────────────────────────────────────────────────────────────
+async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user.id != OWNER_ID:
+        await update.message.reply_text("⛔ هذا الأمر للمالك فقط.")
+        return
+    await update.message.reply_text(
+        "⚙️ *لوحة المالك:*",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=owner_settings_kb()
     )
 
 # ────────────────────────────────────────────────────────────
@@ -2211,6 +2225,7 @@ def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("admin", cmd_admin))
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND & filters.UpdateType.MESSAGE,
         handle_text
@@ -2219,6 +2234,23 @@ def main():
     app.add_handler(PreCheckoutQueryHandler(pre_checkout))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
 
+    async def post_init(application):
+        # أوامر عامة لجميع المستخدمين
+        await application.bot.set_my_commands([
+            BotCommand("start", "🏠 القائمة الرئيسية"),
+        ])
+        # أوامر إضافية للمالك فقط
+        if OWNER_ID:
+            await application.bot.set_my_commands(
+                [
+                    BotCommand("start", "🏠 القائمة الرئيسية"),
+                    BotCommand("admin", "⚙️ لوحة المالك"),
+                ],
+                scope=BotCommandScopeChat(chat_id=OWNER_ID)
+            )
+        logger.info("✅ Bot commands set")
+
+    app.post_init = post_init
     logger.info("🤖 Bot started!")
     app.run_polling(drop_pending_updates=True)
 
