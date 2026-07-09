@@ -369,7 +369,7 @@ def owner_settings_kb():
          InlineKeyboardButton("📢 رسالة جماعية", callback_data="os:broadcast")],
         [InlineKeyboardButton("🔐 تفعيل/تعطيل التحقق", callback_data="os:toggle_captcha"),
          InlineKeyboardButton("📊 إحصائيات", callback_data="os:stats")],
-        [InlineKeyboardButton("💰 أرصدة المستخدمين", callback_data="os:user_balances")],
+        [InlineKeyboardButton("💵 رصيد موقع الرشق", callback_data="os:site_balance")],
         [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
     ]
     return InlineKeyboardMarkup(rows)
@@ -2026,24 +2026,25 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ── أرصدة المستخدمين (مالك) ──
-    if data == "os:user_balances" and is_own:
-        with db_conn() as c:
-            users_list = c.execute(
-                "SELECT user_id, full_name, username, points, total_orders FROM users ORDER BY points DESC LIMIT 30"
-            ).fetchall()
-        if not users_list:
-            await q.edit_message_text("👥 لا يوجد مستخدمون.", reply_markup=owner_settings_kb())
+    # ── رصيد موقع الرشق (مالك) ──
+    if data == "os:site_balance" and is_own:
+        await q.edit_message_text("⏳ جارٍ الاستعلام عن رصيدك في الموقع...")
+        res = smm_request("balance")
+        if "error" in res:
+            await q.edit_message_text(
+                f"❌ تعذّر الاتصال بالموقع:\n{res['error']}",
+                reply_markup=back_kb("owner_settings")
+            )
             return
-        lines = ["💰 *أرصدة المستخدمين (أعلى 30):*\n"]
-        for i, u in enumerate(users_list, 1):
-            name = u["full_name"] or u["username"] or f"ID:{u['user_id']}"
-            lines.append(f"{i}. {name} — {u['points']} نقطة | {u['total_orders']} طلب")
-        msg = "\n".join(lines)
-        if len(msg) > 4000:
-            msg = msg[:4000] + "\n..."
-        await q.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN,
-                                   reply_markup=back_kb("owner_settings"))
+        balance  = res.get("balance", "غير معروف")
+        currency = res.get("currency", "USD")
+        await q.edit_message_text(
+            f"💵 *رصيد حسابك في موقع الرشق:*\n\n"
+            f"💰 {balance} {currency}\n\n"
+            f"_(موقع: smmmain.com)_",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=back_kb("owner_settings")
+        )
         return
 
     # ── إدارة باقات الاستبدال بنجوم (مالك) ──
