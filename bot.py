@@ -452,11 +452,18 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     args = context.args
     invited_by = int(args[0]) if args and args[0].isdigit() else 0
+
+    # تحقق هل المستخدم موجود في قاعدة البيانات قبل التسجيل
+    existing = get_user(user.id)
+    is_new_user = existing is None
+
     db_user = get_or_create_user(user.id, user.username or "", user.full_name or "", invited_by)
     is_own = (user.id == OWNER_ID)
 
-    # إذا كان المستخدم قد تحقق مسبقاً، أظهر القائمة مباشرة
-    if db_user.get("verified", 0):
+    # المستخدم القديم (موجود قبل التحديث) أو متحقق مسبقاً → أظهر القائمة مباشرة
+    if not is_new_user or db_user.get("verified", 0):
+        if not db_user.get("verified", 0):
+            set_user_verified(user.id)
         context.user_data["state"] = "main_menu"
         pts = db_user["points"]
         welcome = get_setting("welcome_message") or "أهلاً بك!"
@@ -467,7 +474,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # أول دخول: التحقق الرياضي (مرة واحدة فقط)
+    # مستخدم جديد فعلاً: التحقق الرياضي (مرة واحدة فقط)
     prob, ans = generate_math()
     context.user_data.clear()
     context.user_data["state"] = "verify_math"
