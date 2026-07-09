@@ -196,7 +196,7 @@ def init_db():
         INSERT OR IGNORE INTO settings VALUES ('daily_gift_points','50');
         INSERT OR IGNORE INTO settings VALUES ('referral_points','30');
         INSERT OR IGNORE INTO settings VALUES ('star_to_points','250');
-        INSERT OR IGNORE INTO settings VALUES ('exchange_star_rate','100');
+        INSERT OR IGNORE INTO settings VALUES ('exchange_star_rate','2000');
         INSERT OR IGNORE INTO settings VALUES ('telegram_number_cost','5000');
         INSERT OR IGNORE INTO settings VALUES ('transfer_fee_percent','1');
         INSERT OR IGNORE INTO settings VALUES ('mandatory_channel_cost','200');
@@ -838,7 +838,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if stars <= 0:
             await update.message.reply_text("⚠️ يجب أن يكون الرقم أكبر من صفر.")
             return
-        rate = int(get_setting("exchange_star_rate") or "100")
+        rate = int(get_setting("exchange_star_rate") or "2000")
         cost = stars * rate
         db_user = get_user(user.id)
         pts = db_user["points"] if db_user else 0
@@ -1305,7 +1305,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         with db_conn() as c:
             c.execute("INSERT INTO exchange_star_packages (stars) VALUES (?)", (stars,))
-        rate = int(get_setting("exchange_star_rate") or "100")
+        rate = int(get_setting("exchange_star_rate") or "2000")
         cost = stars * rate
         await update.message.reply_text(
             f"✅ *تمت إضافة الباقة بنجاح!*\n\n⭐ {stars} نجمة = {cost} نقطة",
@@ -1630,7 +1630,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "exchange:stars":
-        rate = int(get_setting("exchange_star_rate") or "100")
+        rate = int(get_setting("exchange_star_rate") or "2000")
         with db_conn() as c:
             packages = c.execute("SELECT * FROM exchange_star_packages WHERE active=1 ORDER BY stars").fetchall()
         if not packages:
@@ -1656,7 +1656,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("exchange:pkg:"):
         stars = int(data.split(":")[2])
-        rate = int(get_setting("exchange_star_rate") or "100")
+        rate = int(get_setting("exchange_star_rate") or "2000")
         cost = stars * rate
         db_user = get_user(user.id)
         pts = db_user["points"] if db_user else 0
@@ -1966,7 +1966,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "os:edit_exchange_rate" and is_own:
         context.user_data["state"] = "os_await_exchange_rate"
-        cur = get_setting("exchange_star_rate") or "100"
+        cur = get_setting("exchange_star_rate") or "2000"
         await q.edit_message_text(f"🏆 سعر نجمة الجوائز الحالي: {cur} نقطة\n\nأرسل القيمة الجديدة:")
         return
 
@@ -2141,7 +2141,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "os:manage_star_packages" and is_own:
         with db_conn() as c:
             packages = c.execute("SELECT * FROM exchange_star_packages ORDER BY stars").fetchall()
-        rate = int(get_setting("exchange_star_rate") or "100")
+        rate = int(get_setting("exchange_star_rate") or "2000")
         lines = ["📦 *باقات الاستبدال بنجوم:*\n"]
         for pkg in packages:
             status = "✅" if pkg["active"] else "❌"
@@ -2176,7 +2176,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             c.execute("UPDATE exchange_star_packages SET active=? WHERE id=?", (val, pkg_id))
             packages = c.execute("SELECT * FROM exchange_star_packages ORDER BY stars").fetchall()
         await q.answer("✅ تم التحديث")
-        rate = int(get_setting("exchange_star_rate") or "100")
+        rate = int(get_setting("exchange_star_rate") or "2000")
         lines = ["📦 *باقات الاستبدال بنجوم:*\n"]
         for pkg in packages:
             status = "✅" if pkg["active"] else "❌"
