@@ -193,6 +193,13 @@ def init_db():
             active INTEGER DEFAULT 1
         );
 
+        CREATE TABLE IF NOT EXISTS channel_join_rewards (
+            user_id    INTEGER,
+            channel_id INTEGER,
+            PRIMARY KEY (user_id, channel_id)
+        );
+
+        INSERT OR IGNORE INTO settings VALUES ('join_channel_reward','20');
         INSERT OR IGNORE INTO settings VALUES ('daily_gift_points','50');
         INSERT OR IGNORE INTO settings VALUES ('referral_points','30');
         INSERT OR IGNORE INTO settings VALUES ('star_to_points','250');
@@ -363,6 +370,7 @@ def owner_settings_kb():
          InlineKeyboardButton("💌 رسالة الترحيب", callback_data="os:edit_welcome")],
         [InlineKeyboardButton("📢 سعر تمويل إجباري", callback_data="os:edit_mandatory_cost"),
          InlineKeyboardButton("🔄 سعر تمويل داخلي", callback_data="os:edit_internal_cost")],
+        [InlineKeyboardButton("🎁 نقاط الانضمام للقنوات", callback_data="os:edit_join_reward")],
         [InlineKeyboardButton("📡 إدارة قنوات الاشتراك", callback_data="os:manage_channels"),
          InlineKeyboardButton("❌ إلغاء صفقة", callback_data="os:cancel_order")],
         [InlineKeyboardButton("🎟 إنشاء كود ترويجي", callback_data="os:create_promo"),
@@ -1179,6 +1187,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
+    if is_own and state == "os_await_join_reward":
+        try:
+            val = int(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً.")
+            return
+        set_setting("join_channel_reward", str(val))
+        await update.message.reply_text(f"✅ نقاط الانضمام للقنوات = {val} نقطة.", reply_markup=owner_settings_kb())
+        context.user_data["state"] = "main_menu"
+        return
+
     if is_own and state == "os_await_mandatory_cost":
         try:
             val = int(text)
@@ -1600,19 +1619,94 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── انضمام بقنوات ──
     if data == "join_channels":
         with db_conn() as c:
-            channels = c.execute("SELECT * FROM mandatory_channels WHERE active=1").fetchall()
+            channels = c.execute("SELECT * FROM mandatory_channels WHERE active=1 AND funding_type='internal'").fetchall()
         if not channels:
-            await q.edit_message_text("📡 لا توجد قنوات للاشتراك حالياً.", reply_markup=back_kb())
+            await q.edit_message_text("📡 لا توجد قنوات للانضمام حالياً.", reply_markup=back_kb())
             return
+        reward = int(get_setting("join_channel_reward") or "20")
         rows = []
         for ch in channels:
+            # check if user already claimed this channel
+            with db_conn() as c:
+                claimed = c.execute("SELECT 1 FROM channel_join_rewards WHERE user_id=? AND channel_id=?",
+                                    (user.id, ch['id'])).fetchone()
+            status = "✅ تم" if claimed else "🎁 انضم واحصل على نقاط"
             rows.append([InlineKeyboardButton(
-                f"📢 {ch['channel_username']}",
+                f"📢 @{ch['channel_username']}",
                 url=f"https://t.me/{ch['channel_username']}"
             )])
+            if not claimed:
+                rows.append([InlineKeyboardButton(
+                    f"✅ تحقق من انضمامي (+{reward} نقطة)",
+                    callback_data=f"join_verify:{ch['id']}"
+                )])
+            else:
+                rows.append([InlineKeyboardButton("✔️ تم الحصول على نقاطك", callback_data="noop")])
         rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")])
         await q.edit_message_text(
-            "📡 *قنوات الاشتراك:*\nانضم للقنوات التالية:",
+            f"📡 *قنوات الانضمام:*\n\n"
+            f"🎁 انضم لأي قناة واحصل على *{reward} نقطة*\n"
+            f"اضغط ✅ تحقق من انضمامي بعد الانضمام:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
+        return
+
+    # ── التحقق من الانضمام ومنح النقاط ──
+    if data.startswith("join_verify:"):
+        ch_id = int(data.split(":")[1])
+        with db_conn() as c:
+            ch = c.execute("SELECT * FROM mandatory_channels WHERE id=?", (ch_id,)).fetchone()
+            already = c.execute("SELECT 1 FROM channel_join_rewards WHERE user_id=? AND channel_id=?",
+                                (user.id, ch_id)).fetchone()
+        if already:
+            await q.answer("✔️ لقد حصلت على نقاط هذه القناة سابقاً.", show_alert=True)
+            return
+        if not ch:
+            await q.answer("⚠️ القناة غير موجودة.", show_alert=True)
+            return
+        # تحقق من أن المستخدم فعلاً منضم
+        try:
+            member = await context.bot.get_chat_member(f"@{ch['channel_username']}", user.id)
+            is_member = member.status not in ("left", "kicked", "banned")
+        except Exception:
+            await q.answer("⚠️ تعذّر التحقق. تأكد أنك انضممت ثم حاول.", show_alert=True)
+            return
+        if not is_member:
+            await q.answer("❌ لم تنضم بعد! انضم للقناة أولاً ثم اضغط تحقق.", show_alert=True)
+            return
+        reward = int(get_setting("join_channel_reward") or "20")
+        add_points(user.id, reward)
+        with db_conn() as c:
+            c.execute("INSERT OR IGNORE INTO channel_join_rewards (user_id, channel_id) VALUES (?,?)",
+                      (user.id, ch_id))
+        db_user = get_user(user.id)
+        await q.answer(f"🎉 حصلت على {reward} نقطة!", show_alert=True)
+        # تحديث القائمة
+        channels = []
+        with db_conn() as c:
+            channels = c.execute("SELECT * FROM mandatory_channels WHERE active=1 AND funding_type='internal'").fetchall()
+        rows = []
+        for ch2 in channels:
+            with db_conn() as c:
+                claimed = c.execute("SELECT 1 FROM channel_join_rewards WHERE user_id=? AND channel_id=?",
+                                    (user.id, ch2['id'])).fetchone()
+            rows.append([InlineKeyboardButton(
+                f"📢 @{ch2['channel_username']}",
+                url=f"https://t.me/{ch2['channel_username']}"
+            )])
+            if not claimed:
+                rows.append([InlineKeyboardButton(
+                    f"✅ تحقق من انضمامي (+{reward} نقطة)",
+                    callback_data=f"join_verify:{ch2['id']}"
+                )])
+            else:
+                rows.append([InlineKeyboardButton("✔️ تم الحصول على نقاطك", callback_data="noop")])
+        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")])
+        await q.edit_message_text(
+            f"📡 *قنوات الانضمام:*\n\n"
+            f"🎁 انضم لأي قناة واحصل على *{reward} نقطة*\n"
+            f"💰 رصيدك الآن: {db_user['points'] if db_user else 0} نقطة",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(rows)
         )
@@ -2047,6 +2141,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "os_await_asiacell_text"
         cur = get_setting("asiacell_text") or ""
         await q.edit_message_text(f"📲 النص الحالي لاسيا سيل:\n\n{cur}\n\nأرسل النص الجديد:")
+        return
+
+    if data == "os:edit_join_reward" and is_own:
+        cur = get_setting("join_channel_reward") or "20"
+        context.user_data["state"] = "os_await_join_reward"
+        await q.edit_message_text(
+            f"🎁 *نقاط الانضمام للقنوات الداخلية*\n\n"
+            f"القيمة الحالية: {cur} نقطة\n\n"
+            f"أرسل عدد النقاط التي يحصل عليها العضو عند الانضمام:",
+            parse_mode=ParseMode.MARKDOWN
+        )
         return
 
     if data == "os:edit_mandatory_cost" and is_own:
