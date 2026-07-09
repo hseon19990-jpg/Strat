@@ -369,6 +369,7 @@ def owner_settings_kb():
          InlineKeyboardButton("📢 رسالة جماعية", callback_data="os:broadcast")],
         [InlineKeyboardButton("🔐 تفعيل/تعطيل التحقق", callback_data="os:toggle_captcha"),
          InlineKeyboardButton("📊 إحصائيات", callback_data="os:stats")],
+        [InlineKeyboardButton("💰 أرصدة المستخدمين", callback_data="os:user_balances")],
         [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
     ]
     return InlineKeyboardMarkup(rows)
@@ -583,15 +584,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "confirm_smm"
         db_user = get_user(user.id)
         pts = db_user["points"] if db_user else 0
+        svc_full = context.user_data.get("smm_svc", {})
+        desc_text = svc_full.get("description") or ""
         await update.message.reply_text(
             f"📋 *تفاصيل الطلب:*\n\n"
             f"🔹 الخدمة: {svc['name_ar']}\n"
+            + (f"📝 {desc_text}\n" if desc_text else "") +
             f"🔗 الرابط: `{context.user_data.get('smm_link')}`\n"
             f"🔢 الكمية: {qty}\n"
             f"💰 التكلفة: {cost} نقطة\n"
-            f"💎 رصيدك: {pts} نقطة\n\n"
-            f"هل تؤكد الطلب؟ أرسل *نعم* أو *لا*",
-            parse_mode=ParseMode.MARKDOWN
+            f"💎 رصيدك: {pts} نقطة",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ تأكيد الطلب", callback_data="confirm_order:yes"),
+                 InlineKeyboardButton("❌ إلغاء", callback_data="confirm_order:no")]
+            ])
         )
         return
 
@@ -995,14 +1002,22 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_own and state == "os_await_name_ar":
         context.user_data["new_svc_name"] = text
+        await update.message.reply_text(
+            f"✅ الاسم: *{text}*\n\n📝 أرسل *وصف الخدمة* (سيظهر للمستخدم في تفاصيل الطلب):",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        context.user_data["state"] = "os_await_custom_desc"
+        return
+
+    if is_own and state == "os_await_custom_desc":
+        context.user_data["new_svc_desc"] = text
         info = context.user_data.get("new_svc_info", {})
         mn   = info.get("min", 0)
-        # عرض الحد الأدنى مع زر الاستخدام
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton(f"✅ استخدم ({mn})", callback_data=f"os_use_min:{mn}")]
         ])
         await update.message.reply_text(
-            f"📉 *الحد الأدنى من الموقع: {mn}*\n\nاضغط الزر لاستخدامه أو أرسل رقماً مختلفاً:",
+            f"✅ الوصف حُفظ.\n\n📉 *الحد الأدنى من الموقع: {mn}*\n\nاضغط الزر لاستخدامه أو أرسل رقماً مختلفاً:",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=kb
         )
@@ -1293,8 +1308,7 @@ async def _save_service(update, context, price: float):
     name   = context.user_data.get("new_svc_name")
     mn     = context.user_data.get("new_svc_min", 0)
     mx     = context.user_data.get("new_svc_max", 0)
-    info   = context.user_data.get("new_svc_info", {})
-    desc   = info.get("name", "")
+    desc   = context.user_data.get("new_svc_desc", "")
     with db_conn() as c:
         c.execute(
             "INSERT INTO services (category,api_service_id,name_ar,description,min_qty,max_qty,price_per_point) VALUES (?,?,?,?,?,?,?)",
@@ -1358,6 +1372,62 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📎 أرسل *رابط* الحساب/القناة/البوست:",
             parse_mode=ParseMode.MARKDOWN
         )
+        return
+
+    # ── تأكيد الطلب (أزرار) ──
+    if data.startswith("confirm_order:"):
+        action = data.split(":")[1]
+        if context.user_data.get("state") != "confirm_smm":
+            await q.edit_message_text("⚠️ انتهت صلاحية هذا الطلب. ابدأ من جديد.", reply_markup=main_menu_kb(is_own))
+            return
+        if action == "yes":
+            svc  = context.user_data.get("smm_svc", {})
+            qty  = context.user_data.get("smm_qty", 0)
+            cost = context.user_data.get("smm_cost", 0)
+            link = context.user_data.get("smm_link", "")
+            if not deduct_points(user.id, cost):
+                await q.edit_message_text("❌ نقاطك غير كافية.", reply_markup=main_menu_kb(is_own))
+                context.user_data["state"] = "main_menu"
+                return
+            api_res = smm_create_order(svc["api_service_id"], link, qty)
+            if "error" in api_res or not api_res.get("order"):
+                add_points(user.id, cost)
+                err_msg = api_res.get("error", "خطأ غير معروف من الموقع")
+                await q.edit_message_text(
+                    f"❌ فشل الطلب: {err_msg}\nتمت إعادة نقاطك.",
+                    reply_markup=main_menu_kb(is_own)
+                )
+                context.user_data["state"] = "main_menu"
+                return
+            api_oid = str(api_res.get("order", ""))
+            code    = next_order_code(user.id)
+            with db_conn() as c:
+                c.execute(
+                    "INSERT INTO orders (user_id,service_id,link,quantity,cost_points,api_order_id,order_code) VALUES (?,?,?,?,?,?,?)",
+                    (user.id, svc["id"], link, qty, cost, api_oid, code)
+                )
+            await q.edit_message_text(
+                f"✅ *تمت العملية بنجاح!*\n\n"
+                f"🔹 الخدمة: {svc['name_ar']}\n"
+                f"🔢 الكمية: {qty}\n"
+                f"💰 التكلفة: {cost} نقطة\n\n"
+                f"📌 *كود عمليتك هو: `{code}`*\nاحفظه قد تحتاجه لاحقاً.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=main_menu_kb(is_own)
+            )
+            await notify_group(
+                context.application,
+                f"🆕 <b>طلب جديد</b>\n"
+                f"👤 المستخدم: <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
+                f"🔹 الخدمة: {svc['name_ar']}\n"
+                f"🔗 الرابط: {link}\n"
+                f"🔢 الكمية: {qty}\n"
+                f"💰 التكلفة: {cost} نقطة\n"
+                f"📌 الكود: {code}"
+            )
+        else:
+            await q.edit_message_text("❌ تم إلغاء الطلب.", reply_markup=main_menu_kb(is_own))
+        context.user_data["state"] = "main_menu"
         return
 
     # ── رابط الدعوة ──
@@ -1714,8 +1784,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         name   = context.user_data.get("new_svc_name")
         mn     = context.user_data.get("new_svc_min", 0)
         mx_val = context.user_data.get("new_svc_max", 0)
-        info   = context.user_data.get("new_svc_info", {})
-        desc   = info.get("name", "")
+        desc   = context.user_data.get("new_svc_desc", "")
         with db_conn() as c:
             c.execute(
                 "INSERT INTO services (category,api_service_id,name_ar,description,min_qty,max_qty,price_per_point) VALUES (?,?,?,?,?,?,?)",
@@ -1955,6 +2024,26 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=owner_settings_kb()
         )
+        return
+
+    # ── أرصدة المستخدمين (مالك) ──
+    if data == "os:user_balances" and is_own:
+        with db_conn() as c:
+            users_list = c.execute(
+                "SELECT user_id, full_name, username, points, total_orders FROM users ORDER BY points DESC LIMIT 30"
+            ).fetchall()
+        if not users_list:
+            await q.edit_message_text("👥 لا يوجد مستخدمون.", reply_markup=owner_settings_kb())
+            return
+        lines = ["💰 *أرصدة المستخدمين (أعلى 30):*\n"]
+        for i, u in enumerate(users_list, 1):
+            name = u["full_name"] or u["username"] or f"ID:{u['user_id']}"
+            lines.append(f"{i}. {name} — {u['points']} نقطة | {u['total_orders']} طلب")
+        msg = "\n".join(lines)
+        if len(msg) > 4000:
+            msg = msg[:4000] + "\n..."
+        await q.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN,
+                                   reply_markup=back_kb("owner_settings"))
         return
 
     # ── إدارة باقات الاستبدال بنجوم (مالك) ──
