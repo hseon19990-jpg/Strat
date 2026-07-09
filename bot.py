@@ -562,21 +562,29 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
-    # ── مسار خدمة SMM: إدخال رابط ──
+    # ── مسار خدمة SMM: إدخال الرابط (بعد الكمية) ──
     if state == "await_smm_link":
         context.user_data["smm_link"] = text
-        svc_id = context.user_data.get("smm_svc_db_id")
-        with db_conn() as c:
-            svc = c.execute("SELECT * FROM services WHERE id=?", (svc_id,)).fetchone()
-        if not svc:
-            context.user_data["state"] = "main_menu"
-            await update.message.reply_text("⚠️ خدمة غير موجودة.", reply_markup=main_menu_kb(is_own))
-            return
-        context.user_data["smm_svc"] = dict(svc)
-        context.user_data["state"] = "await_smm_qty"
+        svc  = context.user_data.get("smm_svc", {})
+        qty  = context.user_data.get("smm_qty", 0)
+        cost = context.user_data.get("smm_cost", 0)
+        db_user = get_user(user.id)
+        pts = db_user["points"] if db_user else 0
+        desc_text = svc.get("description") or ""
+        context.user_data["state"] = "confirm_smm"
         await update.message.reply_text(
-            f"🔢 أدخل الكمية المطلوبة:\n"
-            f"الحد الأدنى: {svc['min_qty']} | الحد الأعلى: {svc['max_qty']}"
+            f"📋 *تفاصيل الطلب:*\n\n"
+            f"🔹 الخدمة: {svc.get('name_ar', '')}\n"
+            f"🔢 الكمية: {qty}\n"
+            f"🔗 الرابط: `{text}`\n"
+            + (f"📝 {desc_text}\n" if desc_text else "") +
+            f"💰 التكلفة: {cost} نقطة\n"
+            f"💎 رصيدك: {pts} نقطة",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ تأكيد الطلب", callback_data="confirm_order:yes"),
+                 InlineKeyboardButton("❌ إلغاء", callback_data="confirm_order:no")]
+            ])
         )
         return
 
@@ -587,6 +595,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ أرسل رقماً صحيحاً.")
             return
         svc = context.user_data.get("smm_svc", {})
+        if not svc:
+            svc_id = context.user_data.get("smm_svc_db_id")
+            with db_conn() as c:
+                svc = dict(c.execute("SELECT * FROM services WHERE id=?", (svc_id,)).fetchone() or {})
+            context.user_data["smm_svc"] = svc
         if qty < svc.get("min_qty", 1) or qty > svc.get("max_qty", 1000000):
             await update.message.reply_text(
                 f"⚠️ الكمية خارج النطاق المسموح.\nالحد الأدنى: {svc['min_qty']} | الحد الأعلى: {svc['max_qty']}"
@@ -595,24 +608,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cost = int(qty / 1000 * svc.get("price_per_point", 1))
         context.user_data["smm_qty"] = qty
         context.user_data["smm_cost"] = cost
-        context.user_data["state"] = "confirm_smm"
-        db_user = get_user(user.id)
-        pts = db_user["points"] if db_user else 0
-        svc_full = context.user_data.get("smm_svc", {})
-        desc_text = svc_full.get("description") or ""
+        context.user_data["state"] = "await_smm_link"
         await update.message.reply_text(
-            f"📋 *تفاصيل الطلب:*\n\n"
-            f"🔹 الخدمة: {svc['name_ar']}\n"
-            + (f"📝 {desc_text}\n" if desc_text else "") +
-            f"🔗 الرابط: `{context.user_data.get('smm_link')}`\n"
-            f"🔢 الكمية: {qty}\n"
-            f"💰 التكلفة: {cost} نقطة\n"
-            f"💎 رصيدك: {pts} نقطة",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ تأكيد الطلب", callback_data="confirm_order:yes"),
-                 InlineKeyboardButton("❌ إلغاء", callback_data="confirm_order:no")]
-            ])
+            f"✅ الكمية: {qty} | التكلفة: {cost} نقطة\n\n"
+            f"📎 أرسل *رابط* الحساب/القناة/البوست:",
+            parse_mode=ParseMode.MARKDOWN
         )
         return
 
@@ -1376,14 +1376,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text("⚠️ الخدمة غير موجودة.", reply_markup=back_kb())
             return
         context.user_data["smm_svc_db_id"] = svc_id
-        context.user_data["state"] = "await_smm_link"
+        context.user_data["smm_svc"] = dict(svc)
+        context.user_data["state"] = "await_smm_qty"
         await q.edit_message_text(
             f"🔹 *{svc['name_ar']}*\n\n"
-            f"📝 {svc['description'] or 'خدمة متميزة'}\n"
             f"📉 الحد الأدنى: {svc['min_qty']}\n"
             f"📈 الحد الأعلى: {svc['max_qty']}\n"
             f"💰 السعر: {svc['price_per_point']} نقطة / 1000 وحدة\n\n"
-            f"📎 أرسل *رابط* الحساب/القناة/البوست:",
+            f"🔢 أرسل *الكمية* المطلوبة:",
             parse_mode=ParseMode.MARKDOWN
         )
         return
