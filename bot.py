@@ -570,7 +570,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"⚠️ الكمية خارج النطاق المسموح.\nالحد الأدنى: {svc['min_qty']} | الحد الأعلى: {svc['max_qty']}"
             )
             return
-        cost = int(qty * svc.get("price_per_point", 1))
+        cost = int(qty / 1000 * svc.get("price_per_point", 1))
         context.user_data["smm_qty"] = qty
         context.user_data["smm_cost"] = cost
         context.user_data["state"] = "confirm_smm"
@@ -1032,14 +1032,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         info = context.user_data.get("new_svc_info", {})
         rate = float(info.get("rate", 0))
         # كل سنت = 1000 نقطة → كل دولار = 100000 نقطة
-        # السعر لكل وحدة = rate * 100 نقطة
-        suggested = round(rate * 100, 1)
+        # السعر لكل 1000 وحدة = rate * 100000 نقطة
+        suggested = round(rate * 100000, 1)
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"✅ استخدم ({suggested} نقطة/وحدة)", callback_data=f"os_use_price:{suggested}")]
+            [InlineKeyboardButton(f"✅ استخدم ({suggested} نقطة/1000 وحدة)", callback_data=f"os_use_price:{suggested}")]
         ])
         await update.message.reply_text(
-            f"💰 *السعر المقترح: {suggested} نقطة لكل وحدة*\n"
-            f"_(محسوب: {rate}$ × 100 = {suggested} نقطة/وحدة)_\n\n"
+            f"💰 *السعر المقترح: {suggested} نقطة لكل 1000 وحدة*\n"
+            f"_(محسوب: {rate}$ × 100000 = {suggested} نقطة/1000 وحدة)_\n\n"
             f"اضغط الزر لاستخدامه أو أرسل رقماً مختلفاً:",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=kb
@@ -1275,7 +1275,7 @@ async def _save_service(update, context, price: float):
         f"✅ تمت إضافة الخدمة *'{name}'* بنجاح!\n\n"
         f"📉 الحد الأدنى: {mn}\n"
         f"📈 الحد الأعلى: {mx}\n"
-        f"💰 السعر: {price} نقطة/وحدة",
+        f"💰 السعر: {price} نقطة/1000 وحدة",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=owner_settings_kb()
     )
@@ -1325,7 +1325,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📝 {svc['description'] or 'خدمة متميزة'}\n"
             f"📉 الحد الأدنى: {svc['min_qty']}\n"
             f"📈 الحد الأعلى: {svc['max_qty']}\n"
-            f"💰 السعر: {svc['price_per_point']} نقطة / وحدة\n\n"
+            f"💰 السعر: {svc['price_per_point']} نقطة / 1000 وحدة\n\n"
             f"📎 أرسل *رابط* الحساب/القناة/البوست:",
             parse_mode=ParseMode.MARKDOWN
         )
@@ -1629,13 +1629,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["new_svc_max"] = mx
         info = context.user_data.get("new_svc_info", {})
         rate = float(info.get("rate", 0))
-        suggested = round(rate * 100, 1)
+        suggested = round(rate * 100000, 1)
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"✅ استخدم ({suggested} نقطة/وحدة)", callback_data=f"os_use_price:{suggested}")]
+            [InlineKeyboardButton(f"✅ استخدم ({suggested} نقطة/1000 وحدة)", callback_data=f"os_use_price:{suggested}")]
         ])
         await q.edit_message_text(
             f"✅ الحد الأعلى: {mx}\n\n"
-            f"💰 *السعر المقترح: {suggested} نقطة/وحدة*\n"
+            f"💰 *السعر المقترح: {suggested} نقطة/1000 وحدة*\n"
             f"_(محسوب: {rate}$ × 100)_\n\n"
             f"اضغط الزر لاستخدامه أو أرسل رقماً مختلفاً:",
             parse_mode=ParseMode.MARKDOWN,
@@ -1664,7 +1664,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ تمت إضافة الخدمة *'{name}'* بنجاح!\n\n"
             f"📉 الحد الأدنى: {mn}\n"
             f"📈 الحد الأعلى: {mx_val}\n"
-            f"💰 السعر: {price} نقطة/وحدة",
+            f"💰 السعر: {price} نقطة/1000 وحدة",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=owner_settings_kb()
         )
