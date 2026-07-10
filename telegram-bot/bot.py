@@ -135,6 +135,10 @@ class SmartCursor:
     def fetchall(self):
         return self._cur.fetchall()
 
+    @property
+    def rowcount(self):
+        return self._cur.rowcount
+
     def __iter__(self):
         return iter(self._cur)
 
@@ -448,7 +452,7 @@ def deduct_points(user_id: int, pts: int) -> bool:
             "UPDATE users SET points=points-%s WHERE user_id=%s AND points>=%s",
             (pts, user_id, pts)
         )
-        return c._cur.rowcount > 0
+        return c.rowcount > 0
 
 def get_user(user_id: int) -> dict | None:
     with db_conn() as c:
@@ -1313,7 +1317,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "INSERT INTO promo_uses (code, user_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
                 (code, user.id)
             )
-            inserted = c._cur.rowcount
+            inserted = c.rowcount
             if not inserted:
                 await update.message.reply_text(
                     "⚠️ لقد استخدمت هذا الكود مسبقاً.",
@@ -2167,7 +2171,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with db_conn() as c:
             c.execute("INSERT INTO channel_join_rewards (user_id, channel_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
                       (user.id, ch_id))
-            if c._cur.rowcount == 0:
+            if c.rowcount == 0:
                 await q.answer("✔️ لقد حصلت على نقاط هذه القناة سابقاً.", show_alert=True)
                 return
             c.execute("UPDATE users SET points=points+%s WHERE user_id=%s", (reward, user.id))
