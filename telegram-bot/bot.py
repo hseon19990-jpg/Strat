@@ -390,6 +390,8 @@ def init_db():
               ('asiacell_text', '⚠️ الشحن التلقائي عبر اسيا سيل غير متاح حالياً.\nيرجى التواصل مع المالك.'),
               ('captcha_enabled', '0'),
               ('exchange_success_msg', ''),
+              ('mandatory_channel_min_members', '0'),
+              ('internal_channel_min_members', '0'),
           ]
           for k, v in default_settings:
               c.execute(
@@ -561,7 +563,7 @@ CATEGORY_MAP = {
 # ────────────────────────────────────────────────────────────
 #  إدارة أزرار القوائم (يتحكم بها المالك: إضافة/حذف/ترتيب/تحجيم)
 # ────────────────────────────────────────────────────────────
-MENU_LABELS = {"main": "القائمة الرئيسية", "owner_settings": "قائمة إعدادات المالك"}
+MENU_LABELS = {"main": "القائمة الرئيسية", "owner_settings": "قائمة إعدادات المالك", "collect_points": "تجميع نقاط"}
 MENU_LABELS.update({f"cat:{k}": f"قائمة فئة: {v}" for k, v in CATEGORY_MAP.items()})
 
 MANAGEABLE_MENUS = ["main", "owner_settings"] + [f"cat:{k}" for k in CATEGORY_MAP]
@@ -572,8 +574,8 @@ BUILTIN_DEFAULTS = {
         ("👁 رشق مشاهدات", "cat:views", 2), ("💬 رشق تفاعلات", "cat:interactions", 2),
         ("📖 رشق مشاهدات ستوري", "cat:story_views", 2), ("🤖 بدء بوت", "cat:start_bot", 2),
         ("📣 تعزيز قناة أو كروب", "cat:boost", 2), ("⭐ نجوم على بوست قناة", "cat:post_stars", 2),
-        ("🔗 رابط دعوة", "referral", 2), ("🎁 هدية يومية", "daily_gift", 2),
-        ("📡 انضمام بقنوات", "join_channels", 2), ("💎 شحن نقاط", "charge_points", 2),
+        ("🔗 رابط دعوة", "referral", 2), ("💰 تجميع نقاط", "collect_points", 2),
+        ("💎 شحن نقاط", "charge_points", 2),
         ("🏆 استبدال نقاط بجوائز", "exchange_points", 2), ("↔️ تحويل النقاط", "transfer_points", 2),
         ("🎟 استخدام كود", "use_promo", 2), ("ℹ️ معلوماتي", "my_info", 2),
     ],
@@ -586,7 +588,8 @@ BUILTIN_DEFAULTS = {
         ("📱 سعر رقم تيلغرام", "os:edit_number_cost", 2), ("💌 رسالة الترحيب", "os:edit_welcome", 2),
         ("📢 سعر تمويل إجباري", "os:edit_mandatory_cost", 2), ("🔄 سعر تمويل داخلي", "os:edit_internal_cost", 2),
         ("🎁 نقاط الانضمام للقنوات", "os:edit_join_reward", 1),
-        ("📡 إدارة قنوات الاشتراك", "os:manage_channels", 2), ("❌ إلغاء صفقة", "os:cancel_order", 2),
+        ("📡 إدارة قنوات الاشتراك", "os:manage_channels", 2), ("👥 حد أدنى تمويل إجباري", "os:edit_mandatory_min", 2),
+        ("👥 حد أدنى تمويل داخلي", "os:edit_internal_min", 2), ("❌ إلغاء صفقة", "os:cancel_order", 2),
         ("🎟 إنشاء كود ترويجي", "os:create_promo", 2), ("📋 أكواد ترويجية", "os:list_promos", 2),
         ("📲 تعديل نص اسيا سيل", "os:edit_asiacell", 2), ("📢 رسالة جماعية", "os:broadcast", 2),
         ("🔐 تفعيل/تعطيل التحقق", "os:toggle_captcha", 2), ("📊 إحصائيات", "os:stats", 2),
@@ -597,8 +600,8 @@ BUILTIN_DEFAULTS = {
 }
 
 GOTO_TARGETS = [
-    ("🏠 القائمة الرئيسية", "main_menu"), ("🔗 رابط دعوة", "referral"), ("🎁 هدية يومية", "daily_gift"),
-    ("📡 انضمام بقنوات", "join_channels"), ("💎 شحن نقاط", "charge_points"),
+    ("🏠 القائمة الرئيسية", "main_menu"), ("🔗 رابط دعوة", "referral"), ("💰 تجميع نقاط", "collect_points"),
+    ("💎 شحن نقاط", "charge_points"),
     ("🏆 استبدال نقاط بجوائز", "exchange_points"), ("↔️ تحويل النقاط", "transfer_points"),
     ("🎟 استخدام كود", "use_promo"), ("ℹ️ معلوماتي", "my_info"), ("📺 تمويل قناتك حقيقي", "fund_channel"),
 ] + [(v, f"cat:{k}") for k, v in CATEGORY_MAP.items()]
@@ -1556,11 +1559,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
-    # ── تمويل قناة: إدخال اسم القناة ──
-    if state == "await_fund_channel":
+    # ── تمويل قناة: الخطوة 1 — إدخال عدد الأعضاء ──
+    if state == "await_fund_member_count":
         fund_type = context.user_data.get("fund_type", "mandatory")
         cost_key  = "mandatory_channel_cost" if fund_type == "mandatory" else "internal_channel_cost"
         cost      = int(get_setting(cost_key) or "200")
+        min_key   = "mandatory_channel_min_members" if fund_type == "mandatory" else "internal_channel_min_members"
+        min_members = int(get_setting(min_key) or "0")
         db_user   = get_user(user.id)
         if db_user["points"] < cost:
             await update.message.reply_text(
@@ -1569,10 +1574,54 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             context.user_data["state"] = "main_menu"
             return
-        channel = text.strip().lstrip("@")
+        try:
+            member_count = int(text.strip().replace(",", ""))
+            if member_count <= 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً يمثل عدد أعضاء قناتك.")
+            return
+        if min_members > 0 and member_count < min_members:
+            await update.message.reply_text(
+                f"❌ *عدد الأعضاء غير كافٍ!*\n\n"
+                f"الحد الأدنى المطلوب: *{min_members:,} عضو*\n"
+                f"العدد الذي أدخلته: {member_count:,}\n\n"
+                f"يجب أن تمتلك قناة بعدد أعضاء لا يقل عن الحد الأدنى.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=back_kb("fund_channel")
+            )
+            context.user_data["state"] = "main_menu"
+            return
+        context.user_data["fund_member_count"] = member_count
+        context.user_data["state"] = "await_fund_channel"
+        ft_label = "إجباري سريع" if fund_type == "mandatory" else "داخلي بطيء"
+        await update.message.reply_text(
+            f"✅ *عدد الأعضاء: {member_count:,}*\n\n"
+            f"الآن أرسل *رابط أو يوزرنيم قناتك* (مثال: @mychannel):",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    # ── تمويل قناة: الخطوة 2 — إدخال رابط القناة ──
+    if state == "await_fund_channel":
+        fund_type = context.user_data.get("fund_type", "mandatory")
+        cost_key  = "mandatory_channel_cost" if fund_type == "mandatory" else "internal_channel_cost"
+        cost      = int(get_setting(cost_key) or "200")
+        min_key   = "mandatory_channel_min_members" if fund_type == "mandatory" else "internal_channel_min_members"
+        min_members = int(get_setting(min_key) or "0")
+        submitted_count = context.user_data.get("fund_member_count", 0)
+        db_user   = get_user(user.id)
+        if db_user["points"] < cost:
+            await update.message.reply_text(
+                f"❌ نقاطك غير كافية. السعر: {cost} نقطة.",
+                reply_markup=main_menu_kb(is_own)
+            )
+            context.user_data["state"] = "main_menu"
+            return
+        channel = text.strip().lstrip("@").split("/")[-1]
         channel_id = f"@{channel}"
 
-        # ── التحقق من أن البوت مشرف في القناة/الكروب ──
+        # ── التحقق من أن البوت مشرف في القناة ──
         try:
             bot_member = await context.bot.get_chat_member(channel_id, context.bot.id)
             is_admin = bot_member.status in ("administrator", "creator")
@@ -1607,40 +1656,74 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode=ParseMode.MARKDOWN
             )
             return
-        deduct_points(user.id, cost)
-        code = next_order_code(user.id)
-        ft_label = "إجباري سريع" if fund_type == "mandatory" else "داخلي بطيء"
-        with db_conn() as c:
-            c.execute(
-                "INSERT INTO channel_funding (user_id,channel_username,funding_type,cost_points) VALUES (?,?,?,?)",
-                (user.id, channel, fund_type, cost)
+
+        # ── التحقق من عدد الأعضاء الفعلي ──
+        try:
+            real_count = await context.bot.get_chat_member_count(channel_id)
+        except Exception:
+            real_count = 0
+
+        if min_members > 0 and real_count < min_members:
+            await update.message.reply_text(
+                f"❌ *عدد الأعضاء الفعلي غير كافٍ!*\n\n"
+                f"📢 القناة: @{channel}\n"
+                f"👥 العدد الفعلي: {real_count:,} عضو\n"
+                f"📌 الحد الأدنى المطلوب: {min_members:,} عضو\n\n"
+                f"عزّز قناتك أولاً ثم حاول مجدداً.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=back_kb("fund_channel")
             )
-            if fund_type == "mandatory":
-                c.execute(
-                    "INSERT INTO mandatory_channels (channel_username,owner_user_id,funding_type) VALUES (?,?,?)",
-                    (channel, user.id, "mandatory")
-                )
-            else:
-                c.execute(
-                    "INSERT INTO mandatory_channels (channel_username,owner_user_id,funding_type) VALUES (?,?,?)",
-                    (channel, user.id, "internal")
-                )
+            context.user_data["state"] = "main_menu"
+            return
+
+        # ── عرض التأكيد ──
+        ft_label = "إجباري سريع" if fund_type == "mandatory" else "داخلي بطيء"
+        context.user_data["fund_channel_username"] = channel
+        context.user_data["state"] = "await_fund_confirm"
         await update.message.reply_text(
-            f"✅ *تم تفعيل تمويل قناتك بنجاح!*\n\n"
+            f"📋 *مراجعة طلب التمويل:*\n\n"
             f"📢 القناة: @{channel}\n"
             f"⚙️ النوع: {ft_label}\n"
+            f"👥 عدد الأعضاء الفعلي: {real_count:,}\n"
             f"💰 التكلفة: {cost} نقطة\n\n"
-            f"📌 *كود عمليتك: `{code}`*\nاحفظه قد تحتاجه لاحقاً.",
+            f"هل تريد تأكيد الطلب؟",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=main_menu_kb(is_own)
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ تأكيد", callback_data="fund_confirm:yes"),
+                 InlineKeyboardButton("❌ إلغاء", callback_data="fund_confirm:no")]
+            ])
         )
-        await notify_group(
-            context.application,
-            f"📢 <b>تمويل قناة {ft_label}</b>\n"
-            f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
-            f"📡 القناة: @{channel}\n"
-            f"💰 {cost} نقطة\n"
-            f"📌 {code}"
+        return
+
+    # ── إعدادات المالك: الحد الأدنى للأعضاء ──
+    if is_own and state == "os_await_mandatory_min":
+        try:
+            val = int(text.strip())
+            if val < 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً (0 = بدون حد أدنى).")
+            return
+        set_setting("mandatory_channel_min_members", str(val))
+        await update.message.reply_text(
+            f"✅ تم تحديث الحد الأدنى للتمويل الإجباري إلى: {val:,} عضو",
+            reply_markup=owner_settings_kb()
+        )
+        context.user_data["state"] = "main_menu"
+        return
+
+    if is_own and state == "os_await_internal_min":
+        try:
+            val = int(text.strip())
+            if val < 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً (0 = بدون حد أدنى).")
+            return
+        set_setting("internal_channel_min_members", str(val))
+        await update.message.reply_text(
+            f"✅ تم تحديث الحد الأدنى للتمويل الداخلي إلى: {val:,} عضو",
+            reply_markup=owner_settings_kb()
         )
         context.user_data["state"] = "main_menu"
         return
@@ -2345,6 +2428,105 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # ── تجميع نقاط (هدية يومية + انضمام بقنوات) ──
+    if data == "collect_points":
+        today = str(date.today())
+        gift  = int(get_setting("daily_gift_points") or "50")
+        reward = int(get_setting("join_channel_reward") or "20")
+        # فحص الهدية اليومية
+        with db_conn() as c:
+            gift_row = c.execute("SELECT last_claim FROM daily_gifts WHERE user_id=?", (user.id,)).fetchone()
+        already_claimed = gift_row and gift_row["last_claim"] == today
+        # قنوات الانضمام
+        with db_conn() as c:
+            channels = c.execute(
+                "SELECT * FROM mandatory_channels WHERE active=1 AND funding_type='internal' ORDER BY id"
+            ).fetchall()
+        # بناء أزرار القنوات
+        channel_rows = []
+        for ch in channels:
+            with db_conn() as c:
+                claimed = c.execute(
+                    "SELECT 1 FROM channel_join_rewards WHERE user_id=? AND channel_id=?",
+                    (user.id, ch["id"])
+                ).fetchone()
+            channel_rows.append([InlineKeyboardButton(
+                f"📢 @{ch['channel_username']}",
+                url=f"https://t.me/{ch['channel_username']}"
+            )])
+            if not claimed:
+                channel_rows.append([InlineKeyboardButton(
+                    f"✅ تحقق من انضمامي (+{reward} نقطة)",
+                    callback_data=f"join_verify:{ch['id']}"
+                )])
+            else:
+                channel_rows.append([InlineKeyboardButton("✔️ تم الحصول على نقاطك", callback_data="noop")])
+        gift_btn = []
+        if already_claimed:
+            gift_btn = [[InlineKeyboardButton("⏰ الهدية اليومية — تم استلامها (عد غداً)", callback_data="noop")]]
+        else:
+            gift_btn = [[InlineKeyboardButton(f"🎁 استلام الهدية اليومية (+{gift} نقطة)", callback_data="daily_gift_collect")]]
+        rows = gift_btn + channel_rows + [[InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")]]
+        db_user = get_user(user.id)
+        channels_txt = f"\n📡 *انضم للقنوات* واحصل على *{reward} نقطة* لكل قناة." if channels else "\n📡 لا توجد قنوات للانضمام حالياً."
+        await q.edit_message_text(
+            f"💰 *تجميع النقاط*\n\n"
+            f"💰 رصيدك الحالي: {db_user['points'] if db_user else 0} نقطة\n"
+            f"🎁 الهدية اليومية: *{gift} نقطة* {'✅ مستلمة' if already_claimed else '— متاحة الآن'}\n"
+            f"{channels_txt}",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
+        return
+
+    if data == "daily_gift_collect":
+        today = str(date.today())
+        with db_conn() as c:
+            row = c.execute("SELECT last_claim FROM daily_gifts WHERE user_id=?", (user.id,)).fetchone()
+            if row and row["last_claim"] == today:
+                await q.answer("⏰ لقد استلمت هديتك اليومية بالفعل! عد غداً.", show_alert=True)
+                return
+            gift = int(get_setting("daily_gift_points") or "50")
+            c.execute("INSERT INTO daily_gifts (user_id, last_claim) VALUES (%s, %s) ON CONFLICT (user_id) DO UPDATE SET last_claim=EXCLUDED.last_claim", (user.id, today))
+            c.execute("UPDATE users SET points=points+%s WHERE user_id=%s", (gift, user.id))
+        db_user = get_user(user.id)
+        await q.answer(f"🎁 حصلت على {gift} نقطة!", show_alert=True)
+        # تحديث شاشة تجميع النقاط
+        reward = int(get_setting("join_channel_reward") or "20")
+        with db_conn() as c:
+            channels = c.execute(
+                "SELECT * FROM mandatory_channels WHERE active=1 AND funding_type='internal' ORDER BY id"
+            ).fetchall()
+        channel_rows = []
+        for ch in channels:
+            with db_conn() as c:
+                claimed = c.execute(
+                    "SELECT 1 FROM channel_join_rewards WHERE user_id=? AND channel_id=?",
+                    (user.id, ch["id"])
+                ).fetchone()
+            channel_rows.append([InlineKeyboardButton(
+                f"📢 @{ch['channel_username']}",
+                url=f"https://t.me/{ch['channel_username']}"
+            )])
+            if not claimed:
+                channel_rows.append([InlineKeyboardButton(
+                    f"✅ تحقق من انضمامي (+{reward} نقطة)",
+                    callback_data=f"join_verify:{ch['id']}"
+                )])
+            else:
+                channel_rows.append([InlineKeyboardButton("✔️ تم الحصول على نقاطك", callback_data="noop")])
+        rows = [[InlineKeyboardButton("⏰ الهدية اليومية — تم استلامها (عد غداً)", callback_data="noop")]] + channel_rows + [[InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")]]
+        channels_txt = f"\n📡 *انضم للقنوات* واحصل على *{reward} نقطة* لكل قناة." if channels else "\n📡 لا توجد قنوات للانضمام حالياً."
+        await q.edit_message_text(
+            f"💰 *تجميع النقاط*\n\n"
+            f"💰 رصيدك الحالي: {db_user['points'] if db_user else 0} نقطة\n"
+            f"🎁 الهدية اليومية: *{gift} نقطة* ✅ مستلمة\n"
+            f"{channels_txt}",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
+        return
+
     # ── التحقق من بوابة الاشتراك الإجباري (للمستخدمين الجدد/غير المتحقَّقين) ──
     if data == "check_mandatory_join":
         unjoined = await get_unjoined_mandatory_channels(context, user.id)
@@ -2356,21 +2538,23 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await proceed_after_mandatory(update, context, edit=True)
         return
 
-    # ── انضمام بقنوات ──
+    # ── انضمام بقنوات (متاح أيضاً كمسار مستقل للتوافق مع الأزرار القديمة) ──
     if data == "join_channels":
         with db_conn() as c:
-            channels = c.execute("SELECT * FROM mandatory_channels WHERE active=1 AND funding_type='internal'").fetchall()
+            channels = c.execute(
+                "SELECT * FROM mandatory_channels WHERE active=1 AND funding_type='internal' ORDER BY id"
+            ).fetchall()
         if not channels:
             await q.edit_message_text("📡 لا توجد قنوات للانضمام حالياً.", reply_markup=back_kb())
             return
         reward = int(get_setting("join_channel_reward") or "20")
         rows = []
         for ch in channels:
-            # check if user already claimed this channel
             with db_conn() as c:
-                claimed = c.execute("SELECT 1 FROM channel_join_rewards WHERE user_id=? AND channel_id=?",
-                                    (user.id, ch['id'])).fetchone()
-            status = "✅ تم" if claimed else "🎁 انضم واحصل على نقاط"
+                claimed = c.execute(
+                    "SELECT 1 FROM channel_join_rewards WHERE user_id=%s AND channel_id=%s",
+                    (user.id, ch["id"])
+                ).fetchone()
             rows.append([InlineKeyboardButton(
                 f"📢 @{ch['channel_username']}",
                 url=f"https://t.me/{ch['channel_username']}"
@@ -2392,18 +2576,22 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ── التحقق من الانضمام ومنح النقاط ──
+    # ── التحقق من الانضمام ومنح النقاط (إصلاح: ذري وآمن) ──
     if data.startswith("join_verify:"):
         ch_id = int(data.split(":")[1])
         with db_conn() as c:
-            ch = c.execute("SELECT * FROM mandatory_channels WHERE id=?", (ch_id,)).fetchone()
-            already = c.execute("SELECT 1 FROM channel_join_rewards WHERE user_id=? AND channel_id=?",
-                                (user.id, ch_id)).fetchone()
-        if already:
-            await q.answer("✔️ لقد حصلت على نقاط هذه القناة سابقاً.", show_alert=True)
-            return
+            ch = c.execute("SELECT * FROM mandatory_channels WHERE id=%s", (ch_id,)).fetchone()
         if not ch:
             await q.answer("⚠️ القناة غير موجودة.", show_alert=True)
+            return
+        # تحقق مسبق من الحصول على النقاط
+        with db_conn() as c:
+            already = c.execute(
+                "SELECT 1 FROM channel_join_rewards WHERE user_id=%s AND channel_id=%s",
+                (user.id, ch_id)
+            ).fetchone()
+        if already:
+            await q.answer("✔️ لقد حصلت على نقاط هذه القناة سابقاً.", show_alert=True)
             return
         # تحقق من أن المستخدم فعلاً منضم
         try:
@@ -2416,25 +2604,33 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.answer("❌ لم تنضم بعد! انضم للقناة أولاً ثم اضغط تحقق.", show_alert=True)
             return
         reward = int(get_setting("join_channel_reward") or "20")
-        # نُدرج السجل أولاً — إن نجح نُضيف النقاط في نفس المعاملة (ذري)
+        # إدراج ذري مع فحص التكرار عبر RETURNING
         with db_conn() as c:
-            c.execute("INSERT INTO channel_join_rewards (user_id, channel_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
-                      (user.id, ch_id))
-            if c.rowcount == 0:
-                await q.answer("✔️ لقد حصلت على نقاط هذه القناة سابقاً.", show_alert=True)
-                return
-            c.execute("UPDATE users SET points=points+%s WHERE user_id=%s", (reward, user.id))
+            c.execute(
+                "INSERT INTO channel_join_rewards (user_id, channel_id) VALUES (%s, %s) "
+                "ON CONFLICT (user_id, channel_id) DO NOTHING",
+                (user.id, ch_id)
+            )
+            inserted = c.rowcount
+            if inserted > 0:
+                c.execute("UPDATE users SET points=points+%s WHERE user_id=%s", (reward, user.id))
+        if not inserted:
+            await q.answer("✔️ لقد حصلت على نقاط هذه القناة سابقاً.", show_alert=True)
+            return
         db_user = get_user(user.id)
         await q.answer(f"🎉 حصلت على {reward} نقطة!", show_alert=True)
-        # تحديث القائمة
-        channels = []
+        # تحديث الشاشة — إعادة بناء القائمة
         with db_conn() as c:
-            channels = c.execute("SELECT * FROM mandatory_channels WHERE active=1 AND funding_type='internal'").fetchall()
+            channels = c.execute(
+                "SELECT * FROM mandatory_channels WHERE active=1 AND funding_type='internal' ORDER BY id"
+            ).fetchall()
         rows = []
         for ch2 in channels:
             with db_conn() as c:
-                claimed = c.execute("SELECT 1 FROM channel_join_rewards WHERE user_id=? AND channel_id=?",
-                                    (user.id, ch2['id'])).fetchone()
+                claimed = c.execute(
+                    "SELECT 1 FROM channel_join_rewards WHERE user_id=%s AND channel_id=%s",
+                    (user.id, ch2["id"])
+                ).fetchone()
             rows.append([InlineKeyboardButton(
                 f"📢 @{ch2['channel_username']}",
                 url=f"https://t.me/{ch2['channel_username']}"
@@ -2654,29 +2850,91 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "fund:mandatory":
         cost = get_setting("mandatory_channel_cost") or "200"
+        min_members = get_setting("mandatory_channel_min_members") or "0"
         context.user_data["fund_type"] = "mandatory"
-        context.user_data["state"]     = "await_fund_channel"
+        context.user_data["state"]     = "await_fund_member_count"
+        min_txt = f"👥 الحد الأدنى للأعضاء: *{int(min_members):,}*\n\n" if int(min_members) > 0 else ""
         await q.edit_message_text(
             f"📢 *تمويل قناة إجباري سريع*\n\n"
             f"✅ ستُضاف قناتك كقناة اشتراك إجبارية في البوت\n"
-            f"💰 التكلفة: {cost} نقطة\n\n"
-            f"📎 أرسل *رابط* أو *يوزرنيم* قناتك (مثال: @channel):",
+            f"💰 التكلفة: {cost} نقطة\n"
+            f"{min_txt}\n"
+            f"📊 *الخطوة 1/3:* أرسل *عدد أعضاء قناتك* الحالي:",
             parse_mode=ParseMode.MARKDOWN
         )
         return
 
     if data == "fund:internal":
         cost = get_setting("internal_channel_cost") or "100"
+        min_members = get_setting("internal_channel_min_members") or "0"
         context.user_data["fund_type"] = "internal"
-        context.user_data["state"]     = "await_fund_channel"
+        context.user_data["state"]     = "await_fund_member_count"
+        min_txt = f"👥 الحد الأدنى للأعضاء: *{int(min_members):,}*\n\n" if int(min_members) > 0 else ""
         await q.edit_message_text(
             f"🔄 *تمويل قناة داخلي بطيء*\n\n"
             f"✅ ستُضاف قناتك في قسم انضم بقنوات\n"
             f"👥 الأعضاء يجمعون نقاط وينضمون لقناتك\n"
-            f"💰 التكلفة: {cost} نقطة\n\n"
-            f"📎 أرسل *رابط* أو *يوزرنيم* قناتك (مثال: @channel):",
+            f"💰 التكلفة: {cost} نقطة\n"
+            f"{min_txt}\n"
+            f"📊 *الخطوة 1/3:* أرسل *عدد أعضاء قناتك* الحالي:",
             parse_mode=ParseMode.MARKDOWN
         )
+        return
+
+    # ── تأكيد تمويل القناة ──
+    if data == "fund_confirm:yes":
+        fund_type = context.user_data.get("fund_type", "mandatory")
+        channel   = context.user_data.get("fund_channel_username", "")
+        cost_key  = "mandatory_channel_cost" if fund_type == "mandatory" else "internal_channel_cost"
+        cost      = int(get_setting(cost_key) or "200")
+        ft_label  = "إجباري سريع" if fund_type == "mandatory" else "داخلي بطيء"
+        db_user   = get_user(user.id)
+        if not channel:
+            await q.edit_message_text("⚠️ انتهت الجلسة، ابدأ من جديد.", reply_markup=main_menu_kb(is_own))
+            context.user_data["state"] = "main_menu"
+            return
+        if not deduct_points(user.id, cost):
+            await q.edit_message_text(f"❌ نقاطك غير كافية. السعر: {cost} نقطة.", reply_markup=main_menu_kb(is_own))
+            context.user_data["state"] = "main_menu"
+            return
+        code = next_order_code(user.id)
+        with db_conn() as c:
+            c.execute(
+                "INSERT INTO channel_funding (user_id,channel_username,funding_type,cost_points) VALUES (%s,%s,%s,%s)",
+                (user.id, channel, fund_type, cost)
+            )
+            c.execute(
+                "INSERT INTO mandatory_channels (channel_username,owner_user_id,funding_type,active) VALUES (%s,%s,%s,1) "
+                "ON CONFLICT (channel_username) DO UPDATE SET funding_type=EXCLUDED.funding_type, owner_user_id=EXCLUDED.owner_user_id, active=1",
+                (channel, user.id, fund_type)
+            )
+        context.user_data["state"] = "main_menu"
+        context.user_data.pop("fund_channel_username", None)
+        context.user_data.pop("fund_member_count", None)
+        await q.edit_message_text(
+            f"✅ *تم تفعيل تمويل قناتك بنجاح!*\n\n"
+            f"📢 القناة: @{channel}\n"
+            f"⚙️ النوع: {ft_label}\n"
+            f"💰 التكلفة: {cost} نقطة\n\n"
+            f"📌 *كود عمليتك: `{code}`*\nاحفظه قد تحتاجه لاحقاً.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=main_menu_kb(is_own)
+        )
+        await notify_group(
+            context.application,
+            f"📢 <b>تمويل قناة {ft_label}</b>\n"
+            f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
+            f"📡 القناة: @{channel}\n"
+            f"💰 {cost} نقطة\n"
+            f"📌 {code}"
+        )
+        return
+
+    if data == "fund_confirm:no":
+        context.user_data["state"] = "main_menu"
+        context.user_data.pop("fund_channel_username", None)
+        context.user_data.pop("fund_member_count", None)
+        await q.edit_message_text("❌ تم إلغاء طلب التمويل.", reply_markup=main_menu_kb(is_own))
         return
 
     # ── إعدادات المالك ──
@@ -2898,7 +3156,79 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "os:view_services" and is_own:
-        await send_services_overview(update, context)
+        # عرض قائمة اختيار الفئة أولاً
+        rows = []
+        for cat_key, cat_name in CATEGORY_MAP.items():
+            with db_conn() as c:
+                cnt = c.execute("SELECT COUNT(*) AS n FROM services WHERE category=?", (cat_key,)).fetchone()
+            n = cnt["n"] if cnt else 0
+            rows.append([InlineKeyboardButton(f"{cat_name} ({n})", callback_data=f"os_view_cat:{cat_key}")])
+        rows.append([InlineKeyboardButton("📂 عرض الجميع", callback_data="os_view_cat:ALL")])
+        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
+        await q.edit_message_text(
+            "🗂 *عرض الخدمات — اختر الفئة:*",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
+        return
+
+    if data.startswith("os_view_cat:") and is_own:
+        cat_filter = data.split(":", 1)[1]
+        if cat_filter == "ALL":
+            cats_to_show = list(CATEGORY_MAP.items())
+        else:
+            cats_to_show = [(cat_filter, CATEGORY_MAP.get(cat_filter, cat_filter))]
+        sent_any = False
+        first = True
+        for cat_key, cat_name in cats_to_show:
+            with db_conn() as c:
+                svcs = c.execute("SELECT * FROM services WHERE category=? ORDER BY id", (cat_key,)).fetchall()
+            if not svcs:
+                continue
+            sent_any = True
+            for s in svcs:
+                status = "✅ مفعّلة" if s["active"] else "❌ معطّلة"
+                site_name = PANEL_MAP.get(s["panel"] or 1, PANEL_MAP[1])["name"]
+                svc_text = (
+                    f"📂 *{cat_name}*\n"
+                    f"🔹 *{s['name_ar']}*\n\n"
+                    f"🟢 الحالة: {status}\n"
+                    f"🌐 الموقع: {site_name} (رقم: {s['api_service_id']})\n"
+                    f"📝 الوصف: {s['description'] or '—'}\n"
+                    f"📉 الحد الأدنى: {s['min_qty']:,}\n"
+                    f"📈 الحد الأعلى: {s['max_qty']:,}\n"
+                    f"💰 السعر: {fmt_price(s['price_per_point'])} نقطة / 1000 وحدة\n"
+                )
+                tog = "❌ تعطيل" if s["active"] else "✅ تفعيل"
+                svc_kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✏️ تعديل", callback_data=f"os_edit_svc:{s['id']}"),
+                     InlineKeyboardButton(tog, callback_data=f"os_tog_svc:{s['id']}:{0 if s['active'] else 1}"),
+                     InlineKeyboardButton("🗑 حذف", callback_data=f"os_del_svc:{s['id']}")],
+                ])
+                if first and update.callback_query:
+                    await q.edit_message_text(svc_text, parse_mode=ParseMode.MARKDOWN, reply_markup=svc_kb)
+                    first = False
+                else:
+                    await context.bot.send_message(
+                        chat_id=update.effective_chat.id,
+                        text=svc_text,
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=svc_kb
+                    )
+        if not sent_any:
+            cat_name = "الجميع" if cat_filter == "ALL" else CATEGORY_MAP.get(cat_filter, cat_filter)
+            msg = f"📋 لا توجد خدمات في فئة ({cat_name}) بعد."
+            if first and update.callback_query:
+                await q.edit_message_text(msg, reply_markup=owner_settings_kb())
+            else:
+                await context.bot.send_message(update.effective_chat.id, msg)
+        else:
+            await context.bot.send_message(
+                update.effective_chat.id,
+                "⬆️ هذه جميع الخدمات المطلوبة.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع للعرض", callback_data="os:view_services"),
+                                                    InlineKeyboardButton("⚙️ الإعدادات", callback_data="owner_settings")]])
+            )
         return
 
     if data == "os:orders_section" and is_own:
@@ -3095,6 +3425,30 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🎁 *نقاط الانضمام للقنوات الداخلية*\n\n"
             f"القيمة الحالية: {cur} نقطة\n\n"
             f"أرسل عدد النقاط التي يحصل عليها العضو عند الانضمام:",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    if data == "os:edit_mandatory_min" and is_own:
+        cur = get_setting("mandatory_channel_min_members") or "0"
+        context.user_data["state"] = "os_await_mandatory_min"
+        await q.edit_message_text(
+            f"👥 *الحد الأدنى للأعضاء — التمويل الإجباري*\n\n"
+            f"القيمة الحالية: {int(cur):,} عضو\n"
+            f"(0 = بدون حد أدنى)\n\n"
+            f"أرسل العدد الجديد:",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    if data == "os:edit_internal_min" and is_own:
+        cur = get_setting("internal_channel_min_members") or "0"
+        context.user_data["state"] = "os_await_internal_min"
+        await q.edit_message_text(
+            f"👥 *الحد الأدنى للأعضاء — التمويل الداخلي*\n\n"
+            f"القيمة الحالية: {int(cur):,} عضو\n"
+            f"(0 = بدون حد أدنى)\n\n"
+            f"أرسل العدد الجديد:",
             parse_mode=ParseMode.MARKDOWN
         )
         return
