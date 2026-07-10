@@ -86,7 +86,13 @@ import psycopg2
 import psycopg2.extras
 import psycopg2.pool
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "")
+DATABASE_URL = (
+    os.environ.get("DATABASE_URL") or
+    os.environ.get("DB_FILE") or
+    os.environ.get("POSTGRES_URL") or
+    os.environ.get("POSTGRESQL_URL") or
+    ""
+)
 
 import threading
 _pool = None
