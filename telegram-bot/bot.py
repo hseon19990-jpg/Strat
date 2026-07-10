@@ -664,6 +664,7 @@ def generate_math():
 def main_menu_kb(is_owner=False):
     rows = build_kb_rows(get_menu_items("main"))
     if is_owner:
+        rows.append([InlineKeyboardButton("🧩 إضافة/إزالة خيار", callback_data="mb_menu:main")])
         rows.append([InlineKeyboardButton("⚙️ إعدادات المالك", callback_data="owner_settings")])
     return InlineKeyboardMarkup(rows)
 
@@ -696,6 +697,7 @@ def _render_service_list():
 
 def owner_settings_kb():
     rows = build_kb_rows(get_menu_items("owner_settings"))
+    rows.append([InlineKeyboardButton("🧩 إضافة/إزالة خيار", callback_data="mb_menu:owner_settings")])
     rows.append([InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")])
     return InlineKeyboardMarkup(rows)
 
@@ -773,6 +775,9 @@ async def show_category_services(update: Update, context: ContextTypes.DEFAULT_T
         )])
     extra_items = get_menu_items(f"cat:{category}")
     rows.extend(build_kb_rows(extra_items))
+    _cat_user = update.effective_user
+    if _cat_user and _cat_user.id == OWNER_ID:
+        rows.append([InlineKeyboardButton("🧩 إضافة/إزالة خيار", callback_data=f"mb_menu:cat:{category}")])
     rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")])
     text = f"📦 *{CATEGORY_MAP.get(category, category)}*\nاختر الخدمة المطلوبة:"
     if update.callback_query:
