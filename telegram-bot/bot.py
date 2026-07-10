@@ -407,6 +407,13 @@ def init_db():
               c.execute("ALTER TABLE services ADD COLUMN panel INTEGER DEFAULT 1")
       except Exception:
           pass
+      try:
+          with db_conn() as c:
+              c.execute("ALTER TABLE users ADD COLUMN referral_credited INTEGER DEFAULT 0")
+              # المستخدمون المدعوون سابقاً كانت نقاطهم تُمنح فوراً — علّمهم كمكتملين لتفادي منحهم مرتين
+              c.execute("UPDATE users SET referral_credited=1 WHERE invited_by IS NOT NULL AND invited_by != 0")
+      except Exception:
+          pass
 def get_setting(key: str) -> str:
     with db_conn() as c:
         row = c.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
@@ -433,14 +440,37 @@ def get_or_create_user(user_id: int, username: str, full_name: str, invited_by: 
             "INSERT INTO users (user_id, username, full_name, invited_by, bot_user_num, verified) VALUES (?,?,?,?,?,0)",
             (user_id, username, full_name, invited_by, total)
         )
-        if invited_by and invited_by != user_id:
-            rp = int(get_setting("referral_points") or "30")
-            c.execute("UPDATE users SET points=points+? WHERE user_id=?", (rp, invited_by))
+        # ملاحظة: لا نمنح نقاط الإحالة هنا — تُمنح فقط بعد اشتراك المستخدم الجديد
+        # بالقنوات الإجبارية واجتيازه للتحقق (انظر credit_referral_if_pending)
         return dict(c.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone())
 
 def set_user_verified(user_id: int):
     with db_conn() as c:
         c.execute("UPDATE users SET verified=1 WHERE user_id=?", (user_id,))
+
+def credit_referral_if_pending(user_id: int, context=None):
+    """يمنح نقاط الإحالة للداعي مرة واحدة فقط، بعد اشتراك المدعو بالقنوات الإجبارية واجتيازه التحقق.
+    يُعيد (inviter_id, points) عند المنح، أو None إن لم يكن هناك شيء لمنحه."""
+    with db_conn() as c:
+        row = c.execute(
+            "SELECT invited_by, referral_credited FROM users WHERE user_id=?", (user_id,)
+        ).fetchone()
+        if not row:
+            return None
+        invited_by = row["invited_by"]
+        already = row["referral_credited"]
+        if not invited_by or invited_by == 0 or invited_by == user_id or already:
+            return None
+        rp = int(get_setting("referral_points") or "30")
+        # تحديث ذري يمنع منح النقاط أكثر من مرة عند أي تسابق محتمل
+        c.execute(
+            "UPDATE users SET referral_credited=1 WHERE user_id=%s AND referral_credited=0",
+            (user_id,)
+        )
+        if c.rowcount == 0:
+            return None
+        c.execute("UPDATE users SET points=points+%s WHERE user_id=%s", (rp, invited_by))
+    return (invited_by, rp)
 
 def is_user_verified(user_id: int) -> bool:
     with db_conn() as c:
@@ -788,24 +818,78 @@ async def show_category_services(update: Update, context: ContextTypes.DEFAULT_T
                                         parse_mode=ParseMode.MARKDOWN)
 
 # ────────────────────────────────────────────────────────────
-#  /start
+#  الاشتراك الإجباري + التحقق النهائي
 # ────────────────────────────────────────────────────────────
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def get_unjoined_mandatory_channels(context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    """يُرجع قائمة القنوات الإجبارية التي لم ينضم لها المستخدم بعد."""
+    with db_conn() as c:
+        channels = c.execute(
+            "SELECT * FROM mandatory_channels WHERE active=1 AND funding_type='mandatory'"
+        ).fetchall()
+    unjoined = []
+    for ch in channels:
+        try:
+            member = await context.bot.get_chat_member(f"@{ch['channel_username']}", user_id)
+            if member.status in ("left", "kicked", "banned"):
+                unjoined.append(ch)
+        except Exception:
+            # تعذّر التحقق (مثلاً البوت ليس مشرفاً بالقناة) — نعتبرها غير منضمة احتياطاً
+            unjoined.append(ch)
+    return unjoined
+
+
+def mandatory_join_kb(channels):
+    rows = []
+    for ch in channels:
+        rows.append([InlineKeyboardButton(
+            f"📢 {ch['channel_title'] or ('@' + ch['channel_username'])}",
+            url=f"https://t.me/{ch['channel_username']}"
+        )])
+    rows.append([InlineKeyboardButton("✅ تحقق من الاشتراك", callback_data="check_mandatory_join")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def show_mandatory_gate(update: Update, context: ContextTypes.DEFAULT_TYPE, channels, edit=False):
+    text = (
+        "📢 *الاشتراك الإجباري*\n\n"
+        "للمتابعة، يجب عليك الاشتراك بالقنوات التالية أولاً:\n"
+        "ثم اضغط «✅ تحقق من الاشتراك»."
+    )
+    kb = mandatory_join_kb(channels)
+    if edit and update.callback_query:
+        await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+    else:
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+
+async def proceed_after_mandatory(update: Update, context: ContextTypes.DEFAULT_TYPE, edit=False):
+    """بعد اجتياز بوابة الاشتراك الإجباري: يعرض سؤال التحقق الرياضي إن كان مفعّلاً، وإلا يُنهي التحقق مباشرة."""
     user = update.effective_user
-    args = context.args
-    invited_by = int(args[0]) if args and args[0].isdigit() else 0
+    captcha_on = int(get_setting("captcha_enabled") or "0")
+    if not captcha_on:
+        await finalize_verification(update, context, user, edit=edit)
+        return
 
-    # تحقق هل المستخدم موجود في قاعدة البيانات قبل التسجيل
-    existing = get_user(user.id)
-    is_new_user = existing is None
+    prob, ans = generate_math()
+    context.user_data["state"] = "verify_math"
+    context.user_data["math_ans"] = ans
 
-    db_user = get_or_create_user(user.id, user.username or "", user.full_name or "", invited_by)
+    text = f"🔐 للدخول للبوت، أجب على هذه المسألة البسيطة:\n\n❓  *{prob} = ؟*"
+    if edit and update.callback_query:
+        await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN)
+    else:
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+
+async def finalize_verification(update: Update, context: ContextTypes.DEFAULT_TYPE, user, edit=False):
+    """تُستدعى بعد اجتياز الاشتراك الإجباري والتحقق: تُفعّل المستخدم، تمنح نقاط الإحالة، وتعرض القائمة الرئيسية."""
+    set_user_verified(user.id)
     is_own = (user.id == OWNER_ID)
 
-    # ── إشعارات نظام الدعوة (تُرسل مرة واحدة فقط عند أول دخول فعلي للمستخدم الجديد) ──
     referral_note = ""
-    if is_new_user and invited_by and invited_by != user.id:
-        rp = int(get_setting("referral_points") or "30")
+    credited = credit_referral_if_pending(user.id, context)
+    if credited:
+        invited_by, rp = credited
         invited_name = f"@{user.username}" if user.username else (user.full_name or "مستخدم")
         inviter_row = get_user(invited_by)
         inviter_name = "صديقك"
@@ -813,61 +897,67 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             inviter_username = inviter_row.get("username")
             inviter_full_name = inviter_row.get("full_name")
             inviter_name = f"@{inviter_username}" if inviter_username else (inviter_full_name or "صديقك")
-
         try:
             await context.bot.send_message(
                 chat_id=invited_by,
-                text=f"🎉 مبروك! لقد دخل المستخدم {invited_name} عن طريق رابط دعوتك، وحصلت على {rp} نقطة.",
+                text=f"🎉 مبروك! لقد أكمل المستخدم {invited_name} الاشتراك والتحقق عن طريق رابط دعوتك، وحصلت على {rp} نقطة.",
                 parse_mode=ParseMode.MARKDOWN
             )
         except Exception:
             pass
-
         referral_note = f"\n\n🔗 لقد دخلت إلى رابط دعوة صديقك {inviter_name} وقد حصل على {rp} نقطة."
 
-    # مستخدم موجود سابقاً أو متحقق مسبقاً → القائمة مباشرة
-    if not is_new_user or db_user.get("verified", 0):
-        if not db_user.get("verified", 0):
-            set_user_verified(user.id)
+    context.user_data["state"] = "main_menu"
+    db_user = get_user(user.id)
+    pts = db_user["points"] if db_user else 0
+    welcome = get_setting("welcome_message") or "أهلاً بك!"
+    text = f"✅ *تم التحقق بنجاح!*\n\n{welcome}\n\n💰 رصيدك: {pts} نقطة{referral_note}"
+    kb = main_menu_kb(is_own)
+    if edit and update.callback_query:
+        await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+    else:
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+
+async def start_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """يبدأ تدفّق المستخدم الجديد/غير المتحقق: بوابة الاشتراك الإجباري أولاً، ثم التحقق."""
+    user = update.effective_user
+    unjoined = await get_unjoined_mandatory_channels(context, user.id)
+    if unjoined:
+        context.user_data["state"] = "await_mandatory_join"
+        await show_mandatory_gate(update, context, unjoined, edit=False)
+        return
+    await proceed_after_mandatory(update, context, edit=False)
+
+
+# ────────────────────────────────────────────────────────────
+#  /start
+# ────────────────────────────────────────────────────────────
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    args = context.args
+    invited_by = int(args[0]) if args and args[0].isdigit() else 0
+
+    db_user = get_or_create_user(user.id, user.username or "", user.full_name or "", invited_by)
+    is_own = (user.id == OWNER_ID)
+
+    # مستخدم متحقق مسبقاً → القائمة مباشرة (لا إشعارات دعوة هنا، فهي تُمنح مرة واحدة عند التحقق الأول)
+    if db_user.get("verified", 0):
         context.user_data["state"] = "main_menu"
         pts = db_user["points"]
         welcome = get_setting("welcome_message") or "أهلاً بك!"
         await update.message.reply_text(
-            f"👋 *أهلاً بك مجدداً!*\n\n{welcome}\n\n💰 رصيدك: {pts} نقطة{referral_note}",
+            f"👋 *أهلاً بك مجدداً!*\n\n{welcome}\n\n💰 رصيدك: {pts} نقطة",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=main_menu_kb(is_own)
         )
         return
 
-    # مستخدم جديد فعلاً: تحقق هل التحقق الرياضي مفعّل
-    captcha_on = int(get_setting("captcha_enabled") or "0")
-    if not captcha_on:
-        # التحقق معطّل → دخول مباشر وتسجيل كمتحقق
-        set_user_verified(user.id)
-        context.user_data["state"] = "main_menu"
-        pts = db_user["points"]
-        welcome = get_setting("welcome_message") or "أهلاً بك!"
-        await update.message.reply_text(
-            f"👋 *أهلاً بك!*\n\n{welcome}\n\n💰 رصيدك: {pts} نقطة{referral_note}",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=main_menu_kb(is_own)
-        )
-        return
-
-    # التحقق مفعّل → سؤال رياضي للمستخدمين الجدد فقط
-    prob, ans = generate_math()
-    context.user_data.clear()
-    context.user_data["state"] = "verify_math"
-    context.user_data["math_ans"] = ans
-    # احفظ إشعار الدعوة (بعد clear) لعرضه بعد نجاح التحقق الرياضي
-    if referral_note:
-        context.user_data["referral_note"] = referral_note
-
+    # مستخدم جديد أو لم يُكمل التحقق بعد: تحية ثم بدء تدفّق الاشتراك الإجباري + التحقق
     await update.message.reply_text(
-        f"👋 *أهلاً بك!*\n\n🔐 للدخول للبوت، أجب على هذه المسألة البسيطة:\n\n"
-        f"❓  *{prob} = ؟*",
-        parse_mode=ParseMode.MARKDOWN
+        "👋 *أهلاً بك!*", parse_mode=ParseMode.MARKDOWN
     )
+    await start_onboarding(update, context)
 
 # ────────────────────────────────────────────────────────────
 #  /admin — لوحة المالك المباشرة
@@ -901,17 +991,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ أرسل رقماً فقط.")
             return
         if ans == correct:
-            context.user_data["state"] = "main_menu"
-            set_user_verified(user.id)
-            db_user = get_user(user.id)
-            pts = db_user["points"] if db_user else 0
-            welcome = get_setting("welcome_message") or "أهلاً بك!"
-            referral_note = context.user_data.pop("referral_note", "")
-            await update.message.reply_text(
-                f"✅ *إجابة صحيحة!*\n\n{welcome}\n\n💰 رصيدك: {pts} نقطة{referral_note}",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=main_menu_kb(is_own)
-            )
+            await finalize_verification(update, context, user, edit=False)
         else:
             prob, new_ans = generate_math()
             context.user_data["math_ans"] = new_ans
@@ -2116,6 +2196,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=back_kb()
         )
+        return
+
+    # ── التحقق من بوابة الاشتراك الإجباري (للمستخدمين الجدد/غير المتحقَّقين) ──
+    if data == "check_mandatory_join":
+        unjoined = await get_unjoined_mandatory_channels(context, user.id)
+        if unjoined:
+            await q.answer("❌ لم تشترك بعد بجميع القنوات المطلوبة.", show_alert=True)
+            await show_mandatory_gate(update, context, unjoined, edit=True)
+            return
+        await q.answer("✅ تم التحقق من اشتراكك!")
+        await proceed_after_mandatory(update, context, edit=True)
         return
 
     # ── انضمام بقنوات ──
