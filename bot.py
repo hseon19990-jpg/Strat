@@ -1757,7 +1757,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             gift = int(get_setting("daily_gift_points") or "50")
             c.execute("INSERT OR REPLACE INTO daily_gifts VALUES (?,?)", (user.id, today))
-            add_points(user.id, gift)
+            c.execute("UPDATE users SET points=points+? WHERE user_id=?", (gift, user.id))
         db_user = get_user(user.id)
         await q.edit_message_text(
             f"🎁 *مبروك!* حصلت على هديتك اليومية!\n\n"
