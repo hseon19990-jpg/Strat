@@ -539,6 +539,15 @@ def smm_order_status(order_id: str, panel: int = 1) -> dict:
 # ────────────────────────────────────────────────────────────
 #  مساعدات رياضية
 # ────────────────────────────────────────────────────────────
+def fmt_price(n) -> str:
+    """يعرض السعر بدون فاصلة عشرية إن كان رقماً صحيحاً (100.0 → 100)، وإلا يُبقيه كما هو."""
+    try:
+        f = float(n)
+    except (TypeError, ValueError):
+        return str(n)
+    return str(int(f)) if f == int(f) else str(f)
+
+
 CATEGORY_MAP = {
     "followers":    "رشق متابعين",
     "views":        "رشق مشاهدات",
@@ -570,6 +579,7 @@ BUILTIN_DEFAULTS = {
     ],
     "owner_settings": [
         ("➕ إضافة خدمة", "os:add_service", 2), ("📋 قائمة الخدمات", "os:list_services", 2),
+        ("🗂 عرض الخدمات", "os:view_services", 2),
         ("🎁 تعديل الهدية اليومية", "os:edit_gift", 2), ("🔗 تعديل نقاط الدعوة", "os:edit_referral", 2),
         ("⭐ سعر النجمة شحن", "os:edit_star_rate", 2), ("🏆 سعر نجمة الجوائز", "os:edit_exchange_rate", 2),
         ("📦 باقات الاستبدال بنجوم", "os:manage_star_packages", 1),
@@ -723,6 +733,47 @@ def _render_service_list():
         ])
     rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
     return "\n".join(lines), rows
+
+
+async def send_services_overview(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """يعرض كل الخدمات مجمّعة حسب الفئة — رسالة مستقلة لكل فئة (الأعضاء برسالة، التفاعلات برسالة، وهكذا)."""
+    chat_id = update.effective_chat.id
+    sent_any = False
+    first = True
+    for cat_key, cat_name in CATEGORY_MAP.items():
+        with db_conn() as c:
+            svcs = c.execute(
+                "SELECT * FROM services WHERE category=? ORDER BY id", (cat_key,)
+            ).fetchall()
+        if not svcs:
+            continue
+        sent_any = True
+        lines = [f"📂 *{cat_name}*\n"]
+        for s in svcs:
+            status = "✅ متاحة" if s["active"] else "❌ معطّلة"
+            site_name = PANEL_MAP.get(s["panel"] or 1, PANEL_MAP[1])["name"]
+            lines.append(
+                f"{status} *{s['name_ar']}*\n"
+                f"💰 السعر: {fmt_price(s['price_per_point'])} نقطة / 1000 وحدة\n"
+                f"📝 الوصف: {s['description'] or '—'}\n"
+                f"📉 الحد الأدنى: {s['min_qty']} | 📈 الحد الأعلى: {s['max_qty']}\n"
+                f"🌐 الموقع: {site_name}\n"
+            )
+        text = "\n".join(lines)
+        if first and update.callback_query:
+            await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN)
+            first = False
+        else:
+            await context.bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.MARKDOWN)
+
+    if not sent_any:
+        if update.callback_query:
+            await update.callback_query.edit_message_text("📋 لا توجد خدمات مضافة بعد.", reply_markup=owner_settings_kb())
+        else:
+            await context.bot.send_message(chat_id=chat_id, text="📋 لا توجد خدمات مضافة بعد.", reply_markup=owner_settings_kb())
+        return
+
+    await context.bot.send_message(chat_id=chat_id, text="⬆️ هذه كل الخدمات المتاحة حالياً.", reply_markup=owner_settings_kb())
 
 
 def owner_settings_kb():
@@ -1938,7 +1989,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with db_conn() as c:
             c.execute("UPDATE services SET price_per_point=? WHERE id=?", (price, sid))
         context.user_data["state"] = "main_menu"
-        await update.message.reply_text(f"✅ تم تحديث السعر إلى: {price} نقطة/1000 وحدة", reply_markup=owner_settings_kb())
+        await update.message.reply_text(f"✅ تم تحديث السعر إلى: {fmt_price(price)} نقطة/1000 وحدة", reply_markup=owner_settings_kb())
         return
 
     if is_own and state == "os_edit_await_apiid":
@@ -1989,7 +2040,7 @@ async def _save_service(update, context, price: float):
         f"🌐 الموقع: {site_name}\n"
         f"📉 الحد الأدنى: {mn}\n"
         f"📈 الحد الأعلى: {mx}\n"
-        f"💰 السعر: {price} نقطة/1000 وحدة",
+        f"💰 السعر: {fmt_price(price)} نقطة/1000 وحدة",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=owner_settings_kb()
     )
@@ -2050,7 +2101,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔹 *{svc['name_ar']}*\n\n"
             f"📉 الحد الأدنى: {svc['min_qty']}\n"
             f"📈 الحد الأعلى: {svc['max_qty']}\n"
-            f"💰 السعر: {svc['price_per_point']} نقطة / 1000 وحدة\n\n"
+            f"💰 السعر: {fmt_price(svc['price_per_point'])} نقطة / 1000 وحدة\n\n"
             f"🔢 أرسل *الكمية* المطلوبة:",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([
@@ -2072,7 +2123,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔹 *{svc['name_ar']}*\n\n"
             f"📉 الحد الأدنى: {svc['min_qty']}\n"
             f"📈 الحد الأعلى: {svc['max_qty']}\n"
-            f"💰 السعر: {svc['price_per_point']} نقطة / 1000 وحدة\n\n"
+            f"💰 السعر: {fmt_price(svc['price_per_point'])} نقطة / 1000 وحدة\n\n"
             f"🔢 أرسل *الكمية* المطلوبة:",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([
@@ -2744,10 +2795,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🌐 الموقع: {site_name}\n"
             f"📉 الحد الأدنى: {mn}\n"
             f"📈 الحد الأعلى: {mx_val}\n"
-            f"💰 السعر: {price} نقطة/1000 وحدة",
+            f"💰 السعر: {fmt_price(price)} نقطة/1000 وحدة",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=owner_settings_kb()
         )
+        return
+
+    if data == "os:view_services" and is_own:
+        await send_services_overview(update, context)
         return
 
     if data == "os:list_services" and is_own:
@@ -2794,7 +2849,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🌐 الموقع الحالي: {site_name} (رقم {svc['api_service_id']})\n"
             f"📉 الحد الأدنى: {svc['min_qty']}\n"
             f"📈 الحد الأعلى: {svc['max_qty']}\n"
-            f"💰 السعر: {svc['price_per_point']} نقطة/1000\n\n"
+            f"💰 السعر: {fmt_price(svc['price_per_point'])} نقطة/1000\n\n"
             f"اختر ما تريد تعديله:",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(rows)
