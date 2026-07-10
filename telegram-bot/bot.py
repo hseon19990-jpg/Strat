@@ -579,7 +579,7 @@ BUILTIN_DEFAULTS = {
     ],
     "owner_settings": [
         ("➕ إضافة خدمة", "os:add_service", 2), ("📋 قائمة الخدمات", "os:list_services", 2),
-        ("🗂 عرض الخدمات", "os:view_services", 2),
+        ("🗂 عرض الخدمات", "os:view_services", 2), ("📦 قسم الطلبات", "os:orders_section", 2),
         ("🎁 تعديل الهدية اليومية", "os:edit_gift", 2), ("🔗 تعديل نقاط الدعوة", "os:edit_referral", 2),
         ("⭐ سعر النجمة شحن", "os:edit_star_rate", 2), ("🏆 سعر نجمة الجوائز", "os:edit_exchange_rate", 2),
         ("📦 باقات الاستبدال بنجوم", "os:manage_star_packages", 1),
@@ -774,6 +774,79 @@ async def send_services_overview(update: Update, context: ContextTypes.DEFAULT_T
         return
 
     await context.bot.send_message(chat_id=chat_id, text="⬆️ هذه كل الخدمات المتاحة حالياً.", reply_markup=owner_settings_kb())
+
+
+ORDERS_PAGE_SIZE = 10
+
+def _fetch_orders_page(offset: int = 0, limit: int = ORDERS_PAGE_SIZE):
+    with db_conn() as c:
+        rows = c.execute(
+            """SELECT o.*, u.full_name AS u_full_name, u.username AS u_username,
+                      s.name_ar AS s_name_ar, s.category AS s_category
+               FROM orders o
+               LEFT JOIN users u ON u.user_id = o.user_id
+               LEFT JOIN services s ON s.id = o.service_id
+               ORDER BY o.id DESC
+               LIMIT %s OFFSET %s""",
+            (limit, offset)
+        ).fetchall()
+        total = c.execute("SELECT COUNT(*) AS cnt FROM orders").fetchone()["cnt"]
+    return rows, total
+
+
+def _render_order_block(o) -> str:
+    uname = f"@{o['u_username']}" if o.get("u_username") else "—"
+    full_name = o.get("u_full_name") or "—"
+    service_name = o.get("s_name_ar") or f"خدمة #{o['service_id']}"
+    category = CATEGORY_MAP.get(o.get("s_category"), o.get("s_category") or "—")
+    status_map = {"pending": "⏳ قيد التنفيذ", "completed": "✅ مكتمل", "cancelled": "❌ ملغي"}
+    status = status_map.get(o["status"], o["status"])
+    return (
+        f"🧾 *كود الطلب:* {o['order_code']}\n"
+        f"👤 *صاحب الطلب:* {full_name} ({uname}) — ID: `{o['user_id']}`\n"
+        f"📦 *نوع الطلب:* {service_name} ({category})\n"
+        f"🔗 *الرابط:* {o['link'] or '—'}\n"
+        f"🔢 *الكمية:* {o['quantity']}\n"
+        f"💰 *التكلفة:* {o['cost_points']} نقطة" + (f" + {o['cost_stars']} نجمة" if o.get("cost_stars") else "") + "\n"
+        f"📶 *الحالة:* {status}\n"
+        f"🆔 *رقم API:* {o['api_order_id'] or '—'}\n"
+        f"🕒 *الوقت:* {o['created_at']}\n"
+    )
+
+
+async def show_orders_section(update: Update, context: ContextTypes.DEFAULT_TYPE, offset: int = 0):
+    rows, total = _fetch_orders_page(offset)
+    if not rows:
+        text = "📦 لا توجد طلبات بعد." if offset == 0 else "📦 لا مزيد من الطلبات."
+        kb_rows = [[InlineKeyboardButton("🔍 بحث بكود الطلب", callback_data="os:order_lookup")],
+                   [InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")]]
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb_rows))
+        else:
+            await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb_rows))
+        return
+
+    blocks = [_render_order_block(o) for o in rows]
+    header = f"📦 *قسم الطلبات* ({offset + 1}-{offset + len(rows)} من {total})\n\n"
+    text = header + "\n➖➖➖➖➖\n".join(blocks)
+
+    nav = []
+    if offset + ORDERS_PAGE_SIZE < total:
+        nav.append(InlineKeyboardButton("◀️ الأقدم", callback_data=f"os:orders_page:{offset + ORDERS_PAGE_SIZE}"))
+    if offset > 0:
+        nav.append(InlineKeyboardButton("الأحدث ▶️", callback_data=f"os:orders_page:{max(0, offset - ORDERS_PAGE_SIZE)}"))
+    kb_rows = []
+    if nav:
+        kb_rows.append(nav)
+    kb_rows.append([InlineKeyboardButton("🔍 بحث بكود الطلب", callback_data="os:order_lookup")])
+    kb_rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
+
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN,
+                                                        reply_markup=InlineKeyboardMarkup(kb_rows))
+    else:
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN,
+                                         reply_markup=InlineKeyboardMarkup(kb_rows))
 
 
 def owner_settings_kb():
@@ -1791,6 +1864,29 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
+    if is_own and state == "os_await_order_lookup":
+        code = text.strip()
+        with db_conn() as c:
+            o = c.execute(
+                """SELECT o.*, u.full_name AS u_full_name, u.username AS u_username,
+                          s.name_ar AS s_name_ar, s.category AS s_category
+                   FROM orders o
+                   LEFT JOIN users u ON u.user_id = o.user_id
+                   LEFT JOIN services s ON s.id = o.service_id
+                   WHERE o.order_code=?""",
+                (code,)
+            ).fetchone()
+        context.user_data["state"] = "main_menu"
+        if not o:
+            await update.message.reply_text("⚠️ كود الطلب غير موجود.", reply_markup=owner_settings_kb())
+            return
+        await update.message.reply_text(
+            _render_order_block(dict(o)),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=owner_settings_kb()
+        )
+        return
+
     if is_own and state == "os_await_cancel_order":
         code = text.strip()
         with db_conn() as c:
@@ -2803,6 +2899,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "os:view_services" and is_own:
         await send_services_overview(update, context)
+        return
+
+    if data == "os:orders_section" and is_own:
+        await show_orders_section(update, context, offset=0)
+        return
+
+    if data.startswith("os:orders_page:") and is_own:
+        offset = int(data.split(":")[2])
+        await show_orders_section(update, context, offset=offset)
+        return
+
+    if data == "os:order_lookup" and is_own:
+        context.user_data["state"] = "os_await_order_lookup"
+        await q.edit_message_text("🔍 أرسل كود الطلب الذي تريد عرض تفاصيله:")
         return
 
     if data == "os:list_services" and is_own:
