@@ -527,6 +527,29 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db_user = get_or_create_user(user.id, user.username or "", user.full_name or "", invited_by)
     is_own = (user.id == OWNER_ID)
 
+    # ── إشعارات نظام الدعوة (تُرسل مرة واحدة فقط عند أول دخول فعلي للمستخدم الجديد) ──
+    referral_note = ""
+    if is_new_user and invited_by and invited_by != user.id:
+        rp = int(get_setting("referral_points") or "30")
+        invited_name = f"@{user.username}" if user.username else (user.full_name or "مستخدم")
+        inviter_row = get_user(invited_by)
+        inviter_name = "صديقك"
+        if inviter_row:
+            inviter_username = inviter_row.get("username")
+            inviter_full_name = inviter_row.get("full_name")
+            inviter_name = f"@{inviter_username}" if inviter_username else (inviter_full_name or "صديقك")
+
+        try:
+            await context.bot.send_message(
+                chat_id=invited_by,
+                text=f"🎉 مبروك! لقد دخل المستخدم {invited_name} عن طريق رابط دعوتك، وحصلت على {rp} نقطة.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception:
+            pass
+
+        referral_note = f"\n\n🔗 لقد دخلت إلى رابط دعوة صديقك {inviter_name} وقد حصل على {rp} نقطة."
+
     # مستخدم موجود سابقاً أو متحقق مسبقاً → القائمة مباشرة
     if not is_new_user or db_user.get("verified", 0):
         if not db_user.get("verified", 0):
@@ -535,7 +558,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pts = db_user["points"]
         welcome = get_setting("welcome_message") or "أهلاً بك!"
         await update.message.reply_text(
-            f"👋 *أهلاً بك مجدداً!*\n\n{welcome}\n\n💰 رصيدك: {pts} نقطة",
+            f"👋 *أهلاً بك مجدداً!*\n\n{welcome}\n\n💰 رصيدك: {pts} نقطة{referral_note}",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=main_menu_kb(is_own)
         )
@@ -550,7 +573,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pts = db_user["points"]
         welcome = get_setting("welcome_message") or "أهلاً بك!"
         await update.message.reply_text(
-            f"👋 *أهلاً بك!*\n\n{welcome}\n\n💰 رصيدك: {pts} نقطة",
+            f"👋 *أهلاً بك!*\n\n{welcome}\n\n💰 رصيدك: {pts} نقطة{referral_note}",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=main_menu_kb(is_own)
         )
@@ -561,6 +584,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     context.user_data["state"] = "verify_math"
     context.user_data["math_ans"] = ans
+    # احفظ إشعار الدعوة (بعد clear) لعرضه بعد نجاح التحقق الرياضي
+    if referral_note:
+        context.user_data["referral_note"] = referral_note
 
     await update.message.reply_text(
         f"👋 *أهلاً بك!*\n\n🔐 للدخول للبوت، أجب على هذه المسألة البسيطة:\n\n"
@@ -605,8 +631,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             db_user = get_user(user.id)
             pts = db_user["points"] if db_user else 0
             welcome = get_setting("welcome_message") or "أهلاً بك!"
+            referral_note = context.user_data.pop("referral_note", "")
             await update.message.reply_text(
-                f"✅ *إجابة صحيحة!*\n\n{welcome}\n\n💰 رصيدك: {pts} نقطة",
+                f"✅ *إجابة صحيحة!*\n\n{welcome}\n\n💰 رصيدك: {pts} نقطة{referral_note}",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=main_menu_kb(is_own)
             )
