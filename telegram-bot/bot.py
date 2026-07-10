@@ -150,18 +150,27 @@ class _DBContext:
     - يُرجع الاتصال المكسور دائماً بـ close=True حتى لا يعود إلى الـ pool.
     """
     def __enter__(self):
+        self._conn = None
+        self._pool = None
         for attempt in range(2):
             try:
-                self._conn = get_pool().getconn()
-                self._conn.cursor().execute("SELECT 1")
+                self._pool = get_pool()
+                self._conn = self._pool.getconn()
+                # اختبار الاتصال سريعاً
+                cur = self._conn.cursor()
+                cur.execute("SELECT 1")
+                cur.close()
                 break
             except _DB_RETRY_EXC as e:
                 if attempt == 0:
                     logger.warning(f"⚠️ خطأ في الاتصال بالDB، إعادة المحاولة... ({e})")
-                    try:
-                        get_pool().putconn(self._conn, close=True)
-                    except Exception:
-                        pass
+                    # أعد الاتصال المعطوب إن وُجد
+                    if self._conn is not None and self._pool is not None:
+                        try:
+                            self._pool.putconn(self._conn, close=True)
+                        except Exception:
+                            pass
+                        self._conn = None
                     reset_pool()
                 else:
                     raise
@@ -187,11 +196,12 @@ class _DBContext:
                 self._raw.close()
             except Exception:
                 pass
-            pool = get_pool()
-            try:
-                pool.putconn(self._conn, close=conn_broken)
-            except Exception:
-                pass
+            # استخدم نفس الـ pool الذي أصدر الاتصال
+            if self._conn is not None and self._pool is not None:
+                try:
+                    self._pool.putconn(self._conn, close=conn_broken)
+                except Exception:
+                    pass
         return False
 
 
