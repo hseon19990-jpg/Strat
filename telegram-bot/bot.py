@@ -1051,6 +1051,20 @@ async def count_user_for_fundings(user_id: int, context):
             with db_conn() as c:
                 c.execute("UPDATE channel_funding SET status='completed' WHERE id=%s", (f["id"],))
                 c.execute("UPDATE mandatory_channels SET active=0 WHERE channel_username=%s", (f["channel_username"],))
+            try:
+                ft_label = "إجباري سريع" if f["funding_type"] == "mandatory" else "داخلي بطيء"
+                await context.bot.send_message(
+                    chat_id=f["owner_id"],
+                    text=(
+                        f"🎉 *اكتمل تمويل قناتك!*\n\n"
+                        f"📢 القناة: @{f['channel_username']}\n"
+                        f"⚙️ النوع: {ft_label}\n"
+                        f"👥 العدد المستهدف: {f['target_members']:,} عضو — ✅ تم الوصول!"
+                    ),
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            except Exception:
+                pass
 
 
 def mandatory_join_kb(channels):
