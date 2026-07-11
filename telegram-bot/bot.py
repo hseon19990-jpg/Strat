@@ -1469,53 +1469,42 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cost = stars * rate
         db_user = get_user(user.id)
         pts = db_user["points"] if db_user else 0
-        context.user_data["exchange_stars"] = stars
-        context.user_data["exchange_cost"]  = cost
-        context.user_data["state"] = "confirm_exchange_stars"
-        await update.message.reply_text(
-            f"⭐ *تأكيد الاستبدال:*\n\n"
-            f"⭐ عدد النجوم: {stars}\n"
-            f"💰 التكلفة: {cost} نقطة\n"
-            f"💎 رصيدك: {pts} نقطة\n\n"
-            f"أرسل *نعم* للتأكيد أو *لا* للإلغاء",
-            parse_mode=ParseMode.MARKDOWN
-        )
-        return
-
-    if state == "confirm_exchange_stars":
-        if text == "نعم":
-            stars = context.user_data.get("exchange_stars", 0)
-            cost  = context.user_data.get("exchange_cost", 0)
-            if not deduct_points(user.id, cost):
-                await update.message.reply_text("❌ نقاطك غير كافية.", reply_markup=main_menu_kb(is_own))
-                context.user_data["state"] = "main_menu"
-                return
-            code = next_order_code(user.id)
-            with db_conn() as c:
-                c.execute(
-                    "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,status) VALUES (?,?,?,?,'pending')",
-                    (user.id, "stars", str(stars), cost)
-                )
-            custom_msg = get_setting("exchange_success_msg") or ""
-            result_kb_rows = contact_owner_row() + [[InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="main_menu")]]
+        if pts < cost:
             await update.message.reply_text(
-                f"✅ *تمت العملية بنجاح!*\n\n"
-                f"⭐ طلب {stars} نجمة مسجل\n"
-                f"💰 التكلفة: {cost} نقطة\n\n"
-                + (f"{custom_msg}\n\n" if custom_msg else "")
-                + f"📌 *كود عمليتك: `{code}`*\nسيتواصل معك المالك قريباً.",
+                f"❌ *نقاطك غير كافية!*\n\n⭐ تحتاج: {cost} نقطة\n💎 رصيدك: {pts} نقطة",
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup(result_kb_rows)
+                reply_markup=main_menu_kb(is_own)
             )
-            await notify_group(
-                context.application,
-                f"⭐ <b>طلب شراء نجوم (جائزة)</b>\n"
-                f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
-                f"⭐ {stars} نجمة مقابل {cost} نقطة\n"
-                f"📌 {code}"
+            context.user_data["state"] = "main_menu"
+            return
+        if not deduct_points(user.id, cost):
+            await update.message.reply_text("❌ حدث خطأ في خصم النقاط.", reply_markup=main_menu_kb(is_own))
+            context.user_data["state"] = "main_menu"
+            return
+        code = next_order_code(user.id)
+        with db_conn() as c:
+            c.execute(
+                "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,status) VALUES (%s,%s,%s,%s,'pending')",
+                (user.id, "stars", str(stars), cost)
             )
-        else:
-            await update.message.reply_text("❌ تم الإلغاء.", reply_markup=main_menu_kb(is_own))
+        custom_msg = get_setting("exchange_success_msg") or ""
+        result_kb_rows = contact_owner_row() + [[InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="main_menu")]]
+        await update.message.reply_text(
+            f"✅ *تمت العملية بنجاح!*\n\n"
+            f"⭐ طلب {stars} نجمة مسجل\n"
+            f"💰 التكلفة: {cost} نقطة\n\n"
+            + (f"{custom_msg}\n\n" if custom_msg else "")
+            + f"📌 *كود عمليتك: `{code}`*\nسيتواصل معك المالك قريباً.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(result_kb_rows)
+        )
+        await notify_group(
+            context.application,
+            f"⭐ <b>طلب شراء نجوم (جائزة)</b>\n"
+            f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
+            f"⭐ {stars} نجمة مقابل {cost} نقطة\n"
+            f"📌 {code}"
+        )
         context.user_data["state"] = "main_menu"
         return
 
@@ -2778,16 +2767,42 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cost = stars * rate
         db_user = get_user(user.id)
         pts = db_user["points"] if db_user else 0
-        context.user_data["exchange_stars"] = stars
-        context.user_data["exchange_cost"]  = cost
-        context.user_data["state"] = "confirm_exchange_stars"
+        if pts < cost:
+            kb_rows = contact_owner_row() + [[InlineKeyboardButton("🔙 رجوع", callback_data="exchange:stars")]]
+            await q.edit_message_text(
+                f"❌ *نقاطك غير كافية!*\n\n"
+                f"⭐ تحتاج: {cost} نقطة\n"
+                f"💎 رصيدك: {pts} نقطة",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup(kb_rows)
+            )
+            return
+        if not deduct_points(user.id, cost):
+            await q.edit_message_text("❌ حدث خطأ في خصم النقاط.", reply_markup=back_kb("exchange:stars"))
+            return
+        code = next_order_code(user.id)
+        with db_conn() as c:
+            c.execute(
+                "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,status) VALUES (%s,%s,%s,%s,'pending')",
+                (user.id, "stars", str(stars), cost)
+            )
+        custom_msg = get_setting("exchange_success_msg") or ""
+        result_kb_rows = contact_owner_row() + [[InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="main_menu")]]
         await q.edit_message_text(
-            f"⭐ *تأكيد الاستبدال:*\n\n"
-            f"⭐ عدد النجوم: {stars}\n"
-            f"💰 التكلفة: {cost} نقطة\n"
-            f"💎 رصيدك: {pts} نقطة\n\n"
-            f"أرسل *نعم* للتأكيد أو *لا* للإلغاء",
-            parse_mode=ParseMode.MARKDOWN
+            f"✅ *تمت العملية بنجاح!*\n\n"
+            f"⭐ طلب {stars} نجمة مسجل\n"
+            f"💰 التكلفة: {cost} نقطة\n\n"
+            + (f"{custom_msg}\n\n" if custom_msg else "")
+            + f"📌 *كود عمليتك: `{code}`*\nسيتواصل معك المالك قريباً.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(result_kb_rows)
+        )
+        await notify_group(
+            context.application,
+            f"⭐ <b>طلب شراء نجوم (جائزة)</b>\n"
+            f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
+            f"⭐ {stars} نجمة مقابل {cost} نقطة\n"
+            f"📌 {code}"
         )
         return
 
