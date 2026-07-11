@@ -2703,56 +2703,43 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ── إعادة توجيه daily_gift و join_channels لتجميع النقاط ──
-    if data in ("daily_gift", "join_channels"):
-        data = "collect_points"
-
-    # ── تجميع نقاط (هدية يومية + انضمام بقنوات) ──
-    if data == "collect_points":
-        today = str(date.today())
-        gift  = int(get_setting("daily_gift_points") or "50")
-        reward = int(get_setting("join_channel_reward") or "20")
-        # فحص الهدية اليومية
-        with db_conn() as c:
-            gift_row = c.execute("SELECT last_claim FROM daily_gifts WHERE user_id=?", (user.id,)).fetchone()
-        already_claimed = gift_row and gift_row["last_claim"] == today
-        # قنوات الانضمام
-        with db_conn() as c:
-            channels = c.execute(
-                "SELECT * FROM mandatory_channels WHERE active=1 AND funding_type='internal' ORDER BY id"
-            ).fetchall()
-        # بناء أزرار القنوات
-        channel_rows = []
-        for ch in channels:
-            with db_conn() as c:
-                claimed = c.execute(
-                    "SELECT 1 FROM channel_join_rewards WHERE user_id=? AND channel_id=?",
-                    (user.id, ch["id"])
-                ).fetchone()
-            channel_rows.append([InlineKeyboardButton(
-                f"📢 @{ch['channel_username']}",
-                url=f"https://t.me/{ch['channel_username']}"
-            )])
-            if not claimed:
-                channel_rows.append([InlineKeyboardButton(
-                    f"✅ تحقق من انضمامي (+{reward} نقطة)",
-                    callback_data=f"join_verify:{ch['id']}"
-                )])
-            else:
-                channel_rows.append([InlineKeyboardButton("✔️ تم الحصول على نقاطك", callback_data="noop")])
-        gift_btn = []
-        if already_claimed:
-            gift_btn = [[InlineKeyboardButton("⏰ الهدية اليومية — تم استلامها (عد غداً)", callback_data="noop")]]
-        else:
-            gift_btn = [[InlineKeyboardButton(f"🎁 استلام الهدية اليومية (+{gift} نقطة)", callback_data="daily_gift_collect")]]
-        rows = gift_btn + channel_rows + [[InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")]]
+    # ── تجميع نقاط — قائمة فرعية (هدية يومية | انضمام بقنوات) ──
+    if data in ("collect_points", "daily_gift", "join_channels_menu"):
         db_user = get_user(user.id)
-        channels_txt = (f"\n📡 *انضم للقنوات* واحصل على *{reward} نقطة* لكل قناة." + _leave_penalty_note()) if channels else "\n📡 لا توجد قنوات للانضمام حالياً."
+        rows = [
+            [InlineKeyboardButton("🎁 الهدية اليومية", callback_data="daily_gift_screen")],
+            [InlineKeyboardButton("📡 الانضمام بقنوات", callback_data="join_channels")],
+            [InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")],
+        ]
         await q.edit_message_text(
             f"💰 *تجميع النقاط*\n\n"
+            f"💰 رصيدك الحالي: {db_user['points'] if db_user else 0} نقطة\n\n"
+            f"اختر أحد الخيارين للحصول على نقاط:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
+        return
+
+    # ── شاشة الهدية اليومية ──
+    if data == "daily_gift_screen":
+        today = str(date.today())
+        gift = int(get_setting("daily_gift_points") or "50")
+        with db_conn() as c:
+            gift_row = c.execute("SELECT last_claim FROM daily_gifts WHERE user_id=%s", (user.id,)).fetchone()
+        already_claimed = gift_row and gift_row["last_claim"] == today
+        db_user = get_user(user.id)
+        if already_claimed:
+            btn = [InlineKeyboardButton("⏰ تم استلام هديتك اليوم — عد غداً", callback_data="noop")]
+        else:
+            btn = [InlineKeyboardButton(f"🎁 استلام الهدية (+{gift} نقطة)", callback_data="daily_gift_collect")]
+        rows = [
+            [btn],
+            [InlineKeyboardButton("🔙 رجوع", callback_data="collect_points")],
+        ]
+        await q.edit_message_text(
+            f"🎁 *الهدية اليومية*\n\n"
             f"💰 رصيدك الحالي: {db_user['points'] if db_user else 0} نقطة\n"
-            f"🎁 الهدية اليومية: *{gift} نقطة* {'✅ مستلمة' if already_claimed else '— متاحة الآن'}\n"
-            f"{channels_txt}",
+            f"🎁 الهدية اليوم: *{gift} نقطة* {'✅ مستلمة بالفعل' if already_claimed else '— متاحة الآن!'}",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(rows)
         )
@@ -2761,46 +2748,28 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "daily_gift_collect":
         today = str(date.today())
         with db_conn() as c:
-            row = c.execute("SELECT last_claim FROM daily_gifts WHERE user_id=?", (user.id,)).fetchone()
+            row = c.execute("SELECT last_claim FROM daily_gifts WHERE user_id=%s", (user.id,)).fetchone()
             if row and row["last_claim"] == today:
                 await q.answer("⏰ لقد استلمت هديتك اليومية بالفعل! عد غداً.", show_alert=True)
                 return
             gift = int(get_setting("daily_gift_points") or "50")
-            c.execute("INSERT INTO daily_gifts (user_id, last_claim) VALUES (%s, %s) ON CONFLICT (user_id) DO UPDATE SET last_claim=EXCLUDED.last_claim", (user.id, today))
+            c.execute(
+                "INSERT INTO daily_gifts (user_id, last_claim) VALUES (%s, %s) "
+                "ON CONFLICT (user_id) DO UPDATE SET last_claim=EXCLUDED.last_claim",
+                (user.id, today)
+            )
             c.execute("UPDATE users SET points=points+%s WHERE user_id=%s", (gift, user.id))
         db_user = get_user(user.id)
         await q.answer(f"🎁 حصلت على {gift} نقطة!", show_alert=True)
-        # تحديث شاشة تجميع النقاط
-        reward = int(get_setting("join_channel_reward") or "20")
-        with db_conn() as c:
-            channels = c.execute(
-                "SELECT * FROM mandatory_channels WHERE active=1 AND funding_type='internal' ORDER BY id"
-            ).fetchall()
-        channel_rows = []
-        for ch in channels:
-            with db_conn() as c:
-                claimed = c.execute(
-                    "SELECT 1 FROM channel_join_rewards WHERE user_id=? AND channel_id=?",
-                    (user.id, ch["id"])
-                ).fetchone()
-            channel_rows.append([InlineKeyboardButton(
-                f"📢 @{ch['channel_username']}",
-                url=f"https://t.me/{ch['channel_username']}"
-            )])
-            if not claimed:
-                channel_rows.append([InlineKeyboardButton(
-                    f"✅ تحقق من انضمامي (+{reward} نقطة)",
-                    callback_data=f"join_verify:{ch['id']}"
-                )])
-            else:
-                channel_rows.append([InlineKeyboardButton("✔️ تم الحصول على نقاطك", callback_data="noop")])
-        rows = [[InlineKeyboardButton("⏰ الهدية اليومية — تم استلامها (عد غداً)", callback_data="noop")]] + channel_rows + [[InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")]]
-        channels_txt = (f"\n📡 *انضم للقنوات* واحصل على *{reward} نقطة* لكل قناة." + _leave_penalty_note()) if channels else "\n📡 لا توجد قنوات للانضمام حالياً."
+        # تحديث شاشة الهدية بعد الاستلام
+        rows = [
+            [InlineKeyboardButton("⏰ تم استلام هديتك اليوم — عد غداً", callback_data="noop")],
+            [InlineKeyboardButton("🔙 رجوع", callback_data="collect_points")],
+        ]
         await q.edit_message_text(
-            f"💰 *تجميع النقاط*\n\n"
-            f"💰 رصيدك الحالي: {db_user['points'] if db_user else 0} نقطة\n"
-            f"🎁 الهدية اليومية: *{gift} نقطة* ✅ مستلمة\n"
-            f"{channels_txt}",
+            f"🎁 *الهدية اليومية*\n\n"
+            f"✅ استلمت *{gift} نقطة* بنجاح!\n"
+            f"💰 رصيدك الآن: {db_user['points'] if db_user else 0} نقطة",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(rows)
         )
@@ -2830,16 +2799,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await proceed_after_mandatory(update, context, edit=True)
         return
 
-    # ── انضمام بقنوات (متاح أيضاً كمسار مستقل للتوافق مع الأزرار القديمة) ──
+    # ── انضمام بقنوات ──
     if data == "join_channels":
         with db_conn() as c:
             channels = c.execute(
                 "SELECT * FROM mandatory_channels WHERE active=1 AND funding_type='internal' ORDER BY id"
             ).fetchall()
         if not channels:
-            await q.edit_message_text("📡 لا توجد قنوات للانضمام حالياً.", reply_markup=back_kb())
+            await q.edit_message_text(
+                "📡 لا توجد قنوات للانضمام حالياً.",
+                reply_markup=back_kb("collect_points")
+            )
             return
         reward = int(get_setting("join_channel_reward") or "20")
+        db_user = get_user(user.id)
         rows = []
         for ch in channels:
             with db_conn() as c:
@@ -2858,9 +2831,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )])
             else:
                 rows.append([InlineKeyboardButton("✔️ تم الحصول على نقاطك", callback_data="noop")])
-        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")])
+        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="collect_points")])
         await q.edit_message_text(
-            f"📡 *قنوات الانضمام:*\n\n"
+            f"📡 *الانضمام بقنوات*\n\n"
+            f"💰 رصيدك الحالي: {db_user['points'] if db_user else 0} نقطة\n"
             f"🎁 انضم لأي قناة واحصل على *{reward} نقطة*\n"
             f"اضغط ✅ تحقق من انضمامي بعد الانضمام:"
             f"{_leave_penalty_note()}",
@@ -2935,9 +2909,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )])
             else:
                 rows.append([InlineKeyboardButton("✔️ تم الحصول على نقاطك", callback_data="noop")])
-        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")])
+        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="join_channels")])
         await q.edit_message_text(
-            f"📡 *قنوات الانضمام:*\n\n"
+            f"📡 *الانضمام بقنوات*\n\n"
             f"🎁 انضم لأي قناة واحصل على *{reward} نقطة*\n"
             f"💰 رصيدك الآن: {db_user['points'] if db_user else 0} نقطة"
             f"{_leave_penalty_note()}",
