@@ -1435,10 +1435,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"✅ *تمت العملية بنجاح!*\n\n"
                 f"🔹 الخدمة: {svc['name_ar']}\n"
                 f"🔢 الكمية: {qty}\n"
-                f"💰 التكلفة: {cost} نقطة\n\n"
-                f"📌 *كود عمليتك هو: `{code}`*\nاحفظه قد تحتاجه لاحقاً.",
+                f"💰 التكلفة: {cost} نقطة",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=main_menu_kb(is_own)
+            )
+            await update.message.reply_text(
+                f"📌 *كود عمليتك هو:* `{code}`\nاحفظه قد تحتاجه لاحقاً.",
+                parse_mode=ParseMode.MARKDOWN
             )
             await notify_group(
                 context.application,
@@ -1526,10 +1529,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                 await update.message.reply_text(
                     f"✅ *تم التحويل بنجاح!*\n\n"
-                    f"💰 {pts} نقطة إلى المستخدم.\n"
-                    f"📌 *كود عمليتك: `{code}`*",
+                    f"💰 {pts} نقطة إلى المستخدم.",
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=main_menu_kb(is_own)
+                )
+                await update.message.reply_text(
+                    f"📌 *كود عمليتك:* `{code}`",
+                    parse_mode=ParseMode.MARKDOWN
                 )
                 try:
                     await context.bot.send_message(
@@ -1650,9 +1656,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"⭐ طلب {stars} نجمة مسجل\n"
             f"💰 التكلفة: {cost} نقطة\n\n"
             + (f"{custom_msg}\n\n" if custom_msg else "")
-            + f"📌 *كود عمليتك: `{code}`*\nسيتواصل معك المالك قريباً.",
+            + "سيتواصل معك المالك قريباً.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(result_kb_rows)
+        )
+        await update.message.reply_text(
+            f"📌 *كود عمليتك:* `{code}`",
+            parse_mode=ParseMode.MARKDOWN
         )
         await notify_group(
             context.application,
@@ -2670,10 +2680,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"✅ *تمت العملية بنجاح!*\n\n"
                 f"🔹 الخدمة: {svc['name_ar']}\n"
                 f"🔢 الكمية: {qty}\n"
-                f"💰 التكلفة: {cost} نقطة\n\n"
-                f"📌 *كود عمليتك هو: `{code}`*\nاحفظه قد تحتاجه لاحقاً.",
+                f"💰 التكلفة: {cost} نقطة",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=main_menu_kb(is_own)
+            )
+            await context.bot.send_message(
+                user.id,
+                f"📌 *كود عمليتك هو:* `{code}`\nاحفظه قد تحتاجه لاحقاً.",
+                parse_mode=ParseMode.MARKDOWN
             )
             await notify_group(
                 context.application,
@@ -3072,9 +3086,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"⭐ طلب {stars} نجمة مسجل\n"
             f"💰 التكلفة: {cost} نقطة\n\n"
             + (f"{custom_msg}\n\n" if custom_msg else "")
-            + f"📌 *كود عمليتك: `{code}`*\nسيتواصل معك المالك قريباً.",
+            + "سيتواصل معك المالك قريباً.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(result_kb_rows)
+        )
+        await context.bot.send_message(
+            user.id,
+            f"📌 *كود عمليتك:* `{code}`",
+            parse_mode=ParseMode.MARKDOWN
         )
         await notify_group(
             context.application,
@@ -3111,9 +3130,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📱 طلب رقم تيلغرام مسجل\n"
             f"💰 التكلفة: {cost} نقطة\n\n"
             + (f"{custom_msg}\n\n" if custom_msg else "")
-            + f"📌 *كود عمليتك: `{code}`*\nسيتواصل معك المالك قريباً.",
+            + "سيتواصل معك المالك قريباً.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(result_kb)
+        )
+        await context.bot.send_message(
+            user.id,
+            f"📌 *كود عمليتك:* `{code}`",
+            parse_mode=ParseMode.MARKDOWN
         )
         await notify_group(
             context.application,
@@ -3238,10 +3262,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📢 القناة: @{channel}\n"
             f"⚙️ النوع: {ft_label}\n"
             f"👥 عدد الأعضاء: {member_count:,}\n"
-            f"💰 التكلفة: {cost_per} × {member_count:,} = *{cost:,} نقطة*\n\n"
-            f"📌 *كود عمليتك: `{code}`*\nاحفظه قد تحتاجه لاحقاً.",
+            f"💰 التكلفة: {cost_per} × {member_count:,} = *{cost:,} نقطة*",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=main_menu_kb(is_own)
+        )
+        await context.bot.send_message(
+            user.id,
+            f"📌 *كود عمليتك:* `{code}`\nاحفظه قد تحتاجه لاحقاً.",
+            parse_mode=ParseMode.MARKDOWN
         )
         await notify_group(
             context.application,
@@ -4125,9 +4153,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🎁 الجائزة: {prize['name']}{qty_txt}\n"
             f"💰 التكلفة: {cost:,} نقطة\n\n"
             + (f"{custom_msg}\n\n" if custom_msg else "")
-            + f"📌 *كود عمليتك: `{code}`*\nسيتواصل معك المالك قريباً.",
+            + "سيتواصل معك المالك قريباً.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(result_kb)
+        )
+        await context.bot.send_message(
+            user.id,
+            f"📌 *كود عمليتك:* `{code}`",
+            parse_mode=ParseMode.MARKDOWN
         )
         await notify_group(
             context.application,
