@@ -470,15 +470,20 @@ def get_or_create_user(user_id: int, username: str, full_name: str, invited_by: 
             c.execute("UPDATE users SET username=?, full_name=? WHERE user_id=?",
                       (username, full_name, user_id))
             return dict(row)
-        total = int(get_setting("total_bot_users") or "0") + 1
-        set_setting("total_bot_users", str(total))
+        # إصلاح race condition: نستخدم UPDATE RETURNING ذري داخل نفس المعاملة
+        # بدلاً من get_setting/set_setting اللتين تفتحان معاملتين منفصلتين
+        # مما كان يتسبب في تكرار bot_user_num عند تسجيل مستخدمين في نفس اللحظة
+        num_row = c.execute(
+            "UPDATE settings SET value=(value::int+1)::text WHERE key='total_bot_users' RETURNING value::int AS total"
+        ).fetchone()
+        total = num_row["total"] if num_row else 1
         c.execute(
-            "INSERT INTO users (user_id, username, full_name, invited_by, bot_user_num, verified) VALUES (?,?,?,?,?,0)",
+            "INSERT INTO users (user_id, username, full_name, invited_by, bot_user_num, verified) VALUES (%s,%s,%s,%s,%s,0)",
             (user_id, username, full_name, invited_by, total)
         )
         # ملاحظة: لا نمنح نقاط الإحالة هنا — تُمنح فقط بعد اشتراك المستخدم الجديد
         # بالقنوات الإجبارية واجتيازه للتحقق (انظر credit_referral_if_pending)
-        return dict(c.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone())
+        return dict(c.execute("SELECT * FROM users WHERE user_id=%s", (user_id,)).fetchone())
 
 def set_user_verified(user_id: int):
     with db_conn() as c:
@@ -4541,15 +4546,91 @@ async def handle_member_leave(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception:
             pass
 
+
+# ────────────────────────────────────────────────────────────
+#  أوامر slash إضافية للمالك
+# ────────────────────────────────────────────────────────────
+async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر المالك: /broadcast <رسالة> — يبث رسالة HTML لجميع المستخدمين."""
+    user = update.effective_user
+    if user.id != OWNER_ID:
+        await update.message.reply_text("⛔ هذا الأمر للمالك فقط.")
+        return
+    if not context.args:
+        await update.message.reply_text("الاستخدام:\n/broadcast <نص الرسالة>")
+        return
+    broadcast_text = " ".join(context.args)
+    with db_conn() as c:
+        users_list = c.execute("SELECT user_id FROM users").fetchall()
+    sent, failed = 0, 0
+    for u_row in users_list:
+        try:
+            await context.bot.send_message(u_row["user_id"], broadcast_text, parse_mode=ParseMode.HTML)
+            sent += 1
+        except Exception:
+            failed += 1
+    await update.message.reply_text(f"✅ أُرسلت: {sent} | ❌ فشل: {failed}")
+
+
+async def cmd_status_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر المالك: /status <كود_الطلب> — يعرض تفاصيل طلب بكوده."""
+    user = update.effective_user
+    if user.id != OWNER_ID:
+        await update.message.reply_text("⛔ هذا الأمر للمالك فقط.")
+        return
+    if not context.args:
+        await update.message.reply_text("الاستخدام:\n/status <كود_الطلب>")
+        return
+    code = context.args[0].strip()
+    with db_conn() as c:
+        order = c.execute(
+            "SELECT o.*, s.name_ar FROM orders o LEFT JOIN services s ON s.id=o.service_id WHERE o.order_code=?",
+            (code,)
+        ).fetchone()
+    if not order:
+        await update.message.reply_text(f"⚠️ لا يوجد طلب بالكود: {code}")
+        return
+    status_map = {"pending": "⏳ قيد الانتظار", "completed": "✅ مكتمل", "cancelled": "❌ ملغى"}
+    status_label = status_map.get(order["status"], order["status"])
+    await update.message.reply_text(
+        f"📋 *تفاصيل الطلب*\n\n"
+        f"📌 الكود: `{order['order_code']}`\n"
+        f"👤 المستخدم: {order['user_id']}\n"
+        f"🔹 الخدمة: {order['name_ar'] or '—'}\n"
+        f"🔗 الرابط: {order['link']}\n"
+        f"🔢 الكمية: {order['quantity']}\n"
+        f"💰 التكلفة: {order['cost_points']} نقطة\n"
+        f"📊 الحالة: {status_label}\n"
+        f"🆔 كود API: {order['api_order_id'] or '—'}\n"
+        f"🕐 التاريخ: {order['created_at']}",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+
 def main():
+    # ── التحقق من المتغيرات البيئية الضرورية عند الإطلاق ──────────────────
+    missing = []
+    if not BOT_TOKEN:
+        missing.append("BOT_TOKEN")
+    if not DATABASE_URL:
+        missing.append("DATABASE_URL")
+    if not OWNER_ID:
+        missing.append("OWNER_ID")
+    if missing:
+        logger.critical(f"❌ متغيرات بيئية مفقودة: {', '.join(missing)}")
+        logger.critical("❌ أضفها في إعدادات Railway ثم أعد التشغيل.")
+        raise SystemExit(1)
+
     init_db()
     start_health_server()
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("admin", cmd_admin))
+    app.add_handler(CommandHandler("start",     cmd_start))
+    app.add_handler(CommandHandler("admin",     cmd_admin))
     app.add_handler(CommandHandler("addpoints", cmd_addpoints))
+    app.add_handler(CommandHandler("broadcast", cmd_broadcast))
+    app.add_handler(CommandHandler("status",    cmd_status_order))
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND & filters.UpdateType.MESSAGE,
         handle_text
@@ -4568,8 +4649,11 @@ def main():
         if OWNER_ID:
             await application.bot.set_my_commands(
                 [
-                    BotCommand("start", "🏠 القائمة الرئيسية"),
-                    BotCommand("admin", "⚙️ لوحة المالك"),
+                    BotCommand("start",     "🏠 القائمة الرئيسية"),
+                    BotCommand("admin",     "⚙️ لوحة المالك"),
+                    BotCommand("addpoints", "💰 إضافة/خصم نقاط لمستخدم"),
+                    BotCommand("broadcast", "📢 إرسال رسالة جماعية"),
+                    BotCommand("status",    "🔍 فحص حالة طلب"),
                 ],
                 scope=BotCommandScopeChat(chat_id=OWNER_ID)
             )
