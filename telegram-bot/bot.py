@@ -441,6 +441,12 @@ def init_db():
               c.execute("UPDATE users SET referral_credited=1 WHERE invited_by IS NOT NULL AND invited_by != 0")
       except Exception:
           pass
+      # إضافة عمود partial_refund_pts لتتبع النقاط المستردّة من الطلبات الجزئية
+      try:
+          with db_conn() as c:
+              c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS partial_refund_pts INTEGER DEFAULT 0")
+      except Exception:
+          pass
       # إعادة تسمية زر "بدء بوت" إلى "رشق بدء (ستارت) بوت" مع إبقاء نفس الخدمات (نفس action_value)
       try:
           with db_conn() as c:
@@ -590,15 +596,33 @@ def smm_order_status(order_id: str, panel: int = 1) -> dict:
     return smm_request("status", panel=panel, order=order_id)
 
 
+def _calc_partial_refund_pts(api_service_id: int, remains: int) -> int:
+    """يحسب النقاط المستردّة من الطلب الجزئي لموقع SMMMAIN:
+    المعادلة: (سعر الخدمة بالدولار / 1000) × الوحدات المتبقية × 100,000
+    أي: 1000 نقطة لكل سنت يُستردّ (100,000 نقطة لكل دولار)."""
+    try:
+        svc_info = smm_service_info(api_service_id, panel=1)
+        rate = float(svc_info.get("rate", 0) or 0)   # USD per 1000 units
+        if rate <= 0 or remains <= 0:
+            return 0
+        refunded_usd   = (rate / 1000) * remains
+        refunded_cents = refunded_usd * 100
+        return max(1, round(refunded_cents * 1000))   # 1000 نقطة لكل سنت
+    except Exception as e:
+        logger.warning(f"⚠️ فشل حساب استرجاع الطلب الجزئي: {e}")
+        return 0
+
+
 async def check_pending_orders_job(context: ContextTypes.DEFAULT_TYPE):
-    """يفحص دورياً حالة الطلبات المعلّقة عبر API موقع الرشق (SMMMAIN)، ويحدّث حالتها محلياً تلقائياً:
-    - Completed/Partial ← يعلّم الطلب كمكتمل ويرسل للمستخدم إشعار اكتمال.
-    - Canceled/Failed/Error ← يعيد النقاط للمستخدم ويشعره مع توجيهه لإرسال رابط صحيح عند إعادة الطلب.
-    - أي حالة أخرى (Pending/In progress/Processing) ← تُترك بدون تغيير ليُعاد فحصها في الدورة القادمة."""
+    """يفحص دورياً حالة الطلبات المعلّقة عبر API موقع الرشق، ويحدّث حالتها:
+    - Completed  ← يُعلّم الطلب مكتملاً ويُشعر المستخدم.
+    - Partial    ← يُعلّم مكتملاً ويُعيد النقاط المستحقة (1000 نقطة/سنت) لموقع SMMMAIN.
+    - Canceled/Failed/Error ← يُعيد كامل النقاط ويُشعر المستخدم.
+    - Pending/Processing → لا تغيير، يُعاد فحصه لاحقاً."""
     try:
         with db_conn() as c:
             pending = c.execute(
-                "SELECT o.*, s.panel AS svc_panel FROM orders o "
+                "SELECT o.*, s.panel AS svc_panel, s.api_service_id AS svc_api_id FROM orders o "
                 "LEFT JOIN services s ON s.id = o.service_id "
                 "WHERE o.status='pending' AND o.api_order_id IS NOT NULL AND o.api_order_id != ''"
             ).fetchall()
@@ -619,15 +643,47 @@ async def check_pending_orders_job(context: ContextTypes.DEFAULT_TYPE):
         if not panel_status:
             continue
 
-        if panel_status in ("completed", "partial"):
+        if panel_status == "completed":
             with db_conn() as c:
                 c.execute("UPDATE orders SET status='completed' WHERE id=?", (o["id"],))
             try:
-                note = "" if panel_status == "completed" else "\n\nℹ️ تم تنفيذ الطلب جزئياً حسب سياسة الموقع."
                 await context.bot.send_message(
                     o["user_id"],
-                    f"🎉 تم اكتمال طلبك بكود {o['order_code']} بنجاح!{note}\nنتمنى أن تكون راضياً عن الخدمة 🌟"
+                    f"🎉 تم اكتمال طلبك بكود {o['order_code']} بنجاح!\nنتمنى أن تكون راضياً عن الخدمة 🌟"
                 )
+            except Exception:
+                pass
+
+        elif panel_status == "partial":
+            # ── حساب النقاط المستردّة (فقط لموقع SMMMAIN - الموقع 1) ──
+            remains    = int(res.get("remains", 0) or 0)
+            refund_pts = 0
+            if panel == 1 and remains > 0 and o.get("svc_api_id"):
+                refund_pts = _calc_partial_refund_pts(o["svc_api_id"], remains)
+
+            with db_conn() as c:
+                c.execute(
+                    "UPDATE orders SET status='completed', partial_refund_pts=%s WHERE id=%s",
+                    (refund_pts, o["id"])
+                )
+            if refund_pts > 0:
+                add_points(o["user_id"], refund_pts)
+                logger.info(f"💰 استرجاع جزئي: طلب {o['order_code']} — {refund_pts:,} نقطة → مستخدم {o['user_id']}")
+
+            try:
+                if refund_pts > 0:
+                    msg = (
+                        f"⚠️ طلبك بكود `{o['order_code']}` اكتمل *جزئياً*.\n\n"
+                        f"📦 الوحدات غير المنفذة: {remains:,}\n"
+                        f"💰 تم استرجاع *{refund_pts:,}* نقطة لرصيدك تعويضاً عن الجزء الناقص.\n\n"
+                        f"ℹ️ سياسة الموقع: يُعيد الموقع قيمة الجزء غير المنفذ تلقائياً."
+                    )
+                else:
+                    msg = (
+                        f"⚠️ طلبك بكود {o['order_code']} اكتمل جزئياً.\n"
+                        f"ℹ️ تم تنفيذ الطلب جزئياً حسب سياسة الموقع."
+                    )
+                await context.bot.send_message(o["user_id"], msg, parse_mode="Markdown")
             except Exception:
                 pass
 
@@ -4607,6 +4663,109 @@ async def cmd_status_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def cmd_compensate_partial(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر المالك: /compensate_partial
+    يفحص جميع طلبات SMMMAIN المكتملة التي لم تحصل على تعويض جزئي بعد،
+    يسأل موقع الرشق عن حالتها، وإن كانت Partial يحسب النقاط ويُعيدها لأصحابها.
+    مفيد لتعويض المستخدمين الذين خسروا نقاطاً قبل تفعيل هذه الميزة."""
+    user = update.effective_user
+    if user.id != OWNER_ID:
+        await update.message.reply_text("⛔ هذا الأمر للمالك فقط.")
+        return
+
+    await update.message.reply_text(
+        "🔍 جاري فحص الطلبات المكتملة للبحث عن طلبات جزئية غير معوَّضة...\n"
+        "⏳ قد يستغرق هذا بعض الوقت حسب عدد الطلبات."
+    )
+
+    # جلب الطلبات المكتملة من SMMMAIN التي لم تحصل على تعويض جزئي بعد
+    try:
+        with db_conn() as c:
+            candidates = c.execute(
+                "SELECT o.*, s.panel AS svc_panel, s.api_service_id AS svc_api_id "
+                "FROM orders o "
+                "LEFT JOIN services s ON s.id = o.service_id "
+                "WHERE o.status='completed' "
+                "  AND (o.partial_refund_pts IS NULL OR o.partial_refund_pts = 0) "
+                "  AND o.api_order_id IS NOT NULL AND o.api_order_id != '' "
+                "  AND (s.panel = 1 OR s.panel IS NULL)"   # فقط SMMMAIN
+            ).fetchall()
+    except Exception as e:
+        await update.message.reply_text(f"❌ خطأ في جلب الطلبات: {e}")
+        return
+
+    if not candidates:
+        await update.message.reply_text("✅ لا توجد طلبات تحتاج فحصاً.")
+        return
+
+    await update.message.reply_text(f"📋 عدد الطلبات المراد فحصها: {len(candidates):,}")
+
+    compensated, skipped, errors = 0, 0, 0
+    total_pts_given = 0
+
+    for o in candidates:
+        try:
+            res = smm_order_status(o["api_order_id"], panel=1)
+        except Exception:
+            errors += 1
+            continue
+
+        if not isinstance(res, dict) or "error" in res:
+            skipped += 1
+            continue
+
+        panel_status = str(res.get("status", "")).strip().lower()
+
+        if panel_status != "partial":
+            skipped += 1
+            continue
+
+        remains = int(res.get("remains", 0) or 0)
+        if remains <= 0 or not o.get("svc_api_id"):
+            skipped += 1
+            continue
+
+        refund_pts = _calc_partial_refund_pts(o["svc_api_id"], remains)
+        if refund_pts <= 0:
+            skipped += 1
+            continue
+
+        # منح النقاط وتسجيل التعويض
+        add_points(o["user_id"], refund_pts)
+        with db_conn() as c:
+            c.execute(
+                "UPDATE orders SET partial_refund_pts=%s WHERE id=%s",
+                (refund_pts, o["id"])
+            )
+
+        # إشعار المستخدم
+        try:
+            await context.bot.send_message(
+                o["user_id"],
+                f"💰 *تعويض طلب جزئي*\n\n"
+                f"📌 كود الطلب: `{o['order_code']}`\n"
+                f"📦 الوحدات غير المنفذة: {remains:,}\n"
+                f"✅ تم إضافة *{refund_pts:,}* نقطة إلى رصيدك تعويضاً.\n\n"
+                f"نعتذر عن التأخير في هذا التعويض.",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+
+        compensated += 1
+        total_pts_given += refund_pts
+        logger.info(f"✅ تعويض جزئي: طلب {o['order_code']} — {refund_pts:,} نقطة → {o['user_id']}")
+
+    await update.message.reply_text(
+        f"✅ *انتهى فحص التعويضات*\n\n"
+        f"💚 طلبات عُوِّضت: {compensated}\n"
+        f"💰 إجمالي النقاط الموزّعة: {total_pts_given:,}\n"
+        f"⏭ طلبات تخطّيها (غير جزئية): {skipped}\n"
+        f"❌ أخطاء API: {errors}",
+        parse_mode="Markdown"
+    )
+
+
 def main():
     # ── التحقق من المتغيرات البيئية الضرورية عند الإطلاق ──────────────────
     missing = []
@@ -4629,8 +4788,9 @@ def main():
     app.add_handler(CommandHandler("start",     cmd_start))
     app.add_handler(CommandHandler("admin",     cmd_admin))
     app.add_handler(CommandHandler("addpoints", cmd_addpoints))
-    app.add_handler(CommandHandler("broadcast", cmd_broadcast))
-    app.add_handler(CommandHandler("status",    cmd_status_order))
+    app.add_handler(CommandHandler("broadcast",           cmd_broadcast))
+    app.add_handler(CommandHandler("status",              cmd_status_order))
+    app.add_handler(CommandHandler("compensate_partial",  cmd_compensate_partial))
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND & filters.UpdateType.MESSAGE,
         handle_text
@@ -4652,8 +4812,9 @@ def main():
                     BotCommand("start",     "🏠 القائمة الرئيسية"),
                     BotCommand("admin",     "⚙️ لوحة المالك"),
                     BotCommand("addpoints", "💰 إضافة/خصم نقاط لمستخدم"),
-                    BotCommand("broadcast", "📢 إرسال رسالة جماعية"),
-                    BotCommand("status",    "🔍 فحص حالة طلب"),
+                    BotCommand("broadcast",          "📢 إرسال رسالة جماعية"),
+                    BotCommand("status",             "🔍 فحص حالة طلب"),
+                    BotCommand("compensate_partial", "💰 تعويض أصحاب الطلبات الجزئية"),
                 ],
                 scope=BotCommandScopeChat(chat_id=OWNER_ID)
             )
