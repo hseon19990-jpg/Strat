@@ -2448,6 +2448,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ تم تحديث السعر إلى: {fmt_price(price)} نقطة/1000 وحدة", reply_markup=owner_settings_kb())
         return
 
+    if is_own and state == "os_edit_await_desc":
+        sid = context.user_data.get("edit_svc_id")
+        new_desc = None if text.strip() == "-" else text.strip()
+        with db_conn() as c:
+            c.execute("UPDATE services SET description=? WHERE id=?", (new_desc, sid))
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(
+            "✅ تم حذف الوصف." if new_desc is None else f"✅ تم تحديث الوصف إلى:\n{new_desc}",
+            reply_markup=owner_settings_kb()
+        )
+        return
+
     if is_own and state == "os_edit_await_apiid":
         try:
             api_id = int(text)
@@ -3593,6 +3605,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("📉 الحد الأدنى", callback_data=f"os_edit_field:{sid}:min")],
             [InlineKeyboardButton("📈 الحد الأعلى", callback_data=f"os_edit_field:{sid}:max"),
              InlineKeyboardButton("💰 السعر", callback_data=f"os_edit_field:{sid}:price")],
+            [InlineKeyboardButton("📝 الوصف", callback_data=f"os_edit_field:{sid}:desc")],
             [InlineKeyboardButton("🌐 الموقع ورقم الخدمة", callback_data=f"os_edit_field:{sid}:source")],
             [InlineKeyboardButton("🔙 رجوع", callback_data="os:list_services")],
         ]
@@ -3601,7 +3614,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🌐 الموقع الحالي: {site_name} (رقم {svc['api_service_id']})\n"
             f"📉 الحد الأدنى: {svc['min_qty']}\n"
             f"📈 الحد الأعلى: {svc['max_qty']}\n"
-            f"💰 السعر: {fmt_price(svc['price_per_point'])} نقطة/1000\n\n"
+            f"💰 السعر: {fmt_price(svc['price_per_point'])} نقطة/1000\n"
+            f"📝 الوصف: {svc['description'] or '—'}\n\n"
             f"اختر ما تريد تعديله:",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(rows)
@@ -3616,6 +3630,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "min":   ("📉 أرسل *الحد الأدنى* الجديد:", "os_edit_await_min"),
             "max":   ("📈 أرسل *الحد الأعلى* الجديد:", "os_edit_await_max"),
             "price": ("💰 أرسل *السعر* الجديد (نقطة/1000 وحدة):", "os_edit_await_price"),
+            "desc":  ("📝 أرسل *الوصف الجديد* للخدمة (أو أرسل `-` لحذف الوصف):", "os_edit_await_desc"),
         }
         if field == "source":
             rows = [
