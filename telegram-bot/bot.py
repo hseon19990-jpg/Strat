@@ -393,6 +393,7 @@ def init_db():
               ('mandatory_channel_min_members', '0'),
               ('internal_channel_min_members', '0'),
               ('owner_contact_label', '💬 تواصل مع المالك'),
+              ('support_contact_label', '🛎 تواصل مع الدعم'),
           ]
           for k, v in default_settings:
               c.execute(
@@ -564,7 +565,7 @@ CATEGORY_MAP = {
 # ────────────────────────────────────────────────────────────
 #  إدارة أزرار القوائم (يتحكم بها المالك: إضافة/حذف/ترتيب/تحجيم)
 # ────────────────────────────────────────────────────────────
-MENU_LABELS = {"main": "القائمة الرئيسية", "owner_settings": "قائمة إعدادات المالك", "collect_points": "تجميع نقاط"}
+MENU_LABELS = {"main": "القائمة الرئيسية", "owner_settings": "قائمة إعدادات المالك", "collect_points": "تجميع نقاط", "contact_support": "تواصل مع الدعم"}
 MENU_LABELS.update({f"cat:{k}": f"قائمة فئة: {v}" for k, v in CATEGORY_MAP.items()})
 
 MANAGEABLE_MENUS = ["main", "owner_settings"] + [f"cat:{k}" for k in CATEGORY_MAP]
@@ -579,6 +580,7 @@ BUILTIN_DEFAULTS = {
         ("💎 شحن نقاط", "charge_points", 2),
         ("🏆 استبدال نقاط بجوائز", "exchange_points", 2), ("↔️ تحويل النقاط", "transfer_points", 2),
         ("🎟 استخدام كود", "use_promo", 2), ("ℹ️ معلوماتي", "my_info", 2),
+        ("🛎 تواصل مع الدعم", "contact_support", 1),
     ],
     "owner_settings": [
         ("➕ إضافة خدمة", "os:add_service", 2), ("📋 قائمة الخدمات", "os:list_services", 2),
@@ -594,7 +596,7 @@ BUILTIN_DEFAULTS = {
         ("🎟 إنشاء كود ترويجي", "os:create_promo", 2), ("📋 أكواد ترويجية", "os:list_promos", 2),
         ("💬 رابط تواصل المالك", "os:edit_contact", 2), ("✏️ نص زر التواصل", "os:edit_contact_label", 2),
         ("📲 تعديل نص اسيا سيل", "os:edit_asiacell", 2),
-        ("📢 رسالة جماعية", "os:broadcast", 2),
+        ("✏️ نص زر الدعم بالقائمة", "os:edit_support_label", 2), ("📢 رسالة جماعية", "os:broadcast", 2),
         ("🔐 تفعيل/تعطيل التحقق", "os:toggle_captcha", 2), ("📊 إحصائيات", "os:stats", 2),
         ("💵 رصيد موقع الرشق", "os:site_balance", 1),
         ("🧩 إدارة الأزرار", "os:manage_buttons", 1),
@@ -1965,7 +1967,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         set_setting("owner_contact_label", new_label)
         await update.message.reply_text(
-            f"✅ تم تحديث نص الزر إلى:\n{new_label}",
+            f"✅ تم تحديث نص زر التواصل (بعد الخصم) إلى:\n{new_label}",
+            reply_markup=owner_settings_kb()
+        )
+        context.user_data["state"] = "main_menu"
+        return
+
+    if is_own and state == "os_await_support_label":
+        new_label = text.strip()
+        if not new_label:
+            await update.message.reply_text("⚠️ النص لا يمكن أن يكون فارغاً.")
+            return
+        set_setting("support_contact_label", new_label)
+        await update.message.reply_text(
+            f"✅ تم تحديث نص زر الدعم إلى:\n{new_label}",
             reply_markup=owner_settings_kb()
         )
         context.user_data["state"] = "main_menu"
@@ -2414,6 +2429,26 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await q.edit_message_text("❌ تم إلغاء الطلب.", reply_markup=main_menu_kb(is_own))
         context.user_data["state"] = "main_menu"
+        return
+
+    # ── تواصل مع الدعم ──
+    if data == "contact_support":
+        contact = get_setting("owner_contact") or ""
+        if not contact:
+            await q.edit_message_text(
+                "⚠️ خدمة الدعم غير متاحة حالياً.",
+                reply_markup=back_kb()
+            )
+            return
+        label = get_setting("support_contact_label") or "🛎 تواصل مع الدعم"
+        await q.edit_message_text(
+            "🛎 *تواصل مع الدعم*\n\nاضغط الزر أدناه للتواصل معنا مباشرة:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(label, url=contact)],
+                [InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")]
+            ])
+        )
         return
 
     # ── رابط الدعوة ──
@@ -3481,9 +3516,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "os_await_contact_label"
         cur_label = get_setting("owner_contact_label") or "💬 تواصل مع المالك"
         await q.edit_message_text(
-            f"✏️ *نص زر التواصل*\n\n"
+            f"✏️ *نص زر التواصل (بعد خصم النقاط)*\n\n"
             f"النص الحالي: {cur_label}\n\n"
             f"أرسل النص الجديد للزر:\n"
+            f"مثال: `- الدعم الفني 🧑‍🔧 -`",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    if data == "os:edit_support_label" and is_own:
+        context.user_data["state"] = "os_await_support_label"
+        cur_label = get_setting("support_contact_label") or "🛎 تواصل مع الدعم"
+        await q.edit_message_text(
+            f"✏️ *نص زر الدعم داخل صفحة التواصل*\n\n"
+            f"النص الحالي: {cur_label}\n\n"
+            f"أرسل النص الجديد:\n"
             f"مثال: `- الدعم الفني 🧑‍🔧 -`",
             parse_mode=ParseMode.MARKDOWN
         )
