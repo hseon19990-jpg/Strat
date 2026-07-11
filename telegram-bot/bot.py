@@ -397,7 +397,7 @@ def init_db():
           )""")
           # القيم الافتراضية للإعدادات
           default_settings = [
-              ('join_channel_reward', '20'),
+              ('join_channel_reward', '45'),
               ('daily_gift_points', '50'),
               ('referral_points', '30'),
               ('star_to_points', '250'),
@@ -948,8 +948,9 @@ def exchange_kb():
         [InlineKeyboardButton("📱 شراء رقم تيلغرام",  callback_data="exchange:number")],
     ]
     for p in prizes:
+        # يُعرض الاسم فقط — السعر يظهر بعد الضغط
         rows.append([InlineKeyboardButton(
-            f"🎁 {p['name']} × {p['quantity']}  —  {p['points_cost']:,} نقطة",
+            f"🎁 {p['name']}",
             callback_data=f"exchange:custom:{p['id']}"
         )])
     rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")])
@@ -1047,18 +1048,28 @@ async def get_unjoined_mandatory_channels(context: ContextTypes.DEFAULT_TYPE, us
 async def count_user_for_fundings(user_id: int, context):
     """
     تحسب هذا المستخدم ضمن التمويلات النشطة التي لم يُحسب فيها بعد.
+    الشرط: يجب أن يكون المستخدم قد انضم عبر البوت (سجل في channel_join_rewards).
     عند اكتمال أي تمويل: يُوقَف تلقائياً ويُرسَل إشعار لصاحبه.
     """
     with db_conn() as c:
         fundings = c.execute(
             """SELECT cf.id, cf.channel_username, cf.funding_type,
-                      cf.target_members, cf.current_members, cf.user_id AS owner_id
+                      cf.target_members, cf.current_members, cf.user_id AS owner_id,
+                      mc.id AS mc_id
                FROM channel_funding cf
                JOIN mandatory_channels mc ON mc.channel_username = cf.channel_username
                WHERE mc.active = 1 AND cf.status = 'active' AND cf.target_members > 0"""
         ).fetchall()
 
     for f in fundings:
+        # ── شرط التمييز: لا يُحسب إلا من انضم عبر البوت (ضغط تحقق فعلاً) ──
+        with db_conn() as c:
+            verified_via_bot = c.execute(
+                "SELECT 1 FROM channel_join_rewards WHERE user_id=%s AND channel_id=%s",
+                (user_id, f["mc_id"])
+            ).fetchone()
+        if not verified_via_bot:
+            continue
         with db_conn() as c:
             c.execute(
                 "INSERT INTO channel_funding_counts (user_id, funding_id) VALUES (%s, %s) "
@@ -2153,9 +2164,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "os_await_prize_qty"
         await update.message.reply_text(
             f"🎀 *الجائزة:* {name}\n\n"
-            f"الخطوة 2/3 — أرسل *العدد الذي ستعطيه* لكل طلب:\n"
-            f"مثال: `1` أو `500`",
-            parse_mode=ParseMode.MARKDOWN
+            f"الخطوة 1.5/2 — أرسل *العدد* لكل طلب (مثال: `1`) أو اضغط تخطي:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⏭ تخطي (العدد = 1)", callback_data="os:skip_prize_qty")]
+            ])
         )
         return
 
@@ -2165,13 +2178,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             qty = int(text.strip().replace(",", ""))
             if qty <= 0: raise ValueError
         except ValueError:
-            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً موجباً.")
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً موجباً أو اضغط تخطي.")
             return
         context.user_data["prize_qty"] = qty
         context.user_data["state"] = "os_await_prize_cost"
         await update.message.reply_text(
             f"🎀 *الجائزة:* {context.user_data['prize_name']} × {qty}\n\n"
-            f"الخطوة 3/3 — أرسل *عدد النقاط* اللازمة للحصول عليها:\n"
+            f"الخطوة 2/2 — أرسل *عدد النقاط* اللازمة للحصول عليها:\n"
             f"مثال: `1000`",
             parse_mode=ParseMode.MARKDOWN
         )
@@ -2187,6 +2200,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         name = context.user_data.get("prize_name", "")
         qty  = context.user_data.get("prize_qty", 1)
+        qty_txt = f" × {qty}" if qty > 1 else ""
         with db_conn() as c:
             c.execute(
                 "INSERT INTO custom_prizes (name, quantity, points_cost, active) VALUES (%s, %s, %s, 1)",
@@ -2197,8 +2211,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         await update.message.reply_text(
             f"✅ *تمت إضافة الجائزة بنجاح!*\n\n"
-            f"🎀 الاسم: {name}\n"
-            f"🔢 العدد: {qty}\n"
+            f"🎀 الاسم: {name}{qty_txt}\n"
             f"💰 التكلفة: {cost:,} نقطة",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=owner_settings_kb()
@@ -2811,7 +2824,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=back_kb("collect_points")
             )
             return
-        reward = int(get_setting("join_channel_reward") or "20")
+        reward = int(get_setting("join_channel_reward") or "45")
         db_user = get_user(user.id)
         rows = []
         for ch in channels:
@@ -2870,7 +2883,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not is_member:
             await q.answer("❌ لم تنضم بعد! انضم للقناة أولاً ثم اضغط تحقق.", show_alert=True)
             return
-        reward = int(get_setting("join_channel_reward") or "20")
+        reward = int(get_setting("join_channel_reward") or "45")
         # إدراج ذري مع فحص التكرار عبر RETURNING
         with db_conn() as c:
             c.execute(
@@ -3757,7 +3770,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "os:edit_join_reward" and is_own:
-        cur = get_setting("join_channel_reward") or "20"
+        cur = get_setting("join_channel_reward") or "45"
         context.user_data["state"] = "os_await_join_reward"
         await q.edit_message_text(
             f"🎁 *نقاط الانضمام للقنوات الداخلية*\n\n"
@@ -4041,7 +4054,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── استبدال بجائزة مخصصة ──
     if data.startswith("exchange:custom:"):
-        prize_id = int(data.split(":")[2])
+        parts = data.split(":")
+        prize_id = int(parts[2])
+        confirmed = len(parts) > 3 and parts[3] == "confirm"
         with db_conn() as c:
             prize = c.execute(
                 "SELECT * FROM custom_prizes WHERE id=%s AND active=1", (prize_id,)
@@ -4051,14 +4066,33 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         cost = prize["points_cost"]
         db_user = get_user(user.id)
-        if (db_user["points"] if db_user else 0) < cost:
+        pts = db_user["points"] if db_user else 0
+        qty_txt = f" × {prize['quantity']}" if prize["quantity"] and prize["quantity"] > 1 else ""
+
+        if not confirmed:
+            # ── شاشة التفاصيل والتأكيد ──
+            can_afford = pts >= cost
+            confirm_kb = [
+                [InlineKeyboardButton(
+                    "✅ تأكيد الطلب" if can_afford else "❌ رصيدك غير كافٍ",
+                    callback_data=f"exchange:custom:{prize_id}:confirm" if can_afford else "noop"
+                )],
+                [InlineKeyboardButton("🔙 رجوع", callback_data="exchange_points")],
+            ]
             await q.edit_message_text(
-                f"❌ نقاطك غير كافية!\n\n"
-                f"🎁 الجائزة: {prize['name']} × {prize['quantity']}\n"
-                f"💰 التكلفة: {cost:,} نقطة\n"
-                f"💎 رصيدك: {db_user['points'] if db_user else 0} نقطة",
-                reply_markup=back_kb("exchange_points")
+                f"🎁 *{prize['name']}{qty_txt}*\n\n"
+                f"💰 التكلفة: *{cost:,} نقطة*\n"
+                f"💎 رصيدك الحالي: {pts:,} نقطة\n\n"
+                + ("✅ يمكنك الطلب — اضغط تأكيد للمتابعة." if can_afford else
+                   f"❌ تحتاج {cost - pts:,} نقطة إضافية."),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup(confirm_kb)
             )
+            return
+
+        # ── تنفيذ الطلب بعد التأكيد ──
+        if pts < cost:
+            await q.edit_message_text("❌ رصيدك غير كافٍ!", reply_markup=back_kb("exchange_points"))
             return
         if not deduct_points(user.id, cost):
             await q.edit_message_text("❌ حدث خطأ في خصم النقاط.", reply_markup=back_kb("exchange_points"))
@@ -4067,13 +4101,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with db_conn() as c:
             c.execute(
                 "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,status) VALUES (%s,%s,%s,%s,'pending')",
-                (user.id, "custom", f"{prize['name']}×{prize['quantity']}", cost)
+                (user.id, "custom", f"{prize['name']}{qty_txt}", cost)
             )
         custom_msg = get_setting("exchange_success_msg") or ""
         result_kb = contact_owner_row() + [[InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="main_menu")]]
         await q.edit_message_text(
             f"✅ *تمت العملية بنجاح!*\n\n"
-            f"🎁 الجائزة: {prize['name']} × {prize['quantity']}\n"
+            f"🎁 الجائزة: {prize['name']}{qty_txt}\n"
             f"💰 التكلفة: {cost:,} نقطة\n\n"
             + (f"{custom_msg}\n\n" if custom_msg else "")
             + f"📌 *كود عمليتك: `{code}`*\nسيتواصل معك المالك قريباً.",
@@ -4084,7 +4118,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.application,
             f"🎁 <b>طلب جائزة مخصصة</b>\n"
             f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
-            f"🎀 {prize['name']} × {prize['quantity']}\n"
+            f"🎀 {prize['name']}{qty_txt}\n"
             f"💰 {cost:,} نقطة\n"
             f"📌 {code}"
         )
@@ -4114,8 +4148,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "os_await_prize_name"
         await q.edit_message_text(
             "🎀 *إضافة جائزة مخصصة*\n\n"
-            "الخطوة 1/3 — أرسل *اسم الجائزة*:\n"
+            "الخطوة 1/2 — أرسل *اسم الجائزة*:\n"
             "مثال: `اسيا سيل 500` أو `بطاقة شحن`",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    if data == "os:skip_prize_qty" and is_own:
+        context.user_data["prize_qty"] = 1
+        context.user_data["state"] = "os_await_prize_cost"
+        name = context.user_data.get("prize_name", "")
+        await q.edit_message_text(
+            f"🎀 *الجائزة:* {name}\n\n"
+            f"الخطوة 2/2 — أرسل *عدد النقاط* اللازمة للحصول عليها:\n"
+            f"مثال: `1000`",
             parse_mode=ParseMode.MARKDOWN
         )
         return
