@@ -24,7 +24,7 @@ from telegram import (
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
     CallbackQueryHandler, PreCheckoutQueryHandler,
-    ContextTypes, filters
+    ChatMemberHandler, ContextTypes, filters
 )
 from telegram.constants import ParseMode
 from telegram.error import TelegramError, NetworkError, TimedOut, RetryAfter
@@ -417,6 +417,7 @@ def init_db():
               ('internal_channel_min_members', '0'),
               ('owner_contact_label', '💬 تواصل مع المالك'),
               ('support_contact_label', '🛎 تواصل مع الدعم'),
+              ('channel_leave_penalty', '75'),
           ]
           for k, v in default_settings:
               c.execute(
@@ -517,6 +518,18 @@ def deduct_points(user_id: int, pts: int) -> bool:
         )
         return c.rowcount > 0
 
+def deduct_points_clamped(user_id: int, pts: int) -> int:
+    """يخصم نقاطاً بحد أقصى لا يقل عن صفر (لا يجعل الرصيد سالباً)، ويُرجع العدد الفعلي المخصوم."""
+    with db_conn() as c:
+        row = c.execute("SELECT points FROM users WHERE user_id=?", (user_id,)).fetchone()
+        if not row:
+            return 0
+        current = row["points"] or 0
+        actual = min(pts, current)
+        if actual > 0:
+            c.execute("UPDATE users SET points=points-%s WHERE user_id=%s", (actual, user_id))
+        return actual
+
 def get_user(user_id: int) -> dict | None:
     with db_conn() as c:
         row = c.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
@@ -615,6 +628,7 @@ BUILTIN_DEFAULTS = {
         ("📱 سعر رقم تيلغرام", "os:edit_number_cost", 2), ("💌 رسالة الترحيب", "os:edit_welcome", 2),
         ("📢 سعر تمويل إجباري", "os:edit_mandatory_cost", 2), ("🔄 سعر تمويل داخلي", "os:edit_internal_cost", 2),
         ("🎁 نقاط الانضمام للقنوات", "os:edit_join_reward", 1),
+        ("❌ خصم مغادرة القناة", "os:edit_leave_penalty", 1),
         ("📡 إدارة قنوات الاشتراك", "os:manage_channels", 2), ("👥 حد أدنى تمويل إجباري", "os:edit_mandatory_min", 2),
         ("👥 حد أدنى تمويل داخلي", "os:edit_internal_min", 2), ("❌ إلغاء صفقة", "os:cancel_order", 2),
         ("🎟 إنشاء كود ترويجي", "os:create_promo", 2), ("📋 أكواد ترويجية", "os:list_promos", 2),
@@ -938,6 +952,10 @@ def fund_channel_kb():
         [InlineKeyboardButton("🔄 تمويل قناة داخلي بطيء", callback_data="fund:internal")],
         [InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")],
     ])
+
+def _leave_penalty_note() -> str:
+    penalty = int(get_setting("channel_leave_penalty") or "75")
+    return f"\n⚠️ *ملاحظة:* إذا غادرت القناة بعد الحصول على نقاطها سيتم خصم *{penalty} نقطة* من رصيدك تلقائياً."
 
 def back_kb(target="main_menu"):
     return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data=target)]])
@@ -2024,6 +2042,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
+    if is_own and state == "os_await_leave_penalty":
+        try:
+            val = int(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً.")
+            return
+        set_setting("channel_leave_penalty", str(val))
+        await update.message.reply_text(f"✅ خصم مغادرة القناة = {val} نقطة.", reply_markup=owner_settings_kb())
+        context.user_data["state"] = "main_menu"
+        return
+
     if is_own and state == "os_await_mandatory_cost":
         try:
             val = int(text)
@@ -2709,7 +2738,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             gift_btn = [[InlineKeyboardButton(f"🎁 استلام الهدية اليومية (+{gift} نقطة)", callback_data="daily_gift_collect")]]
         rows = gift_btn + channel_rows + [[InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")]]
         db_user = get_user(user.id)
-        channels_txt = f"\n📡 *انضم للقنوات* واحصل على *{reward} نقطة* لكل قناة." if channels else "\n📡 لا توجد قنوات للانضمام حالياً."
+        channels_txt = (f"\n📡 *انضم للقنوات* واحصل على *{reward} نقطة* لكل قناة." + _leave_penalty_note()) if channels else "\n📡 لا توجد قنوات للانضمام حالياً."
         await q.edit_message_text(
             f"💰 *تجميع النقاط*\n\n"
             f"💰 رصيدك الحالي: {db_user['points'] if db_user else 0} نقطة\n"
@@ -2757,7 +2786,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 channel_rows.append([InlineKeyboardButton("✔️ تم الحصول على نقاطك", callback_data="noop")])
         rows = [[InlineKeyboardButton("⏰ الهدية اليومية — تم استلامها (عد غداً)", callback_data="noop")]] + channel_rows + [[InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")]]
-        channels_txt = f"\n📡 *انضم للقنوات* واحصل على *{reward} نقطة* لكل قناة." if channels else "\n📡 لا توجد قنوات للانضمام حالياً."
+        channels_txt = (f"\n📡 *انضم للقنوات* واحصل على *{reward} نقطة* لكل قناة." + _leave_penalty_note()) if channels else "\n📡 لا توجد قنوات للانضمام حالياً."
         await q.edit_message_text(
             f"💰 *تجميع النقاط*\n\n"
             f"💰 رصيدك الحالي: {db_user['points'] if db_user else 0} نقطة\n"
@@ -2824,7 +2853,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(
             f"📡 *قنوات الانضمام:*\n\n"
             f"🎁 انضم لأي قناة واحصل على *{reward} نقطة*\n"
-            f"اضغط ✅ تحقق من انضمامي بعد الانضمام:",
+            f"اضغط ✅ تحقق من انضمامي بعد الانضمام:"
+            f"{_leave_penalty_note()}",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(rows)
         )
@@ -2900,7 +2930,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(
             f"📡 *قنوات الانضمام:*\n\n"
             f"🎁 انضم لأي قناة واحصل على *{reward} نقطة*\n"
-            f"💰 رصيدك الآن: {db_user['points'] if db_user else 0} نقطة",
+            f"💰 رصيدك الآن: {db_user['points'] if db_user else 0} نقطة"
+            f"{_leave_penalty_note()}",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(rows)
         )
@@ -3753,6 +3784,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if data == "os:edit_leave_penalty" and is_own:
+        cur = get_setting("channel_leave_penalty") or "75"
+        context.user_data["state"] = "os_await_leave_penalty"
+        await q.edit_message_text(
+            f"❌ *خصم مغادرة القناة*\n\n"
+            f"القيمة الحالية: {cur} نقطة\n\n"
+            f"عند مغادرة العضو لقناة داخلية حصل منها على نقاط انضمام سابقاً، تُخصم منه هذه القيمة تلقائياً.\n"
+            f"أرسل عدد النقاط الجديد:",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
     if data == "os:edit_mandatory_min" and is_own:
         cur = get_setting("mandatory_channel_min_members") or "0"
         context.user_data["state"] = "os_await_mandatory_min"
@@ -4203,6 +4246,56 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # ────────────────────────────────────────────────────────────
 #  Main
 # ────────────────────────────────────────────────────────────
+# ── اكتشاف مغادرة الأعضاء لقنوات التمويل الداخلي وخصم نقاط العقوبة ──
+async def handle_member_leave(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cmu = update.chat_member
+    if not cmu:
+        return
+    old_status = cmu.old_chat_member.status
+    new_status = cmu.new_chat_member.status
+    member_user = cmu.new_chat_member.user
+    if member_user.is_bot:
+        return
+    was_in = old_status in ("member", "administrator", "creator", "restricted")
+    now_out = new_status in ("left", "kicked")
+    if not (was_in and now_out):
+        return
+    username = (cmu.chat.username or "").lstrip("@")
+    if not username:
+        return
+    with db_conn() as c:
+        ch = c.execute(
+            "SELECT * FROM mandatory_channels WHERE channel_username=? AND funding_type='internal' AND active=1",
+            (username,)
+        ).fetchone()
+    if not ch:
+        return
+    with db_conn() as c:
+        claimed = c.execute(
+            "SELECT 1 FROM channel_join_rewards WHERE user_id=? AND channel_id=?",
+            (member_user.id, ch["id"])
+        ).fetchone()
+        if not claimed:
+            return
+        c.execute(
+            "DELETE FROM channel_join_rewards WHERE user_id=%s AND channel_id=%s",
+            (member_user.id, ch["id"])
+        )
+    penalty = int(get_setting("channel_leave_penalty") or "75")
+    deducted = deduct_points_clamped(member_user.id, penalty)
+    if deducted > 0:
+        try:
+            await context.bot.send_message(
+                member_user.id,
+                f"⚠️ *تنبيه خصم نقاط*\n\n"
+                f"لاحظنا أنك غادرت القناة @{username} بعد حصولك على نقاط الانضمام إليها.\n"
+                f"💸 تم خصم *{deducted} نقطة* من رصيدك.\n\n"
+                f"يمكنك الانضمام للقناة مجدداً من قسم 💰 تجميع النقاط لكسب النقاط من جديد.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception:
+            pass
+
 def main():
     init_db()
     start_health_server()
@@ -4218,6 +4311,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(PreCheckoutQueryHandler(pre_checkout))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
+    app.add_handler(ChatMemberHandler(handle_member_leave, ChatMemberHandler.CHAT_MEMBER))
 
     async def post_init(application):
         # أوامر عامة لجميع المستخدمين
@@ -4255,7 +4349,7 @@ def main():
         write_timeout=30,
         connect_timeout=30,
         pool_timeout=30,
-        allowed_updates=["message", "callback_query", "pre_checkout_query", "successful_payment"],
+        allowed_updates=["message", "callback_query", "pre_checkout_query", "successful_payment", "chat_member"],
     )
 
 if __name__ == "__main__":
