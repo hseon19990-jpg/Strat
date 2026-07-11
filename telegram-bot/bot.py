@@ -639,6 +639,7 @@ BUILTIN_DEFAULTS = {
         ("❌ خصم مغادرة القناة", "os:edit_leave_penalty", 1),
         ("📡 إدارة قنوات الاشتراك", "os:manage_channels", 2), ("👥 حد أدنى تمويل إجباري", "os:edit_mandatory_min", 2),
         ("👥 حد أدنى تمويل داخلي", "os:edit_internal_min", 2), ("❌ إلغاء صفقة", "os:cancel_order", 2),
+        ("✅ إكمال طلب", "os:complete_order", 2),
         ("🎟 إنشاء كود ترويجي", "os:create_promo", 2), ("📋 أكواد ترويجية", "os:list_promos", 2),
         ("💬 رابط تواصل المالك", "os:edit_contact", 2), ("✏️ نص زر التواصل", "os:edit_contact_label", 2),
         ("📲 تعديل نص اسيا سيل", "os:edit_asiacell", 2),
@@ -1473,7 +1474,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 add_points(user.id, cost)
                 err_msg = api_res.get("error", "خطأ غير معروف من الموقع")
                 await update.message.reply_text(
-                    f"❌ فشل الطلب: {err_msg}\nتمت إعادة نقاطك.",
+                    f"❌ فشل الطلب: {err_msg}\nتمت إعادة نقاطك.\n\n"
+                    f"⚠️ يرجى التأكد من إرسال رابط صحيح ومطابق لنوع الخدمة المطلوبة، ثم أعد إرسال الطلب.",
                     reply_markup=main_menu_kb(is_own)
                 )
                 context.user_data["state"] = "main_menu"
@@ -2348,7 +2350,50 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 await context.bot.send_message(
                     uid,
-                    f"🔴 تم إلغاء طلبك بكود {o_code} وإعادة {pts} نقطة لرصيدك."
+                    f"🔴 تم إلغاء طلبك بكود {o_code} وإعادة {pts} نقطة لرصيدك.\n\n"
+                    f"⚠️ يرجى التأكد من إرسال رابط صحيح ومطابق لنوع الخدمة المطلوبة (رابط الحساب/المنشور/القناة الصحيح) عند إعادة إرسال الطلب."
+                )
+            except Exception:
+                pass
+        else:
+            await update.message.reply_text("❌ تم التراجع.", reply_markup=owner_settings_kb())
+        context.user_data["state"] = "main_menu"
+        return
+
+    if is_own and state == "os_await_complete_order":
+        code = text.strip()
+        with db_conn() as c:
+            order = c.execute("SELECT * FROM orders WHERE order_code=?", (code,)).fetchone()
+        if not order:
+            await update.message.reply_text("⚠️ كود الطلب غير موجود.", reply_markup=owner_settings_kb())
+            context.user_data["state"] = "main_menu"
+            return
+        context.user_data["complete_order"] = dict(order)
+        context.user_data["state"] = "confirm_complete_order"
+        await update.message.reply_text(
+            f"✅ *تأكيد إكمال الطلب:*\n\n"
+            f"📌 الكود: {code}\n"
+            f"👤 المستخدم ID: {order['user_id']}\n\n"
+            f"أرسل *نعم* لتأكيد الإكمال وإشعار المستخدم أو *لا* للتراجع",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    if is_own and state == "confirm_complete_order":
+        if text == "نعم":
+            order  = context.user_data.get("complete_order", {})
+            uid    = order.get("user_id")
+            o_code = order.get("order_code")
+            with db_conn() as c:
+                c.execute("UPDATE orders SET status='completed' WHERE order_code=?", (o_code,))
+            await update.message.reply_text(
+                f"✅ تم تحديد الطلب {o_code} كمكتمل وإشعار المستخدم.",
+                reply_markup=owner_settings_kb()
+            )
+            try:
+                await context.bot.send_message(
+                    uid,
+                    f"🎉 تم اكتمال طلبك بكود {o_code} بنجاح!\nنتمنى أن تكون راضياً عن الخدمة 🌟"
                 )
             except Exception:
                 pass
@@ -2723,7 +2768,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 add_points(user.id, cost)
                 err_msg = api_res.get("error", "خطأ غير معروف من الموقع")
                 await q.edit_message_text(
-                    f"❌ فشل الطلب: {err_msg}\nتمت إعادة نقاطك.",
+                    f"❌ فشل الطلب: {err_msg}\nتمت إعادة نقاطك.\n\n"
+                    f"⚠️ يرجى التأكد من إرسال رابط صحيح ومطابق لنوع الخدمة المطلوبة، ثم أعد إرسال الطلب.",
                     reply_markup=main_menu_kb(is_own)
                 )
                 context.user_data["state"] = "main_menu"
@@ -3943,6 +3989,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "os:cancel_order" and is_own:
         context.user_data["state"] = "os_await_cancel_order"
         await q.edit_message_text("❌ *إلغاء طلب:*\n\nأرسل كود الطلب المراد إلغاؤه:", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    if data == "os:complete_order" and is_own:
+        context.user_data["state"] = "os_await_complete_order"
+        await q.edit_message_text("✅ *إكمال طلب:*\n\nأرسل كود الطلب الذي تم تنفيذه بالكامل:", parse_mode=ParseMode.MARKDOWN)
         return
 
     if data == "os:manage_channels" and is_own:
