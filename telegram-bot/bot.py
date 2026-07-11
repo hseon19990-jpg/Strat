@@ -1564,21 +1564,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── تمويل قناة: الخطوة 1 — إدخال عدد الأعضاء ──
     if state == "await_fund_member_count":
-        fund_type = context.user_data.get("fund_type", "mandatory")
-        cost_key  = "mandatory_channel_cost" if fund_type == "mandatory" else "internal_channel_cost"
-        cost      = int(get_setting(cost_key) or "200")
-        min_key   = "mandatory_channel_min_members" if fund_type == "mandatory" else "internal_channel_min_members"
+        fund_type   = context.user_data.get("fund_type", "mandatory")
+        cost_key    = "mandatory_channel_cost" if fund_type == "mandatory" else "internal_channel_cost"
+        cost_per    = int(get_setting(cost_key) or "200")
+        min_key     = "mandatory_channel_min_members" if fund_type == "mandatory" else "internal_channel_min_members"
         min_members = int(get_setting(min_key) or "0")
-        db_user   = get_user(user.id)
-        if db_user["points"] < cost:
-            await update.message.reply_text(
-                f"❌ نقاطك غير كافية. السعر: {cost} نقطة.",
-                reply_markup=main_menu_kb(is_own)
-            )
-            context.user_data["state"] = "main_menu"
-            return
+        db_user     = get_user(user.id)
         try:
-            member_count = int(text.strip().replace(",", ""))
+            member_count = int(text.strip().replace(",", "").replace(".", ""))
             if member_count <= 0:
                 raise ValueError
         except ValueError:
@@ -1595,28 +1588,41 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             context.user_data["state"] = "main_menu"
             return
+        total_cost = cost_per * member_count
+        if (db_user["points"] if db_user else 0) < total_cost:
+            await update.message.reply_text(
+                f"❌ *نقاطك غير كافية!*\n\n"
+                f"💰 السعر: {cost_per} × {member_count:,} = *{total_cost:,} نقطة*\n"
+                f"💎 رصيدك الحالي: {db_user['points'] if db_user else 0} نقطة",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=back_kb("fund_channel")
+            )
+            context.user_data["state"] = "main_menu"
+            return
         context.user_data["fund_member_count"] = member_count
+        context.user_data["fund_total_cost"]   = total_cost
         context.user_data["state"] = "await_fund_channel"
-        ft_label = "إجباري سريع" if fund_type == "mandatory" else "داخلي بطيء"
         await update.message.reply_text(
-            f"✅ *عدد الأعضاء: {member_count:,}*\n\n"
-            f"الآن أرسل *رابط أو يوزرنيم قناتك* (مثال: @mychannel):",
+            f"✅ *عدد الأعضاء: {member_count:,}*\n"
+            f"💰 التكلفة الإجمالية: {cost_per} × {member_count:,} = *{total_cost:,} نقطة*\n\n"
+            f"📊 *الخطوة 2/3:* أرسل *رابط أو يوزرنيم قناتك* (مثال: @mychannel):",
             parse_mode=ParseMode.MARKDOWN
         )
         return
 
     # ── تمويل قناة: الخطوة 2 — إدخال رابط القناة ──
     if state == "await_fund_channel":
-        fund_type = context.user_data.get("fund_type", "mandatory")
-        cost_key  = "mandatory_channel_cost" if fund_type == "mandatory" else "internal_channel_cost"
-        cost      = int(get_setting(cost_key) or "200")
-        min_key   = "mandatory_channel_min_members" if fund_type == "mandatory" else "internal_channel_min_members"
-        min_members = int(get_setting(min_key) or "0")
-        submitted_count = context.user_data.get("fund_member_count", 0)
-        db_user   = get_user(user.id)
-        if db_user["points"] < cost:
+        fund_type    = context.user_data.get("fund_type", "mandatory")
+        cost_key     = "mandatory_channel_cost" if fund_type == "mandatory" else "internal_channel_cost"
+        cost_per     = int(get_setting(cost_key) or "200")
+        min_key      = "mandatory_channel_min_members" if fund_type == "mandatory" else "internal_channel_min_members"
+        min_members  = int(get_setting(min_key) or "0")
+        member_count = context.user_data.get("fund_member_count", 0)
+        cost         = context.user_data.get("fund_total_cost", cost_per * max(member_count, 1))
+        db_user      = get_user(user.id)
+        if (db_user["points"] if db_user else 0) < cost:
             await update.message.reply_text(
-                f"❌ نقاطك غير كافية. السعر: {cost} نقطة.",
+                f"❌ نقاطك غير كافية. التكلفة الإجمالية: {cost:,} نقطة.",
                 reply_markup=main_menu_kb(is_own)
             )
             context.user_data["state"] = "main_menu"
@@ -1684,11 +1690,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["fund_channel_username"] = channel
         context.user_data["state"] = "await_fund_confirm"
         await update.message.reply_text(
-            f"📋 *مراجعة طلب التمويل:*\n\n"
+            f"📋 *مراجعة طلب التمويل — الخطوة 3/3:*\n\n"
             f"📢 القناة: @{channel}\n"
             f"⚙️ النوع: {ft_label}\n"
             f"👥 عدد الأعضاء الفعلي: {real_count:,}\n"
-            f"💰 التكلفة: {cost} نقطة\n\n"
+            f"💰 التكلفة: {cost_per} × {member_count:,} = *{cost:,} نقطة*\n\n"
             f"هل تريد تأكيد الطلب؟",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([
@@ -2940,15 +2946,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "fund:mandatory":
-        cost = get_setting("mandatory_channel_cost") or "200"
+        cost_per = get_setting("mandatory_channel_cost") or "200"
         min_members = get_setting("mandatory_channel_min_members") or "0"
         context.user_data["fund_type"] = "mandatory"
         context.user_data["state"]     = "await_fund_member_count"
-        min_txt = f"👥 الحد الأدنى للأعضاء: *{int(min_members):,}*\n\n" if int(min_members) > 0 else ""
+        min_txt = f"👥 الحد الأدنى للأعضاء: *{int(min_members):,}*\n" if int(min_members) > 0 else ""
         await q.edit_message_text(
             f"📢 *تمويل قناة إجباري سريع*\n\n"
             f"✅ ستُضاف قناتك كقناة اشتراك إجبارية في البوت\n"
-            f"💰 التكلفة: {cost} نقطة\n"
+            f"💰 السعر: *{cost_per} نقطة لكل عضو*\n"
             f"{min_txt}\n"
             f"📊 *الخطوة 1/3:* أرسل *عدد أعضاء قناتك* الحالي:",
             parse_mode=ParseMode.MARKDOWN
@@ -2956,16 +2962,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "fund:internal":
-        cost = get_setting("internal_channel_cost") or "100"
+        cost_per = get_setting("internal_channel_cost") or "100"
         min_members = get_setting("internal_channel_min_members") or "0"
         context.user_data["fund_type"] = "internal"
         context.user_data["state"]     = "await_fund_member_count"
-        min_txt = f"👥 الحد الأدنى للأعضاء: *{int(min_members):,}*\n\n" if int(min_members) > 0 else ""
+        min_txt = f"👥 الحد الأدنى للأعضاء: *{int(min_members):,}*\n" if int(min_members) > 0 else ""
         await q.edit_message_text(
             f"🔄 *تمويل قناة داخلي بطيء*\n\n"
             f"✅ ستُضاف قناتك في قسم انضم بقنوات\n"
             f"👥 الأعضاء يجمعون نقاط وينضمون لقناتك\n"
-            f"💰 التكلفة: {cost} نقطة\n"
+            f"💰 السعر: *{cost_per} نقطة لكل عضو*\n"
             f"{min_txt}\n"
             f"📊 *الخطوة 1/3:* أرسل *عدد أعضاء قناتك* الحالي:",
             parse_mode=ParseMode.MARKDOWN
@@ -2974,18 +2980,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── تأكيد تمويل القناة ──
     if data == "fund_confirm:yes":
-        fund_type = context.user_data.get("fund_type", "mandatory")
-        channel   = context.user_data.get("fund_channel_username", "")
-        cost_key  = "mandatory_channel_cost" if fund_type == "mandatory" else "internal_channel_cost"
-        cost      = int(get_setting(cost_key) or "200")
-        ft_label  = "إجباري سريع" if fund_type == "mandatory" else "داخلي بطيء"
-        db_user   = get_user(user.id)
+        fund_type    = context.user_data.get("fund_type", "mandatory")
+        channel      = context.user_data.get("fund_channel_username", "")
+        member_count = context.user_data.get("fund_member_count", 1)
+        cost_key     = "mandatory_channel_cost" if fund_type == "mandatory" else "internal_channel_cost"
+        cost_per     = int(get_setting(cost_key) or "200")
+        cost         = context.user_data.get("fund_total_cost", cost_per * member_count)
+        ft_label     = "إجباري سريع" if fund_type == "mandatory" else "داخلي بطيء"
         if not channel:
             await q.edit_message_text("⚠️ انتهت الجلسة، ابدأ من جديد.", reply_markup=main_menu_kb(is_own))
             context.user_data["state"] = "main_menu"
             return
         if not deduct_points(user.id, cost):
-            await q.edit_message_text(f"❌ نقاطك غير كافية. السعر: {cost} نقطة.", reply_markup=main_menu_kb(is_own))
+            await q.edit_message_text(f"❌ نقاطك غير كافية. التكلفة الإجمالية: {cost:,} نقطة.", reply_markup=main_menu_kb(is_own))
             context.user_data["state"] = "main_menu"
             return
         code = next_order_code(user.id)
@@ -3002,11 +3009,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         context.user_data.pop("fund_channel_username", None)
         context.user_data.pop("fund_member_count", None)
+        context.user_data.pop("fund_total_cost", None)
         await q.edit_message_text(
             f"✅ *تم تفعيل تمويل قناتك بنجاح!*\n\n"
             f"📢 القناة: @{channel}\n"
             f"⚙️ النوع: {ft_label}\n"
-            f"💰 التكلفة: {cost} نقطة\n\n"
+            f"👥 عدد الأعضاء: {member_count:,}\n"
+            f"💰 التكلفة: {cost_per} × {member_count:,} = *{cost:,} نقطة*\n\n"
             f"📌 *كود عمليتك: `{code}`*\nاحفظه قد تحتاجه لاحقاً.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=main_menu_kb(is_own)
@@ -3016,7 +3025,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📢 <b>تمويل قناة {ft_label}</b>\n"
             f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
             f"📡 القناة: @{channel}\n"
-            f"💰 {cost} نقطة\n"
+            f"👥 {member_count:,} عضو\n"
+            f"💰 {cost:,} نقطة ({cost_per} × {member_count:,})\n"
             f"📌 {code}"
         )
         return
