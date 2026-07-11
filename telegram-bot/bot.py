@@ -2831,7 +2831,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             btn = [InlineKeyboardButton(f"🎁 استلام الهدية (+{gift} نقطة)", callback_data="daily_gift_collect")]
         rows = [
-            [btn],
+            btn,
             [InlineKeyboardButton("🔙 رجوع", callback_data="collect_points")],
         ]
         await q.edit_message_text(
