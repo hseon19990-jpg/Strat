@@ -748,6 +748,17 @@ def build_kb_rows(items):
     return rows
 
 
+def md_escape(text: str) -> str:
+    """يُهرّب رموز Markdown (النمط القديم) داخل نص متغيّر (اسم مستخدم/اسم كامل)
+    قبل إدراجه في رسالة parse_mode=MARKDOWN، لتفادي فشل الإرسال بصمت عند وجود
+    عدد فردي من _ أو * أو ` أو [ في اسم المستخدم (شائع جداً في يوزرات تيليجرام)."""
+    if not text:
+        return text
+    for ch in ("_", "*", "`", "["):
+        text = text.replace(ch, f"\\{ch}")
+    return text
+
+
 def generate_math():
     a, b = random.randint(1, 9), random.randint(1, 9)
     op = random.choice(['+', '-', '×'])
@@ -1162,21 +1173,21 @@ async def finalize_verification(update: Update, context: ContextTypes.DEFAULT_TY
     credited = credit_referral_if_pending(user.id, context)
     if credited:
         invited_by, rp = credited
-        invited_name = f"@{user.username}" if user.username else (user.full_name or "مستخدم")
+        invited_name = md_escape(f"@{user.username}") if user.username else md_escape(user.full_name or "مستخدم")
         inviter_row = get_user(invited_by)
         inviter_name = "صديقك"
         if inviter_row:
             inviter_username = inviter_row.get("username")
             inviter_full_name = inviter_row.get("full_name")
-            inviter_name = f"@{inviter_username}" if inviter_username else (inviter_full_name or "صديقك")
+            inviter_name = md_escape(f"@{inviter_username}") if inviter_username else md_escape(inviter_full_name or "صديقك")
         try:
             await context.bot.send_message(
                 chat_id=invited_by,
                 text=f"🎉 مبروك! لقد أكمل المستخدم {invited_name} الاشتراك والتحقق عن طريق رابط دعوتك، وحصلت على {rp} نقطة.",
                 parse_mode=ParseMode.MARKDOWN
             )
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.warning(f"⚠️ فشل إرسال إشعار الإحالة للمستخدم {invited_by}: {_e}")
         referral_note = f"\n\n🔗 لقد دخلت إلى رابط دعوة صديقك {inviter_name} وقد حصل على {rp} نقطة."
 
     context.user_data["state"] = "main_menu"
@@ -2573,7 +2584,12 @@ async def _save_service(update, context, price: float):
 # ────────────────────────────────────────────────────────────
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q      = update.callback_query
-    await q.answer()
+    # ملاحظة: لا نستدعي q.answer() هنا بدون محتوى — تيليجرام يسمح بالرد على
+    # الـ callback_query مرة واحدة فقط. كل فرع أدناه يستدعي q.answer() بنفسه
+    # عند الحاجة (فارغاً أو مع تنبيه). استدعاؤه هنا مسبقاً كان يجعل أي استدعاء
+    # لاحق يفشل بخطأ "query is too old ... cannot answer it more than once"،
+    # فيتوقف تنفيذ الفرع قبل تحديث الرسالة (مثال: الهدية اليومية كانت تُضاف
+    # في قاعدة البيانات لكن الرسالة/التنبيه لا يظهران للمستخدم إطلاقاً).
     data   = q.data
     user   = q.from_user
     is_own = (user.id == OWNER_ID)
