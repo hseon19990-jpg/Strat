@@ -637,6 +637,11 @@ GOTO_TARGETS = [
 
 
 def seed_menu_items(menu: str):
+    # تأكد من حذف daily_gift و join_channels من القائمة الرئيسية دائماً
+    with db_conn() as c:
+        c.execute(
+            "DELETE FROM menu_items WHERE menu='main' AND action_value IN ('daily_gift','join_channels')"
+        )
     with db_conn() as c:
         existing = c.execute(
             "SELECT action_value FROM menu_items WHERE menu=? AND action_type='builtin'", (menu,)
@@ -2660,29 +2665,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ── الهدية اليومية ──
-    if data == "daily_gift":
-        today = str(date.today())
-        with db_conn() as c:
-            row = c.execute("SELECT last_claim FROM daily_gifts WHERE user_id=?", (user.id,)).fetchone()
-            if row and row["last_claim"] == today:
-                await q.edit_message_text(
-                    "⏰ لقد استلمت هديتك اليومية بالفعل! عد غداً.",
-                    reply_markup=back_kb()
-                )
-                return
-            gift = int(get_setting("daily_gift_points") or "50")
-            c.execute("INSERT INTO daily_gifts (user_id, last_claim) VALUES (%s, %s) ON CONFLICT (user_id) DO UPDATE SET last_claim=EXCLUDED.last_claim", (user.id, today))
-            c.execute("UPDATE users SET points=points+? WHERE user_id=?", (gift, user.id))
-        db_user = get_user(user.id)
-        await q.edit_message_text(
-            f"🎁 *مبروك!* حصلت على هديتك اليومية!\n\n"
-            f"✅ {gift} نقطة أضيفت لرصيدك\n"
-            f"💰 رصيدك الآن: {db_user['points']} نقطة",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=back_kb()
-        )
-        return
+    # ── إعادة توجيه daily_gift و join_channels لتجميع النقاط ──
+    if data in ("daily_gift", "join_channels"):
+        data = "collect_points"
 
     # ── تجميع نقاط (هدية يومية + انضمام بقنوات) ──
     if data == "collect_points":
