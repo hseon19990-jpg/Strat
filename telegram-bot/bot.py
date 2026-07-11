@@ -442,6 +442,15 @@ def init_db():
               c.execute("UPDATE users SET referral_credited=1 WHERE invited_by IS NOT NULL AND invited_by != 0")
       except Exception:
           pass
+      # إعادة تسمية زر "بدء بوت" إلى "رشق بدء (ستارت) بوت" مع إبقاء نفس الخدمات (نفس action_value)
+      try:
+          with db_conn() as c:
+              c.execute(
+                  "UPDATE menu_items SET label=%s WHERE action_type='builtin' AND action_value='cat:start_bot' AND label != %s",
+                  ("🤖 رشق بدء (ستارت) بوت", "🤖 رشق بدء (ستارت) بوت")
+              )
+      except Exception:
+          pass
 def get_setting(key: str) -> str:
     with db_conn() as c:
         row = c.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
@@ -593,7 +602,7 @@ CATEGORY_MAP = {
     "views":        "رشق مشاهدات",
     "interactions": "رشق تفاعلات",
     "story_views":  "رشق مشاهدات ستوري",
-    "start_bot":    "بدء بوت",
+    "start_bot":    "رشق بدء (ستارت) بوت",
     "boost":        "تعزيز قناة أو كروب",
     "post_stars":   "نجوم على بوست قناة",
 }
@@ -610,7 +619,7 @@ BUILTIN_DEFAULTS = {
     "main": [
         ("👥 رشق متابعين", "cat:followers", 2), ("📺 تمويل قناتك حقيقي", "fund_channel", 2),
         ("👁 رشق مشاهدات", "cat:views", 2), ("💬 رشق تفاعلات", "cat:interactions", 2),
-        ("📖 رشق مشاهدات ستوري", "cat:story_views", 2), ("🤖 بدء بوت", "cat:start_bot", 2),
+        ("📖 رشق مشاهدات ستوري", "cat:story_views", 2), ("🤖 رشق بدء (ستارت) بوت", "cat:start_bot", 2),
         ("📣 تعزيز قناة أو كروب", "cat:boost", 2), ("⭐ نجوم على بوست قناة", "cat:post_stars", 2),
         ("🔗 رابط دعوة", "referral", 2), ("💰 تجميع نقاط", "collect_points", 2),
         ("💎 شحن نقاط", "charge_points", 2),
