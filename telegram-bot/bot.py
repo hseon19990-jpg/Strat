@@ -392,6 +392,7 @@ def init_db():
               ('exchange_success_msg', ''),
               ('mandatory_channel_min_members', '0'),
               ('internal_channel_min_members', '0'),
+              ('owner_contact_label', '💬 تواصل مع المالك'),
           ]
           for k, v in default_settings:
               c.execute(
@@ -591,7 +592,8 @@ BUILTIN_DEFAULTS = {
         ("📡 إدارة قنوات الاشتراك", "os:manage_channels", 2), ("👥 حد أدنى تمويل إجباري", "os:edit_mandatory_min", 2),
         ("👥 حد أدنى تمويل داخلي", "os:edit_internal_min", 2), ("❌ إلغاء صفقة", "os:cancel_order", 2),
         ("🎟 إنشاء كود ترويجي", "os:create_promo", 2), ("📋 أكواد ترويجية", "os:list_promos", 2),
-        ("💬 رابط تواصل المالك", "os:edit_contact", 2), ("📲 تعديل نص اسيا سيل", "os:edit_asiacell", 2),
+        ("💬 رابط تواصل المالك", "os:edit_contact", 2), ("✏️ نص زر التواصل", "os:edit_contact_label", 2),
+        ("📲 تعديل نص اسيا سيل", "os:edit_asiacell", 2),
         ("📢 رسالة جماعية", "os:broadcast", 2),
         ("🔐 تفعيل/تعطيل التحقق", "os:toggle_captcha", 2), ("📊 إحصائيات", "os:stats", 2),
         ("💵 رصيد موقع الرشق", "os:site_balance", 1),
@@ -902,9 +904,10 @@ def back_kb(target="main_menu"):
 def contact_owner_row() -> list:
     """يُرجع صفاً يحتوي زر تواصل مع المالك إن كان رابط التواصل مضبوطاً، وإلا قائمة فارغة."""
     contact = get_setting("owner_contact") or ""
-    if contact:
-        return [[InlineKeyboardButton("💬 تواصل مع المالك", url=contact)]]
-    return []
+    if not contact:
+        return []
+    label = get_setting("owner_contact_label") or "💬 تواصل مع المالك"
+    return [[InlineKeyboardButton(label, url=contact)]]
 
 # ────────────────────────────────────────────────────────────
 #  إرسال إشعار للكروب
@@ -1952,6 +1955,19 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode=ParseMode.MARKDOWN
             )
             return
+        context.user_data["state"] = "main_menu"
+        return
+
+    if is_own and state == "os_await_contact_label":
+        new_label = text.strip()
+        if not new_label:
+            await update.message.reply_text("⚠️ النص لا يمكن أن يكون فارغاً.")
+            return
+        set_setting("owner_contact_label", new_label)
+        await update.message.reply_text(
+            f"✅ تم تحديث نص الزر إلى:\n{new_label}",
+            reply_markup=owner_settings_kb()
+        )
         context.user_data["state"] = "main_menu"
         return
 
@@ -3449,12 +3465,26 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "os:edit_contact" and is_own:
         context.user_data["state"] = "os_await_contact"
         cur = get_setting("owner_contact") or "غير مضبوط"
+        cur_label = get_setting("owner_contact_label") or "💬 تواصل مع المالك"
         await q.edit_message_text(
             f"💬 *رابط تواصل المالك*\n\n"
-            f"الرابط الحالي: {cur}\n\n"
+            f"الرابط الحالي: {cur}\n"
+            f"نص الزر الحالي: {cur_label}\n\n"
             f"أرسل رابط تيلغرام الخاص بك:\n"
             f"مثال: `https://t.me/username`\n\n"
             f"(أرسل *حذف* لإزالة الرابط)",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    if data == "os:edit_contact_label" and is_own:
+        context.user_data["state"] = "os_await_contact_label"
+        cur_label = get_setting("owner_contact_label") or "💬 تواصل مع المالك"
+        await q.edit_message_text(
+            f"✏️ *نص زر التواصل*\n\n"
+            f"النص الحالي: {cur_label}\n\n"
+            f"أرسل النص الجديد للزر:\n"
+            f"مثال: `- الدعم الفني 🧑‍🔧 -`",
             parse_mode=ParseMode.MARKDOWN
         )
         return
