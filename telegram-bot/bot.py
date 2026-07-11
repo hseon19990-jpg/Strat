@@ -349,6 +349,15 @@ def init_db():
               UNIQUE(user_id, funding_id)
           )""")
           c.execute("""
+          CREATE TABLE IF NOT EXISTS custom_prizes (
+              id          SERIAL PRIMARY KEY,
+              name        TEXT NOT NULL,
+              quantity    INTEGER DEFAULT 1,
+              points_cost INTEGER NOT NULL,
+              active      INTEGER DEFAULT 1,
+              created_at  TEXT DEFAULT CURRENT_TIMESTAMP
+          )""")
+          c.execute("""
           CREATE TABLE IF NOT EXISTS promo_codes (
               code       TEXT PRIMARY KEY,
               max_uses   INTEGER DEFAULT 1,
@@ -599,7 +608,8 @@ BUILTIN_DEFAULTS = {
     "owner_settings": [
         ("➕ إضافة خدمة", "os:add_service", 2), ("📋 قائمة الخدمات", "os:list_services", 2),
         ("🗂 عرض الخدمات", "os:view_services", 2), ("📦 قسم الطلبات", "os:orders_section", 2),
-        ("🎁 تعديل الهدية اليومية", "os:edit_gift", 2), ("🔗 تعديل نقاط الدعوة", "os:edit_referral", 2),
+        ("🎁 تعديل الهدية اليومية", "os:edit_gift", 2), ("🎀 جوائز مخصصة", "os:manage_prizes", 2),
+        ("🔗 تعديل نقاط الدعوة", "os:edit_referral", 2),
         ("⭐ سعر النجمة شحن", "os:edit_star_rate", 2), ("🏆 سعر نجمة الجوائز", "os:edit_exchange_rate", 2),
         ("📦 باقات الاستبدال بنجوم", "os:manage_star_packages", 1),
         ("📱 سعر رقم تيلغرام", "os:edit_number_cost", 2), ("💌 رسالة الترحيب", "os:edit_welcome", 2),
@@ -901,11 +911,21 @@ def charge_stars_kb():
     return InlineKeyboardMarkup(rows)
 
 def exchange_kb():
-    return InlineKeyboardMarkup([
+    with db_conn() as c:
+        prizes = c.execute(
+            "SELECT id, name, quantity, points_cost FROM custom_prizes WHERE active=1 ORDER BY id"
+        ).fetchall()
+    rows = [
         [InlineKeyboardButton("⭐ استبدال نقاط بنجوم", callback_data="exchange:stars")],
-        [InlineKeyboardButton("📱 شراء رقم تيلغرام", callback_data="exchange:number")],
-        [InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")],
-    ])
+        [InlineKeyboardButton("📱 شراء رقم تيلغرام",  callback_data="exchange:number")],
+    ]
+    for p in prizes:
+        rows.append([InlineKeyboardButton(
+            f"🎁 {p['name']} × {p['quantity']}  —  {p['points_cost']:,} نقطة",
+            callback_data=f"exchange:custom:{p['id']}"
+        )])
+    rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")])
+    return InlineKeyboardMarkup(rows)
 
 def fund_channel_kb():
     return InlineKeyboardMarkup([
@@ -2079,6 +2099,68 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=owner_settings_kb()
         )
         context.user_data["state"] = "main_menu"
+        return
+
+    # ── إضافة جائزة مخصصة: الاسم ──
+    if is_own and state == "os_await_prize_name":
+        name = text.strip()
+        if not name:
+            await update.message.reply_text("⚠️ الاسم لا يمكن أن يكون فارغاً، أعد الإرسال.")
+            return
+        context.user_data["prize_name"] = name
+        context.user_data["state"] = "os_await_prize_qty"
+        await update.message.reply_text(
+            f"🎀 *الجائزة:* {name}\n\n"
+            f"الخطوة 2/3 — أرسل *العدد الذي ستعطيه* لكل طلب:\n"
+            f"مثال: `1` أو `500`",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    # ── إضافة جائزة مخصصة: العدد ──
+    if is_own and state == "os_await_prize_qty":
+        try:
+            qty = int(text.strip().replace(",", ""))
+            if qty <= 0: raise ValueError
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً موجباً.")
+            return
+        context.user_data["prize_qty"] = qty
+        context.user_data["state"] = "os_await_prize_cost"
+        await update.message.reply_text(
+            f"🎀 *الجائزة:* {context.user_data['prize_name']} × {qty}\n\n"
+            f"الخطوة 3/3 — أرسل *عدد النقاط* اللازمة للحصول عليها:\n"
+            f"مثال: `1000`",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    # ── إضافة جائزة مخصصة: التكلفة ──
+    if is_own and state == "os_await_prize_cost":
+        try:
+            cost = int(text.strip().replace(",", ""))
+            if cost <= 0: raise ValueError
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً موجباً.")
+            return
+        name = context.user_data.get("prize_name", "")
+        qty  = context.user_data.get("prize_qty", 1)
+        with db_conn() as c:
+            c.execute(
+                "INSERT INTO custom_prizes (name, quantity, points_cost, active) VALUES (%s, %s, %s, 1)",
+                (name, qty, cost)
+            )
+        context.user_data.pop("prize_name", None)
+        context.user_data.pop("prize_qty", None)
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(
+            f"✅ *تمت إضافة الجائزة بنجاح!*\n\n"
+            f"🎀 الاسم: {name}\n"
+            f"🔢 العدد: {qty}\n"
+            f"💰 التكلفة: {cost:,} نقطة",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=owner_settings_kb()
+        )
         return
 
     if is_own and state == "os_await_asiacell_text":
@@ -3945,6 +4027,132 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with db_conn() as c:
             c.execute("DELETE FROM exchange_star_packages WHERE id=?", (pkg_id,))
         await q.answer("🗑 تم الحذف")
+        return
+
+    # ── استبدال بجائزة مخصصة ──
+    if data.startswith("exchange:custom:"):
+        prize_id = int(data.split(":")[2])
+        with db_conn() as c:
+            prize = c.execute(
+                "SELECT * FROM custom_prizes WHERE id=%s AND active=1", (prize_id,)
+            ).fetchone()
+        if not prize:
+            await q.edit_message_text("⚠️ هذه الجائزة لم تعد متاحة.", reply_markup=back_kb("exchange_points"))
+            return
+        cost = prize["points_cost"]
+        db_user = get_user(user.id)
+        if (db_user["points"] if db_user else 0) < cost:
+            await q.edit_message_text(
+                f"❌ نقاطك غير كافية!\n\n"
+                f"🎁 الجائزة: {prize['name']} × {prize['quantity']}\n"
+                f"💰 التكلفة: {cost:,} نقطة\n"
+                f"💎 رصيدك: {db_user['points'] if db_user else 0} نقطة",
+                reply_markup=back_kb("exchange_points")
+            )
+            return
+        if not deduct_points(user.id, cost):
+            await q.edit_message_text("❌ حدث خطأ في خصم النقاط.", reply_markup=back_kb("exchange_points"))
+            return
+        code = next_order_code(user.id)
+        with db_conn() as c:
+            c.execute(
+                "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,status) VALUES (%s,%s,%s,%s,'pending')",
+                (user.id, "custom", f"{prize['name']}×{prize['quantity']}", cost)
+            )
+        custom_msg = get_setting("exchange_success_msg") or ""
+        result_kb = contact_owner_row() + [[InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="main_menu")]]
+        await q.edit_message_text(
+            f"✅ *تمت العملية بنجاح!*\n\n"
+            f"🎁 الجائزة: {prize['name']} × {prize['quantity']}\n"
+            f"💰 التكلفة: {cost:,} نقطة\n\n"
+            + (f"{custom_msg}\n\n" if custom_msg else "")
+            + f"📌 *كود عمليتك: `{code}`*\nسيتواصل معك المالك قريباً.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(result_kb)
+        )
+        await notify_group(
+            context.application,
+            f"🎁 <b>طلب جائزة مخصصة</b>\n"
+            f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
+            f"🎀 {prize['name']} × {prize['quantity']}\n"
+            f"💰 {cost:,} نقطة\n"
+            f"📌 {code}"
+        )
+        return
+
+    # ── إدارة الجوائز المخصصة (المالك) ──
+    if data == "os:manage_prizes" and is_own:
+        with db_conn() as c:
+            prizes = c.execute("SELECT * FROM custom_prizes ORDER BY id").fetchall()
+        rows = []
+        for p in prizes:
+            st = "✅" if p["active"] else "❌"
+            rows.append([
+                InlineKeyboardButton(
+                    f"{st} {p['name']} × {p['quantity']} — {p['points_cost']:,} نقطة",
+                    callback_data=f"os:toggle_prize:{p['id']}"
+                ),
+                InlineKeyboardButton("🗑", callback_data=f"os:del_prize:{p['id']}")
+            ])
+        rows.append([InlineKeyboardButton("➕ إضافة جائزة جديدة", callback_data="os:add_prize")])
+        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
+        txt = "🎀 *الجوائز المخصصة:*\n\nاضغط على الجائزة لتفعيل/تعطيل · 🗑 للحذف" if prizes else "🎀 لا توجد جوائز مخصصة بعد."
+        await q.edit_message_text(txt, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(rows))
+        return
+
+    if data == "os:add_prize" and is_own:
+        context.user_data["state"] = "os_await_prize_name"
+        await q.edit_message_text(
+            "🎀 *إضافة جائزة مخصصة*\n\n"
+            "الخطوة 1/3 — أرسل *اسم الجائزة*:\n"
+            "مثال: `اسيا سيل 500` أو `بطاقة شحن`",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    if data.startswith("os:toggle_prize:") and is_own:
+        pid = int(data.split(":")[2])
+        with db_conn() as c:
+            c.execute("UPDATE custom_prizes SET active = 1-active WHERE id=%s", (pid,))
+        await q.answer("✅ تم التحديث")
+        with db_conn() as c:
+            prizes = c.execute("SELECT * FROM custom_prizes ORDER BY id").fetchall()
+        rows = []
+        for p in prizes:
+            st = "✅" if p["active"] else "❌"
+            rows.append([
+                InlineKeyboardButton(
+                    f"{st} {p['name']} × {p['quantity']} — {p['points_cost']:,} نقطة",
+                    callback_data=f"os:toggle_prize:{p['id']}"
+                ),
+                InlineKeyboardButton("🗑", callback_data=f"os:del_prize:{p['id']}")
+            ])
+        rows.append([InlineKeyboardButton("➕ إضافة جائزة جديدة", callback_data="os:add_prize")])
+        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
+        await q.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(rows))
+        return
+
+    if data.startswith("os:del_prize:") and is_own:
+        pid = int(data.split(":")[2])
+        with db_conn() as c:
+            c.execute("DELETE FROM custom_prizes WHERE id=%s", (pid,))
+        await q.answer("🗑 تم الحذف")
+        with db_conn() as c:
+            prizes = c.execute("SELECT * FROM custom_prizes ORDER BY id").fetchall()
+        rows = []
+        for p in prizes:
+            st = "✅" if p["active"] else "❌"
+            rows.append([
+                InlineKeyboardButton(
+                    f"{st} {p['name']} × {p['quantity']} — {p['points_cost']:,} نقطة",
+                    callback_data=f"os:toggle_prize:{p['id']}"
+                ),
+                InlineKeyboardButton("🗑", callback_data=f"os:del_prize:{p['id']}")
+            ])
+        rows.append([InlineKeyboardButton("➕ إضافة جائزة جديدة", callback_data="os:add_prize")])
+        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
+        txt = "🎀 *الجوائز المخصصة:*\n\nاضغط على الجائزة لتفعيل/تعطيل · 🗑 للحذف" if prizes else "🎀 لا توجد جوائز مخصصة بعد."
+        await q.edit_message_text(txt, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(rows))
         return
 
     if data == "noop":
