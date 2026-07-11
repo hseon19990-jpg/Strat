@@ -334,6 +334,20 @@ def init_db():
               funding_type     TEXT DEFAULT 'mandatory',
               active           INTEGER DEFAULT 1
           )""")
+          for _alt in [
+              "ALTER TABLE channel_funding ADD COLUMN IF NOT EXISTS target_members INTEGER DEFAULT 0",
+              "ALTER TABLE channel_funding ADD COLUMN IF NOT EXISTS current_members INTEGER DEFAULT 0",
+              "ALTER TABLE channel_funding ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active'",
+          ]:
+              try: c.execute(_alt)
+              except Exception: pass
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS channel_funding_counts (
+              id         SERIAL PRIMARY KEY,
+              user_id    BIGINT NOT NULL,
+              funding_id INTEGER NOT NULL,
+              UNIQUE(user_id, funding_id)
+          )""")
           c.execute("""
           CREATE TABLE IF NOT EXISTS promo_codes (
               code       TEXT PRIMARY KEY,
@@ -978,6 +992,62 @@ async def get_unjoined_mandatory_channels(context: ContextTypes.DEFAULT_TYPE, us
     return unjoined
 
 
+async def count_user_for_fundings(user_id: int, context):
+    """
+    تحسب هذا المستخدم ضمن التمويلات النشطة التي لم يُحسب فيها بعد.
+    عند اكتمال أي تمويل: يُوقَف تلقائياً ويُرسَل إشعار لصاحبه.
+    """
+    with db_conn() as c:
+        fundings = c.execute(
+            """SELECT cf.id, cf.channel_username, cf.funding_type,
+                      cf.target_members, cf.current_members, cf.user_id AS owner_id
+               FROM channel_funding cf
+               JOIN mandatory_channels mc ON mc.channel_username = cf.channel_username
+               WHERE mc.active = 1 AND cf.status = 'active' AND cf.target_members > 0"""
+        ).fetchall()
+
+    for f in fundings:
+        with db_conn() as c:
+            c.execute(
+                "INSERT INTO channel_funding_counts (user_id, funding_id) VALUES (%s, %s) "
+                "ON CONFLICT (user_id, funding_id) DO NOTHING",
+                (user_id, f["id"])
+            )
+            if c.rowcount == 0:
+                continue
+            c.execute(
+                "UPDATE channel_funding SET current_members = current_members + 1 WHERE id = %s",
+                (f["id"],)
+            )
+            row = c.execute(
+                "SELECT current_members, target_members FROM channel_funding WHERE id = %s",
+                (f["id"],)
+            ).fetchone()
+
+        if not row:
+            continue
+        if row["current_members"] >= row["target_members"]:
+            # ✅ اكتمل التمويل — أوقف القناة وأبلغ المالك
+            with db_conn() as c:
+                c.execute("UPDATE channel_funding SET status='completed' WHERE id=%s", (f["id"],))
+                c.execute("UPDATE mandatory_channels SET active=0 WHERE channel_username=%s", (f["channel_username"],))
+            try:
+                ft_label = "إجباري سريع" if f["funding_type"] == "mandatory" else "داخلي بطيء"
+                await context.bot.send_message(
+                    chat_id=f["owner_id"],
+                    text=(
+                        f"🎉 *اكتمل تمويل قناتك!*\n\n"
+                        f"📢 القناة: @{f['channel_username']}\n"
+                        f"⚙️ النوع: {ft_label}\n"
+                        f"👥 العدد المستهدف: {f['target_members']:,} عضو — ✅ تم الوصول!\n\n"
+                        f"⚠️ تمت إزالة القناة من القوائم الإجبارية/الداخلية تلقائياً."
+                    ),
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            except Exception:
+                pass
+
+
 def mandatory_join_kb(channels):
     rows = []
     for ch in channels:
@@ -1024,6 +1094,7 @@ async def proceed_after_mandatory(update: Update, context: ContextTypes.DEFAULT_
 async def finalize_verification(update: Update, context: ContextTypes.DEFAULT_TYPE, user, edit=False):
     """تُستدعى بعد اجتياز الاشتراك الإجباري والتحقق: تُفعّل المستخدم، تمنح نقاط الإحالة، وتعرض القائمة الرئيسية."""
     set_user_verified(user.id)
+    await count_user_for_fundings(user.id, context)
     is_own = (user.id == OWNER_ID)
 
     referral_note = ""
@@ -1081,10 +1152,18 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db_user = get_or_create_user(user.id, user.username or "", user.full_name or "", invited_by)
     is_own = (user.id == OWNER_ID)
 
-    # مستخدم متحقق مسبقاً → القائمة مباشرة (لا إشعارات دعوة هنا، فهي تُمنح مرة واحدة عند التحقق الأول)
+    # مستخدم متحقق مسبقاً → تحقق من قنوات إجبارية جديدة أولاً (الاشتراك الإجباري مقدس)
     if db_user.get("verified", 0):
+        unjoined = await get_unjoined_mandatory_channels(context, user.id)
+        if unjoined:
+            context.user_data["state"] = "await_mandatory_join"
+            await show_mandatory_gate(update, context, unjoined, edit=False)
+            return
+        # عَدّ المستخدم في التمويلات الجديدة التي لم يُحسب فيها بعد
+        await count_user_for_fundings(user.id, context)
         context.user_data["state"] = "main_menu"
-        pts = db_user["points"]
+        db_user = get_user(user.id)
+        pts = db_user["points"] if db_user else 0
         welcome = get_setting("welcome_message") or "أهلاً بك!"
         await update.message.reply_text(
             f"👋 *أهلاً بك مجدداً!*\n\n{welcome}\n\n💰 رصيدك: {pts} نقطة",
@@ -1121,6 +1200,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text   = update.message.text.strip()
     state  = context.user_data.get("state", "")
     is_own = (user.id == OWNER_ID)
+
+    # ── فرض الاشتراك الإجباري على المستخدمين المتحققين عبر الرسائل أيضاً ──
+    if not is_own and state not in ("verify_math", "await_mandatory_join"):
+        _db_user = get_user(user.id)
+        if _db_user and _db_user.get("verified", 0):
+            _unjoined = await get_unjoined_mandatory_channels(context, user.id)
+            if _unjoined:
+                context.user_data["state"] = "await_mandatory_join"
+                await show_mandatory_gate(update, context, _unjoined, edit=False)
+                return
 
     # ── التحقق الرياضي ──
     if state == "verify_math":
@@ -2287,6 +2376,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user   = q.from_user
     is_own = (user.id == OWNER_ID)
 
+    # ── فرض الاشتراك الإجباري على جميع المستخدمين المتحققين (الاشتراك مقدس) ──
+    _GATE_EXEMPT = {"check_mandatory_join", "noop", "main_menu"}
+    if not is_own and data not in _GATE_EXEMPT and not data.startswith("join_verify:"):
+        _db_user = get_user(user.id)
+        if _db_user and _db_user.get("verified", 0):
+            _unjoined = await get_unjoined_mandatory_channels(context, user.id)
+            if _unjoined:
+                await q.edit_message_text(
+                    "📢 *يجب عليك الاشتراك بالقنوات الجديدة أولاً للمتابعة:*",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=mandatory_join_kb(_unjoined)
+                )
+                context.user_data["state"] = "await_mandatory_join"
+                return
+
     # ── القائمة الرئيسية ──
     if data == "main_menu":
         context.user_data["state"] = "main_menu"
@@ -2598,7 +2702,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ── التحقق من بوابة الاشتراك الإجباري (للمستخدمين الجدد/غير المتحقَّقين) ──
+    # ── التحقق من بوابة الاشتراك الإجباري ──
     if data == "check_mandatory_join":
         unjoined = await get_unjoined_mandatory_channels(context, user.id)
         if unjoined:
@@ -2606,7 +2710,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await show_mandatory_gate(update, context, unjoined, edit=True)
             return
         await q.answer("✅ تم التحقق من اشتراكك!")
-        await proceed_after_mandatory(update, context, edit=True)
+        db_user = get_user(user.id)
+        if db_user and db_user.get("verified", 0):
+            # مستخدم متحقق سابقاً اضطُرّ للانضمام لقناة جديدة → عَدّه وأعد القائمة
+            await count_user_for_fundings(user.id, context)
+            context.user_data["state"] = "main_menu"
+            db_user = get_user(user.id)
+            pts = db_user["points"] if db_user else 0
+            await q.edit_message_text(
+                f"✅ *تم التحقق! أهلاً بك مجدداً.*\n\n💰 رصيدك: {pts} نقطة",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=main_menu_kb(is_own)
+            )
+        else:
+            await proceed_after_mandatory(update, context, edit=True)
         return
 
     # ── انضمام بقنوات (متاح أيضاً كمسار مستقل للتوافق مع الأزرار القديمة) ──
@@ -2998,8 +3115,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         code = next_order_code(user.id)
         with db_conn() as c:
             c.execute(
-                "INSERT INTO channel_funding (user_id,channel_username,funding_type,cost_points) VALUES (%s,%s,%s,%s)",
-                (user.id, channel, fund_type, cost)
+                "INSERT INTO channel_funding (user_id,channel_username,funding_type,cost_points,target_members,current_members,status) "
+                "VALUES (%s,%s,%s,%s,%s,0,'active')",
+                (user.id, channel, fund_type, cost, member_count)
             )
             c.execute(
                 "INSERT INTO mandatory_channels (channel_username,owner_user_id,funding_type,active) VALUES (%s,%s,%s,1) "
