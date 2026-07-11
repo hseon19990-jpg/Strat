@@ -16,10 +16,10 @@ import math
 import requests
 import logging
 import traceback
-from datetime import datetime, date
+from datetime import date
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
-    LabeledPrice, PreCheckoutQuery, BotCommand, BotCommandScopeChat
+    LabeledPrice, BotCommand, BotCommandScopeChat
 )
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
@@ -27,7 +27,7 @@ from telegram.ext import (
     ChatMemberHandler, ContextTypes, filters
 )
 from telegram.constants import ParseMode
-from telegram.error import TelegramError, NetworkError, TimedOut, RetryAfter
+from telegram.error import NetworkError, TimedOut, RetryAfter
 
 logging.basicConfig(
     level=logging.INFO,
@@ -94,7 +94,6 @@ DATABASE_URL = (
     ""
 )
 
-import threading
 _pool = None
 _pool_lock = threading.Lock()
 
@@ -1253,6 +1252,50 @@ async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=owner_settings_kb()
     )
+
+async def cmd_addpoints(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر المالك: /addpoints <user_id> <points> — يضيف (أو يخصم برقم سالب) نقاطاً لمستخدم معيّن."""
+    user = update.effective_user
+    if user.id != OWNER_ID:
+        await update.message.reply_text("⛔ هذا الأمر للمالك فقط.")
+        return
+
+    args = context.args
+    if len(args) != 2:
+        await update.message.reply_text("الاستخدام:\n/addpoints <user_id> <points>")
+        return
+
+    try:
+        target_id = int(args[0])
+        pts = int(args[1])
+    except ValueError:
+        await update.message.reply_text("⚠️ تأكد أن المعرف والنقاط أرقام صحيحة.")
+        return
+
+    target = get_user(target_id)
+    if not target:
+        await update.message.reply_text("⚠️ لا يوجد مستخدم بهذا المعرف في قاعدة البيانات.")
+        return
+
+    if pts == 0:
+        await update.message.reply_text("⚠️ عدد النقاط لا يمكن أن يكون صفراً.")
+        return
+
+    if pts > 0:
+        add_points(target_id, pts)
+        actual = pts
+    else:
+        actual = -deduct_points_clamped(target_id, -pts)
+
+    await update.message.reply_text(f"✅ تم تعديل رصيد المستخدم {target_id} بمقدار {actual} نقطة.")
+
+    try:
+        if actual > 0:
+            await context.bot.send_message(target_id, f"💰 تم إضافة {actual} نقطة إلى رصيدك من قبل الإدارة.")
+        elif actual < 0:
+            await context.bot.send_message(target_id, f"⚠️ تم خصم {-actual} نقطة من رصيدك من قبل الإدارة.")
+    except Exception:
+        pass
 
 # ────────────────────────────────────────────────────────────
 #  معالج الرسائل النصية (آلة الحالة)
@@ -4381,6 +4424,7 @@ def main():
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("admin", cmd_admin))
+    app.add_handler(CommandHandler("addpoints", cmd_addpoints))
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND & filters.UpdateType.MESSAGE,
         handle_text
