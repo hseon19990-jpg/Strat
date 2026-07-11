@@ -584,6 +584,64 @@ def smm_create_order(service_id: int, link: str, quantity: int, panel: int = 1) 
 def smm_order_status(order_id: str, panel: int = 1) -> dict:
     return smm_request("status", panel=panel, order=order_id)
 
+
+async def check_pending_orders_job(context: ContextTypes.DEFAULT_TYPE):
+    """يفحص دورياً حالة الطلبات المعلّقة عبر API موقع الرشق (SMMMAIN)، ويحدّث حالتها محلياً تلقائياً:
+    - Completed/Partial ← يعلّم الطلب كمكتمل ويرسل للمستخدم إشعار اكتمال.
+    - Canceled/Failed/Error ← يعيد النقاط للمستخدم ويشعره مع توجيهه لإرسال رابط صحيح عند إعادة الطلب.
+    - أي حالة أخرى (Pending/In progress/Processing) ← تُترك بدون تغيير ليُعاد فحصها في الدورة القادمة."""
+    try:
+        with db_conn() as c:
+            pending = c.execute(
+                "SELECT o.*, s.panel AS svc_panel FROM orders o "
+                "LEFT JOIN services s ON s.id = o.service_id "
+                "WHERE o.status='pending' AND o.api_order_id IS NOT NULL AND o.api_order_id != ''"
+            ).fetchall()
+    except Exception as e:
+        logger.warning(f"⚠️ فشل جلب الطلبات المعلّقة للفحص الدوري: {e}")
+        return
+
+    for o in pending:
+        panel = o.get("svc_panel") or 1
+        try:
+            res = smm_order_status(o["api_order_id"], panel=panel)
+        except Exception as e:
+            logger.warning(f"⚠️ فشل فحص حالة الطلب {o.get('order_code')}: {e}")
+            continue
+        if not isinstance(res, dict) or "error" in res:
+            continue
+        panel_status = str(res.get("status", "")).strip().lower()
+        if not panel_status:
+            continue
+
+        if panel_status in ("completed", "partial"):
+            with db_conn() as c:
+                c.execute("UPDATE orders SET status='completed' WHERE id=?", (o["id"],))
+            try:
+                note = "" if panel_status == "completed" else "\n\nℹ️ تم تنفيذ الطلب جزئياً حسب سياسة الموقع."
+                await context.bot.send_message(
+                    o["user_id"],
+                    f"🎉 تم اكتمال طلبك بكود {o['order_code']} بنجاح!{note}\nنتمنى أن تكون راضياً عن الخدمة 🌟"
+                )
+            except Exception:
+                pass
+
+        elif panel_status in ("canceled", "cancelled", "failed", "error"):
+            with db_conn() as c:
+                c.execute("UPDATE orders SET status='cancelled' WHERE id=?", (o["id"],))
+            pts = o.get("cost_points", 0) or 0
+            if pts:
+                add_points(o["user_id"], pts)
+            try:
+                await context.bot.send_message(
+                    o["user_id"],
+                    f"🔴 تم إلغاء طلبك بكود {o['order_code']} من قبل موقع الرشق وإعادة {pts} نقطة لرصيدك.\n\n"
+                    f"⚠️ يرجى التأكد من إرسال رابط صحيح ومطابق لنوع الخدمة المطلوبة، ثم أعد إرسال الطلب."
+                )
+            except Exception:
+                pass
+        # حالات أخرى (Pending/In progress/Processing) → لا تغيير، فحص لاحق
+
 # ────────────────────────────────────────────────────────────
 #  مساعدات رياضية
 # ────────────────────────────────────────────────────────────
@@ -4530,6 +4588,11 @@ def main():
 
     app.add_error_handler(error_handler)
     app.post_init = post_init
+
+    if app.job_queue:
+        app.job_queue.run_repeating(check_pending_orders_job, interval=300, first=30)
+        logger.info("⏱️ تم تفعيل الفحص الدوري لحالة الطلبات (كل 5 دقائق)")
+
     logger.info("🤖 Bot started!")
     app.run_polling(
         drop_pending_updates=True,
