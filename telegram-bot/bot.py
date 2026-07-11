@@ -591,7 +591,8 @@ BUILTIN_DEFAULTS = {
         ("📡 إدارة قنوات الاشتراك", "os:manage_channels", 2), ("👥 حد أدنى تمويل إجباري", "os:edit_mandatory_min", 2),
         ("👥 حد أدنى تمويل داخلي", "os:edit_internal_min", 2), ("❌ إلغاء صفقة", "os:cancel_order", 2),
         ("🎟 إنشاء كود ترويجي", "os:create_promo", 2), ("📋 أكواد ترويجية", "os:list_promos", 2),
-        ("📲 تعديل نص اسيا سيل", "os:edit_asiacell", 2), ("📢 رسالة جماعية", "os:broadcast", 2),
+        ("💬 رابط تواصل المالك", "os:edit_contact", 2), ("📲 تعديل نص اسيا سيل", "os:edit_asiacell", 2),
+        ("📢 رسالة جماعية", "os:broadcast", 2),
         ("🔐 تفعيل/تعطيل التحقق", "os:toggle_captcha", 2), ("📊 إحصائيات", "os:stats", 2),
         ("💵 رصيد موقع الرشق", "os:site_balance", 1),
         ("🧩 إدارة الأزرار", "os:manage_buttons", 1),
@@ -897,6 +898,13 @@ def fund_channel_kb():
 
 def back_kb(target="main_menu"):
     return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data=target)]])
+
+def contact_owner_row() -> list:
+    """يُرجع صفاً يحتوي زر تواصل مع المالك إن كان رابط التواصل مضبوطاً، وإلا قائمة فارغة."""
+    contact = get_setting("owner_contact") or ""
+    if contact:
+        return [[InlineKeyboardButton("💬 تواصل مع المالك", url=contact)]]
+    return []
 
 # ────────────────────────────────────────────────────────────
 #  إرسال إشعار للكروب
@@ -1489,6 +1497,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     (user.id, "stars", str(stars), cost)
                 )
             custom_msg = get_setting("exchange_success_msg") or ""
+            result_kb_rows = contact_owner_row() + [[InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="main_menu")]]
             await update.message.reply_text(
                 f"✅ *تمت العملية بنجاح!*\n\n"
                 f"⭐ طلب {stars} نجمة مسجل\n"
@@ -1496,7 +1505,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 + (f"{custom_msg}\n\n" if custom_msg else "")
                 + f"📌 *كود عمليتك: `{code}`*\nسيتواصل معك المالك قريباً.",
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=main_menu_kb(is_own)
+                reply_markup=InlineKeyboardMarkup(result_kb_rows)
             )
             await notify_group(
                 context.application,
@@ -1938,6 +1947,22 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_own and state == "os_await_welcome":
         set_setting("welcome_message", text)
         await update.message.reply_text("✅ تم تحديث رسالة الترحيب.", reply_markup=owner_settings_kb())
+        context.user_data["state"] = "main_menu"
+        return
+
+    if is_own and state == "os_await_contact":
+        if text.strip().lower() == "حذف":
+            set_setting("owner_contact", "")
+            await update.message.reply_text("✅ تم حذف رابط تواصل المالك.", reply_markup=owner_settings_kb())
+        elif text.strip().startswith("https://t.me/") or text.strip().startswith("https://"):
+            set_setting("owner_contact", text.strip())
+            await update.message.reply_text(f"✅ تم حفظ رابط التواصل:\n{text.strip()}", reply_markup=owner_settings_kb())
+        else:
+            await update.message.reply_text(
+                "⚠️ الرابط غير صحيح. يجب أن يبدأ بـ `https://t.me/` مثال:\n`https://t.me/username`\n\nأو أرسل *حذف* لإزالة الرابط.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
         context.user_data["state"] = "main_menu"
         return
 
@@ -2710,11 +2735,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "charge:asiacell":
         asiacell_txt = get_setting("asiacell_text") or "⚠️ الشحن التلقائي عبر اسيا سيل غير متاح حالياً.\nيرجى التواصل مع المالك."
-        owner_contact = get_setting("owner_contact") or ""
-        kb_rows = []
-        if owner_contact:
-            kb_rows.append([InlineKeyboardButton("💬 تواصل مع المالك", url=owner_contact)])
-        kb_rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="charge_points")])
+        kb_rows = contact_owner_row() + [[InlineKeyboardButton("🔙 رجوع", callback_data="charge_points")]]
         await q.edit_message_text(asiacell_txt, reply_markup=InlineKeyboardMarkup(kb_rows))
         return
 
@@ -2729,9 +2750,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with db_conn() as c:
             packages = c.execute("SELECT * FROM exchange_star_packages WHERE active=1 ORDER BY stars").fetchall()
         if not packages:
+            kb_rows = contact_owner_row() + [[InlineKeyboardButton("🔙 رجوع", callback_data="exchange_points")]]
             await q.edit_message_text(
                 "⚠️ لا توجد باقات استبدال متاحة حالياً.\nتواصل مع المالك لإضافة باقات.",
-                reply_markup=back_kb("exchange_points")
+                reply_markup=InlineKeyboardMarkup(kb_rows)
             )
             return
         rows = []
@@ -2739,6 +2761,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             stars = pkg["stars"]
             cost = stars * rate
             rows.append([InlineKeyboardButton(f"⭐ {stars} نجمة = {cost} نقطة", callback_data=f"exchange:pkg:{stars}")])
+        rows += contact_owner_row()
         rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="exchange_points")])
         await q.edit_message_text(
             f"⭐ *استبدال نقاط بنجوم*\n\n"
@@ -2772,9 +2795,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cost = int(get_setting("telegram_number_cost") or "5000")
         db_user = get_user(user.id)
         if db_user["points"] < cost:
+            kb_rows = contact_owner_row() + [[InlineKeyboardButton("🔙 رجوع", callback_data="exchange_points")]]
             await q.edit_message_text(
                 f"❌ نقاطك غير كافية! تحتاج {cost} نقطة ولديك {db_user['points']} نقطة.",
-                reply_markup=back_kb("exchange_points")
+                reply_markup=InlineKeyboardMarkup(kb_rows)
             )
             return
         if not deduct_points(user.id, cost):
@@ -2787,6 +2811,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 (user.id, "telegram_number", "number", cost)
             )
         custom_msg = get_setting("exchange_success_msg") or ""
+        result_kb = contact_owner_row() + [[InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")]]
         await q.edit_message_text(
             f"✅ *تمت العملية بنجاح!*\n\n"
             f"📱 طلب رقم تيلغرام مسجل\n"
@@ -2794,7 +2819,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             + (f"{custom_msg}\n\n" if custom_msg else "")
             + f"📌 *كود عمليتك: `{code}`*\nسيتواصل معك المالك قريباً.",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=back_kb()
+            reply_markup=InlineKeyboardMarkup(result_kb)
         )
         await notify_group(
             context.application,
@@ -3404,6 +3429,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "os_await_number_cost"
         cur = get_setting("telegram_number_cost") or "5000"
         await q.edit_message_text(f"📱 سعر رقم تيلغرام الحالي: {cur} نقطة\n\nأرسل القيمة الجديدة:")
+        return
+
+    if data == "os:edit_contact" and is_own:
+        context.user_data["state"] = "os_await_contact"
+        cur = get_setting("owner_contact") or "غير مضبوط"
+        await q.edit_message_text(
+            f"💬 *رابط تواصل المالك*\n\n"
+            f"الرابط الحالي: {cur}\n\n"
+            f"أرسل رابط تيلغرام الخاص بك:\n"
+            f"مثال: `https://t.me/username`\n\n"
+            f"(أرسل *حذف* لإزالة الرابط)",
+            parse_mode=ParseMode.MARKDOWN
+        )
         return
 
     if data == "os:edit_welcome" and is_own:
