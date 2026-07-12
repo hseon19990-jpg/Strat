@@ -2064,8 +2064,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         fund_type    = context.user_data.get("fund_type", "mandatory")
         cost_key     = "mandatory_channel_cost" if fund_type == "mandatory" else "internal_channel_cost"
         cost_per     = int(get_setting(cost_key) or "200")
-        min_key      = "mandatory_channel_min_members" if fund_type == "mandatory" else "internal_channel_min_members"
-        min_members  = int(get_setting(min_key) or "0")
         member_count = context.user_data.get("fund_member_count", 0)
         cost         = context.user_data.get("fund_total_cost", cost_per * max(member_count, 1))
         db_user      = get_user(user.id)
@@ -2116,24 +2114,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # ── التحقق من عدد الأعضاء الفعلي ──
+        # ── عدد أعضاء القناة الفعلي (لعرضه فقط في المراجعة؛ الحد الأدنى مطبَّق بالفعل على
+        #     العدد الذي طلب المستخدم تمويله في الخطوة 1، وليس على حجم القناة الحالي) ──
         try:
             real_count = await context.bot.get_chat_member_count(channel_id)
         except Exception:
             real_count = 0
-
-        if min_members > 0 and real_count < min_members:
-            await update.message.reply_text(
-                f"❌ *عدد الأعضاء الفعلي غير كافٍ!*\n\n"
-                f"📢 القناة: @{channel_md}\n"
-                f"👥 العدد الفعلي: {real_count:,} عضو\n"
-                f"📌 الحد الأدنى المطلوب: {min_members:,} عضو\n\n"
-                f"عزّز قناتك أولاً ثم حاول مجدداً.",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=back_kb("fund_channel")
-            )
-            context.user_data["state"] = "main_menu"
-            return
 
         # ── عرض التأكيد ──
         ft_label = "إجباري سريع" if fund_type == "mandatory" else "داخلي بطيء"
