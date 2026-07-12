@@ -337,6 +337,7 @@ def init_db():
               "ALTER TABLE channel_funding ADD COLUMN IF NOT EXISTS target_members INTEGER DEFAULT 0",
               "ALTER TABLE channel_funding ADD COLUMN IF NOT EXISTS current_members INTEGER DEFAULT 0",
               "ALTER TABLE channel_funding ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active'",
+              "ALTER TABLE mandatory_channels ADD COLUMN IF NOT EXISTS queued INTEGER DEFAULT 0",
           ]:
               try: c.execute(_alt)
               except Exception: pass
@@ -1171,6 +1172,65 @@ async def show_category_services(update: Update, context: ContextTypes.DEFAULT_T
 # ────────────────────────────────────────────────────────────
 #  الاشتراك الإجباري + التحقق النهائي
 # ────────────────────────────────────────────────────────────
+MANDATORY_MAX_ACTIVE = 10   # الحد الأقصى لعدد القنوات الإجبارية النشطة في نفس الوقت
+MANDATORY_PAGE_SIZE   = 5   # عدد القنوات المعروضة للمستخدم دفعة واحدة في بوابة الاشتراك
+
+
+def count_active_mandatory_channels() -> int:
+    with db_conn() as c:
+        row = c.execute(
+            "SELECT COUNT(*) AS n FROM mandatory_channels WHERE active=1 AND funding_type='mandatory'"
+        ).fetchone()
+    return row["n"] if row else 0
+
+
+async def promote_queued_mandatory_channel(context: ContextTypes.DEFAULT_TYPE, app=None):
+    """يُستدعى بعد أي إخراج لقناة إجبارية من القائمة النشطة (اكتمال تمويلها أو تعطيلها يدوياً).
+    إن وُجدت قناة إجبارية بانتظار الدور (queued=1) وتوفّر عدد أقل من الحد الأقصى، تُفعَّل تلقائياً
+    وتُخطَر مالكها ويُعلَن عنها في الكروب، حتى لا يبقى دور القناة معلّقاً بلا داعٍ."""
+    if count_active_mandatory_channels() >= MANDATORY_MAX_ACTIVE:
+        return
+    with db_conn() as c:
+        nxt = c.execute(
+            "SELECT * FROM mandatory_channels WHERE queued=1 AND funding_type='mandatory' ORDER BY id ASC LIMIT 1"
+        ).fetchone()
+        if not nxt:
+            return
+        c.execute("UPDATE mandatory_channels SET active=1, queued=0 WHERE id=?", (nxt["id"],))
+
+    try:
+        await context.bot.send_message(
+            nxt["owner_user_id"],
+            f"🎉 *أصبحت قناتك الآن ضمن قائمة الاشتراك الإجباري!*\n\n"
+            f"📢 القناة: @{nxt['channel_username']}\n"
+            f"✅ تحرّر أحد الأماكن العشرة فأصبح دور قناتك، وباتت تظهر الآن لجميع مستخدمي البوت.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception:
+        pass
+
+    bot_app = app or getattr(context, "application", None)
+    if bot_app:
+        await notify_group(
+            bot_app,
+            f"📢 <b>قناة إجبارية جديدة أصبحت نشطة (من قائمة الانتظار)</b>\n"
+            f"👤 <a href='tg://user?id={nxt['owner_user_id']}'>مالك القناة</a>\n"
+            f"📡 القناة: @{nxt['channel_username']}\n"
+            f"{mandatory_terms_text_html()}"
+        )
+
+
+def mandatory_terms_text_html() -> str:
+    """نص الشروط المرفق مع أي إعلان في الكروب عن قناة إجبارية جديدة (HTML)."""
+    penalty = int(get_setting("channel_leave_penalty") or "75")
+    return (
+        f"📌 <b>الشروط:</b>\n"
+        f"• الاشتراك بهذه القناة أصبح إجبارياً لاستخدام البوت.\n"
+        f"• الحد الأقصى للقنوات الإجبارية النشطة في نفس الوقت: {MANDATORY_MAX_ACTIVE} قنوات.\n"
+        f"• مغادرة القناة بعد التحقق تخصم {penalty} نقطة تلقائياً من رصيد المستخدم."
+    )
+
+
 async def get_unjoined_mandatory_channels(context: ContextTypes.DEFAULT_TYPE, user_id: int):
     """يُرجع قائمة القنوات الإجبارية التي لم ينضم لها المستخدم بعد."""
     with db_conn() as c:
@@ -1252,11 +1312,14 @@ async def count_user_for_fundings(user_id: int, context):
                 )
             except Exception:
                 pass
+            if f["funding_type"] == "mandatory":
+                await promote_queued_mandatory_channel(context)
 
 
 def mandatory_join_kb(channels):
+    page = channels[:MANDATORY_PAGE_SIZE]
     rows = []
-    for ch in channels:
+    for ch in page:
         rows.append([InlineKeyboardButton(
             f"📢 {ch['channel_title'] or ('@' + ch['channel_username'])}",
             url=f"https://t.me/{ch['channel_username']}"
@@ -1266,10 +1329,16 @@ def mandatory_join_kb(channels):
 
 
 async def show_mandatory_gate(update: Update, context: ContextTypes.DEFAULT_TYPE, channels, edit=False):
+    remaining = max(0, len(channels) - MANDATORY_PAGE_SIZE)
+    more_note = (
+        f"\n\n➕ يوجد *{remaining}* قناة إضافية ستظهر تلقائياً بعد إكمال هذه المجموعة."
+        if remaining > 0 else ""
+    )
     text = (
         "📢 *الاشتراك الإجباري*\n\n"
         "للمتابعة، يجب عليك الاشتراك بالقنوات التالية أولاً:\n"
         "ثم اضغط «✅ تحقق من الاشتراك»."
+        f"{more_note}"
     )
     kb = mandatory_join_kb(channels)
     if edit and update.callback_query:
@@ -2791,8 +2860,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if _db_user and _db_user.get("verified", 0):
             _unjoined = await get_unjoined_mandatory_channels(context, user.id)
             if _unjoined:
+                _remaining = max(0, len(_unjoined) - MANDATORY_PAGE_SIZE)
+                _more_note = (
+                    f"\n\n➕ يوجد *{_remaining}* قناة إضافية ستظهر تلقائياً بعد إكمال هذه المجموعة."
+                    if _remaining > 0 else ""
+                )
                 await q.edit_message_text(
-                    "📢 *يجب عليك الاشتراك بالقنوات الجديدة أولاً للمتابعة:*",
+                    f"📢 *يجب عليك الاشتراك بالقنوات الجديدة أولاً للمتابعة:*{_more_note}",
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=mandatory_join_kb(_unjoined)
                 )
@@ -3493,6 +3567,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["state"] = "main_menu"
             return
         code = next_order_code(user.id)
+
+        # ── الحد الأقصى 10 قنوات إجبارية نشطة في نفس الوقت: إن كانت ممتلئة، تدخل القناة الجديدة قائمة انتظار ──
+        is_queued = False
+        if fund_type == "mandatory" and count_active_mandatory_channels() >= MANDATORY_MAX_ACTIVE:
+            is_queued = True
+
         with db_conn() as c:
             c.execute(
                 "INSERT INTO channel_funding (user_id,channel_username,funding_type,cost_points,target_members,current_members,status) "
@@ -3500,28 +3580,46 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 (user.id, channel, fund_type, cost, member_count)
             )
             c.execute(
-                "INSERT INTO mandatory_channels (channel_username,owner_user_id,funding_type,active) VALUES (%s,%s,%s,1) "
-                "ON CONFLICT (channel_username) DO UPDATE SET funding_type=EXCLUDED.funding_type, owner_user_id=EXCLUDED.owner_user_id, active=1",
-                (channel, user.id, fund_type)
+                "INSERT INTO mandatory_channels (channel_username,owner_user_id,funding_type,active,queued) "
+                "VALUES (%s,%s,%s,%s,%s) "
+                "ON CONFLICT (channel_username) DO UPDATE SET funding_type=EXCLUDED.funding_type, owner_user_id=EXCLUDED.owner_user_id, "
+                "active=EXCLUDED.active, queued=EXCLUDED.queued",
+                (channel, user.id, fund_type, 0 if is_queued else 1, 1 if is_queued else 0)
             )
         context.user_data["state"] = "main_menu"
         context.user_data.pop("fund_channel_username", None)
         context.user_data.pop("fund_member_count", None)
         context.user_data.pop("fund_total_cost", None)
-        await q.edit_message_text(
-            f"✅ *تم تفعيل تمويل قناتك بنجاح!*\n\n"
-            f"📢 القناة: @{channel}\n"
-            f"⚙️ النوع: {ft_label}\n"
-            f"👥 عدد الأعضاء: {member_count:,}\n"
-            f"💰 التكلفة: {cost_per} × {member_count:,} = *{cost:,} نقطة*",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=main_menu_kb(is_own)
-        )
+
+        if is_queued:
+            await q.edit_message_text(
+                f"⏳ *تم استلام تمويل قناتك وسُحبت النقاط بنجاح، لكنها في قائمة الانتظار حالياً.*\n\n"
+                f"📢 القناة: @{channel}\n"
+                f"👥 عدد الأعضاء: {member_count:,}\n"
+                f"💰 التكلفة: {cost_per} × {member_count:,} = *{cost:,} نقطة*\n\n"
+                f"⚠️ عدد القنوات الإجبارية النشطة حالياً بلغ الحد الأقصى ({MANDATORY_MAX_ACTIVE} قنوات).\n"
+                f"✅ ستُفعَّل قناتك تلقائياً وتظهر لجميع المستخدمين فور تحرّر أحد الأماكن (عند اكتمال إحدى القنوات العشرة).",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=main_menu_kb(is_own)
+            )
+        else:
+            await q.edit_message_text(
+                f"✅ *تم تفعيل تمويل قناتك بنجاح!*\n\n"
+                f"📢 القناة: @{channel}\n"
+                f"⚙️ النوع: {ft_label}\n"
+                f"👥 عدد الأعضاء: {member_count:,}\n"
+                f"💰 التكلفة: {cost_per} × {member_count:,} = *{cost:,} نقطة*",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=main_menu_kb(is_own)
+            )
         await context.bot.send_message(
             user.id,
             f"📌 *كود عمليتك:* `{code}`\nاحفظه قد تحتاجه لاحقاً.",
             parse_mode=ParseMode.MARKDOWN
         )
+
+        _queue_note = "\n⏳ <b>ملاحظة:</b> دخلت قائمة الانتظار (الحد الأقصى ممتلئ) وستُفعَّل تلقائياً عند توفر مكان." if is_queued else ""
+        _terms = mandatory_terms_text_html() if fund_type == "mandatory" else ""
         await notify_group(
             context.application,
             f"📢 <b>تمويل قناة {ft_label}</b>\n"
@@ -3530,6 +3628,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👥 {member_count:,} عضو\n"
             f"💰 {cost:,} نقطة ({cost_per} × {member_count:,})\n"
             f"📌 {code}"
+            f"{_queue_note}\n"
+            f"{_terms}"
         )
         return
 
@@ -4164,7 +4264,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("os_del_ch:") and is_own:
         ch_id = int(data.split(":")[1])
         with db_conn() as c:
-            c.execute("UPDATE mandatory_channels SET active=0 WHERE id=?", (ch_id,))
+            _deleted_ch = c.execute("SELECT funding_type FROM mandatory_channels WHERE id=?", (ch_id,)).fetchone()
+            c.execute("UPDATE mandatory_channels SET active=0, queued=0 WHERE id=?", (ch_id,))
+        if _deleted_ch and _deleted_ch.get("funding_type") == "mandatory":
+            await promote_queued_mandatory_channel(context, app=context.application)
         await q.answer("🗑 تم حذف القناة")
         return
 
@@ -4826,7 +4929,7 @@ async def cmd_refund_mandatory(update: Update, context: ContextTypes.DEFAULT_TYP
             with db_conn() as c:
                 c.execute("UPDATE channel_funding SET status='refunded' WHERE id=?", (f["id"],))
                 c.execute(
-                    "UPDATE mandatory_channels SET active=0 WHERE channel_username=? AND funding_type='mandatory'",
+                    "UPDATE mandatory_channels SET active=0, queued=0 WHERE channel_username=? AND funding_type='mandatory'",
                     (f["channel_username"],)
                 )
         except Exception as e:
@@ -4854,6 +4957,8 @@ async def cmd_refund_mandatory(update: Update, context: ContextTypes.DEFAULT_TYP
         refunded += 1
         total_pts += pts
         logger.info(f"✅ استرجاع تمويل إجباري: @{f['channel_username']} — {pts:,} نقطة → {f['user_id']}")
+
+    await promote_queued_mandatory_channel(context, app=context.application)
 
     await update.message.reply_text(
         f"✅ *انتهى استرجاع تمويلات الاشتراك الإجباري*\n\n"
