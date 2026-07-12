@@ -4317,11 +4317,22 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             channels = c.execute(
                 "SELECT * FROM mandatory_channels WHERE active=1 OR queued=1 ORDER BY queued ASC, id ASC"
             ).fetchall()
+            fundings = {}
+            for ch in channels:
+                f = c.execute(
+                    "SELECT current_members, target_members FROM channel_funding "
+                    "WHERE channel_username=%s AND status='active' ORDER BY id DESC LIMIT 1",
+                    (ch["channel_username"],)
+                ).fetchone()
+                if f:
+                    fundings[ch["channel_username"]] = f
         if channels:
             lines = ["📡 *القنوات الحالية:*\n"]
             for ch in channels:
                 tag = " ⏳ قيد الانتظار" if ch["queued"] else ""
-                lines.append(f"• @{md_escape(ch['channel_username'])} ({md_escape(ch['funding_type'])}){tag}")
+                f = fundings.get(ch["channel_username"])
+                progress = f" — {f['current_members']}/{f['target_members']}" if f else ""
+                lines.append(f"• @{md_escape(ch['channel_username'])} ({md_escape(ch['funding_type'])}){progress}{tag}")
         else:
             lines = ["📡 لا توجد قنوات مضافة حالياً."]
         rows = []
