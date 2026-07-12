@@ -596,6 +596,19 @@ def smm_order_status(order_id: str, panel: int = 1) -> dict:
     return smm_request("status", panel=panel, order=order_id)
 
 
+# رسالة موحّدة تُرسل مع أي فشل/إلغاء لطلب، لتوجيه المستخدم لسبب الخطأ الأكثر شيوعاً:
+# إرسال رابط لا يطابق نوع الخدمة (مثال: رابط حساب بدل رابط منشور).
+LINK_ERROR_GUIDANCE = (
+    "⚠️ *السبب الأكثر شيوعاً لهذا الخطأ هو إرسال رابط غير مطابق لنوع الخدمة.*\n\n"
+    "📌 يرجى التأكد من التالي قبل إعادة الطلب:\n"
+    "• إذا كانت الخدمة *لايكات / تعليقات / مشاهدات* ➜ أرسل رابط *المنشور (البوست)* نفسه، لا رابط الحساب.\n"
+    "• إذا كانت الخدمة *متابعين / أعضاء* ➜ أرسل رابط *الحساب أو القناة* فقط، لا رابط منشور.\n"
+    "• تأكد أن الرابط من *نفس المنصة* المطلوبة تماماً (إنستغرام، تيك توك، ...).\n"
+    "• تأكد أن الحساب أو المنشور *عام (Public)* وغير خاص.\n\n"
+    "🔁 بعد التأكد من الرابط الصحيح، أعد إرسال طلبك."
+)
+
+
 def _calc_partial_refund_pts(api_service_id: int, remains: int) -> int:
     """يحسب النقاط المستردّة من الطلب الجزئي لموقع SMMMAIN:
     المعادلة: (سعر الخدمة بالدولار / 1000) × الوحدات المتبقية × 100,000
@@ -696,8 +709,9 @@ async def check_pending_orders_job(context: ContextTypes.DEFAULT_TYPE):
             try:
                 await context.bot.send_message(
                     o["user_id"],
-                    f"🔴 تم إلغاء طلبك بكود {o['order_code']} من قبل موقع الرشق وإعادة {pts} نقطة لرصيدك.\n\n"
-                    f"⚠️ يرجى التأكد من إرسال رابط صحيح ومطابق لنوع الخدمة المطلوبة، ثم أعد إرسال الطلب."
+                    f"🔴 تم إلغاء طلبك بكود {o['order_code']} من قبل موقع الرشق وإعادة *{pts}* نقطة لرصيدك.\n\n"
+                    f"{LINK_ERROR_GUIDANCE}",
+                    parse_mode=ParseMode.MARKDOWN
                 )
             except Exception:
                 pass
@@ -1437,8 +1451,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state  = context.user_data.get("state", "")
     is_own = (user.id == OWNER_ID)
 
-    # ── فرض الاشتراك الإجباري على المستخدمين المتحققين عبر الرسائل أيضاً ──
-    if not is_own and state not in ("verify_math", "await_mandatory_join"):
+    # ── فرض الاشتراك الإجباري على جميع المستخدمين المتحققين عبر الرسائل، بمن فيهم المالك ──
+    # (استثناء وحيد: المالك أثناء استخدامه فعلياً لخطوات لوحة التحكم os_/confirm_*_order،
+    # حتى لا يُحبَس خارج اللوحة التي يحتاجها لإدارة/إصلاح القنوات الإجبارية نفسها)
+    _owner_admin_state = is_own and (
+        state.startswith("os_") or state in ("confirm_cancel_order", "confirm_complete_order")
+    )
+    if state not in ("verify_math", "await_mandatory_join") and not _owner_admin_state:
         _db_user = get_user(user.id)
         if _db_user and _db_user.get("verified", 0):
             _unjoined = await get_unjoined_mandatory_channels(context, user.id)
@@ -1591,10 +1610,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             api_res = smm_create_order(svc["api_service_id"], link, qty, panel=svc.get("panel", 1))
             if "error" in api_res or not api_res.get("order"):
                 add_points(user.id, cost)
-                err_msg = api_res.get("error", "خطأ غير معروف من الموقع")
+                err_msg = md_escape(api_res.get("error", "خطأ غير معروف من الموقع"))
                 await update.message.reply_text(
-                    f"❌ فشل الطلب: {err_msg}\nتمت إعادة نقاطك.\n\n"
-                    f"⚠️ يرجى التأكد من إرسال رابط صحيح ومطابق لنوع الخدمة المطلوبة، ثم أعد إرسال الطلب.",
+                    f"❌ *فشل الطلب:* {err_msg}\n✅ تمت إعادة نقاطك.\n\n"
+                    f"{LINK_ERROR_GUIDANCE}",
+                    parse_mode=ParseMode.MARKDOWN,
                     reply_markup=main_menu_kb(is_own)
                 )
                 context.user_data["state"] = "main_menu"
@@ -2469,8 +2489,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 await context.bot.send_message(
                     uid,
-                    f"🔴 تم إلغاء طلبك بكود {o_code} وإعادة {pts} نقطة لرصيدك.\n\n"
-                    f"⚠️ يرجى التأكد من إرسال رابط صحيح ومطابق لنوع الخدمة المطلوبة (رابط الحساب/المنشور/القناة الصحيح) عند إعادة إرسال الطلب."
+                    f"🔴 تم إلغاء طلبك بكود {o_code} وإعادة *{pts}* نقطة لرصيدك.\n\n"
+                    f"{LINK_ERROR_GUIDANCE}",
+                    parse_mode=ParseMode.MARKDOWN
                 )
             except Exception:
                 pass
@@ -2758,9 +2779,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user   = q.from_user
     is_own = (user.id == OWNER_ID)
 
-    # ── فرض الاشتراك الإجباري على جميع المستخدمين المتحققين (الاشتراك مقدس) ──
-    _GATE_EXEMPT = {"check_mandatory_join", "noop", "main_menu"}
-    if not is_own and data not in _GATE_EXEMPT and not data.startswith("join_verify:"):
+    # ── فرض الاشتراك الإجباري على جميع المستخدمين المتحققين، بمن فيهم المالك (الاشتراك مقدس) ──
+    # ملاحظة: "main_menu" لم يعد مستثنى — الضغط على زر «القائمة الرئيسية» يعيد فحص
+    # القنوات الإجبارية أيضاً، حتى لا يبقى مستخدم قديم لم يرَ قناة أُضيفت حديثاً.
+    # الاستثناء الوحيد: المالك أثناء استخدامه الفعلي لأزرار لوحة التحكم os:،
+    # حتى لا يُحبَس خارج اللوحة التي يحتاجها لإدارة/إصلاح القنوات الإجبارية نفسها.
+    _GATE_EXEMPT = {"check_mandatory_join", "noop"}
+    _owner_admin_action = is_own and data.startswith("os:")
+    if data not in _GATE_EXEMPT and not data.startswith("join_verify:") and not _owner_admin_action:
         _db_user = get_user(user.id)
         if _db_user and _db_user.get("verified", 0):
             _unjoined = await get_unjoined_mandatory_channels(context, user.id)
@@ -2885,10 +2911,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             api_res = smm_create_order(svc["api_service_id"], link, qty, panel=svc.get("panel", 1))
             if "error" in api_res or not api_res.get("order"):
                 add_points(user.id, cost)
-                err_msg = api_res.get("error", "خطأ غير معروف من الموقع")
+                err_msg = md_escape(api_res.get("error", "خطأ غير معروف من الموقع"))
                 await q.edit_message_text(
-                    f"❌ فشل الطلب: {err_msg}\nتمت إعادة نقاطك.\n\n"
-                    f"⚠️ يرجى التأكد من إرسال رابط صحيح ومطابق لنوع الخدمة المطلوبة، ثم أعد إرسال الطلب.",
+                    f"❌ *فشل الطلب:* {err_msg}\n✅ تمت إعادة نقاطك.\n\n"
+                    f"{LINK_ERROR_GUIDANCE}",
+                    parse_mode=ParseMode.MARKDOWN,
                     reply_markup=main_menu_kb(is_own)
                 )
                 context.user_data["state"] = "main_menu"
@@ -4766,6 +4793,77 @@ async def cmd_compensate_partial(update: Update, context: ContextTypes.DEFAULT_T
     )
 
 
+async def cmd_refund_mandatory(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر المالك: /refund_mandatory
+    كان هنالك خلل في تفعيل الاشتراك الإجباري يجعل المستخدمين القدامى لا يُطالَبون
+    بالانضمام للقنوات الإجبارية الجديدة (تم إصلاحه الآن). هذا الأمر يعيد نقاط كل من
+    دفع لتفعيل «تمويل قناة إجباري سريع» ولم يُسترجع له ماله بعد، ويرسل له اعتذاراً
+    مع طلب إعادة تفعيل تمويل قناته من جديد بعد الإصلاح."""
+    user = update.effective_user
+    if user.id != OWNER_ID:
+        await update.message.reply_text("⛔ هذا الأمر للمالك فقط.")
+        return
+
+    with db_conn() as c:
+        fundings = c.execute(
+            "SELECT * FROM channel_funding WHERE funding_type='mandatory' AND status != 'refunded'"
+        ).fetchall()
+
+    if not fundings:
+        await update.message.reply_text("✅ لا توجد تمويلات إجبارية بحاجة لاسترجاع.")
+        return
+
+    await update.message.reply_text(
+        f"🔍 تم العثور على {len(fundings):,} تمويل إجباري. جاري إعادة النقاط والاعتذار لأصحابها..."
+    )
+
+    refunded, errors, total_pts = 0, 0, 0
+    for f in fundings:
+        pts = f.get("cost_points", 0) or 0
+        try:
+            if pts:
+                add_points(f["user_id"], pts)
+            with db_conn() as c:
+                c.execute("UPDATE channel_funding SET status='refunded' WHERE id=?", (f["id"],))
+                c.execute(
+                    "UPDATE mandatory_channels SET active=0 WHERE channel_username=? AND funding_type='mandatory'",
+                    (f["channel_username"],)
+                )
+        except Exception as e:
+            logger.warning(f"⚠️ فشل استرجاع تمويل القناة @{f.get('channel_username')}: {e}")
+            errors += 1
+            continue
+
+        try:
+            await context.bot.send_message(
+                f["user_id"],
+                f"🙏 *اعتذار بخصوص تمويل قناتك @{f['channel_username']}*\n\n"
+                f"اكتشفنا خللاً فنياً كان يمنع القناة الإجبارية من الظهور لبعض\n"
+                f"المستخدمين القدامى في البوت، ما أثّر على نتيجة تمويلك.\n\n"
+                f"✅ تم إعادة *{pts:,}* نقطة كاملة إلى رصيدك تعويضاً عن ذلك.\n"
+                f"🛠 تم إصلاح الخلل الآن بالكامل، وأصبحت القنوات الإجبارية تظهر لجميع\n"
+                f"المستخدمين (القدامى والجدد) في كل مرة يستخدمون فيها البوت.\n\n"
+                f"🔁 يمكنك الآن إعادة طلب «📺 تمويل قناتك حقيقي ← تمويل قناة إجباري سريع»\n"
+                f"من القائمة الرئيسية لتفعيل تمويل قناتك من جديد والاستفادة الكاملة منه.\n\n"
+                f"نعتذر عن الإزعاج ونشكر تفهمك 🌹",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception:
+            pass
+
+        refunded += 1
+        total_pts += pts
+        logger.info(f"✅ استرجاع تمويل إجباري: @{f['channel_username']} — {pts:,} نقطة → {f['user_id']}")
+
+    await update.message.reply_text(
+        f"✅ *انتهى استرجاع تمويلات الاشتراك الإجباري*\n\n"
+        f"💚 عدد من تم استرجاع تمويله: {refunded}\n"
+        f"💰 إجمالي النقاط المُعادة: {total_pts:,}\n"
+        f"❌ أخطاء: {errors}",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+
 def main():
     # ── التحقق من المتغيرات البيئية الضرورية عند الإطلاق ──────────────────
     missing = []
@@ -4791,6 +4889,7 @@ def main():
     app.add_handler(CommandHandler("broadcast",           cmd_broadcast))
     app.add_handler(CommandHandler("status",              cmd_status_order))
     app.add_handler(CommandHandler("compensate_partial",  cmd_compensate_partial))
+    app.add_handler(CommandHandler("refund_mandatory",    cmd_refund_mandatory))
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND & filters.UpdateType.MESSAGE,
         handle_text
@@ -4815,6 +4914,7 @@ def main():
                     BotCommand("broadcast",          "📢 إرسال رسالة جماعية"),
                     BotCommand("status",             "🔍 فحص حالة طلب"),
                     BotCommand("compensate_partial", "💰 تعويض أصحاب الطلبات الجزئية"),
+                    BotCommand("refund_mandatory", "🔁 استرجاع تمويلات الاشتراك الإجباري"),
                 ],
                 scope=BotCommandScopeChat(chat_id=OWNER_ID)
             )
