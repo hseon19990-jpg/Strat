@@ -340,6 +340,7 @@ def init_db():
               "ALTER TABLE channel_funding ADD COLUMN IF NOT EXISTS current_members INTEGER DEFAULT 0",
               "ALTER TABLE channel_funding ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active'",
               "ALTER TABLE mandatory_channels ADD COLUMN IF NOT EXISTS queued INTEGER DEFAULT 0",
+              "ALTER TABLE prize_exchanges ADD COLUMN IF NOT EXISTS order_code TEXT",
           ]:
               try: c.execute(_alt)
               except Exception: pass
@@ -1140,12 +1141,33 @@ def contact_owner_row() -> list:
 # ────────────────────────────────────────────────────────────
 #  إرسال إشعار للكروب
 # ────────────────────────────────────────────────────────────
-async def notify_group(app, text: str):
+async def notify_group(app, text: str, reply_markup=None):
     if ADMIN_GROUP_ID:
         try:
-            await app.bot.send_message(ADMIN_GROUP_ID, text, parse_mode=ParseMode.HTML)
+            await app.bot.send_message(ADMIN_GROUP_ID, text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
         except Exception as e:
             logger.warning(f"notify_group error: {e}")
+
+
+def prize_exchange_admin_kb(pe_id: int) -> InlineKeyboardMarkup:
+    """أزرار المالك على إشعار طلب استبدال: تمييزه كمكتمل (تم التسليم)، أو إعلام
+    الطالب بأن طلبه قيد المعالجة إن لم يكتمل بعد."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ مكتمل (تم التسليم)", callback_data=f"pe_complete:{pe_id}")],
+        [InlineKeyboardButton("⏳ غير مكتمل (إعلام الطالب)", callback_data=f"pe_ack:{pe_id}")],
+    ])
+
+
+async def notify_prize_exchange_owner(context, pe_id: int, text_html: str):
+    """يرسل إشعار طلب الاستبدال إلى كروب الإدارة (إن كان مُعرّفاً) وإلى خاص
+    المالك، مع أزرار مكتمل/غير مكتمل على كل نسخة."""
+    kb = prize_exchange_admin_kb(pe_id)
+    await notify_group(context.application, text_html, reply_markup=kb)
+    if OWNER_ID:
+        try:
+            await context.bot.send_message(OWNER_ID, text_html, parse_mode=ParseMode.HTML, reply_markup=kb)
+        except Exception as e:
+            logger.warning(f"notify_prize_exchange_owner error: {e}")
 
 # ────────────────────────────────────────────────────────────
 #  عرض خدمات الفئة
@@ -1944,10 +1966,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         code = next_order_code(user.id)
         with db_conn() as c:
-            c.execute(
-                "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,status) VALUES (%s,%s,%s,%s,'pending')",
-                (user.id, "stars", str(stars), cost)
-            )
+            pe = c.execute(
+                "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,status,order_code) "
+                "VALUES (%s,%s,%s,%s,'pending',%s) RETURNING id",
+                (user.id, "stars", str(stars), cost, code)
+            ).fetchone()
         custom_msg = get_setting("exchange_success_msg") or ""
         result_kb_rows = contact_owner_row() + [[InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="main_menu")]]
         await update.message.reply_text(
@@ -1963,8 +1986,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📌 *كود عمليتك:* `{code}`",
             parse_mode=ParseMode.MARKDOWN
         )
-        await notify_group(
-            context.application,
+        await notify_prize_exchange_owner(
+            context, pe["id"],
             f"⭐ <b>طلب شراء نجوم (جائزة)</b>\n"
             f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
             f"⭐ {stars} نجمة مقابل {cost} نقطة\n"
@@ -3480,10 +3503,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         code = next_order_code(user.id)
         with db_conn() as c:
-            c.execute(
-                "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,status) VALUES (%s,%s,%s,%s,'pending')",
-                (user.id, "stars", str(stars), cost)
-            )
+            pe = c.execute(
+                "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,status,order_code) "
+                "VALUES (%s,%s,%s,%s,'pending',%s) RETURNING id",
+                (user.id, "stars", str(stars), cost, code)
+            ).fetchone()
         custom_msg = get_setting("exchange_success_msg") or ""
         result_kb_rows = contact_owner_row() + [[InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="main_menu")]]
         await q.edit_message_text(
@@ -3500,8 +3524,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📌 *كود عمليتك:* `{code}`",
             parse_mode=ParseMode.MARKDOWN
         )
-        await notify_group(
-            context.application,
+        await notify_prize_exchange_owner(
+            context, pe["id"],
             f"⭐ <b>طلب شراء نجوم (جائزة)</b>\n"
             f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
             f"⭐ {stars} نجمة مقابل {cost} نقطة\n"
@@ -3524,10 +3548,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         code = next_order_code(user.id)
         with db_conn() as c:
-            c.execute(
-                "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,status) VALUES (?,?,?,?,'pending')",
-                (user.id, "telegram_number", "number", cost)
-            )
+            pe = c.execute(
+                "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,status,order_code) "
+                "VALUES (?,?,?,?,'pending',?) RETURNING id",
+                (user.id, "telegram_number", "number", cost, code)
+            ).fetchone()
         custom_msg = get_setting("exchange_success_msg") or ""
         result_kb = contact_owner_row() + [[InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")]]
         await q.edit_message_text(
@@ -3544,8 +3569,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📌 *كود عمليتك:* `{code}`",
             parse_mode=ParseMode.MARKDOWN
         )
-        await notify_group(
-            context.application,
+        await notify_prize_exchange_owner(
+            context, pe["id"],
             f"📱 <b>طلب رقم تيلغرام</b>\n"
             f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
             f"💰 {cost} نقطة\n"
@@ -4642,10 +4667,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         code = next_order_code(user.id)
         with db_conn() as c:
-            c.execute(
-                "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,status) VALUES (%s,%s,%s,%s,'pending')",
-                (user.id, "custom", f"{prize['name']}{qty_txt}", cost)
-            )
+            pe = c.execute(
+                "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,status,order_code) "
+                "VALUES (%s,%s,%s,%s,'pending',%s) RETURNING id",
+                (user.id, "custom", f"{prize['name']}{qty_txt}", cost, code)
+            ).fetchone()
         custom_msg = get_setting("exchange_success_msg") or ""
         result_kb = contact_owner_row() + [[InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="main_menu")]]
         await q.edit_message_text(
@@ -4662,14 +4688,66 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📌 *كود عمليتك:* `{code}`",
             parse_mode=ParseMode.MARKDOWN
         )
-        await notify_group(
-            context.application,
+        await notify_prize_exchange_owner(
+            context, pe["id"],
             f"🎁 <b>طلب جائزة مخصصة</b>\n"
             f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
             f"🎀 {prize['name']}{qty_txt}\n"
             f"💰 {cost:,} نقطة\n"
             f"📌 {code}"
         )
+        return
+
+    # ── إجراءات المالك على طلب استبدال: مكتمل / غير مكتمل ──
+    if data.startswith("pe_complete:") and is_own:
+        pe_id = int(data.split(":")[1])
+        with db_conn() as c:
+            pe = c.execute("SELECT * FROM prize_exchanges WHERE id=%s", (pe_id,)).fetchone()
+            if not pe:
+                await q.answer("⚠️ الطلب غير موجود.", show_alert=True)
+                return
+            if pe["status"] == "completed":
+                await q.answer("✔️ هذا الطلب مكتمل مسبقاً.", show_alert=True)
+                return
+            c.execute("UPDATE prize_exchanges SET status='completed' WHERE id=%s", (pe_id,))
+        try:
+            await context.bot.send_message(
+                pe["user_id"],
+                f"🎉 *تم تسليم طلبك بنجاح!*\n\n"
+                f"📌 الكود: `{pe['order_code'] or pe_id}`\n"
+                f"نتمنى أن تكون راضياً عن الخدمة 🌟",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ فشل إشعار المستخدم {pe['user_id']} باكتمال طلب الاستبدال: {e}")
+        await q.answer("✅ تم تمييز الطلب كمكتمل وإشعار الطالب.", show_alert=True)
+        try:
+            await q.edit_message_text(
+                q.message.text_html + "\n\n✅ <b>مكتمل — تم التسليم</b>",
+                parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            pass
+        return
+
+    if data.startswith("pe_ack:") and is_own:
+        pe_id = int(data.split(":")[1])
+        with db_conn() as c:
+            pe = c.execute("SELECT * FROM prize_exchanges WHERE id=%s", (pe_id,)).fetchone()
+        if not pe:
+            await q.answer("⚠️ الطلب غير موجود.", show_alert=True)
+            return
+        if pe["status"] == "completed":
+            await q.answer("✔️ هذا الطلب مكتمل مسبقاً.", show_alert=True)
+            return
+        try:
+            await context.bot.send_message(
+                pe["user_id"],
+                "👀 لقد علم المالك بطلبك، سيعطيك حقك بأسرع وقت ممكن 🙏"
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ فشل إشعار المستخدم {pe['user_id']} بانتظار طلب الاستبدال: {e}")
+        await q.answer("✅ تم إعلام الطالب بالانتظار.", show_alert=True)
         return
 
     # ── إدارة الجوائز المخصصة (المالك) ──
