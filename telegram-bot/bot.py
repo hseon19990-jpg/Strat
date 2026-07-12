@@ -18,7 +18,7 @@ import math
 import requests
 import logging
 import traceback
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
     LabeledPrice, BotCommand, BotCommandScopeChat
@@ -451,6 +451,13 @@ def init_db():
               c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS partial_refund_pts INTEGER DEFAULT 0")
       except Exception:
           pass
+      # عمود لحظة اعتماد الإحالة (بتوقيت عالمي دقيق) — يُستخدم لتصفية قائمة
+      # "الأكثر إرسالاً لرابط الدعوة" حسب الفترة (24 ساعة / يوم / أسبوع / شهر)
+      try:
+          with db_conn() as c:
+              c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS credited_at TIMESTAMPTZ")
+      except Exception:
+          pass
       # إعادة تسمية زر "بدء بوت" إلى "رشق بدء (ستارت) بوت" مع إبقاء نفس الخدمات (نفس action_value)
       try:
           with db_conn() as c:
@@ -515,13 +522,67 @@ def credit_referral_if_pending(user_id: int, context=None):
         rp = int(get_setting("referral_points") or "30")
         # تحديث ذري يمنع منح النقاط أكثر من مرة عند أي تسابق محتمل
         c.execute(
-            "UPDATE users SET referral_credited=1 WHERE user_id=%s AND referral_credited=0",
+            "UPDATE users SET referral_credited=1, credited_at=NOW() WHERE user_id=%s AND referral_credited=0",
             (user_id,)
         )
         if c.rowcount == 0:
             return None
         c.execute("UPDATE users SET points=points+%s WHERE user_id=%s", (rp, invited_by))
     return (invited_by, rp)
+
+
+def _referral_period_bounds(period: str):
+    """يُرجع (since_utc, عنوان الفترة) لفترة زمنية معيّنة، محسوبة بالتوقيت العالمي (UTC)."""
+    now = datetime.now(timezone.utc)
+    if period == "24h":
+        return now - timedelta(hours=24), "آخر 24 ساعة"
+    if period == "day":
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        return start, "اليوم (منذ 00:00 بالتوقيت العالمي)"
+    if period == "week":
+        return now - timedelta(days=7), "آخر أسبوع"
+    if period == "month":
+        return now - timedelta(days=30), "آخر شهر"
+    return None, "كل الأوقات"
+
+
+def get_top_referrers_since(since_dt, limit: int = 10):
+    """يُرجع قائمة أكثر الأعضاء إرسالاً لرابط الدعوة (دعوات مكتملة/معتمدة فقط)
+    منذ لحظة زمنية محدّدة (UTC)، أو لكل الأوقات إن كانت since_dt=None."""
+    with db_conn() as c:
+        if since_dt is None:
+            rows = c.execute(
+                "SELECT invited_by, COUNT(*) as cnt FROM users "
+                "WHERE invited_by IS NOT NULL AND invited_by != 0 AND referral_credited=1 "
+                "GROUP BY invited_by ORDER BY cnt DESC LIMIT %s",
+                (limit,)
+            ).fetchall()
+        else:
+            rows = c.execute(
+                "SELECT invited_by, COUNT(*) as cnt FROM users "
+                "WHERE invited_by IS NOT NULL AND invited_by != 0 AND referral_credited=1 "
+                "AND credited_at IS NOT NULL AND credited_at >= %s "
+                "GROUP BY invited_by ORDER BY cnt DESC LIMIT %s",
+                (since_dt, limit)
+            ).fetchall()
+    return rows
+
+
+def _format_top_referrers(rows, title: str) -> str:
+    lines = [f"🏆 *الأكثر إرسالاً لرابط الدعوة — {title}:*\n"]
+    if not rows:
+        lines.append("لا توجد دعوات مكتملة خلال هذه الفترة.")
+        return "\n".join(lines)
+    for i, r in enumerate(rows, start=1):
+        inviter = get_user(r["invited_by"])
+        if inviter and inviter.get("username"):
+            name = md_escape(f"@{inviter['username']}")
+        elif inviter and inviter.get("full_name"):
+            name = md_escape(inviter["full_name"])
+        else:
+            name = f"ID {r['invited_by']}"
+        lines.append(f"{i}. {name} — {r['cnt']} دعوة")
+    return "\n".join(lines)
 
 def is_user_verified(user_id: int) -> bool:
     with db_conn() as c:
@@ -773,6 +834,7 @@ BUILTIN_DEFAULTS = {
         ("💎 شحن نقاط", "charge_points", 2),
         ("🏆 استبدال نقاط بجوائز", "exchange_points", 2), ("↔️ تحويل النقاط", "transfer_points", 2),
         ("🎟 استخدام كود", "use_promo", 2), ("ℹ️ معلوماتي", "my_info", 2),
+        ("🏆 الأكثر دعوةً اليوم", "top_ref_today", 2),
         ("🛎 تواصل مع الدعم", "contact_support", 1),
     ],
     "owner_settings": [
@@ -794,6 +856,7 @@ BUILTIN_DEFAULTS = {
         ("📲 تعديل نص اسيا سيل", "os:edit_asiacell", 2),
         ("✏️ نص زر الدعم بالقائمة", "os:edit_support_label", 2), ("📢 رسالة جماعية", "os:broadcast", 2),
         ("🔐 تفعيل/تعطيل التحقق", "os:toggle_captcha", 2), ("📊 إحصائيات", "os:stats", 2),
+        ("🏆 الأكثر إرسالاً لرابط الدعوة", "os:top_referrers", 2),
         ("💵 رصيد موقع الرشق", "os:site_balance", 1),
         ("🧩 إدارة الأزرار", "os:manage_buttons", 1),
         ("✏️ رسالة عند الاستبدال", "os:edit_exchange_msg", 1),
@@ -3206,6 +3269,42 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💰 رصيدك: {db_user['points'] if db_user else 0} نقطة",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=back_kb()
+        )
+        return
+
+    # ── الأكثر دعوةً اليوم (للأعضاء — يوم واحد فقط بالتوقيت العالمي) ──
+    if data == "top_ref_today":
+        since, title = _referral_period_bounds("day")
+        rows = get_top_referrers_since(since, limit=10)
+        text = _format_top_referrers(rows, title)
+        await q.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb())
+        return
+
+    # ── الأكثر إرسالاً لرابط الدعوة (للمالك — اختيار الفترة) ──
+    if data == "os:top_referrers" and is_own:
+        rows = [
+            [InlineKeyboardButton("🕐 آخر 24 ساعة (من لحظة الضغط)", callback_data="os:top_ref:24h")],
+            [InlineKeyboardButton("📅 آخر يوم (بالتوقيت العالمي)", callback_data="os:top_ref:day")],
+            [InlineKeyboardButton("🗓 آخر أسبوع", callback_data="os:top_ref:week")],
+            [InlineKeyboardButton("🗓 آخر شهر", callback_data="os:top_ref:month")],
+            [InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")],
+        ]
+        await q.edit_message_text(
+            "🏆 *الأكثر إرسالاً لرابط الدعوة*\n\nاختر الفترة الزمنية:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
+        return
+
+    if data.startswith("os:top_ref:") and is_own:
+        period = data.split(":", 2)[2]
+        since, title = _referral_period_bounds(period)
+        rows = get_top_referrers_since(since, limit=10)
+        text = _format_top_referrers(rows, title)
+        await q.edit_message_text(
+            text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:top_referrers")]])
         )
         return
 
