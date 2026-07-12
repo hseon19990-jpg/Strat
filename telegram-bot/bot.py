@@ -1516,7 +1516,9 @@ async def cmd_addpoints(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ────────────────────────────────────────────────────────────
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user   = update.effective_user
-    text   = update.message.text.strip()
+    # نأخذ النص أو الوصف (caption) إن وُجد — بعض المستخدمين يرسلون قناتهم كصورة/منشور معه
+    # وصف نصي بدل كتابة اليوزرنيم مباشرة، فلا يجب أن يبقى البوت صامتاً في هذه الحالة.
+    text   = (update.message.text or update.message.caption or "").strip()
     state  = context.user_data.get("state", "")
     is_own = (user.id == OWNER_ID)
 
@@ -2803,6 +2805,27 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # إذا لا يوجد حالة معروفة، عرض القائمة
+    await update.message.reply_text("🏠 القائمة الرئيسية:", reply_markup=main_menu_kb(is_own))
+
+
+async def handle_unsupported_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """شبكة أمان: تُستدعى لأي رسالة لا تحمل نصاً أو وصفاً (صورة/فيديو/ملصق بلا caption،
+    جهة اتصال، موقع، ملف...) ولا تطابق أي معالج آخر. بدون هذا المعالج كان البوت يبقى
+    صامتاً تماماً بلا أي رد إن أرسل المستخدم قناته بالتوجيه/المشاركة بدل كتابة اليوزرنيم."""
+    if not update.message:
+        return
+    state = context.user_data.get("state", "")
+    if state == "await_fund_channel":
+        await update.message.reply_text(
+            "⚠️ لم يصلني نص. يرجى إرسال *يوزرنيم قناتك كرسالة نصية* مباشرة، مثال: @mychannel\n"
+            "(لا ترسله كمشاركة أو توجيه لمنشور — اكتب اليوزرنيم بنفسك)",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    if state.startswith("await_") or state.startswith("os_await"):
+        await update.message.reply_text("⚠️ لم يصلني نص. يرجى إرسال ردك كرسالة نصية فقط.")
+        return
+    is_own = (update.effective_user.id == OWNER_ID)
     await update.message.reply_text("🏠 القائمة الرئيسية:", reply_markup=main_menu_kb(is_own))
 
 
@@ -4996,12 +5019,19 @@ def main():
     app.add_handler(CommandHandler("compensate_partial",  cmd_compensate_partial))
     app.add_handler(CommandHandler("refund_mandatory",    cmd_refund_mandatory))
     app.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND & filters.UpdateType.MESSAGE,
+        (filters.TEXT | filters.CAPTION) & ~filters.COMMAND & filters.UpdateType.MESSAGE,
         handle_text
     ))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(PreCheckoutQueryHandler(pre_checkout))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
+    # ── شبكة أمان: أي رسالة أخرى (صورة/ملصق/جهة اتصال بلا نص) لا تطابق ما سبق ──
+    # حتى لا يبقى البوت صامتاً تماماً بلا أي رد إذا أرسل المستخدم قناته/رده بطريقة غير متوقعة
+    # (توجيه/مشاركة بدل الكتابة المباشرة).
+    app.add_handler(MessageHandler(
+        filters.ALL & ~filters.COMMAND & ~filters.SUCCESSFUL_PAYMENT & filters.UpdateType.MESSAGE,
+        handle_unsupported_message
+    ))
     app.add_handler(ChatMemberHandler(handle_member_leave, ChatMemberHandler.CHAT_MEMBER))
 
     async def post_init(application):
