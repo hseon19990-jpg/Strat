@@ -537,19 +537,44 @@ def credit_referral_if_pending(user_id: int, context=None):
     return (invited_by, rp)
 
 
+def _referral_counter_reset_at():
+    """يُرجع لحظة آخر تصفير للعداد (UTC) إن وُجدت، وإلا None."""
+    raw = get_setting("referral_counter_reset_at")
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
+def reset_referral_counter():
+    """يصفّر عداد 'الأكثر إرسالاً لرابط الدعوة' من الآن، دون المساس بنقاط
+    الأعضاء أو حالة الدعوات الفعلية — فقط يستثني ما قبل هذه اللحظة من العدّ."""
+    set_setting("referral_counter_reset_at", datetime.now(timezone.utc).isoformat())
+
+
 def _referral_period_bounds(period: str):
-    """يُرجع (since_utc, عنوان الفترة) لفترة زمنية معيّنة، محسوبة بالتوقيت العالمي (UTC)."""
+    """يُرجع (since_utc, عنوان الفترة) لفترة زمنية معيّنة، محسوبة بالتوقيت العالمي (UTC)،
+    مع مراعاة آخر عملية تصفير للعداد إن وُجدت (يُؤخذ الأحدث بين الاثنين)."""
     now = datetime.now(timezone.utc)
     if period == "24h":
-        return now - timedelta(hours=24), "آخر 24 ساعة"
-    if period == "day":
-        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        return start, "اليوم (منذ 00:00 بالتوقيت العالمي)"
-    if period == "week":
-        return now - timedelta(days=7), "آخر أسبوع"
-    if period == "month":
-        return now - timedelta(days=30), "آخر شهر"
-    return None, "كل الأوقات"
+        since, title = now - timedelta(hours=24), "آخر 24 ساعة"
+    elif period == "day":
+        since, title = now.replace(hour=0, minute=0, second=0, microsecond=0), "اليوم (منذ 00:00 بالتوقيت العالمي)"
+    elif period == "week":
+        since, title = now - timedelta(days=7), "آخر أسبوع"
+    elif period == "month":
+        since, title = now - timedelta(days=30), "آخر شهر"
+    else:
+        since, title = None, "كل الأوقات"
+    reset_at = _referral_counter_reset_at()
+    if reset_at is not None and (since is None or reset_at > since):
+        since = reset_at
+    return since, title
 
 
 def get_top_referrers_since(since_dt, limit: int = 10):
@@ -3294,6 +3319,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📅 آخر يوم (بالتوقيت العالمي)", callback_data="os:top_ref:day")],
             [InlineKeyboardButton("🗓 آخر أسبوع", callback_data="os:top_ref:week")],
             [InlineKeyboardButton("🗓 آخر شهر", callback_data="os:top_ref:month")],
+            [InlineKeyboardButton("🔄 تصفير العداد", callback_data="os:top_ref_reset_confirm")],
             [InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")],
         ]
         await q.edit_message_text(
@@ -3310,6 +3336,29 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = _format_top_referrers(rows, title)
         await q.edit_message_text(
             text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:top_referrers")]])
+        )
+        return
+
+    if data == "os:top_ref_reset_confirm" and is_own:
+        await q.edit_message_text(
+            "⚠️ *تصفير عداد الأكثر إرسالاً لرابط الدعوة*\n\n"
+            "سيبدأ العدّ من جديد من هذه اللحظة (لن يتأثر رصيد نقاط أي عضو).\n"
+            "هل أنت متأكد؟",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ نعم، صفّر العداد", callback_data="os:top_ref_reset")],
+                [InlineKeyboardButton("🔙 إلغاء", callback_data="os:top_referrers")],
+            ])
+        )
+        return
+
+    if data == "os:top_ref_reset" and is_own:
+        reset_referral_counter()
+        await q.answer("✅ تم تصفير العداد.", show_alert=True)
+        await q.edit_message_text(
+            "✅ *تم تصفير عداد الأكثر إرسالاً لرابط الدعوة بنجاح.*",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:top_referrers")]])
         )
