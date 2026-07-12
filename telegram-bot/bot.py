@@ -2639,7 +2639,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "ON CONFLICT (channel_username) DO UPDATE SET active=1, funding_type='mandatory'",
                 (channel,)
             )
-        await update.message.reply_text(f"✅ تمت إضافة @{channel} كقناة اشتراك إجبارية.", reply_markup=owner_settings_kb())
+        await update.message.reply_text(f"✅ تمت إضافة القناة @{channel} بنجاح! 🎉 أحسنت.", reply_markup=owner_settings_kb())
         context.user_data["state"] = "main_menu"
         return
 
@@ -4314,10 +4314,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "os:manage_channels" and is_own:
         context.user_data["state"] = "os_await_channel"
         with db_conn() as c:
-            channels = c.execute("SELECT * FROM mandatory_channels WHERE active=1").fetchall()
+            channels = c.execute(
+                "SELECT * FROM mandatory_channels WHERE active=1 OR queued=1 ORDER BY queued ASC, id ASC"
+            ).fetchall()
         lines = ["📡 *القنوات الحالية:*\n"]
         for ch in channels:
-            lines.append(f"• @{ch['channel_username']} ({ch['funding_type']})")
+            tag = " ⏳ قيد الانتظار" if ch["queued"] else ""
+            lines.append(f"• @{ch['channel_username']} ({ch['funding_type']}){tag}")
         rows = []
         for ch in channels:
             rows.append([InlineKeyboardButton(
