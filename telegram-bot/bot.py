@@ -1577,7 +1577,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # (استثناء وحيد: المالك أثناء استخدامه فعلياً لخطوات لوحة التحكم os_/confirm_*_order،
     # حتى لا يُحبَس خارج اللوحة التي يحتاجها لإدارة/إصلاح القنوات الإجبارية نفسها)
     _owner_admin_state = is_own and (
-        state.startswith("os_") or state in ("confirm_cancel_order", "confirm_complete_order")
+        state.startswith("os_") or state.startswith("await_mb_")
+        or state in ("confirm_cancel_order", "confirm_complete_order")
     )
     if state != "verify_math" and not _owner_admin_state:
         try:
@@ -1626,6 +1627,28 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif mb_type == "text":
             context.user_data["state"] = "await_mb_textcontent"
             await update.message.reply_text("💬 أرسل النص الذي سيظهر للمستخدم عند الضغط على الزر:")
+        elif mb_type == "owner":
+            saved_contact = get_setting("owner_contact") or ""
+            if saved_contact:
+                with db_conn() as c:
+                    max_order = c.execute("SELECT COALESCE(MAX(sort_order),-1) AS m FROM menu_items WHERE menu=?", (menu,)).fetchone()["m"]
+                    c.execute(
+                        "INSERT INTO menu_items (menu,label,action_type,action_value,width,sort_order,enabled) VALUES (?,?,?,?,?,?,1)",
+                        (menu, text, "url", saved_contact, 2, max_order + 1)
+                    )
+                context.user_data["state"] = "main_menu"
+                await update.message.reply_text(
+                    f"✅ تمت إضافة الزر '{text}' (يفتح: {saved_contact}).",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع للإدارة", callback_data=f"mb_menu:{menu}")]])
+                )
+            else:
+                context.user_data["state"] = "await_mb_url"
+                context.user_data["mb_save_as_owner_contact"] = True
+                await update.message.reply_text(
+                    "🔗 لم تحدد رابط تواصل مع المالك من قبل. أرسل الآن رابط حسابك الشخصي "
+                    "(مثال: `https://t.me/username`) — سيُستخدم لهذا الزر وسيُحفظ لاستخدامه تلقائياً في المرات القادمة:",
+                    parse_mode=ParseMode.MARKDOWN
+                )
         else:  # goto
             rows = [[InlineKeyboardButton(lbl, callback_data=f"mb_goto_pick:{val}")] for lbl, val in GOTO_TARGETS]
             rows.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"mb_menu:{menu}")])
@@ -1639,12 +1662,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         menu  = context.user_data.get("mb_menu")
         label = context.user_data.get("mb_label")
+        save_as_owner_contact = context.user_data.pop("mb_save_as_owner_contact", False)
         with db_conn() as c:
             max_order = c.execute("SELECT COALESCE(MAX(sort_order),-1) AS m FROM menu_items WHERE menu=?", (menu,)).fetchone()["m"]
             c.execute(
                 "INSERT INTO menu_items (menu,label,action_type,action_value,width,sort_order,enabled) VALUES (?,?,?,?,?,?,1)",
                 (menu, label, "url", text, 2, max_order + 1)
             )
+        if save_as_owner_contact:
+            set_setting("owner_contact", text)
         context.user_data["state"] = "main_menu"
         await update.message.reply_text(f"✅ تمت إضافة الزر '{label}'.",
                                          reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع للإدارة", callback_data=f"mb_menu:{menu}")]]))
@@ -3835,6 +3861,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🔗 رابط خارجي", callback_data="mb_type:url")],
             [InlineKeyboardButton("💬 نص يظهر عند الضغط", callback_data="mb_type:text")],
             [InlineKeyboardButton("↪️ ربط بقسم موجود بالبوت", callback_data="mb_type:goto")],
+            [InlineKeyboardButton("👤 تواصل مع المالك (يفتح حسابك الشخصي)", callback_data="mb_type:owner")],
             [InlineKeyboardButton("🔙 رجوع", callback_data=f"mb_menu:{menu}")],
         ]
         await q.edit_message_text("اختر نوع الزر الجديد:", reply_markup=InlineKeyboardMarkup(rows))
