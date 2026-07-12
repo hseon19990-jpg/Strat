@@ -4425,16 +4425,59 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "os:stats" and is_own:
         with db_conn() as c:
-            total_users   = c.execute("SELECT COUNT(*) as cnt FROM users").fetchone()["cnt"]
-            total_orders  = c.execute("SELECT COUNT(*) as cnt FROM orders").fetchone()["cnt"]
-            total_pts     = c.execute("SELECT SUM(points) as s FROM users").fetchone()["s"] or 0
-            total_promos  = c.execute("SELECT COUNT(*) as cnt FROM promo_codes WHERE active=1").fetchone()["cnt"]
+            total_users     = c.execute("SELECT COUNT(*) as cnt FROM users").fetchone()["cnt"]
+            verified_users  = c.execute("SELECT COUNT(*) as cnt FROM users WHERE verified=1").fetchone()["cnt"]
+            total_orders    = c.execute("SELECT COUNT(*) as cnt FROM orders").fetchone()["cnt"]
+            pending_orders  = c.execute("SELECT COUNT(*) as cnt FROM orders WHERE status='pending'").fetchone()["cnt"]
+            completed_orders = c.execute("SELECT COUNT(*) as cnt FROM orders WHERE status='completed'").fetchone()["cnt"]
+            cancelled_orders = c.execute("SELECT COUNT(*) as cnt FROM orders WHERE status='cancelled'").fetchone()["cnt"]
+            total_pts       = c.execute("SELECT SUM(points) as s FROM users").fetchone()["s"] or 0
+            total_promos    = c.execute("SELECT COUNT(*) as cnt FROM promo_codes WHERE active=1").fetchone()["cnt"]
+            active_mandatory = c.execute(
+                "SELECT COUNT(*) as cnt FROM mandatory_channels WHERE active=1 AND funding_type='mandatory'"
+            ).fetchone()["cnt"]
+            queued_mandatory = c.execute(
+                "SELECT COUNT(*) as cnt FROM mandatory_channels WHERE queued=1 AND funding_type='mandatory'"
+            ).fetchone()["cnt"]
+            active_fundings = c.execute(
+                "SELECT COUNT(*) as cnt FROM channel_funding WHERE status='active'"
+            ).fetchone()["cnt"]
+            top_referrers = c.execute(
+                "SELECT invited_by, COUNT(*) as cnt FROM users "
+                "WHERE invited_by IS NOT NULL AND invited_by != 0 AND referral_credited=1 "
+                "GROUP BY invited_by ORDER BY cnt DESC LIMIT 5"
+            ).fetchall()
+
+        lines = [
+            "📊 *إحصائيات البوت:*\n",
+            f"👥 إجمالي المستخدمين: {total_users}",
+            f"✅ المستخدمون المتحققون: {verified_users}\n",
+            f"📦 إجمالي الطلبات: {total_orders}",
+            f"🟡 الطلبات الحالية (قيد التنفيذ): {pending_orders}",
+            f"🟢 الطلبات المكتملة: {completed_orders}",
+            f"🔴 الطلبات الملغاة: {cancelled_orders}\n",
+            f"💰 إجمالي النقاط في البوت: {total_pts}",
+            f"🎟 أكواد ترويجية نشطة: {total_promos}\n",
+            f"📡 قنوات إجبارية نشطة: {active_mandatory} (⏳ بانتظار الدور: {queued_mandatory})",
+            f"💸 تمويلات قنوات نشطة حالياً: {active_fundings}\n",
+        ]
+
+        if top_referrers:
+            lines.append("🏆 *الأكثر دعوةً للأصدقاء:*")
+            for i, r in enumerate(top_referrers, start=1):
+                inviter = get_user(r["invited_by"])
+                if inviter and inviter.get("username"):
+                    name = md_escape(f"@{inviter['username']}")
+                elif inviter and inviter.get("full_name"):
+                    name = md_escape(inviter["full_name"])
+                else:
+                    name = f"ID {r['invited_by']}"
+                lines.append(f"{i}. {name} — {r['cnt']} دعوة")
+        else:
+            lines.append("🏆 لا توجد دعوات مكتملة بعد.")
+
         await q.edit_message_text(
-            f"📊 *إحصائيات البوت:*\n\n"
-            f"👥 إجمالي المستخدمين: {total_users}\n"
-            f"📦 إجمالي الطلبات: {total_orders}\n"
-            f"💰 إجمالي النقاط في البوت: {total_pts}\n"
-            f"🎟 أكواد ترويجية نشطة: {total_promos}",
+            "\n".join(lines),
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=owner_settings_kb()
         )
