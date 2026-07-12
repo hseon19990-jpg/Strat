@@ -1546,13 +1546,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state.startswith("os_") or state in ("confirm_cancel_order", "confirm_complete_order")
     )
     if state != "verify_math" and not _owner_admin_state:
-        _db_user = get_user(user.id)
-        if _db_user and _db_user.get("verified", 0):
-            _unjoined = await get_unjoined_mandatory_channels(context, user.id)
-            if _unjoined:
-                context.user_data["state"] = "await_mandatory_join"
-                await show_mandatory_gate(update, context, _unjoined, edit=False, is_owner=is_own)
-                return
+        try:
+            _db_user = get_user(user.id)
+            if _db_user and _db_user.get("verified", 0):
+                _unjoined = await get_unjoined_mandatory_channels(context, user.id)
+                if _unjoined:
+                    context.user_data["state"] = "await_mandatory_join"
+                    await show_mandatory_gate(update, context, _unjoined, edit=False, is_owner=is_own)
+                    return
+        except Exception as _gate_err:
+            logger.warning(f"⚠️ خطأ في فحص القنوات الإجبارية للمستخدم {user.id}: {_gate_err}")
+            # نتابع التنفيذ الطبيعي حتى لا يصمت البوت
 
     # ── التحقق الرياضي ──
     if state == "verify_math":
@@ -2056,6 +2060,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── تمويل قناة: الخطوة 2 — إدخال رابط القناة ──
     if state == "await_fund_channel":
+      try:
         fund_type    = context.user_data.get("fund_type", "mandatory")
         cost_key     = "mandatory_channel_cost" if fund_type == "mandatory" else "internal_channel_cost"
         cost_per     = int(get_setting(cost_key) or "200")
@@ -2146,6 +2151,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                  InlineKeyboardButton("❌ إلغاء", callback_data="fund_confirm:no")]
             ])
         )
+        return
+      except Exception as _fund_err:
+        logger.error(f"❌ خطأ في await_fund_channel للمستخدم {user.id}: {_fund_err}", exc_info=True)
+        try:
+            await update.message.reply_text(
+                "⚠️ حدث خطأ غير متوقع. يرجى المحاولة مجدداً أو الضغط على /start للعودة للقائمة."
+            )
+        except Exception:
+            pass
         return
 
     # ── إعدادات المالك: الحد الأدنى للأعضاء ──
@@ -2900,22 +2914,26 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _GATE_EXEMPT = {"check_mandatory_join", "noop", "skip_mandatory_gate"}
     _owner_admin_action = is_own and data.startswith("os:")
     if data not in _GATE_EXEMPT and not data.startswith("join_verify:") and not _owner_admin_action:
-        _db_user = get_user(user.id)
-        if _db_user and _db_user.get("verified", 0):
-            _unjoined = await get_unjoined_mandatory_channels(context, user.id)
-            if _unjoined:
-                _remaining = max(0, len(_unjoined) - MANDATORY_PAGE_SIZE)
-                _more_note = (
-                    f"\n\n➕ يوجد *{_remaining}* قناة إضافية ستظهر تلقائياً بعد إكمال هذه المجموعة."
-                    if _remaining > 0 else ""
-                )
-                await q.edit_message_text(
-                    f"📢 *يجب عليك الاشتراك بالقنوات الجديدة أولاً للمتابعة:*{_more_note}",
-                    parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=mandatory_join_kb(_unjoined, is_owner=is_own)
-                )
-                context.user_data["state"] = "await_mandatory_join"
-                return
+        try:
+            _db_user = get_user(user.id)
+            if _db_user and _db_user.get("verified", 0):
+                _unjoined = await get_unjoined_mandatory_channels(context, user.id)
+                if _unjoined:
+                    _remaining = max(0, len(_unjoined) - MANDATORY_PAGE_SIZE)
+                    _more_note = (
+                        f"\n\n➕ يوجد *{_remaining}* قناة إضافية ستظهر تلقائياً بعد إكمال هذه المجموعة."
+                        if _remaining > 0 else ""
+                    )
+                    await q.edit_message_text(
+                        f"📢 *يجب عليك الاشتراك بالقنوات الجديدة أولاً للمتابعة:*{_more_note}",
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=mandatory_join_kb(_unjoined, is_owner=is_own)
+                    )
+                    context.user_data["state"] = "await_mandatory_join"
+                    return
+        except Exception as _gate_err:
+            logger.warning(f"⚠️ خطأ في فحص القنوات الإجبارية (callback) للمستخدم {user.id}: {_gate_err}")
+            # نتابع التنفيذ الطبيعي حتى لا يصمت البوت
 
     if data == "skip_mandatory_gate":
         if user.id != OWNER_ID:
