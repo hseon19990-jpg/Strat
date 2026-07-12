@@ -2078,6 +2078,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         channel = text.strip().lstrip("@").split("/")[-1]
         channel_id = f"@{channel}"
+        channel_md = md_escape(channel)
 
         # ── التحقق من أن البوت مشرف في القناة ──
         try:
@@ -2087,13 +2088,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             err = str(e).lower()
             if "chat not found" in err or "invalid" in err:
                 await update.message.reply_text(
-                    f"⚠️ *القناة @{channel} غير موجودة أو الرابط خاطئ.*\n\n"
+                    f"⚠️ *القناة @{channel_md} غير موجودة أو الرابط خاطئ.*\n\n"
                     f"تأكد من اسم القناة وأعد الإرسال:",
                     parse_mode=ParseMode.MARKDOWN
                 )
             else:
                 await update.message.reply_text(
-                    f"⚠️ *البوت ليس مشرفاً في @{channel}*\n\n"
+                    f"⚠️ *البوت ليس مشرفاً في @{channel_md}*\n\n"
                     f"📋 *خطوات الإضافة:*\n"
                     f"1️⃣ افتح إعدادات القناة/الكروب\n"
                     f"2️⃣ اذهب إلى *المشرفون*\n"
@@ -2105,7 +2106,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if not is_admin:
             await update.message.reply_text(
-                f"❌ *البوت ليس مشرفاً في @{channel}*\n\n"
+                f"❌ *البوت ليس مشرفاً في @{channel_md}*\n\n"
                 f"📋 *خطوات الإضافة:*\n"
                 f"1️⃣ افتح إعدادات القناة/الكروب\n"
                 f"2️⃣ اذهب إلى *المشرفون*\n"
@@ -2124,7 +2125,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if min_members > 0 and real_count < min_members:
             await update.message.reply_text(
                 f"❌ *عدد الأعضاء الفعلي غير كافٍ!*\n\n"
-                f"📢 القناة: @{channel}\n"
+                f"📢 القناة: @{channel_md}\n"
                 f"👥 العدد الفعلي: {real_count:,} عضو\n"
                 f"📌 الحد الأدنى المطلوب: {min_members:,} عضو\n\n"
                 f"عزّز قناتك أولاً ثم حاول مجدداً.",
@@ -2140,7 +2141,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "await_fund_confirm"
         await update.message.reply_text(
             f"📋 *مراجعة طلب التمويل — الخطوة 3/3:*\n\n"
-            f"📢 القناة: @{channel}\n"
+            f"📢 القناة: @{channel_md}\n"
             f"⚙️ النوع: {ft_label}\n"
             f"👥 عدد الأعضاء الفعلي: {real_count:,}\n"
             f"💰 التكلفة: {cost_per} × {member_count:,} = *{cost:,} نقطة*\n\n"
@@ -3639,6 +3640,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cost_per     = int(get_setting(cost_key) or "200")
         cost         = context.user_data.get("fund_total_cost", cost_per * member_count)
         ft_label     = "إجباري سريع" if fund_type == "mandatory" else "داخلي بطيء"
+        channel_md   = md_escape(channel)
         if not channel:
             await q.edit_message_text("⚠️ انتهت الجلسة، ابدأ من جديد.", reply_markup=main_menu_kb(is_own))
             context.user_data["state"] = "main_menu"
@@ -3675,7 +3677,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if is_queued:
             await q.edit_message_text(
                 f"⏳ *تم استلام تمويل قناتك وسُحبت النقاط بنجاح، لكنها في قائمة الانتظار حالياً.*\n\n"
-                f"📢 القناة: @{channel}\n"
+                f"📢 القناة: @{channel_md}\n"
                 f"👥 عدد الأعضاء: {member_count:,}\n"
                 f"💰 التكلفة: {cost_per} × {member_count:,} = *{cost:,} نقطة*\n\n"
                 f"⚠️ عدد القنوات الإجبارية النشطة حالياً بلغ الحد الأقصى ({MANDATORY_MAX_ACTIVE} قنوات).\n"
@@ -3686,7 +3688,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await q.edit_message_text(
                 f"✅ *تم تفعيل تمويل قناتك بنجاح!*\n\n"
-                f"📢 القناة: @{channel}\n"
+                f"📢 القناة: @{channel_md}\n"
                 f"⚙️ النوع: {ft_label}\n"
                 f"👥 عدد الأعضاء: {member_count:,}\n"
                 f"💰 التكلفة: {cost_per} × {member_count:,} = *{cost:,} نقطة*",
