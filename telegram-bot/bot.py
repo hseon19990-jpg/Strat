@@ -1280,14 +1280,26 @@ async def count_user_for_fundings(user_id: int, context):
         ).fetchall()
 
     for f in fundings:
-        # ── شرط التمييز: لا يُحسب إلا من انضم عبر البوت (ضغط تحقق فعلاً) ──
-        with db_conn() as c:
-            verified_via_bot = c.execute(
-                "SELECT 1 FROM channel_join_rewards WHERE user_id=%s AND channel_id=%s",
-                (user_id, f["mc_id"])
-            ).fetchone()
-        if not verified_via_bot:
-            continue
+        # ── شرط التمييز: لا يُحسب إلا من ثبت انضمامه فعلاً ──
+        if f["funding_type"] == "internal":
+            # القنوات الداخلية: الإثبات هو ضغط "تحقق من انضمامي" (يُسجَّل في channel_join_rewards)
+            with db_conn() as c:
+                verified = c.execute(
+                    "SELECT 1 FROM channel_join_rewards WHERE user_id=%s AND channel_id=%s",
+                    (user_id, f["mc_id"])
+                ).fetchone()
+            if not verified:
+                continue
+        else:
+            # القنوات الإجبارية: لا تمر عبر تدفّق "تحقق من انضمامي" أبداً، لذا نتحقق
+            # من العضوية مباشرة عبر تيليجرام بدل الاعتماد على channel_join_rewards
+            # (التي لا تُسجَّل أصلاً لهذا النوع — كانت سبب بقاء العدّاد عند 0 دائماً).
+            try:
+                member = await context.bot.get_chat_member(f"@{f['channel_username']}", user_id)
+                if member.status in ("left", "kicked", "banned"):
+                    continue
+            except Exception:
+                continue
         with db_conn() as c:
             c.execute(
                 "INSERT INTO channel_funding_counts (user_id, funding_id) VALUES (%s, %s) "
