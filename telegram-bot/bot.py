@@ -1330,7 +1330,7 @@ async def count_user_for_fundings(user_id: int, context):
                 await promote_queued_mandatory_channel(context)
 
 
-def mandatory_join_kb(channels):
+def mandatory_join_kb(channels, is_owner=False):
     page = channels[:MANDATORY_PAGE_SIZE]
     rows = []
     for ch in page:
@@ -1339,10 +1339,12 @@ def mandatory_join_kb(channels):
             url=f"https://t.me/{ch['channel_username']}"
         )])
     rows.append([InlineKeyboardButton("✅ تحقق من الاشتراك", callback_data="check_mandatory_join")])
+    if is_owner:
+        rows.append([InlineKeyboardButton("⏭ تخطى (للمالك فقط)", callback_data="skip_mandatory_gate")])
     return InlineKeyboardMarkup(rows)
 
 
-async def show_mandatory_gate(update: Update, context: ContextTypes.DEFAULT_TYPE, channels, edit=False):
+async def show_mandatory_gate(update: Update, context: ContextTypes.DEFAULT_TYPE, channels, edit=False, is_owner=False):
     remaining = max(0, len(channels) - MANDATORY_PAGE_SIZE)
     more_note = (
         f"\n\n➕ يوجد *{remaining}* قناة إضافية ستظهر تلقائياً بعد إكمال هذه المجموعة."
@@ -1354,7 +1356,7 @@ async def show_mandatory_gate(update: Update, context: ContextTypes.DEFAULT_TYPE
         "ثم اضغط «✅ تحقق من الاشتراك»."
         f"{more_note}"
     )
-    kb = mandatory_join_kb(channels)
+    kb = mandatory_join_kb(channels, is_owner=is_owner)
     if edit and update.callback_query:
         await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
     else:
@@ -1423,9 +1425,10 @@ async def start_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """يبدأ تدفّق المستخدم الجديد/غير المتحقق: بوابة الاشتراك الإجباري أولاً، ثم التحقق."""
     user = update.effective_user
     unjoined = await get_unjoined_mandatory_channels(context, user.id)
+    is_owner = (user.id == OWNER_ID)
     if unjoined:
         context.user_data["state"] = "await_mandatory_join"
-        await show_mandatory_gate(update, context, unjoined, edit=False)
+        await show_mandatory_gate(update, context, unjoined, edit=False, is_owner=is_owner)
         return
     await proceed_after_mandatory(update, context, edit=False)
 
@@ -1446,7 +1449,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         unjoined = await get_unjoined_mandatory_channels(context, user.id)
         if unjoined:
             context.user_data["state"] = "await_mandatory_join"
-            await show_mandatory_gate(update, context, unjoined, edit=False)
+            await show_mandatory_gate(update, context, unjoined, edit=False, is_owner=is_own)
             return
         # عَدّ المستخدم في التمويلات الجديدة التي لم يُحسب فيها بعد
         await count_user_for_fundings(user.id, context)
@@ -1542,13 +1545,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _owner_admin_state = is_own and (
         state.startswith("os_") or state in ("confirm_cancel_order", "confirm_complete_order")
     )
-    if state not in ("verify_math", "await_mandatory_join") and not _owner_admin_state:
+    if state != "verify_math" and not _owner_admin_state:
         _db_user = get_user(user.id)
         if _db_user and _db_user.get("verified", 0):
             _unjoined = await get_unjoined_mandatory_channels(context, user.id)
             if _unjoined:
                 context.user_data["state"] = "await_mandatory_join"
-                await show_mandatory_gate(update, context, _unjoined, edit=False)
+                await show_mandatory_gate(update, context, _unjoined, edit=False, is_owner=is_own)
                 return
 
     # ── التحقق الرياضي ──
@@ -2630,7 +2633,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_own and state == "os_await_channel":
         channel = text.lstrip("@")
         with db_conn() as c:
-            c.execute("INSERT INTO mandatory_channels (channel_username,funding_type) VALUES (%s,'mandatory') ON CONFLICT DO NOTHING", (channel,))
+            c.execute(
+                "INSERT INTO mandatory_channels (channel_username,funding_type,active) VALUES (%s,'mandatory',1) "
+                "ON CONFLICT (channel_username) DO UPDATE SET active=1, funding_type='mandatory'",
+                (channel,)
+            )
         await update.message.reply_text(f"✅ تمت إضافة @{channel} كقناة اشتراك إجبارية.", reply_markup=owner_settings_kb())
         context.user_data["state"] = "main_menu"
         return
@@ -2890,7 +2897,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # القنوات الإجبارية أيضاً، حتى لا يبقى مستخدم قديم لم يرَ قناة أُضيفت حديثاً.
     # الاستثناء الوحيد: المالك أثناء استخدامه الفعلي لأزرار لوحة التحكم os:،
     # حتى لا يُحبَس خارج اللوحة التي يحتاجها لإدارة/إصلاح القنوات الإجبارية نفسها.
-    _GATE_EXEMPT = {"check_mandatory_join", "noop"}
+    _GATE_EXEMPT = {"check_mandatory_join", "noop", "skip_mandatory_gate"}
     _owner_admin_action = is_own and data.startswith("os:")
     if data not in _GATE_EXEMPT and not data.startswith("join_verify:") and not _owner_admin_action:
         _db_user = get_user(user.id)
@@ -2905,10 +2912,29 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await q.edit_message_text(
                     f"📢 *يجب عليك الاشتراك بالقنوات الجديدة أولاً للمتابعة:*{_more_note}",
                     parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=mandatory_join_kb(_unjoined)
+                    reply_markup=mandatory_join_kb(_unjoined, is_owner=is_own)
                 )
                 context.user_data["state"] = "await_mandatory_join"
                 return
+
+    if data == "skip_mandatory_gate":
+        if user.id != OWNER_ID:
+            await q.answer("⛔ هذا الخيار للمالك فقط.", show_alert=True)
+            return
+        await q.answer("⏭ تم التخطي")
+        db_user = get_user(user.id)
+        if db_user and db_user.get("verified", 0):
+            context.user_data["state"] = "main_menu"
+            db_user = get_user(user.id)
+            pts = db_user["points"] if db_user else 0
+            await q.edit_message_text(
+                f"🏠 *القائمة الرئيسية*\n💰 رصيدك: {pts} نقطة",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=main_menu_kb(True)
+            )
+        else:
+            await proceed_after_mandatory(update, context, edit=True)
+        return
 
     # ── القائمة الرئيسية ──
     if data == "main_menu":
@@ -3181,7 +3207,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         unjoined = await get_unjoined_mandatory_channels(context, user.id)
         if unjoined:
             await q.answer("❌ لم تشترك بعد بجميع القنوات المطلوبة.", show_alert=True)
-            await show_mandatory_gate(update, context, unjoined, edit=True)
+            await show_mandatory_gate(update, context, unjoined, edit=True, is_owner=is_own)
             return
         await q.answer("✅ تم التحقق من اشتراكك!")
         db_user = get_user(user.id)
@@ -5033,7 +5059,7 @@ def main():
     app.add_handler(CommandHandler("compensate_partial",  cmd_compensate_partial))
     app.add_handler(CommandHandler("refund_mandatory",    cmd_refund_mandatory))
     app.add_handler(MessageHandler(
-        (filters.TEXT | filters.CAPTION) & ~filters.COMMAND & filters.UpdateType.MESSAGE,
+        (filters.TEXT | filters.CAPTION) & ~filters.COMMAND & filters.ChatType.PRIVATE,
         handle_text
     ))
     app.add_handler(CallbackQueryHandler(handle_callback))
@@ -5043,7 +5069,7 @@ def main():
     # حتى لا يبقى البوت صامتاً تماماً بلا أي رد إذا أرسل المستخدم قناته/رده بطريقة غير متوقعة
     # (توجيه/مشاركة بدل الكتابة المباشرة).
     app.add_handler(MessageHandler(
-        filters.ALL & ~filters.COMMAND & ~filters.SUCCESSFUL_PAYMENT & filters.UpdateType.MESSAGE,
+        filters.ChatType.PRIVATE & ~filters.COMMAND & ~filters.SUCCESSFUL_PAYMENT,
         handle_unsupported_message
     ))
     app.add_handler(ChatMemberHandler(handle_member_leave, ChatMemberHandler.CHAT_MEMBER))
