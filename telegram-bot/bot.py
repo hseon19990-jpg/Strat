@@ -4317,10 +4317,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             channels = c.execute(
                 "SELECT * FROM mandatory_channels WHERE active=1 OR queued=1 ORDER BY queued ASC, id ASC"
             ).fetchall()
-        lines = ["📡 *القنوات الحالية:*\n"]
-        for ch in channels:
-            tag = " ⏳ قيد الانتظار" if ch["queued"] else ""
-            lines.append(f"• @{ch['channel_username']} ({ch['funding_type']}){tag}")
+        if channels:
+            lines = ["📡 *القنوات الحالية:*\n"]
+            for ch in channels:
+                tag = " ⏳ قيد الانتظار" if ch["queued"] else ""
+                lines.append(f"• @{md_escape(ch['channel_username'])} ({md_escape(ch['funding_type'])}){tag}")
+        else:
+            lines = ["📡 لا توجد قنوات مضافة حالياً."]
         rows = []
         for ch in channels:
             rows.append([InlineKeyboardButton(
@@ -4329,7 +4332,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )])
         rows.append([InlineKeyboardButton("➕ إضافة قناة", callback_data="os_add_ch")])
         rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
-        await q.edit_message_text("\n".join(lines) or "لا توجد قنوات", parse_mode=ParseMode.MARKDOWN,
+        await q.edit_message_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN,
                                    reply_markup=InlineKeyboardMarkup(rows))
         return
 
