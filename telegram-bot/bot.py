@@ -3025,8 +3025,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         mi_id = int(data.split(":")[1])
         with db_conn() as c:
             item = c.execute("SELECT * FROM menu_items WHERE id=?", (mi_id,)).fetchone()
-        if item:
-            await q.answer(item["action_value"] or "", show_alert=True)
+        if not item:
+            await q.answer("⚠️ هذا الزر لم يعد موجوداً.", show_alert=True)
+            return
+        content = item["action_value"] or ""
+        # تنبيه تيليجرام (show_alert) لا يقبل أكثر من 200 حرف تقريباً، وأي نص أطول
+        # كان يتسبب بفشل صامت (استثناء يُسجَّل في اللوغ فقط) فلا يرى المستخدم شيئاً إطلاقاً.
+        # لذلك نعرض النصوص القصيرة كتنبيه فوري، والطويلة كرسالة عادية بدون حد للطول.
+        if len(content) <= 200:
+            try:
+                await q.answer(content, show_alert=True)
+                return
+            except Exception as e:
+                logger.warning(f"⚠️ فشل عرض تنبيه mi_text كـ alert، سيُرسل كرسالة عادية: {e}")
+        await q.answer()
+        await context.bot.send_message(user.id, content or "—")
         return
 
     # ── عرض خدمة بعينها ──
