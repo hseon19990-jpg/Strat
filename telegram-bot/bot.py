@@ -11,6 +11,8 @@
 """
 
 import os
+import asyncio
+import time
 import random
 import math
 import requests
@@ -582,12 +584,24 @@ def smm_request(action: str, panel: int = 1, **params) -> dict:
     except Exception as e:
         return {"error": str(e)}
 
+# كاش لقائمة الخدمات (تُحدَّث كل ساعة) لتفادي استدعاء API مع كل طلب جزئي
+_services_cache: dict = {}  # panel -> (timestamp, list)
+_SERVICES_CACHE_TTL = 3600  # ثانية
+
 def smm_service_info(service_id: int, panel: int = 1) -> dict:
-    res = smm_request("services", panel=panel)
-    if isinstance(res, list):
-        for s in res:
-            if str(s.get("service")) == str(service_id):
-                return s
+    now = time.time()
+    cached = _services_cache.get(panel)
+    if cached and now - cached[0] < _SERVICES_CACHE_TTL:
+        services = cached[1]
+    else:
+        services = smm_request("services", panel=panel)
+        if isinstance(services, list):
+            _services_cache[panel] = (now, services)
+        else:
+            return {}
+    for s in services:
+        if str(s.get("service")) == str(service_id):
+            return s
     return {}
 
 def smm_create_order(service_id: int, link: str, quantity: int, panel: int = 1) -> dict:
@@ -647,7 +661,7 @@ async def check_pending_orders_job(context: ContextTypes.DEFAULT_TYPE):
     for o in pending:
         panel = o.get("svc_panel") or 1
         try:
-            res = smm_order_status(o["api_order_id"], panel=panel)
+            res = await asyncio.to_thread(smm_order_status, o["api_order_id"], panel)
         except Exception as e:
             logger.warning(f"⚠️ فشل فحص حالة الطلب {o.get('order_code')}: {e}")
             continue
@@ -673,7 +687,7 @@ async def check_pending_orders_job(context: ContextTypes.DEFAULT_TYPE):
             remains    = int(res.get("remains", 0) or 0)
             refund_pts = 0
             if panel == 1 and remains > 0 and o.get("svc_api_id"):
-                refund_pts = _calc_partial_refund_pts(o["svc_api_id"], remains)
+                refund_pts = await asyncio.to_thread(_calc_partial_refund_pts, o["svc_api_id"], remains)
 
             with db_conn() as c:
                 c.execute(
