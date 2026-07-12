@@ -456,8 +456,14 @@ def init_db():
       try:
           with db_conn() as c:
               c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS credited_at TIMESTAMPTZ")
-      except Exception:
-          pass
+              # تعبئة القيمة لمن اعتُمدت إحالته قبل إضافة هذا العمود (وإلا
+              # لن يظهر في قوائم "الأكثر إرسالاً" لأن credited_at ستكون NULL)
+              c.execute(
+                  "UPDATE users SET credited_at=joined_at::timestamptz "
+                  "WHERE referral_credited=1 AND credited_at IS NULL"
+              )
+      except Exception as e:
+          logger.warning(f"⚠️ فشل تعبئة credited_at للدعوات القديمة: {e}")
       # إعادة تسمية زر "بدء بوت" إلى "رشق بدء (ستارت) بوت" مع إبقاء نفس الخدمات (نفس action_value)
       try:
           with db_conn() as c:
@@ -1222,10 +1228,11 @@ def prize_exchange_admin_kb(pe_id: int) -> InlineKeyboardMarkup:
 
 
 async def notify_prize_exchange_owner(context, pe_id: int, text_html: str):
-    """يرسل إشعار طلب الاستبدال إلى كروب الإدارة (إن كان مُعرّفاً) وإلى خاص
-    المالك، مع أزرار مكتمل/غير مكتمل على كل نسخة."""
+    """يرسل إشعار طلب الاستبدال إلى كروب الإدارة (إن كان مُعرّفاً) كنص فقط بدون
+    أزرار/علامة الحالة، وإلى خاص المالك (البوت) مع أزرار مكتمل/غير مكتمل —
+    التحكم بالحالة يبقى حصراً داخل البوت."""
     kb = prize_exchange_admin_kb(pe_id)
-    await notify_group(context.application, text_html, reply_markup=kb)
+    await notify_group(context.application, text_html)
     if OWNER_ID:
         try:
             await context.bot.send_message(OWNER_ID, text_html, parse_mode=ParseMode.HTML, reply_markup=kb)
