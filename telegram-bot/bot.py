@@ -1340,15 +1340,8 @@ async def promote_queued_mandatory_channel(context: ContextTypes.DEFAULT_TYPE, a
     except Exception:
         pass
 
-    bot_app = app or getattr(context, "application", None)
-    if bot_app:
-        await notify_group(
-            bot_app,
-            f"📢 <b>قناة إجبارية جديدة أصبحت نشطة (من قائمة الانتظار)</b>\n"
-            f"👤 <a href='tg://user?id={nxt['owner_user_id']}'>مالك القناة</a>\n"
-            f"📡 القناة: @{nxt['channel_username']}\n"
-            f"{mandatory_terms_text_html()}"
-        )
+    # ملاحظة: لم يعد يُرسَل إعلان بهذا في كروب الإشعارات — الكروب أصبح مخصصاً
+    # للطلبات فقط (خدمات/استبدال/تمويل قنوات)، وهذا مجرد تفعيل تلقائي داخلي.
 
 
 def mandatory_terms_text_html() -> str:
@@ -1987,13 +1980,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                 except Exception:
                     pass
-                await notify_group(
-                    context.application,
-                    f"↔️ <b>تحويل نقاط</b>\n"
-                    f"من: <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
-                    f"إلى: ID {to_id}\n"
-                    f"المبلغ: {pts} نقطة | الرسوم: {fee}"
-                )
+                # لا يُرسَل إشعار بهذا لكروب الإشعارات — مخصص الآن للطلبات فقط.
         else:
             await update.message.reply_text("❌ تم إلغاء التحويل.", reply_markup=main_menu_kb(is_own))
         context.user_data["state"] = "main_menu"
@@ -5086,12 +5073,19 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=main_menu_kb(is_own)
         )
-        await notify_group(
-            context.application,
-            f"⭐ <b>شحن نجوم ناجح</b>\n"
-            f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
-            f"⭐ {stars} نجمة → {pts} نقطة"
-        )
+        # لا يُرسَل إشعار بهذا لكروب الإشعارات — مخصص الآن للطلبات فقط.
+
+# ── حذف رسائل "انضم/غادر" الخدمية تلقائياً من كروب إشعارات المالك ──
+# (حذف الرسالة فقط، بدون أي إجراء على الشخص نفسه — الكروب أصبح مخصصاً للطلبات فقط)
+async def delete_group_service_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    if not msg:
+        return
+    try:
+        await msg.delete()
+    except Exception as e:
+        logger.warning(f"⚠️ فشل حذف رسالة انضمام/مغادرة في كروب الإشعارات: {e}")
+
 
 # ────────────────────────────────────────────────────────────
 #  Main
@@ -5424,6 +5418,12 @@ def main():
         handle_unsupported_message
     ))
     app.add_handler(ChatMemberHandler(handle_member_leave, ChatMemberHandler.CHAT_MEMBER))
+    if ADMIN_GROUP_ID:
+        app.add_handler(MessageHandler(
+            filters.Chat(ADMIN_GROUP_ID) &
+            (filters.StatusUpdate.NEW_CHAT_MEMBERS | filters.StatusUpdate.LEFT_CHAT_MEMBER),
+            delete_group_service_messages
+        ))
 
     async def post_init(application):
         # أوامر عامة لجميع المستخدمين
