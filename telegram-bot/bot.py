@@ -3291,12 +3291,30 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ── الأكثر دعوةً اليوم (للأعضاء — يوم واحد فقط بالتوقيت العالمي) ──
+    # ── الأكثر دعوةً (للأعضاء — يختارون الفترة أولاً) ──
     if data == "top_ref_today":
-        since, title = _referral_period_bounds("day")
+        rows = [
+            [InlineKeyboardButton("🕐 آخر 24 ساعة", callback_data="top_ref_pick:24h")],
+            [InlineKeyboardButton("📅 اليوم الحالي (منذ 00:00 بالتوقيت العالمي)", callback_data="top_ref_pick:day")],
+            [InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")],
+        ]
+        await q.edit_message_text(
+            "🏆 *الأكثر دعوةً*\n\nاختر الفترة التي تريد عرض المتصدرين خلالها:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
+        return
+
+    if data.startswith("top_ref_pick:"):
+        period = data.split(":", 1)[1]
+        since, title = _referral_period_bounds(period)
         rows = get_top_referrers_since(since, limit=10)
         text = _format_top_referrers(rows, title)
-        await q.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb())
+        await q.edit_message_text(
+            text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="top_ref_today")]])
+        )
         return
 
     # ── الأكثر إرسالاً لرابط الدعوة (للمالك — اختيار الفترة) ──
