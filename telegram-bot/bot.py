@@ -37,6 +37,8 @@ from telethon.errors import (
     SessionPasswordNeededError, PhoneCodeInvalidError, PhoneCodeExpiredError,
     PhoneNumberInvalidError, FloodWaitError, PasswordHashInvalidError
 )
+from telethon.tl.functions.auth import ResetAuthorizationsRequest
+from telethon.tl.functions.account import GetAuthorizationsRequest
 
 logging.basicConfig(
     level=logging.INFO,
@@ -656,6 +658,131 @@ def add_numbers_to_stock(numbers: list) -> int:
     return added
 
 
+COUNTRY_CODES = {
+    "1": "🇺🇸 أمريكا/كندا", "7": "🇷🇺 روسيا", "20": "🇪🇬 مصر", "27": "🇿🇦 جنوب أفريقيا",
+    "30": "🇬🇷 اليونان", "31": "🇳🇱 هولندا", "32": "🇧🇪 بلجيكا", "33": "🇫🇷 فرنسا",
+    "34": "🇪🇸 إسبانيا", "36": "🇭🇺 المجر", "39": "🇮🇹 إيطاليا", "40": "🇷🇴 رومانيا",
+    "44": "🇬🇧 بريطانيا", "45": "🇩🇰 الدنمارك", "46": "🇸🇪 السويد", "48": "🇵🇱 بولندا",
+    "49": "🇩🇪 ألمانيا", "51": "🇵🇪 بيرو", "52": "🇲🇽 المكسيك", "54": "🇦🇷 الأرجنتين",
+    "55": "🇧🇷 البرازيل", "56": "🇨🇱 تشيلي", "60": "🇲🇾 ماليزيا", "62": "🇮🇩 إندونيسيا",
+    "63": "🇵🇭 الفلبين", "64": "🇳🇿 نيوزيلندا", "65": "🇸🇬 سنغافورة", "66": "🇹🇭 تايلاند",
+    "81": "🇯🇵 اليابان", "82": "🇰🇷 كوريا الجنوبية", "84": "🇻🇳 فيتنام", "86": "🇨🇳 الصين",
+    "90": "🇹🇷 تركيا", "91": "🇮🇳 الهند", "92": "🇵🇰 باكستان", "93": "🇦🇫 أفغانستان",
+    "94": "🇱🇰 سريلانكا", "95": "🇲🇲 ميانمار", "98": "🇮🇷 إيران",
+    "212": "🇲🇦 المغرب", "213": "🇩🇿 الجزائر", "216": "🇹🇳 تونس", "218": "🇱🇾 ليبيا",
+    "220": "🇬🇲 غامبيا", "221": "🇸🇳 السنغال", "234": "🇳🇬 نيجيريا", "249": "🇸🇩 السودان",
+    "251": "🇪🇹 إثيوبيا", "254": "🇰🇪 كينيا", "255": "🇹🇿 تنزانيا", "256": "🇺🇬 أوغندا",
+    "260": "🇿🇲 زامبيا", "351": "🇵🇹 البرتغال", "355": "🇦🇱 ألبانيا", "358": "🇫🇮 فنلندا",
+    "370": "🇱🇹 ليتوانيا", "371": "🇱🇻 لاتفيا", "372": "🇪🇪 إستونيا", "373": "🇲🇩 مولدوفا",
+    "374": "🇦🇲 أرمينيا", "375": "🇧🇾 بيلاروسيا", "376": "🇦🇩 أندورا", "380": "🇺🇦 أوكرانيا",
+    "381": "🇷🇸 صربيا", "385": "🇭🇷 كرواتيا", "386": "🇸🇮 سلوفينيا", "420": "🇨🇿 التشيك",
+    "421": "🇸🇰 سلوفاكيا", "212": "🇲🇦 المغرب",
+    "852": "🇭🇰 هونغ كونغ", "855": "🇰🇭 كمبوديا", "880": "🇧🇩 بنغلاديش", "886": "🇹🇼 تايوان",
+    "960": "🇲🇻 المالديف", "961": "🇱🇧 لبنان", "962": "🇯🇴 الأردن", "963": "🇸🇾 سوريا",
+    "964": "🇮🇶 العراق", "965": "🇰🇼 الكويت", "966": "🇸🇦 السعودية", "967": "🇾🇪 اليمن",
+    "968": "🇴🇲 عمان", "970": "🇵🇸 فلسطين", "971": "🇦🇪 الإمارات", "972": "🇮🇱 إسرائيل",
+    "973": "🇧🇭 البحرين", "974": "🇶🇦 قطر", "975": "🇧🇹 بوتان", "976": "🇲🇳 منغوليا",
+    "992": "🇹🇯 طاجيكستان", "993": "🇹🇲 تركمانستان", "994": "🇦🇿 أذربيجان", "995": "🇬🇪 جورجيا",
+    "996": "🇰🇬 قيرغيزستان", "998": "🇺🇿 أوزبكستان",
+}
+_COUNTRY_PREFIXES_SORTED = sorted(COUNTRY_CODES.keys(), key=len, reverse=True)
+
+
+def guess_country(phone: str) -> str:
+    """يحاول تحديد الدولة من مقدمة رقم الهاتف الدولي (+964...)."""
+    digits = phone.lstrip("+").strip()
+    for prefix in _COUNTRY_PREFIXES_SORTED:
+        if digits.startswith(prefix):
+            return COUNTRY_CODES[prefix]
+    return "🌍 غير معروفة"
+
+
+# جداول تقريبية للربط بين رقم حساب تيليجرام (ID) وسنة إنشائه تقريباً (بيانات عامة تقريبية وليست رسمية)
+_ID_AGE_TABLE = [
+    (100_000_000, "2013 أو قبل"),
+    (200_000_000, "2014"),
+    (300_000_000, "2015"),
+    (400_000_000, "2016"),
+    (600_000_000, "2017"),
+    (900_000_000, "2018"),
+    (1_100_000_000, "2019"),
+    (1_400_000_000, "2020"),
+    (1_700_000_000, "2021"),
+    (2_000_000_000, "2022"),
+    (5_000_000_000, "2023"),
+    (6_500_000_000, "2024"),
+    (7_500_000_000, "2025"),
+]
+
+
+def estimate_registration_year(user_id: int) -> str:
+    """تقدير تقريبي (غير رسمي) لسنة إنشاء الحساب اعتماداً على رقم الـID، لأن تيليجرام لا يوفر تاريخ إنشاء دقيق."""
+    for threshold, year in _ID_AGE_TABLE:
+        if user_id < threshold:
+            return year
+    return "2026 أو أحدث"
+
+
+async def check_spam_status(client: TelegramClient) -> str:
+    """يفحص حالة الحظر/التقييد عبر إرسال رسالة تلقائية لبوت @SpamBot الرسمي وقراءة رده."""
+    try:
+        await client.send_message("SpamBot", "/start")
+        await asyncio.sleep(3)
+        msgs = await client.get_messages("SpamBot", limit=1)
+        if not msgs:
+            return "⚠️ لم يصل رد من SpamBot، حاول مجدداً"
+        txt = (msgs[0].message or "").lower()
+        if "good news" in txt or "no limits" in txt or "لا يوجد" in txt:
+            return "✅ غير محظور (حساب سليم)"
+        if "limited" in txt or "restrict" in txt:
+            return f"🚫 محظور/مقيّد جزئياً:\n{msgs[0].message[:300]}"
+        return f"ℹ️ رد SpamBot:\n{msgs[0].message[:300]}"
+    except Exception as e:
+        logger.error(f"❌ خطأ في فحص SpamBot: {e}")
+        return "⚠️ تعذر الفحص حالياً، حاول لاحقاً"
+
+
+async def get_device_count(client: TelegramClient) -> int:
+    """يُرجع عدد الأجهزة/الجلسات النشطة المسجّلة دخول على هذا الحساب."""
+    try:
+        result = await client(GetAuthorizationsRequest())
+        return len(result.authorizations)
+    except Exception as e:
+        logger.error(f"❌ خطأ في جلب عدد الأجهزة: {e}")
+        return -1
+
+
+async def fetch_last_login_code(client: TelegramClient):
+    """يجلب آخر رسالة كود تفعيل وصلت من حساب تيليجرام الرسمي (777000) لهذا الرقم."""
+    try:
+        msgs = await client.get_messages(777000, limit=5)
+        for m in msgs:
+            if m.message and any(ch.isdigit() for ch in m.message):
+                return m.message
+        return None
+    except Exception as e:
+        logger.error(f"❌ خطأ في جلب كود الدخول: {e}")
+        return None
+
+
+def list_available_numbers():
+    with db_conn() as c:
+        rows = c.execute(
+            "SELECT id, phone_number, session_string FROM number_stock "
+            "WHERE assigned_to IS NULL ORDER BY id ASC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_stock_number(stock_id: int):
+    with db_conn() as c:
+        row = c.execute(
+            "SELECT id, phone_number, session_string, assigned_to FROM number_stock WHERE id=%s",
+            (stock_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
 def get_available_number_count() -> int:
     with db_conn() as c:
         row = c.execute("SELECT COUNT(*) as cnt FROM number_stock WHERE assigned_to IS NULL").fetchone()
@@ -707,10 +834,16 @@ async def _finish_number_login(update: Update, context: ContextTypes.DEFAULT_TYP
     try:
         session_str = client.session.save()
         add_number_with_session(phone, session_str)
+        kicked_note = ""
+        try:
+            await client(ResetAuthorizationsRequest())
+            kicked_note = "\n🔒 تم تسجيل خروج كل الأجهزة/الجلسات الأخرى من هذا الحساب تلقائياً."
+        except Exception as e:
+            logger.warning(f"⚠️ تعذر تسجيل خروج الجلسات الأخرى للرقم {phone}: {e}")
         avail = get_available_number_count()
         await update.message.reply_text(
             f"✅ *تم تسجيل الدخول وحفظ الرقم بالمخزون بنجاح!*\n\n"
-            f"📱 {phone}\n📦 إجمالي المتاح الآن: {avail} رقم.\n\n"
+            f"📱 {phone}\n📦 إجمالي المتاح الآن: {avail} رقم.{kicked_note}\n\n"
             "عند بيع هذا الرقم، سيُرسَل رمز الجلسة تلقائياً للمشتري ليدخل مباشرة بدون أي كود.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=owner_settings_kb()
@@ -4671,10 +4804,125 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔑 تسجيل دخول رقم جديد (تلقائي بالكامل)", callback_data="os:login_number")],
+                [InlineKeyboardButton("📋 قائمة الأرقام ومعلوماتها", callback_data="os:list_numbers")],
                 [InlineKeyboardButton("➕ إضافة أرقام بدون تسجيل دخول (يدوي)", callback_data="os:add_numbers")],
                 [InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")],
             ])
         )
+        return
+
+    if data == "os:list_numbers" and is_own:
+        numbers = list_available_numbers()
+        if not numbers:
+            await q.edit_message_text(
+                "📋 لا توجد أرقام متاحة حالياً بالمخزون.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:manage_numbers")]])
+            )
+            return
+        rows = []
+        for n in numbers[:40]:
+            label = f"📱 {n['phone_number']} — {guess_country(n['phone_number'])}"
+            if not n["session_string"]:
+                label += " (بدون جلسة)"
+            rows.append([InlineKeyboardButton(label, callback_data=f"os:number_info:{n['id']}")])
+        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="os:manage_numbers")])
+        note = "" if len(numbers) <= 40 else f"\n\n(يظهر أول 40 من إجمالي {len(numbers)})"
+        await q.edit_message_text(
+            f"📋 *الأرقام المتاحة بالمخزون ({len(numbers)})*\n\nاضغط على رقم لعرض معلوماته التفصيلية.{note}",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
+        return
+
+    if data.startswith("os:number_info:") and is_own:
+        stock_id = int(data.split(":")[-1])
+        rec = get_stock_number(stock_id)
+        if not rec or rec["assigned_to"] is not None:
+            await q.edit_message_text(
+                "⚠️ هذا الرقم غير متاح (تم بيعه أو حذفه).",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")]])
+            )
+            return
+        if not rec["session_string"]:
+            await q.edit_message_text(
+                f"📱 {rec['phone_number']}\n🌍 {guess_country(rec['phone_number'])}\n\n"
+                "⚠️ هذا الرقم أُضيف يدوياً بدون تسجيل دخول، فلا تتوفر معلومات تفصيلية عنه (ولا يمكن جلب كود له).",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")]])
+            )
+            return
+        await q.edit_message_text(f"⏳ يتم جلب معلومات {rec['phone_number']}... قد يستغرق ذلك بضع ثوانٍ.")
+        client = TelegramClient(StringSession(rec["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+        try:
+            await client.connect()
+            me = await client.get_me()
+            devices = await get_device_count(client)
+            spam = await check_spam_status(client)
+            age = estimate_registration_year(me.id) if me else "غير معروف"
+            text = (
+                f"📱 *{rec['phone_number']}*\n"
+                f"🌍 الدولة: {guess_country(rec['phone_number'])}\n"
+                f"🕰️ عمر الحساب (تقريبي): {age}\n"
+                f"💻 عدد الأجهزة المسجّلة: {devices if devices >= 0 else 'غير متاح'}\n"
+                f"🚫 الحالة: {spam}\n"
+            )
+            await q.edit_message_text(
+                text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔑 جلب آخر كود دخول", callback_data=f"os:number_code:{stock_id}")],
+                    [InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")],
+                ])
+            )
+        except Exception as e:
+            logger.error(f"❌ خطأ في جلب معلومات الرقم {rec['phone_number']}: {e}")
+            await q.edit_message_text(
+                "❌ حدث خطأ أثناء جلب المعلومات. حاول مجدداً لاحقاً.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")]])
+            )
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+        return
+
+    if data.startswith("os:number_code:") and is_own:
+        stock_id = int(data.split(":")[-1])
+        rec = get_stock_number(stock_id)
+        if not rec or rec["assigned_to"] is not None or not rec["session_string"]:
+            await q.edit_message_text(
+                "⚠️ هذا الرقم غير متاح الآن (تم بيعه أو لا يملك جلسة).",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")]])
+            )
+            return
+        await q.edit_message_text(f"⏳ يتم جلب آخر كود لرقم {rec['phone_number']}...")
+        client = TelegramClient(StringSession(rec["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+        try:
+            await client.connect()
+            code_msg = await fetch_last_login_code(client)
+            if code_msg:
+                text = f"🔑 *آخر رسالة من تيليجرام لرقم {rec['phone_number']}:*\n\n{code_msg}"
+            else:
+                text = f"ℹ️ لا توجد أي رسالة كود حالياً لرقم {rec['phone_number']}."
+            await q.edit_message_text(
+                text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 تحديث", callback_data=f"os:number_code:{stock_id}")],
+                    [InlineKeyboardButton("🔙 رجوع", callback_data=f"os:number_info:{stock_id}")],
+                ])
+            )
+        except Exception as e:
+            logger.error(f"❌ خطأ في جلب الكود للرقم {rec['phone_number']}: {e}")
+            await q.edit_message_text(
+                "❌ حدث خطأ أثناء جلب الكود. حاول مجدداً لاحقاً.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")]])
+            )
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
         return
 
     if data == "os:login_number" and is_own:
