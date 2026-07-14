@@ -38,7 +38,10 @@ from telethon.errors import (
     PhoneNumberInvalidError, FloodWaitError, PasswordHashInvalidError
 )
 from telethon.tl.functions.auth import ResetAuthorizationsRequest
-from telethon.tl.functions.account import GetAuthorizationsRequest, ResetAuthorizationRequest
+from telethon.tl.functions.account import (
+    GetAuthorizationsRequest, ResetAuthorizationRequest,
+    GetPasswordRequest,
+)
 from telethon.tl.functions.messages import StartBotRequest
 
 logging.basicConfig(
@@ -370,6 +373,7 @@ def init_db():
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS sessions_reset BOOLEAN DEFAULT FALSE",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS force_listed BOOLEAN DEFAULT FALSE",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS frozen_at TIMESTAMPTZ",
+              "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS twofa_password TEXT",
           ]:
               try: c.execute(_alt)
               except Exception: pass
@@ -871,7 +875,7 @@ def list_available_numbers():
 def get_stock_number(stock_id: int):
     with db_conn() as c:
         row = c.execute(
-            "SELECT id, phone_number, session_string, assigned_to, sessions_reset, force_listed, frozen_at "
+            "SELECT id, phone_number, session_string, assigned_to, sessions_reset, force_listed, frozen_at, twofa_password "
             "FROM number_stock WHERE id=%s",
             (stock_id,)
         ).fetchone()
@@ -1144,6 +1148,137 @@ async def run_referral_tasks_job(context: ContextTypes.DEFAULT_TYPE):
                 pass
 
 
+# ═══════════════════════════════════════════════════════════
+#  التحقق بخطوتين (2FA) — توليد كلمة مرور وتفعيل تلقائي
+# ═══════════════════════════════════════════════════════════
+
+def generate_2fa_password() -> str:
+    """يولّد كلمة مرور قوية ومميّزة لكل رقم:
+    حرف كبير + حرف صغير + رقم + رمز خاص + 8 أحرف عشوائية."""
+    import secrets, string
+    alphabet = string.ascii_letters + string.digits + "!@#$%&*"
+    while True:
+        pwd = (
+            secrets.choice(string.ascii_uppercase) +
+            secrets.choice(string.ascii_lowercase) +
+            secrets.choice(string.digits) +
+            secrets.choice("!@#$%&*") +
+            "".join(secrets.choice(alphabet) for _ in range(8))
+        )
+        # اخلط الترتيب
+        chars = list(pwd)
+        random.shuffle(chars)
+        pwd = "".join(chars)
+        # تأكد أن الشرط الأدنى محقق
+        if (any(c.isupper() for c in pwd) and
+                any(c.islower() for c in pwd) and
+                any(c.isdigit() for c in pwd) and
+                any(c in "!@#$%&*" for c in pwd)):
+            return pwd
+
+
+async def enable_2fa_for_number(phone: str, session_str: str, stock_id: int) -> tuple:
+    """
+    يُفعّل التحقق بخطوتين (كلمة مرور السحابة Cloud Password) لحساب تيليجرام.
+    — إذا لم تكن هناك كلمة مرور مسبقاً: يُوليّد كلمة جديدة ويُفعّلها.
+    — إذا كانت مفعّلة مسبقاً وعندنا كلمتها: لا يفعل شيئاً (بالفعل آمن).
+    — إذا كانت مفعّلة مسبقاً وليس عندنا كلمتها: يسجّل تحذيراً ويتوقف.
+    يُرجع (success: bool, message: str, password: str|None).
+    """
+    if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
+        return False, "TELEGRAM_API_ID/HASH غير مضبوط", None
+
+    client = TelegramClient(
+        StringSession(session_str),
+        int(TELEGRAM_API_ID),
+        TELEGRAM_API_HASH,
+    )
+    try:
+        await client.connect()
+        if not await client.is_user_authorized():
+            return False, "الجلسة منتهية أو مُلغاة", None
+
+        # ─── فحص هل 2FA مفعّل مسبقاً ───────────────────────────────
+        pwd_state = await client(GetPasswordRequest())
+        if pwd_state.has_password:
+            # هل عندنا كلمة المرور محفوظة؟
+            with db_conn() as c:
+                row = c.execute(
+                    "SELECT twofa_password FROM number_stock WHERE id=%s", (stock_id,)
+                ).fetchone()
+            saved_pwd = row["twofa_password"] if row else None
+            if saved_pwd:
+                return True, "2FA مفعّل مسبقاً وكلمة المرور محفوظة", saved_pwd
+            else:
+                return False, "2FA مفعّل مسبقاً بكلمة مرور غير معروفة (مضبوط يدوياً من قبل)", None
+
+        # ─── توليد كلمة مرور جديدة وتفعيل 2FA ──────────────────────
+        new_pwd = generate_2fa_password()
+        await client.edit_2fa(
+            new_password=new_pwd,
+            hint="Auto",     # تلميح محايد لا يكشف شيئاً
+        )
+
+        # ─── حفظ كلمة المرور في DB ──────────────────────────────────
+        with db_conn() as c:
+            c.execute(
+                "UPDATE number_stock SET twofa_password=%s WHERE id=%s",
+                (new_pwd, stock_id)
+            )
+
+        logger.info(f"🔐 تم تفعيل 2FA للرقم {phone} بنجاح")
+        return True, "تم تفعيل التحقق بخطوتين بنجاح", new_pwd
+
+    except Exception as e:
+        err = str(e)
+        logger.error(f"❌ فشل تفعيل 2FA للرقم {phone}: {err}")
+        return False, err[:120], None
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+
+async def enable_pending_2fa_job(context: ContextTypes.DEFAULT_TYPE):
+    """مهمة دورية: تُفعّل 2FA على كل الأرقام التي ليس عندها كلمة مرور محفوظة بعد."""
+    if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
+        return
+    with db_conn() as c:
+        rows = c.execute(
+            "SELECT id, phone_number, session_string FROM number_stock "
+            "WHERE session_string IS NOT NULL AND (twofa_password IS NULL OR twofa_password = '')"
+        ).fetchall()
+    if not rows:
+        return
+    logger.info(f"🔐 مهمة 2FA: {len(rows)} رقم بحاجة لتفعيل التحقق بخطوتين")
+    done = failed = skipped = 0
+    for rec in rows:
+        success, msg, pwd = await enable_2fa_for_number(
+            rec["phone_number"], rec["session_string"], rec["id"]
+        )
+        if success:
+            done += 1
+        elif "مسبقاً بكلمة مرور غير معروفة" in msg:
+            skipped += 1
+        else:
+            failed += 1
+        await asyncio.sleep(3)
+    logger.info(f"✅ مهمة 2FA: {done} نجحت | {skipped} مُتجاوزة | {failed} فشلت")
+    if (done or failed) and OWNER_ID:
+        try:
+            await context.bot.send_message(
+                OWNER_ID,
+                f"🔐 *مهمة التحقق بخطوتين (2FA)*\n\n"
+                f"✅ فُعِّل لـ: {done} رقم\n"
+                f"⏭ مُتجاوزة (مضبوطة يدوياً): {skipped}\n"
+                f"❌ فشلت: {failed}",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception:
+            pass
+
+
 async def _cleanup_pending_login(owner_id: int):
     pending = _pending_number_logins.pop(owner_id, None)
     if pending:
@@ -1176,10 +1311,26 @@ async def _finish_number_login(update: Update, context: ContextTypes.DEFAULT_TYP
             await _start_number_monitor(phone, session_str, context.application)
         except Exception as e:
             logger.warning(f"⚠️ تعذر بدء مراقبة الرقم {phone}: {e}")
+        # ─── تفعيل التحقق بخطوتين تلقائياً ───────────────────────────
+        twofa_note = ""
+        try:
+            with db_conn() as c:
+                row = c.execute(
+                    "SELECT id FROM number_stock WHERE phone_number=%s", (phone,)
+                ).fetchone()
+            if row:
+                ok, msg_2fa, pwd_2fa = await enable_2fa_for_number(phone, session_str, row["id"])
+                if ok and pwd_2fa:
+                    twofa_note = f"\n🔐 *التحقق بخطوتين:* تم تفعيله تلقائياً.\n🗝 كلمة المرور: `{pwd_2fa}`"
+                elif not ok:
+                    twofa_note = f"\n⚠️ تعذّر تفعيل التحقق بخطوتين: {msg_2fa}"
+        except Exception as e2:
+            logger.warning(f"⚠️ خطأ في تفعيل 2FA للرقم {phone}: {e2}")
         avail = get_available_number_count()
         await update.message.reply_text(
             f"✅ *تم تسجيل الدخول وحفظ الرقم بالمخزون بنجاح!*\n\n"
-            f"📱 {phone}\n📦 إجمالي المتاح الآن: {avail} رقم.{kicked_note}\n\n"
+            f"📱 {phone}\n📦 إجمالي المتاح الآن: {avail} رقم.{kicked_note}"
+            f"{twofa_note}\n\n"
             "🔔 سيُبلّغك البوت تلقائياً بأي تغيير أمني على هذا الحساب (كلمة مرور، بريد استرجاع، جلسة دخول جديدة).\n\n"
             "عند بيع هذا الرقم، سيُرسَل رمز الجلسة تلقائياً للمشتري ليدخل مباشرة بدون أي كود.",
             parse_mode=ParseMode.MARKDOWN,
@@ -5431,6 +5582,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             frozen_line = f"\n🧊 حالة التجميد: {frozen_status}"
             if is_frozen and frozen_at_str:
                 frozen_line += f"\n📅 تاريخ التجميد: {frozen_at_str}"
+            # ─── حالة 2FA من DB ───
+            saved_pwd = rec.get("twofa_password") or ""
+            if saved_pwd:
+                twofa_line = "\n🔐 التحقق بخطوتين: ✅ مفعّل (انظر زر كلمة المرور)"
+            else:
+                twofa_line = "\n🔐 التحقق بخطوتين: ❌ غير مفعّل بعد"
             text = (
                 f"📱 *{rec['phone_number']}*"
                 f"{display_name}\n"
@@ -5438,12 +5595,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🕰️ عمر الحساب (تقريبي): {age}\n"
                 f"💻 عدد الأجهزة المسجّلة: {devices if devices >= 0 else 'غير متاح'}\n"
                 f"🚫 حالة الحظر (SpamBot): {spam}"
-                f"{frozen_line}\n"
+                f"{frozen_line}"
+                f"{twofa_line}\n"
                 f"🛒 حالة العرض للبيع: {sale_status}\n"
             )
             kb_rows = [
                 [InlineKeyboardButton("📋 تفاصيل الأجهزة وتواريخ التسجيل", callback_data=f"os:number_devices:{stock_id}")],
                 [InlineKeyboardButton("🔑 جلب آخر كود دخول", callback_data=f"os:number_code:{stock_id}")],
+                [InlineKeyboardButton("🔐 كلمة مرور التحقق بخطوتين", callback_data=f"os:number_2fa:{stock_id}")],
             ]
             if not rec["sessions_reset"] and not rec["force_listed"]:
                 kb_rows.append([InlineKeyboardButton("🚀 عرض مباشر للبيع الآن (تجاوز الانتظار)", callback_data=f"os:force_list:{stock_id}")])
@@ -5632,6 +5791,128 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await client.disconnect()
             except Exception:
                 pass
+        return
+
+    if data.startswith("os:number_2fa:") and is_own:
+        stock_id = int(data.split(":")[-1])
+        rec = get_stock_number(stock_id)
+        if not rec:
+            await q.edit_message_text(
+                "⚠️ الرقم غير موجود.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")]])
+            )
+            return
+        saved_pwd = rec.get("twofa_password") or ""
+        if saved_pwd:
+            # عرض كلمة المرور المحفوظة
+            await q.edit_message_text(
+                f"🔐 *التحقق بخطوتين — {rec['phone_number']}*\n\n"
+                f"✅ مفعّل\n"
+                f"🗝 كلمة المرور: `{saved_pwd}`\n\n"
+                "احتفظ بها في مكان آمن — ستحتاجها لو أردت تغييرها.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 إعادة تفعيل بكلمة مرور جديدة", callback_data=f"os:number_2fa_reset:{stock_id}")],
+                    [InlineKeyboardButton("🔙 رجوع", callback_data=f"os:number_info:{stock_id}")],
+                ])
+            )
+        else:
+            # لم تُفعَّل بعد — عرض زر تفعيل فوري
+            await q.edit_message_text(
+                f"🔐 *التحقق بخطوتين — {rec['phone_number']}*\n\n"
+                "❌ غير مفعّل بعد.\n\n"
+                "اضغط التفعيل لتوليد كلمة مرور قوية وحفظها تلقائياً.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔐 تفعيل التحقق بخطوتين الآن", callback_data=f"os:number_2fa_enable:{stock_id}")],
+                    [InlineKeyboardButton("🔙 رجوع", callback_data=f"os:number_info:{stock_id}")],
+                ])
+            )
+        return
+
+    if data.startswith("os:number_2fa_enable:") and is_own:
+        stock_id = int(data.split(":")[-1])
+        rec = get_stock_number(stock_id)
+        if not rec or not rec.get("session_string"):
+            await q.edit_message_text(
+                "⚠️ لا يمكن تفعيل التحقق — الرقم بلا جلسة.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data=f"os:number_info:{stock_id}")]])
+            )
+            return
+        await q.edit_message_text(f"⏳ جاري تفعيل التحقق بخطوتين لرقم {rec['phone_number']}...")
+        ok, msg_2fa, pwd_2fa = await enable_2fa_for_number(
+            rec["phone_number"], rec["session_string"], stock_id
+        )
+        if ok and pwd_2fa:
+            await q.edit_message_text(
+                f"✅ *تم تفعيل التحقق بخطوتين بنجاح!*\n\n"
+                f"📱 {rec['phone_number']}\n"
+                f"🗝 كلمة المرور: `{pwd_2fa}`\n\n"
+                "تم حفظها تلقائياً وستظهر دائماً في معلومات الرقم.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data=f"os:number_info:{stock_id}")]])
+            )
+        else:
+            await q.edit_message_text(
+                f"❌ *فشل تفعيل التحقق بخطوتين*\n\n{msg_2fa}",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data=f"os:number_info:{stock_id}")]])
+            )
+        return
+
+    if data.startswith("os:number_2fa_reset:") and is_own:
+        stock_id = int(data.split(":")[-1])
+        rec = get_stock_number(stock_id)
+        if not rec or not rec.get("session_string"):
+            await q.edit_message_text(
+                "⚠️ لا يمكن إعادة التفعيل — الرقم بلا جلسة.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data=f"os:number_2fa:{stock_id}")]])
+            )
+            return
+        current_pwd = rec.get("twofa_password") or ""
+        if not current_pwd:
+            # لا توجد كلمة مرور محفوظة → فقط فعّل جديدة
+            await q.edit_message_text(f"⏳ جاري تفعيل التحقق بخطوتين لرقم {rec['phone_number']}...")
+            ok, msg_2fa, pwd_2fa = await enable_2fa_for_number(
+                rec["phone_number"], rec["session_string"], stock_id
+            )
+        else:
+            # يجب تغيير كلمة المرور الموجودة باستخدام الكلمة الحالية
+            await q.edit_message_text(f"⏳ جاري تغيير كلمة مرور التحقق لرقم {rec['phone_number']}...")
+            client2 = TelegramClient(
+                StringSession(rec["session_string"]),
+                int(TELEGRAM_API_ID), TELEGRAM_API_HASH
+            )
+            try:
+                await client2.connect()
+                new_pwd = generate_2fa_password()
+                await client2.edit_2fa(
+                    current_password=current_pwd,
+                    new_password=new_pwd,
+                    hint="Auto",
+                )
+                with db_conn() as c:
+                    c.execute("UPDATE number_stock SET twofa_password=%s WHERE id=%s", (new_pwd, stock_id))
+                ok, msg_2fa, pwd_2fa = True, "تم", new_pwd
+            except Exception as e2:
+                ok, msg_2fa, pwd_2fa = False, str(e2)[:120], None
+            finally:
+                try: await client2.disconnect()
+                except Exception: pass
+        if ok and pwd_2fa:
+            await q.edit_message_text(
+                f"✅ *تم تغيير كلمة المرور بنجاح!*\n\n"
+                f"📱 {rec['phone_number']}\n"
+                f"🗝 كلمة المرور الجديدة: `{pwd_2fa}`",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data=f"os:number_info:{stock_id}")]])
+            )
+        else:
+            await q.edit_message_text(
+                f"❌ *فشل تغيير كلمة المرور*\n\n{msg_2fa}",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data=f"os:number_2fa:{stock_id}")]])
+            )
         return
 
     if data == "os:login_number" and is_own:
@@ -6927,6 +7208,8 @@ def main():
         logger.info("🔒 تم تفعيل إعادة المحاولة الدورية لطرد جلسات الأرقام (كل 10 دقائق)")
         app.job_queue.run_repeating(run_referral_tasks_job, interval=3600, first=120)
         logger.info("🤝 تم تفعيل مهام الإحالة التلقائية (كل ساعة)")
+        app.job_queue.run_repeating(enable_pending_2fa_job, interval=1800, first=180)
+        logger.info("🔐 تم تفعيل مهمة التحقق بخطوتين التلقائي (كل 30 دقيقة)")
 
     logger.info("🤖 Bot started!")
     app.run_polling(
