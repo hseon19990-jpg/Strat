@@ -642,6 +642,14 @@ def start_competition():
     set_setting("competition_scheduled_at", "")
 
 
+def start_competition_at(dt: datetime):
+    """يبدأ (أو يُسجّل) مسابقة نشطة تُحتسب دعواتها منذ تاريخ محدد في الماضي —
+    يفيد عندما تكون المسابقة قد بدأت فعلياً قبل تفعيل هذه الميزة في البوت."""
+    set_setting("competition_active", "1")
+    set_setting("competition_started_at", dt.astimezone(timezone.utc).isoformat())
+    set_setting("competition_scheduled_at", "")
+
+
 def end_competition():
     """ينهي المسابقة الحالية (يبقى تاريخ بدايتها محفوظاً حتى تبدأ مسابقة جديدة)."""
     set_setting("competition_active", "0")
@@ -2531,6 +2539,24 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
+    if is_own and state == "os_await_contest_backdate":
+        try:
+            dt = datetime.strptime(text, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+        except ValueError:
+            await update.message.reply_text("⚠️ الصيغة غير صحيحة. أرسل التاريخ بهذا الشكل: `2026-07-10 09:00`", parse_mode=ParseMode.MARKDOWN)
+            return
+        if dt > datetime.now(timezone.utc):
+            await update.message.reply_text("⚠️ هذا تاريخ في المستقبل. إن كنت تريد جدولة بدء تلقائي مستقبلاً استخدم خيار «⏰ جدولة بدء تلقائي» بدلاً من هذا.")
+            return
+        start_competition_at(dt)
+        await update.message.reply_text(
+            f"✅ تم تسجيل بدء المسابقة من:\n{dt.strftime('%Y-%m-%d %H:%M')} (بالتوقيت العالمي UTC)\n\n"
+            "كل الدعوات المكتملة منذ هذا التاريخ ستظهر الآن في ترتيب المسابقة.",
+            reply_markup=owner_settings_kb()
+        )
+        context.user_data["state"] = "main_menu"
+        return
+
     if is_own and state == "os_await_contest_schedule":
         try:
             dt = datetime.strptime(text, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
@@ -3509,11 +3535,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "os:contest_start_confirm" and is_own:
         await q.edit_message_text(
             "⚠️ *بدء مسابقة جديدة*\n\n"
-            "سيبدأ عدّ المتصدرين بالدعوات من هذه اللحظة، ويمكن للأعضاء رؤية الترتيب فور بدئها عبر زر «الأكثر دعوةً».\n"
-            "هل أنت متأكد؟",
+            "اختر متى تبدأ حساب الدعوات:\n"
+            "• *الآن* — إذا كانت المسابقة ستنطلق من هذه اللحظة.\n"
+            "• *من تاريخ سابق* — إذا كانت المسابقة بدأت فعلياً قبل الآن (مثلاً أنشأتها يدوياً قبل توفر هذه الميزة)، "
+            "لتُحتسب كل الدعوات منذ ذلك التاريخ ولا يخسر المتصدرون تقدّمهم.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ نعم، ابدأ المسابقة", callback_data="os:contest_start")],
+                [InlineKeyboardButton("✅ ابدأ الآن", callback_data="os:contest_start")],
+                [InlineKeyboardButton("🕓 ابدأ من تاريخ سابق", callback_data="os:contest_start_backdate")],
                 [InlineKeyboardButton("🔙 إلغاء", callback_data="os:contest")],
             ])
         )
@@ -3526,6 +3555,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "✅ *بدأت المسابقة بنجاح!*\n\nيمكن للأعضاء الآن رؤية المتصدرين من زر «الأكثر دعوةً» ← «متصدرين المسابقة».",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:contest")]])
+        )
+        return
+
+    if data == "os:contest_start_backdate" and is_own:
+        context.user_data["state"] = "os_await_contest_backdate"
+        await q.edit_message_text(
+            "🕓 *تاريخ بدء المسابقة الفعلي*\n\n"
+            "أرسل التاريخ والوقت اللي بدأت فيه المسابقة فعلياً، بالتوقيت العالمي (UTC)، بهذه الصيغة:\n"
+            "`YYYY-MM-DD HH:MM`\n\nمثال: `2026-07-10 09:00`\n\n"
+            "سيُحتسب كل من دعا أصدقاءه (دعوة مكتملة) منذ هذا التاريخ ضمن ترتيب المسابقة.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:contest")]])
         )
         return
 
