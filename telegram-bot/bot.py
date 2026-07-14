@@ -327,6 +327,14 @@ def init_db():
               created_at  TEXT DEFAULT CURRENT_TIMESTAMP
           )""")
           c.execute("""
+          CREATE TABLE IF NOT EXISTS number_stock (
+              id            SERIAL PRIMARY KEY,
+              phone_number  TEXT UNIQUE,
+              assigned_to   BIGINT,
+              assigned_at   TIMESTAMPTZ,
+              added_at      TIMESTAMPTZ DEFAULT NOW()
+          )""")
+          c.execute("""
           CREATE TABLE IF NOT EXISTS mandatory_channels (
               id               SERIAL PRIMARY KEY,
               channel_username TEXT UNIQUE,
@@ -615,6 +623,45 @@ def _format_top_referrers(rows, title: str) -> str:
         lines.append(f"{i}. {name} — {r['cnt']} دعوة")
     return "\n".join(lines)
 
+def add_numbers_to_stock(numbers: list) -> int:
+    """يضيف أرقاماً جديدة لمخزون أرقام تيلغرام (يتجاهل المكرر). يُرجع عدد الأرقام المضافة فعلياً."""
+    added = 0
+    with db_conn() as c:
+        for n in numbers:
+            n = n.strip()
+            if not n:
+                continue
+            try:
+                c.execute(
+                    "INSERT INTO number_stock (phone_number) VALUES (%s) ON CONFLICT (phone_number) DO NOTHING",
+                    (n,)
+                )
+                if c.rowcount:
+                    added += 1
+            except Exception:
+                pass
+    return added
+
+
+def get_available_number_count() -> int:
+    with db_conn() as c:
+        row = c.execute("SELECT COUNT(*) as cnt FROM number_stock WHERE assigned_to IS NULL").fetchone()
+        return row["cnt"] if row else 0
+
+
+def assign_next_number(user_id: int):
+    """يسحب رقماً متاحاً من المخزون ويحجزه لهذا المستخدم بشكل ذرّي (يمنع تكرار تسليم نفس الرقم
+    لشخصين عند الطلب المتزامن). يُرجع الرقم إن وُجد، أو None إن كان المخزون فارغاً."""
+    with db_conn() as c:
+        row = c.execute(
+            "UPDATE number_stock SET assigned_to=%s, assigned_at=NOW() "
+            "WHERE id = (SELECT id FROM number_stock WHERE assigned_to IS NULL ORDER BY id ASC LIMIT 1 FOR UPDATE SKIP LOCKED) "
+            "RETURNING phone_number",
+            (user_id,)
+        ).fetchone()
+        return row["phone_number"] if row else None
+
+
 def is_user_verified(user_id: int) -> bool:
     with db_conn() as c:
         row = c.execute("SELECT verified FROM users WHERE user_id=?", (user_id,)).fetchone()
@@ -876,6 +923,7 @@ BUILTIN_DEFAULTS = {
         ("⭐ سعر النجمة شحن", "os:edit_star_rate", 2), ("🏆 سعر نجمة الجوائز", "os:edit_exchange_rate", 2),
         ("📦 باقات الاستبدال بنجوم", "os:manage_star_packages", 1),
         ("📱 سعر رقم تيلغرام", "os:edit_number_cost", 2), ("💌 رسالة الترحيب", "os:edit_welcome", 2),
+        ("📥 مخزون أرقام تيلغرام", "os:manage_numbers", 2),
         ("📢 سعر تمويل إجباري", "os:edit_mandatory_cost", 2), ("🔄 سعر تمويل داخلي", "os:edit_internal_cost", 2),
         ("🎁 نقاط الانضمام للقنوات", "os:edit_join_reward", 1),
         ("❌ خصم مغادرة القناة", "os:edit_leave_penalty", 1),
@@ -2543,6 +2591,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
+    if is_own and state == "os_await_add_numbers":
+        raw_numbers = [n for chunk in text.split(",") for n in chunk.splitlines()]
+        added = add_numbers_to_stock(raw_numbers)
+        avail = get_available_number_count()
+        await update.message.reply_text(
+            f"✅ تمت إضافة {added} رقم جديد للمخزون.\n📦 إجمالي المتاح الآن: {avail} رقم.",
+            reply_markup=owner_settings_kb()
+        )
+        context.user_data["state"] = "main_menu"
+        return
+
     if is_own and state == "os_await_welcome":
         set_setting("welcome_message", text)
         await update.message.reply_text("✅ تم تحديث رسالة الترحيب.", reply_markup=owner_settings_kb())
@@ -3746,6 +3805,41 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text("❌ حدث خطأ في خصم النقاط.", reply_markup=back_kb("exchange_points"))
             return
         code = next_order_code(user.id)
+
+        # ── تسليم تلقائي إن وُجد رقم متاح بالمخزون — لا حاجة لتدخل المالك ──
+        auto_number = assign_next_number(user.id)
+        if auto_number:
+            with db_conn() as c:
+                pe = c.execute(
+                    "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,status,order_code) "
+                    "VALUES (?,?,?,?,'completed',?) RETURNING id",
+                    (user.id, "telegram_number", auto_number, cost, code)
+                ).fetchone()
+            result_kb = [[InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")]]
+            await q.edit_message_text(
+                f"✅ *تمت العملية بنجاح!*\n\n"
+                f"📱 رقمك: `{auto_number}`\n"
+                f"💰 التكلفة: {cost} نقطة\n\n"
+                f"📌 كود عمليتك: `{code}`",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup(result_kb)
+            )
+            if OWNER_ID:
+                try:
+                    await context.bot.send_message(
+                        OWNER_ID,
+                        f"📱 <b>تم تسليم رقم تلقائياً</b>\n"
+                        f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
+                        f"📱 {auto_number}\n"
+                        f"💰 {cost} نقطة\n"
+                        f"📌 {code}",
+                        parse_mode=ParseMode.HTML
+                    )
+                except Exception:
+                    pass
+            return
+
+        # ── لا يوجد رقم بالمخزون — نفس المسار اليدوي المعتاد ──
         with db_conn() as c:
             pe = c.execute(
                 "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,status,order_code) "
@@ -4409,6 +4503,34 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(
             f"✏️ الرسالة الحالية التي تظهر عند الاستبدال:\n\n{cur}\n\n"
             f"أرسل الرسالة الجديدة (ستظهر لكل مستخدم قبل كود عمليته تلقائياً):"
+        )
+        return
+
+    # ── مخزون أرقام تيلغرام (تسليم تلقائي) ──
+    if data == "os:manage_numbers" and is_own:
+        avail = get_available_number_count()
+        await q.edit_message_text(
+            "📥 *مخزون أرقام تيلغرام*\n\n"
+            f"📦 الأرقام المتاحة حالياً: *{avail}*\n\n"
+            "عندما يشتري عضو رقماً وهناك مخزون متاح، يُسلَّم له تلقائياً وفوراً بدون أي تدخل منك.\n"
+            "إذا نفد المخزون، يعود الطلب لطريقة التواصل اليدوي كما هو معتاد.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ إضافة أرقام للمخزون", callback_data="os:add_numbers")],
+                [InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")],
+            ])
+        )
+        return
+
+    if data == "os:add_numbers" and is_own:
+        context.user_data["state"] = "os_await_add_numbers"
+        await q.edit_message_text(
+            "➕ *إضافة أرقام للمخزون*\n\n"
+            "أرسل الأرقام دفعة واحدة، رقم واحد في كل سطر (أو مفصولة بفاصلة)، مثال:\n\n"
+            "`+9647701234567`\n`+9647709876543`\n\n"
+            "سيتم تجاهل أي رقم مكرر موجود مسبقاً بالمخزون.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:manage_numbers")]])
         )
         return
 
