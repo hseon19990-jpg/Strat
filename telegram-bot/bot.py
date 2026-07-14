@@ -6360,7 +6360,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             uses  = c.execute(
                 """
                 SELECT pu.user_id, pu.used_at,
-                       u.username, u.first_name, u.last_name, u.points
+                       u.username, u.full_name, u.points
                 FROM promo_uses pu
                 LEFT JOIN users u ON u.user_id = pu.user_id
                 WHERE pu.code = %s
@@ -6380,8 +6380,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             lines = []
             for i, u in enumerate(uses, 1):
-                name = (u["first_name"] or "") + (" " + u["last_name"] if u["last_name"] else "")
-                name = name.strip() or "—"
+                name = (u["full_name"] or "").strip() or "—"
                 uname = f"@{u['username']}" if u["username"] else f"ID: {u['user_id']}"
                 pts   = u["points"] if u["points"] is not None else "؟"
                 ts_raw = u["used_at"]
