@@ -86,6 +86,7 @@ TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "")
 # تخزين مؤقت (في الذاكرة) لجلسات تسجيل دخول الأرقام قيد التنفيذ من قبل المالك
 _pending_number_logins = {}
 _monitor_clients = {}   # phone_number -> TelegramClient متصل بشكل دائم لمراقبة تنبيهات الحساب
+_monitor_tasks   = {}   # phone_number -> asyncio.Task لحلقة run_until_disconnected
 JUSTANOTHERPANEL_API_URL = "https://justanotherpanel.com/api/v2"
 
 # ────────────────────────────────────────────────────────────
@@ -1102,12 +1103,22 @@ def _format_elapsed(added_at) -> str:
 
 async def _start_number_monitor(phone: str, session_str: str, application):
     """يفتح اتصالاً دائماً بحساب هذا الرقم ليراقب أي تنبيهات أمنية تصله من تيليجرام الرسمي
-    (جلسة دخول جديدة، تغيير كلمة المرور، إضافة/تغيير بريد الاسترجاع، ...) ويبلّغ المالك فوراً."""
+    (جلسة دخول جديدة، تغيير كلمة المرور، إضافة/تغيير بريد الاسترجاع، ...) ويبلّغ المالك فوراً.
+
+    ⚠️ السبب الجذري لعدم وصول الإشعارات سابقاً: كان الكلايانت يتصل فقط بدون تشغيل
+    حلقة استقبال التحديثات. Telethon لا يُطلق أحداث NewMessage إلا إذا كانت هناك مهمة
+    run_until_disconnected() تعمل بالخلفية. الإصلاح: asyncio.create_task.
+    """
     if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
         return
     if phone in _monitor_clients:
         return
-    client = TelegramClient(StringSession(session_str), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+
+    client = TelegramClient(
+        StringSession(session_str),
+        int(TELEGRAM_API_ID),
+        TELEGRAM_API_HASH,
+    )
 
     async def _on_official_message(event):
         try:
@@ -1118,18 +1129,46 @@ async def _start_number_monitor(phone: str, session_str: str, application):
                 await application.bot.send_message(
                     OWNER_ID,
                     f"🔔 *تنبيه أمني على الرقم* `{phone}`\n\n{text}",
-                    parse_mode=ParseMode.MARKDOWN
+                    parse_mode=ParseMode.MARKDOWN,
                 )
         except Exception as e:
             logger.error(f"❌ خطأ في إرسال تنبيه أمني للرقم {phone}: {e}")
 
+    async def _on_disconnect():
+        """إعادة تشغيل المراقبة تلقائياً عند انقطاع الاتصال (مثلاً انقطاع شبكة Railway)."""
+        _monitor_clients.pop(phone, None)
+        _monitor_tasks.pop(phone, None)
+        logger.warning(f"⚠️ انقطع اتصال مراقبة الرقم {phone}، سيُعاد المحاولة خلال 30 ثانية...")
+        await asyncio.sleep(30)
+        await _start_number_monitor(phone, session_str, application)
+
     client.add_event_handler(_on_official_message, events.NewMessage(chats=777000))
+
     try:
         await client.connect()
         if not await client.is_user_authorized():
+            logger.warning(f"⚠️ جلسة الرقم {phone} غير مخوّلة (expired/revoked)، توقف عن المراقبة.")
             await client.disconnect()
             return
+
         _monitor_clients[phone] = client
+
+        # ─── الإصلاح الجوهري ───────────────────────────────────────────────
+        # run_until_disconnected() هي ما تُشغّل حلقة استقبال تحديثات Telethon.
+        # بدونها لن تُطلق أي أحداث (NewMessage وغيرها) مطلقاً.
+        # نُشغّلها كـ background task حتى لا تحجب البوت الرئيسي.
+        async def _run_loop():
+            try:
+                await client.run_until_disconnected()
+            except Exception as run_err:
+                logger.error(f"❌ خطأ في حلقة مراقبة الرقم {phone}: {run_err}")
+            finally:
+                await _on_disconnect()
+
+        task = asyncio.create_task(_run_loop())
+        _monitor_tasks[phone] = task
+        logger.info(f"👁️ بدأت مراقبة الرقم {phone} — حلقة الاستقبال تعمل بالخلفية ✅")
+
     except Exception as e:
         logger.warning(f"⚠️ تعذّر بدء مراقبة الرقم {phone}: {e}")
         try:
