@@ -31,7 +31,7 @@ from telegram.ext import (
 from telegram.constants import ParseMode
 from telegram.error import NetworkError, TimedOut, RetryAfter
 
-from telethon import TelegramClient
+from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.errors import (
     SessionPasswordNeededError, PhoneCodeInvalidError, PhoneCodeExpiredError,
@@ -85,6 +85,7 @@ TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "")
 
 # تخزين مؤقت (في الذاكرة) لجلسات تسجيل دخول الأرقام قيد التنفيذ من قبل المالك
 _pending_number_logins = {}
+_monitor_clients = {}   # phone_number -> TelegramClient متصل بشكل دائم لمراقبة تنبيهات الحساب
 JUSTANOTHERPANEL_API_URL = "https://justanotherpanel.com/api/v2"
 
 # ────────────────────────────────────────────────────────────
@@ -364,6 +365,7 @@ def init_db():
               "ALTER TABLE mandatory_channels ADD COLUMN IF NOT EXISTS queued INTEGER DEFAULT 0",
               "ALTER TABLE prize_exchanges ADD COLUMN IF NOT EXISTS order_code TEXT",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS session_string TEXT",
+              "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS sessions_reset BOOLEAN DEFAULT FALSE",
           ]:
               try: c.execute(_alt)
               except Exception: pass
@@ -837,13 +839,21 @@ async def _finish_number_login(update: Update, context: ContextTypes.DEFAULT_TYP
         kicked_note = ""
         try:
             await client(ResetAuthorizationsRequest())
+            with db_conn() as c:
+                c.execute("UPDATE number_stock SET sessions_reset=TRUE WHERE phone_number=%s", (phone,))
             kicked_note = "\n🔒 تم تسجيل خروج كل الأجهزة/الجلسات الأخرى من هذا الحساب تلقائياً."
         except Exception as e:
-            logger.warning(f"⚠️ تعذر تسجيل خروج الجلسات الأخرى للرقم {phone}: {e}")
+            logger.warning(f"⚠️ تعذر تسجيل خروج الجلسات الأخرى للرقم {phone} فوراً، سيُعاد المحاولة تلقائياً بالخلفية: {e}")
+            kicked_note = "\n⏳ لم يُسمح بطرد الجلسات الأخرى فوراً (قيد مؤقت من تيليجرام)، سيحاول البوت تلقائياً كل فترة حتى ينجح ويرسل لك تنبيهاً."
+        try:
+            await _start_number_monitor(phone, session_str, context.application)
+        except Exception as e:
+            logger.warning(f"⚠️ تعذر بدء مراقبة الرقم {phone}: {e}")
         avail = get_available_number_count()
         await update.message.reply_text(
             f"✅ *تم تسجيل الدخول وحفظ الرقم بالمخزون بنجاح!*\n\n"
             f"📱 {phone}\n📦 إجمالي المتاح الآن: {avail} رقم.{kicked_note}\n\n"
+            "🔔 سيُبلّغك البوت تلقائياً بأي تغيير أمني على هذا الحساب (كلمة مرور، بريد استرجاع، جلسة دخول جديدة).\n\n"
             "عند بيع هذا الرقم، سيُرسَل رمز الجلسة تلقائياً للمشتري ليدخل مباشرة بدون أي كود.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=owner_settings_kb()
@@ -977,6 +987,120 @@ def _calc_partial_refund_pts(api_service_id: int, remains: int) -> int:
     except Exception as e:
         logger.warning(f"⚠️ فشل حساب استرجاع الطلب الجزئي: {e}")
         return 0
+
+
+def _format_elapsed(added_at) -> str:
+    """يعيد نصاً يوضّح المدة المنقضية منذ إضافة الرقم للبوت."""
+    try:
+        if added_at is None:
+            return "غير معروف"
+        if added_at.tzinfo is None:
+            added_at = added_at.replace(tzinfo=timezone.utc)
+        delta = datetime.now(timezone.utc) - added_at
+        secs = int(delta.total_seconds())
+        if secs < 60:
+            return f"{secs} ثانية"
+        mins = secs // 60
+        if mins < 60:
+            return f"{mins} دقيقة"
+        hours = mins // 60
+        if hours < 24:
+            return f"{hours} ساعة"
+        days = hours // 24
+        return f"{days} يوم"
+    except Exception:
+        return "غير معروف"
+
+
+async def _start_number_monitor(phone: str, session_str: str, application):
+    """يفتح اتصالاً دائماً بحساب هذا الرقم ليراقب أي تنبيهات أمنية تصله من تيليجرام الرسمي
+    (جلسة دخول جديدة، تغيير كلمة المرور، إضافة/تغيير بريد الاسترجاع، ...) ويبلّغ المالك فوراً."""
+    if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
+        return
+    if phone in _monitor_clients:
+        return
+    client = TelegramClient(StringSession(session_str), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+
+    async def _on_official_message(event):
+        try:
+            text = (event.raw_text or "").strip()
+            if not text:
+                return
+            if OWNER_ID:
+                await application.bot.send_message(
+                    OWNER_ID,
+                    f"🔔 *تنبيه أمني على الرقم* `{phone}`\n\n{text}",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+        except Exception as e:
+            logger.error(f"❌ خطأ في إرسال تنبيه أمني للرقم {phone}: {e}")
+
+    client.add_event_handler(_on_official_message, events.NewMessage(chats=777000))
+    try:
+        await client.connect()
+        if not await client.is_user_authorized():
+            await client.disconnect()
+            return
+        _monitor_clients[phone] = client
+    except Exception as e:
+        logger.warning(f"⚠️ تعذّر بدء مراقبة الرقم {phone}: {e}")
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+
+async def start_all_number_monitors(application):
+    """يُستدعى عند إقلاع البوت: يبدأ مراقبة كل الأرقام التي تملك جلسة محفوظة بالمخزون."""
+    if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
+        return
+    with db_conn() as c:
+        rows = c.execute(
+            "SELECT phone_number, session_string FROM number_stock WHERE session_string IS NOT NULL"
+        ).fetchall()
+    for row in rows:
+        await _start_number_monitor(row["phone_number"], row["session_string"], application)
+    if rows:
+        logger.info(f"👁️ تم تفعيل مراقبة {len(rows)} رقم (تنبيهات أمنية فورية)")
+
+
+async def retry_pending_session_resets(context: ContextTypes.DEFAULT_TYPE):
+    """محاولة دورية لتسجيل خروج الجلسات الأخرى للأرقام التي فشل طردها فوراً بعد تسجيل الدخول
+    (مثلاً بسبب قيود تيليجرام المؤقتة)، يعيد المحاولة كل دورة حتى تنجح، ثم يبلّغ المالك."""
+    if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
+        return
+    with db_conn() as c:
+        rows = c.execute(
+            "SELECT id, phone_number, session_string, added_at FROM number_stock "
+            "WHERE session_string IS NOT NULL AND (sessions_reset IS NULL OR sessions_reset=FALSE)"
+        ).fetchall()
+    for row in rows:
+        rec = dict(row)
+        client = TelegramClient(StringSession(rec["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+        try:
+            await client.connect()
+            if not await client.is_user_authorized():
+                continue
+            await client(ResetAuthorizationsRequest())
+            with db_conn() as c2:
+                c2.execute("UPDATE number_stock SET sessions_reset=TRUE WHERE id=%s", (rec["id"],))
+            elapsed = _format_elapsed(rec["added_at"])
+            if OWNER_ID:
+                await context.bot.send_message(
+                    OWNER_ID,
+                    f"🔒 *تم أخيراً تسجيل خروج كل الجلسات الأخرى تلقائياً*\n\n"
+                    f"📱 الرقم: `{rec['phone_number']}`\n"
+                    f"⏱️ المدة منذ إضافته للبوت: {elapsed}",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            logger.info(f"🔒 تم تسجيل خروج الجلسات الأخرى (إعادة محاولة) للرقم {rec['phone_number']}")
+        except Exception as e:
+            logger.debug(f"⏳ إعادة محاولة لاحقاً لطرد جلسات الرقم {rec['phone_number']}: {e}")
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
 
 
 async def check_pending_orders_job(context: ContextTypes.DEFAULT_TYPE):
@@ -6008,6 +6132,10 @@ def main():
                 scope=BotCommandScopeChat(chat_id=OWNER_ID)
             )
         logger.info("✅ Bot commands set")
+        try:
+            await start_all_number_monitors(application)
+        except Exception as e:
+            logger.error(f"❌ خطأ في بدء مراقبة الأرقام: {e}")
 
     # ── معالج الأخطاء العام ──
     async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -6026,6 +6154,8 @@ def main():
     if app.job_queue:
         app.job_queue.run_repeating(check_pending_orders_job, interval=300, first=30)
         logger.info("⏱️ تم تفعيل الفحص الدوري لحالة الطلبات (كل 5 دقائق)")
+        app.job_queue.run_repeating(retry_pending_session_resets, interval=600, first=90)
+        logger.info("🔒 تم تفعيل إعادة المحاولة الدورية لطرد جلسات الأرقام (كل 10 دقائق)")
 
     logger.info("🤖 Bot started!")
     app.run_polling(
