@@ -615,87 +615,6 @@ def _format_top_referrers(rows, title: str) -> str:
         lines.append(f"{i}. {name} — {r['cnt']} دعوة")
     return "\n".join(lines)
 
-def _competition_started_at():
-    """يُرجع لحظة بدء المسابقة الحالية (UTC) إن كانت هناك مسابقة نشطة، وإلا None."""
-    if get_setting("competition_active") != "1":
-        return None
-    raw = get_setting("competition_started_at")
-    if not raw:
-        return None
-    try:
-        dt = datetime.fromisoformat(raw)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    except Exception:
-        return None
-
-
-def is_competition_active() -> bool:
-    return get_setting("competition_active") == "1"
-
-
-def start_competition():
-    """يبدأ مسابقة جديدة للمتصدرين بالدعوات من هذه اللحظة."""
-    set_setting("competition_active", "1")
-    set_setting("competition_started_at", datetime.now(timezone.utc).isoformat())
-    set_setting("competition_scheduled_at", "")
-
-
-def start_competition_at(dt: datetime):
-    """يبدأ (أو يُسجّل) مسابقة نشطة تُحتسب دعواتها منذ تاريخ محدد في الماضي —
-    يفيد عندما تكون المسابقة قد بدأت فعلياً قبل تفعيل هذه الميزة في البوت."""
-    set_setting("competition_active", "1")
-    set_setting("competition_started_at", dt.astimezone(timezone.utc).isoformat())
-    set_setting("competition_scheduled_at", "")
-
-
-def end_competition():
-    """ينهي المسابقة الحالية (يبقى تاريخ بدايتها محفوظاً حتى تبدأ مسابقة جديدة)."""
-    set_setting("competition_active", "0")
-
-
-def _competition_scheduled_at():
-    """يُرجع الوقت المجدول لبدء المسابقة تلقائياً (UTC)، أو None إن لم توجد جدولة."""
-    raw = get_setting("competition_scheduled_at")
-    if not raw:
-        return None
-    try:
-        dt = datetime.fromisoformat(raw)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    except Exception:
-        return None
-
-
-def schedule_competition(dt: datetime):
-    """يجدول بدء مسابقة تلقائياً في وقت مستقبلي محدد (UTC)."""
-    set_setting("competition_scheduled_at", dt.astimezone(timezone.utc).isoformat())
-
-
-def cancel_scheduled_competition():
-    set_setting("competition_scheduled_at", "")
-
-
-async def check_scheduled_competition_job(context: ContextTypes.DEFAULT_TYPE):
-    """مهمة دورية: تبدأ المسابقة تلقائياً إن حان موعدها المجدول (تُفحص كل دقيقة)."""
-    scheduled = _competition_scheduled_at()
-    if scheduled is None:
-        return
-    if datetime.now(timezone.utc) >= scheduled:
-        start_competition()
-        if OWNER_ID:
-            try:
-                await context.bot.send_message(
-                    OWNER_ID,
-                    "🏁 *بدأت المسابقة تلقائياً حسب الجدولة المحدَّدة مسبقاً.*",
-                    parse_mode=ParseMode.MARKDOWN
-                )
-            except Exception:
-                pass
-
-
 def is_user_verified(user_id: int) -> bool:
     with db_conn() as c:
         row = c.execute("SELECT verified FROM users WHERE user_id=?", (user_id,)).fetchone()
@@ -969,7 +888,6 @@ BUILTIN_DEFAULTS = {
         ("✏️ نص زر الدعم بالقائمة", "os:edit_support_label", 2), ("📢 رسالة جماعية", "os:broadcast", 2),
         ("🔐 تفعيل/تعطيل التحقق", "os:toggle_captcha", 2), ("📊 إحصائيات", "os:stats", 2),
         ("🏆 الأكثر إرسالاً لرابط الدعوة", "os:top_referrers", 2),
-        ("🏁 مسابقة الدعوات", "os:contest", 2),
         ("💵 رصيد موقع الرشق", "os:site_balance", 1),
         ("🧩 إدارة الأزرار", "os:manage_buttons", 1),
         ("✏️ رسالة عند الاستبدال", "os:edit_exchange_msg", 1),
@@ -2539,41 +2457,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
-    if is_own and state == "os_await_contest_backdate":
-        try:
-            dt = datetime.strptime(text, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
-        except ValueError:
-            await update.message.reply_text("⚠️ الصيغة غير صحيحة. أرسل التاريخ بهذا الشكل: `2026-07-10 09:00`", parse_mode=ParseMode.MARKDOWN)
-            return
-        if dt > datetime.now(timezone.utc):
-            await update.message.reply_text("⚠️ هذا تاريخ في المستقبل. إن كنت تريد جدولة بدء تلقائي مستقبلاً استخدم خيار «⏰ جدولة بدء تلقائي» بدلاً من هذا.")
-            return
-        start_competition_at(dt)
-        await update.message.reply_text(
-            f"✅ تم تسجيل بدء المسابقة من:\n{dt.strftime('%Y-%m-%d %H:%M')} (بالتوقيت العالمي UTC)\n\n"
-            "كل الدعوات المكتملة منذ هذا التاريخ ستظهر الآن في ترتيب المسابقة.",
-            reply_markup=owner_settings_kb()
-        )
-        context.user_data["state"] = "main_menu"
-        return
-
-    if is_own and state == "os_await_contest_schedule":
-        try:
-            dt = datetime.strptime(text, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
-        except ValueError:
-            await update.message.reply_text("⚠️ الصيغة غير صحيحة. أرسل التاريخ بهذا الشكل: `2026-07-20 18:00`", parse_mode=ParseMode.MARKDOWN)
-            return
-        if dt <= datetime.now(timezone.utc):
-            await update.message.reply_text("⚠️ يجب أن يكون الموعد في المستقبل. أرسل موعداً آخر.")
-            return
-        schedule_competition(dt)
-        await update.message.reply_text(
-            f"✅ تمت جدولة بدء المسابقة تلقائياً في:\n{dt.strftime('%Y-%m-%d %H:%M')} (بالتوقيت العالمي UTC)",
-            reply_markup=owner_settings_kb()
-        )
-        context.user_data["state"] = "main_menu"
-        return
-
     if is_own and state == "os_await_star_rate":
         try:
             val = int(text)
@@ -3413,7 +3296,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rows = [
             [InlineKeyboardButton("🕐 آخر 24 ساعة", callback_data="top_ref_pick:24h")],
             [InlineKeyboardButton("📅 اليوم الحالي (منذ 00:00 بالتوقيت العالمي)", callback_data="top_ref_pick:day")],
-            [InlineKeyboardButton("🏆 متصدرين المسابقة", callback_data="contest_leaderboard")],
             [InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")],
         ]
         await q.edit_message_text(
@@ -3484,144 +3366,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "✅ *تم تصفير عداد الأكثر إرسالاً لرابط الدعوة بنجاح.*",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:top_referrers")]])
-        )
-        return
-
-    # ── متصدرين المسابقة (للأعضاء) ──
-    if data == "contest_leaderboard":
-        started = _competition_started_at()
-        if started is None:
-            await q.edit_message_text(
-                "🚫 *لا توجد مسابقة حالياً.*\n\nترقّب الإعلان عن المسابقة القادمة في القناة!",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="top_ref_today")]])
-            )
-            return
-        rows = get_top_referrers_since(started, limit=10)
-        text = _format_top_referrers(rows, "المسابقة الحالية")
-        await q.edit_message_text(
-            text,
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="top_ref_today")]])
-        )
-        return
-
-    # ── مسابقة الدعوات (للمالك) ──
-    if data == "os:contest" and is_own:
-        active = is_competition_active()
-        started = _competition_started_at()
-        scheduled = _competition_scheduled_at()
-        lines = ["🏁 *مسابقة الدعوات*\n"]
-        if active and started:
-            lines.append(f"✅ هناك مسابقة نشطة الآن، بدأت في:\n{started.strftime('%Y-%m-%d %H:%M')} (بالتوقيت العالمي UTC)")
-        else:
-            lines.append("⚪️ لا توجد مسابقة نشطة حالياً.")
-        if scheduled:
-            lines.append(f"\n⏰ مجدولة للبدء تلقائياً في:\n{scheduled.strftime('%Y-%m-%d %H:%M')} (بالتوقيت العالمي UTC)")
-        rows = []
-        if active:
-            rows.append([InlineKeyboardButton("⏹ إنهاء المسابقة الحالية", callback_data="os:contest_end_confirm")])
-            rows.append([InlineKeyboardButton("🏆 عرض المتصدرين الآن", callback_data="os:contest_leaderboard")])
-        else:
-            rows.append([InlineKeyboardButton("▶️ بدء مسابقة جديدة الآن", callback_data="os:contest_start_confirm")])
-        if scheduled:
-            rows.append([InlineKeyboardButton("❌ إلغاء الجدولة", callback_data="os:contest_unschedule")])
-        else:
-            rows.append([InlineKeyboardButton("⏰ جدولة بدء تلقائي", callback_data="os:contest_schedule")])
-        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
-        await q.edit_message_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(rows))
-        return
-
-    if data == "os:contest_start_confirm" and is_own:
-        await q.edit_message_text(
-            "⚠️ *بدء مسابقة جديدة*\n\n"
-            "اختر متى تبدأ حساب الدعوات:\n"
-            "• *الآن* — إذا كانت المسابقة ستنطلق من هذه اللحظة.\n"
-            "• *من تاريخ سابق* — إذا كانت المسابقة بدأت فعلياً قبل الآن (مثلاً أنشأتها يدوياً قبل توفر هذه الميزة)، "
-            "لتُحتسب كل الدعوات منذ ذلك التاريخ ولا يخسر المتصدرون تقدّمهم.",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ ابدأ الآن", callback_data="os:contest_start")],
-                [InlineKeyboardButton("🕓 ابدأ من تاريخ سابق", callback_data="os:contest_start_backdate")],
-                [InlineKeyboardButton("🔙 إلغاء", callback_data="os:contest")],
-            ])
-        )
-        return
-
-    if data == "os:contest_start" and is_own:
-        start_competition()
-        await q.answer("✅ بدأت المسابقة.", show_alert=True)
-        await q.edit_message_text(
-            "✅ *بدأت المسابقة بنجاح!*\n\nيمكن للأعضاء الآن رؤية المتصدرين من زر «الأكثر دعوةً» ← «متصدرين المسابقة».",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:contest")]])
-        )
-        return
-
-    if data == "os:contest_start_backdate" and is_own:
-        context.user_data["state"] = "os_await_contest_backdate"
-        await q.edit_message_text(
-            "🕓 *تاريخ بدء المسابقة الفعلي*\n\n"
-            "أرسل التاريخ والوقت اللي بدأت فيه المسابقة فعلياً، بالتوقيت العالمي (UTC)، بهذه الصيغة:\n"
-            "`YYYY-MM-DD HH:MM`\n\nمثال: `2026-07-10 09:00`\n\n"
-            "سيُحتسب كل من دعا أصدقاءه (دعوة مكتملة) منذ هذا التاريخ ضمن ترتيب المسابقة.",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:contest")]])
-        )
-        return
-
-    if data == "os:contest_end_confirm" and is_own:
-        await q.edit_message_text(
-            "⚠️ *إنهاء المسابقة الحالية*\n\n"
-            "لن يظهر ترتيب المسابقة للأعضاء بعدها، حتى تبدأ مسابقة جديدة.\n"
-            "هل أنت متأكد؟",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ نعم، أنهِ المسابقة", callback_data="os:contest_end")],
-                [InlineKeyboardButton("🔙 إلغاء", callback_data="os:contest")],
-            ])
-        )
-        return
-
-    if data == "os:contest_end" and is_own:
-        end_competition()
-        await q.answer("⏹ تم إنهاء المسابقة.", show_alert=True)
-        await q.edit_message_text(
-            "⏹ *تم إنهاء المسابقة.*",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:contest")]])
-        )
-        return
-
-    if data == "os:contest_leaderboard" and is_own:
-        started = _competition_started_at()
-        rows = get_top_referrers_since(started, limit=10)
-        text = _format_top_referrers(rows, "المسابقة الحالية")
-        await q.edit_message_text(
-            text,
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:contest")]])
-        )
-        return
-
-    if data == "os:contest_schedule" and is_own:
-        context.user_data["state"] = "os_await_contest_schedule"
-        await q.edit_message_text(
-            "⏰ *جدولة بدء تلقائي للمسابقة*\n\n"
-            "أرسل تاريخ ووقت البدء بالتوقيت العالمي (UTC) بهذه الصيغة:\n"
-            "`YYYY-MM-DD HH:MM`\n\nمثال: `2026-07-20 18:00`",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:contest")]])
-        )
-        return
-
-    if data == "os:contest_unschedule" and is_own:
-        cancel_scheduled_competition()
-        await q.answer("✅ تم إلغاء الجدولة.", show_alert=True)
-        await q.edit_message_text(
-            "✅ *تم إلغاء جدولة البدء التلقائي.*",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:contest")]])
         )
         return
 
@@ -5737,8 +5481,6 @@ def main():
     if app.job_queue:
         app.job_queue.run_repeating(check_pending_orders_job, interval=300, first=30)
         logger.info("⏱️ تم تفعيل الفحص الدوري لحالة الطلبات (كل 5 دقائق)")
-        app.job_queue.run_repeating(check_scheduled_competition_job, interval=60, first=10)
-        logger.info("⏱️ تم تفعيل الفحص الدوري لجدولة بدء المسابقة تلقائياً (كل دقيقة)")
 
     logger.info("🤖 Bot started!")
     app.run_polling(
