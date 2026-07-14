@@ -31,6 +31,13 @@ from telegram.ext import (
 from telegram.constants import ParseMode
 from telegram.error import NetworkError, TimedOut, RetryAfter
 
+from telethon import TelegramClient
+from telethon.sessions import StringSession
+from telethon.errors import (
+    SessionPasswordNeededError, PhoneCodeInvalidError, PhoneCodeExpiredError,
+    PhoneNumberInvalidError, FloodWaitError, PasswordHashInvalidError
+)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -71,6 +78,11 @@ ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID", "0"))
 API_URL        = "https://smmmain.com/api/v2"
 
 JUSTANOTHERPANEL_API_KEY = os.getenv("JUSTANOTHERPANEL_API_KEY", "")
+TELEGRAM_API_ID   = os.getenv("TELEGRAM_API_ID", "")
+TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "")
+
+# تخزين مؤقت (في الذاكرة) لجلسات تسجيل دخول الأرقام قيد التنفيذ من قبل المالك
+_pending_number_logins = {}
 JUSTANOTHERPANEL_API_URL = "https://justanotherpanel.com/api/v2"
 
 # ────────────────────────────────────────────────────────────
@@ -349,6 +361,7 @@ def init_db():
               "ALTER TABLE channel_funding ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active'",
               "ALTER TABLE mandatory_channels ADD COLUMN IF NOT EXISTS queued INTEGER DEFAULT 0",
               "ALTER TABLE prize_exchanges ADD COLUMN IF NOT EXISTS order_code TEXT",
+              "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS session_string TEXT",
           ]:
               try: c.execute(_alt)
               except Exception: pass
@@ -649,17 +662,69 @@ def get_available_number_count() -> int:
         return row["cnt"] if row else 0
 
 
+def add_number_with_session(phone: str, session_str: str) -> bool:
+    """يضيف رقماً جاهزاً (مسجّل دخول مسبقاً) مع جلسته إلى المخزون. يُرجع False إن كان الرقم موجوداً مسبقاً."""
+    with db_conn() as c:
+        c.execute(
+            "INSERT INTO number_stock (phone_number, session_string) VALUES (%s,%s) "
+            "ON CONFLICT (phone_number) DO UPDATE SET session_string=EXCLUDED.session_string",
+            (phone, session_str)
+        )
+        return True
+
+
 def assign_next_number(user_id: int):
     """يسحب رقماً متاحاً من المخزون ويحجزه لهذا المستخدم بشكل ذرّي (يمنع تكرار تسليم نفس الرقم
-    لشخصين عند الطلب المتزامن). يُرجع الرقم إن وُجد، أو None إن كان المخزون فارغاً."""
+    لشخصين عند الطلب المتزامن). يُرجع dict {phone_number, session_string} إن وُجد، أو None إن كان المخزون فارغاً."""
     with db_conn() as c:
         row = c.execute(
             "UPDATE number_stock SET assigned_to=%s, assigned_at=NOW() "
             "WHERE id = (SELECT id FROM number_stock WHERE assigned_to IS NULL ORDER BY id ASC LIMIT 1 FOR UPDATE SKIP LOCKED) "
-            "RETURNING phone_number",
+            "RETURNING phone_number, session_string",
             (user_id,)
         ).fetchone()
-        return row["phone_number"] if row else None
+        if not row:
+            return None
+        return {"phone_number": row["phone_number"], "session_string": row["session_string"]}
+
+
+async def _cleanup_pending_login(owner_id: int):
+    pending = _pending_number_logins.pop(owner_id, None)
+    if pending:
+        try:
+            await pending["client"].disconnect()
+        except Exception:
+            pass
+
+
+async def _finish_number_login(update: Update, context: ContextTypes.DEFAULT_TYPE, owner_id: int):
+    """يُستدعى بعد نجاح تسجيل الدخول (بكود فقط أو بكود + كلمة مرور): يحفظ الجلسة بالمخزون وينظّف الحالة المؤقتة."""
+    pending = _pending_number_logins.get(owner_id)
+    if not pending:
+        return
+    client = pending["client"]
+    phone = pending["phone"]
+    try:
+        session_str = client.session.save()
+        add_number_with_session(phone, session_str)
+        avail = get_available_number_count()
+        await update.message.reply_text(
+            f"✅ *تم تسجيل الدخول وحفظ الرقم بالمخزون بنجاح!*\n\n"
+            f"📱 {phone}\n📦 إجمالي المتاح الآن: {avail} رقم.\n\n"
+            "عند بيع هذا الرقم، سيُرسَل رمز الجلسة تلقائياً للمشتري ليدخل مباشرة بدون أي كود.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=owner_settings_kb()
+        )
+    except Exception as e:
+        logger.error(f"❌ خطأ في حفظ جلسة الرقم {phone}: {e}")
+        await update.message.reply_text("❌ حدث خطأ أثناء حفظ الجلسة. حاول من جديد لاحقاً.", reply_markup=owner_settings_kb())
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+        _pending_number_logins.pop(owner_id, None)
+        context.user_data["state"] = "main_menu"
 
 
 def is_user_verified(user_id: int) -> bool:
@@ -2591,6 +2656,81 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
+    if is_own and state == "os_await_login_phone":
+        phone = text.strip()
+        if not phone.startswith("+") or not phone[1:].replace(" ", "").isdigit():
+            await update.message.reply_text("⚠️ أرسل الرقم بصيغة دولية تبدأ بـ + متبوعة بالأرقام فقط، مثال: `+9647701234567`", parse_mode=ParseMode.MARKDOWN)
+            return
+        try:
+            client = TelegramClient(StringSession(), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+            await client.connect()
+            sent = await client.send_code_request(phone)
+        except FloodWaitError as e:
+            await update.message.reply_text(f"⚠️ عدد محاولات كبير على هذا الرقم، انتظر {e.seconds} ثانية وحاول مجدداً.")
+            return
+        except PhoneNumberInvalidError:
+            await update.message.reply_text("⚠️ الرقم غير صحيح. تأكد من الصيغة وأعد الإرسال.")
+            return
+        except Exception as e:
+            logger.error(f"❌ خطأ في إرسال كود الدخول: {e}")
+            await update.message.reply_text("❌ حدث خطأ أثناء الاتصال بتيليجرام. حاول مرة أخرى لاحقاً.")
+            return
+        _pending_number_logins[user.id] = {
+            "client": client, "phone": phone, "phone_code_hash": sent.phone_code_hash
+        }
+        context.user_data["state"] = "os_await_login_code"
+        await update.message.reply_text(
+            "📩 تم إرسال كود التفعيل إلى الرقم. أرسل الكود الذي وصلك (أرقام فقط):"
+        )
+        return
+
+    if is_own and state == "os_await_login_code":
+        pending = _pending_number_logins.get(user.id)
+        if not pending:
+            await update.message.reply_text("⚠️ انتهت الجلسة، ابدأ من جديد من قائمة إدارة الأرقام.", reply_markup=owner_settings_kb())
+            context.user_data["state"] = "main_menu"
+            return
+        client = pending["client"]
+        code = text.strip().replace(" ", "")
+        try:
+            await client.sign_in(pending["phone"], code, phone_code_hash=pending["phone_code_hash"])
+        except SessionPasswordNeededError:
+            context.user_data["state"] = "os_await_login_password"
+            await update.message.reply_text("🔒 هذا الحساب محمي بكلمة مرور تحقق بخطوتين (2FA). أرسلها الآن:")
+            return
+        except (PhoneCodeInvalidError, PhoneCodeExpiredError):
+            await update.message.reply_text("⚠️ الكود غير صحيح أو منتهي الصلاحية. أرسل الكود الصحيح مجدداً.")
+            return
+        except Exception as e:
+            logger.error(f"❌ خطأ في تسجيل الدخول: {e}")
+            await update.message.reply_text("❌ فشل تسجيل الدخول. حاول من جديد لاحقاً من قائمة إدارة الأرقام.", reply_markup=owner_settings_kb())
+            await _cleanup_pending_login(user.id)
+            context.user_data["state"] = "main_menu"
+            return
+        await _finish_number_login(update, context, user.id)
+        return
+
+    if is_own and state == "os_await_login_password":
+        pending = _pending_number_logins.get(user.id)
+        if not pending:
+            await update.message.reply_text("⚠️ انتهت الجلسة، ابدأ من جديد من قائمة إدارة الأرقام.", reply_markup=owner_settings_kb())
+            context.user_data["state"] = "main_menu"
+            return
+        client = pending["client"]
+        try:
+            await client.sign_in(password=text.strip())
+        except PasswordHashInvalidError:
+            await update.message.reply_text("⚠️ كلمة المرور غير صحيحة. أرسلها مجدداً:")
+            return
+        except Exception as e:
+            logger.error(f"❌ خطأ في تسجيل الدخول (2FA): {e}")
+            await update.message.reply_text("❌ فشل تسجيل الدخول. حاول من جديد لاحقاً من قائمة إدارة الأرقام.", reply_markup=owner_settings_kb())
+            await _cleanup_pending_login(user.id)
+            context.user_data["state"] = "main_menu"
+            return
+        await _finish_number_login(update, context, user.id)
+        return
+
     if is_own and state == "os_await_add_numbers":
         raw_numbers = [n for chunk in text.split(",") for n in chunk.splitlines()]
         added = add_numbers_to_stock(raw_numbers)
@@ -3807,8 +3947,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         code = next_order_code(user.id)
 
         # ── تسليم تلقائي إن وُجد رقم متاح بالمخزون — لا حاجة لتدخل المالك ──
-        auto_number = assign_next_number(user.id)
-        if auto_number:
+        auto = assign_next_number(user.id)
+        if auto:
+            auto_number = auto["phone_number"]
+            session_str = auto["session_string"]
             with db_conn() as c:
                 pe = c.execute(
                     "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,status,order_code) "
@@ -3820,10 +3962,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"✅ *تمت العملية بنجاح!*\n\n"
                 f"📱 رقمك: `{auto_number}`\n"
                 f"💰 التكلفة: {cost} نقطة\n\n"
-                f"📌 كود عمليتك: `{code}`",
+                f"📌 كود عمليتك: `{code}`\n\n"
+                + ("سيصلك رمز الجلسة (Session) في رسالة منفصلة — استخدمه لتسجيل الدخول مباشرة بدون أي كود."
+                   if session_str else "سيتواصل معك المالك لإتمام تسليم بيانات الدخول."),
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup(result_kb)
             )
+            if session_str:
+                await context.bot.send_message(
+                    user.id,
+                    f"🔑 *رمز جلسة الدخول (Session String) للرقم* `{auto_number}`:\n\n"
+                    f"`{session_str}`\n\n"
+                    "⚠️ هذا الرمز يعطي دخولاً كاملاً للحساب فور استيراده في أحد برامج تسجيل الدخول بالجلسة "
+                    "(Session Login). لا تشاركه مع أي شخص آخر غيرك.",
+                    parse_mode=ParseMode.MARKDOWN
+                )
             if OWNER_ID:
                 try:
                     await context.bot.send_message(
@@ -3832,7 +3985,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
                         f"📱 {auto_number}\n"
                         f"💰 {cost} نقطة\n"
-                        f"📌 {code}",
+                        f"📌 {code}"
+                        + ("\n🔑 مع رمز جلسة" if session_str else "\n⚠️ بدون رمز جلسة (رقم أُضيف يدوياً بدون تسجيل دخول)"),
                         parse_mode=ParseMode.HTML
                     )
                 except Exception:
@@ -4516,9 +4670,30 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "إذا نفد المخزون، يعود الطلب لطريقة التواصل اليدوي كما هو معتاد.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("➕ إضافة أرقام للمخزون", callback_data="os:add_numbers")],
+                [InlineKeyboardButton("🔑 تسجيل دخول رقم جديد (تلقائي بالكامل)", callback_data="os:login_number")],
+                [InlineKeyboardButton("➕ إضافة أرقام بدون تسجيل دخول (يدوي)", callback_data="os:add_numbers")],
                 [InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")],
             ])
+        )
+        return
+
+    if data == "os:login_number" and is_own:
+        if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
+            await q.edit_message_text(
+                "⚠️ *لم يتم إعداد الاتصال بعد*\n\n"
+                "يجب إضافة `TELEGRAM_API_ID` و `TELEGRAM_API_HASH` كمتغيرات بيئة في Railway أولاً "
+                "(تحصل عليهما من my.telegram.org بحسابك الشخصي)، ثم أعد المحاولة.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:manage_numbers")]])
+            )
+            return
+        context.user_data["state"] = "os_await_login_phone"
+        await q.edit_message_text(
+            "🔑 *تسجيل دخول رقم جديد*\n\n"
+            "أرسل رقم الهاتف بصيغة دولية كاملة، مثال:\n`+9647701234567`\n\n"
+            "سيرسل تيليجرام كود تفعيل لهذا الرقم فوراً.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:manage_numbers")]])
         )
         return
 
