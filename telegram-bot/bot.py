@@ -39,6 +39,7 @@ from telethon.errors import (
 )
 from telethon.tl.functions.auth import ResetAuthorizationsRequest
 from telethon.tl.functions.account import GetAuthorizationsRequest, ResetAuthorizationRequest
+from telethon.tl.functions.messages import StartBotRequest
 
 logging.basicConfig(
     level=logging.INFO,
@@ -414,6 +415,24 @@ def init_db():
               user_id    BIGINT,
               channel_id BIGINT,
               PRIMARY KEY (user_id, channel_id)
+          )""")
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS referral_tasks (
+              id           SERIAL PRIMARY KEY,
+              label        TEXT NOT NULL,
+              bot_username TEXT NOT NULL,
+              start_param  TEXT NOT NULL,
+              active       INTEGER DEFAULT 1,
+              created_at   TIMESTAMPTZ DEFAULT NOW()
+          )""")
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS referral_completions (
+              task_id   INTEGER NOT NULL,
+              stock_id  INTEGER NOT NULL,
+              status    TEXT DEFAULT 'pending',
+              done_at   TIMESTAMPTZ,
+              error_msg TEXT,
+              PRIMARY KEY (task_id, stock_id)
           )""")
           c.execute("""
           CREATE TABLE IF NOT EXISTS menu_items (
@@ -904,6 +923,225 @@ def assign_next_number(user_id: int):
         if not row:
             return None
         return {"phone_number": row["phone_number"], "session_string": row["session_string"]}
+
+
+# ═══════════════════════════════════════════════════════════
+#  مساعدات قاعدة بيانات مهام الإحالة التلقائية
+# ═══════════════════════════════════════════════════════════
+
+def get_referral_tasks(only_active: bool = False) -> list:
+    with db_conn() as c:
+        sql = "SELECT * FROM referral_tasks"
+        if only_active:
+            sql += " WHERE active=1"
+        sql += " ORDER BY id ASC"
+        return [dict(r) for r in c.execute(sql).fetchall()]
+
+
+def get_referral_task(task_id: int) -> dict | None:
+    with db_conn() as c:
+        row = c.execute("SELECT * FROM referral_tasks WHERE id=%s", (task_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def add_referral_task(label: str, bot_username: str, start_param: str) -> int:
+    with db_conn() as c:
+        row = c.execute(
+            "INSERT INTO referral_tasks (label, bot_username, start_param) VALUES (%s,%s,%s) RETURNING id",
+            (label, bot_username, start_param)
+        ).fetchone()
+        return row["id"]
+
+
+def delete_referral_task(task_id: int):
+    with db_conn() as c:
+        c.execute("DELETE FROM referral_completions WHERE task_id=%s", (task_id,))
+        c.execute("DELETE FROM referral_tasks WHERE id=%s", (task_id,))
+
+
+def toggle_referral_task(task_id: int) -> bool:
+    """يعكس حالة التفعيل ويُرجع الحالة الجديدة (True=نشط)."""
+    with db_conn() as c:
+        row = c.execute("SELECT active FROM referral_tasks WHERE id=%s", (task_id,)).fetchone()
+        if not row:
+            return False
+        new_val = 0 if row["active"] else 1
+        c.execute("UPDATE referral_tasks SET active=%s WHERE id=%s", (new_val, task_id))
+        return bool(new_val)
+
+
+def get_referral_task_stats(task_id: int) -> dict:
+    """يُرجع إحصاء: done / failed / pending / total لمهمة إحالة معيّنة."""
+    with db_conn() as c:
+        rows = c.execute(
+            "SELECT status, COUNT(*) as cnt FROM referral_completions WHERE task_id=%s GROUP BY status",
+            (task_id,)
+        ).fetchall()
+        stats = {"done": 0, "failed": 0, "pending": 0}
+        for r in rows:
+            stats[r["status"]] = r["cnt"]
+        stats["total"] = sum(stats.values())
+        return stats
+
+
+def get_pending_numbers_for_task(task_id: int) -> list:
+    """أرقام المخزون التي لم تُكمل هذه المهمة بعد (لم تُسجَّل في referral_completions بحالة done)."""
+    with db_conn() as c:
+        rows = c.execute(
+            """
+            SELECT ns.id, ns.phone_number, ns.session_string
+            FROM number_stock ns
+            WHERE ns.session_string IS NOT NULL
+              AND ns.id NOT IN (
+                  SELECT stock_id FROM referral_completions
+                  WHERE task_id=%s AND status='done'
+              )
+            ORDER BY ns.id ASC
+            """,
+            (task_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def mark_referral_completion(task_id: int, stock_id: int, status: str, error_msg: str = None):
+    with db_conn() as c:
+        c.execute(
+            """
+            INSERT INTO referral_completions (task_id, stock_id, status, done_at, error_msg)
+            VALUES (%s, %s, %s, NOW(), %s)
+            ON CONFLICT (task_id, stock_id) DO UPDATE
+              SET status=EXCLUDED.status, done_at=EXCLUDED.done_at, error_msg=EXCLUDED.error_msg
+            """,
+            (task_id, stock_id, status, error_msg)
+        )
+
+
+# ═══════════════════════════════════════════════════════════
+#  تنفيذ الإحالة الفعلية لرقم واحد
+# ═══════════════════════════════════════════════════════════
+
+async def do_referral_for_number(phone: str, session_str: str, bot_username: str, start_param: str) -> tuple:
+    """
+    يُرسل /start مع بارامتر الإحالة إلى البوت المطلوب باستخدام جلسة الرقم المخزونة.
+    يُرجع (success: bool, detail: str).
+
+    الفرق عن /start العادي:
+    - يُستخدم StartBotRequest وهو ما يُسجّل الإحالة رسمياً في Telegram API
+      (مكافئ للنقر على رابط t.me/BotName?start=refCODE من داخل تطبيق تيليجرام).
+    """
+    client = TelegramClient(
+        StringSession(session_str),
+        int(TELEGRAM_API_ID),
+        TELEGRAM_API_HASH,
+    )
+    try:
+        await client.connect()
+        if not await client.is_user_authorized():
+            return False, "جلسة منتهية أو مُلغاة"
+
+        # جلب كيان البوت
+        bot_entity = await client.get_entity(bot_username)
+
+        # StartBotRequest يُرسل deep-link start — يُسجّل كإحالة حقيقية
+        await client(StartBotRequest(
+            bot=bot_entity,
+            peer=bot_entity,
+            start_param=start_param,
+        ))
+
+        # ننتظر ليصل رد البوت ثم نقرأ رسالته الأولى (قد تطلب الانضمام لقنوات)
+        await asyncio.sleep(3)
+        msgs = await client.get_messages(bot_entity, limit=3)
+        joined_channels = 0
+
+        for msg in msgs:
+            if not msg.buttons:
+                continue
+            for row in msg.buttons:
+                for btn in row:
+                    # زر url يحتوي على رابط قناة → نحاول الانضمام
+                    url = getattr(btn, "url", None) or ""
+                    if "t.me/" not in url and "telegram.me/" not in url:
+                        continue
+                    try:
+                        # استخراج username أو invite hash من الرابط
+                        if "joinchat/" in url or "+": 
+                            # رابط دعوة خاص مثل t.me/+XXXXX
+                            invite_part = url.split("/+")[-1] if "/+" in url else url.split("joinchat/")[-1]
+                            invite_part = invite_part.split("?")[0].strip()
+                            if invite_part:
+                                await client(
+                                    __import__("telethon.tl.functions.messages", fromlist=["ImportChatInviteRequest"])
+                                    .ImportChatInviteRequest(invite_part)
+                                )
+                                joined_channels += 1
+                        else:
+                            # رابط عام @username
+                            ch_name = url.rstrip("/").split("/")[-1].split("?")[0]
+                            if ch_name:
+                                ch_entity = await client.get_entity(ch_name)
+                                from telethon.tl.functions.channels import JoinChannelRequest
+                                await client(JoinChannelRequest(ch_entity))
+                                joined_channels += 1
+                        await asyncio.sleep(1)
+                    except Exception:
+                        pass
+
+        detail = f"تمت الإحالة بنجاح" + (f" + انضم لـ {joined_channels} قناة" if joined_channels else "")
+        return True, detail
+
+    except Exception as e:
+        err = str(e)
+        logger.error(f"❌ فشلت إحالة {phone} → {bot_username}: {err}")
+        return False, err[:120]
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+
+# ═══════════════════════════════════════════════════════════
+#  المهمة الدورية — تشغيل الإحالات التلقائية
+# ═══════════════════════════════════════════════════════════
+
+async def run_referral_tasks_job(context: ContextTypes.DEFAULT_TYPE):
+    """تُشغَّل كل ساعة: تُكمل الإحالات لكل الأرقام التي لم تُنفّذها بعد."""
+    if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
+        return
+    tasks = get_referral_tasks(only_active=True)
+    if not tasks:
+        return
+    for task in tasks:
+        pending = get_pending_numbers_for_task(task["id"])
+        if not pending:
+            continue
+        logger.info(f"🤝 مهمة إحالة [{task['label']}]: {len(pending)} رقم معلّق")
+        done = failed = 0
+        for num in pending:
+            success, detail = await do_referral_for_number(
+                num["phone_number"], num["session_string"],
+                task["bot_username"], task["start_param"]
+            )
+            status = "done" if success else "failed"
+            mark_referral_completion(task["id"], num["id"], status,
+                                     None if success else detail)
+            if success:
+                done += 1
+            else:
+                failed += 1
+            await asyncio.sleep(2)   # فاصل بين أرقام لتفادي flood
+        logger.info(f"✅ مهمة [{task['label']}]: {done} نجحت، {failed} فشلت")
+        if OWNER_ID:
+            try:
+                await context.bot.send_message(
+                    OWNER_ID,
+                    f"🤝 *مهمة إحالة: {task['label']}*\n\n"
+                    f"✅ نجحت: {done}\n❌ فشلت: {failed}",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            except Exception:
+                pass
 
 
 async def _cleanup_pending_login(owner_id: int):
@@ -3115,6 +3353,49 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _finish_number_login(update, context, user.id)
         return
 
+    if is_own and state == "os_await_ref_task_link":
+        # يقبل:  t.me/BotUser?start=CODE  أو  BotUser CODE
+        raw = text.strip()
+        bot_user = ""
+        start_p  = ""
+        try:
+            if "t.me/" in raw or "telegram.me/" in raw:
+                # مثال: https://t.me/MyBot?start=refABC
+                from urllib.parse import urlparse, parse_qs
+                parsed = urlparse(raw if raw.startswith("http") else "https://" + raw)
+                bot_user = parsed.path.strip("/")
+                qs = parse_qs(parsed.query)
+                start_p = qs.get("start", [""])[0]
+            else:
+                # مثال: MyBot refABC
+                parts = raw.split(None, 1)
+                bot_user = parts[0].lstrip("@")
+                start_p  = parts[1] if len(parts) > 1 else ""
+
+            if not bot_user or not start_p:
+                raise ValueError("يوزر أو كود فارغ")
+
+            label = f"@{bot_user} — {start_p[:20]}"
+            task_id = add_referral_task(label, bot_user, start_p)
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text(
+                f"✅ *تمت إضافة مهمة الإحالة بنجاح!*\n\n"
+                f"📌 البوت: @{bot_user}\n"
+                f"🔑 الكود: `{start_p}`\n\n"
+                f"ستُنفَّذ تلقائياً على كل الأرقام كل ساعة.\n"
+                f"يمكنك أيضاً تشغيلها فوراً من ⚙️ تفاصيل المهمة.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=owner_settings_kb()
+            )
+        except Exception as parse_err:
+            await update.message.reply_text(
+                f"⚠️ تعذّر قراءة الرابط: `{parse_err}`\n\n"
+                "أرسله بهذا الشكل:\n`t.me/BotUsername?start=REFERRAL_CODE`\n"
+                "أو: `BotUsername REFERRAL_CODE`",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        return
+
     if is_own and state == "os_await_add_numbers":
         raw_numbers = [n for chunk in text.split(",") for n in chunk.splitlines()]
         added = add_numbers_to_stock(raw_numbers)
@@ -5057,6 +5338,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("🔑 تسجيل دخول رقم جديد (تلقائي بالكامل)", callback_data="os:login_number")],
                 [InlineKeyboardButton("📋 قائمة الأرقام ومعلوماتها", callback_data="os:list_numbers")],
                 [InlineKeyboardButton("➕ إضافة أرقام بدون تسجيل دخول (يدوي)", callback_data="os:add_numbers")],
+                [InlineKeyboardButton("🤝 مهام الإحالة التلقائية", callback_data="os:ref_tasks")],
                 [InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")],
             ])
         )
@@ -5381,6 +5663,190 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "سيتم تجاهل أي رقم مكرر موجود مسبقاً بالمخزون.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:manage_numbers")]])
+        )
+        return
+
+    # ═══════════════════════════════════════════════════════════
+    #  مهام الإحالة التلقائية — واجهة المالك
+    # ═══════════════════════════════════════════════════════════
+
+    if data == "os:ref_tasks" and is_own:
+        tasks = get_referral_tasks()
+        lines = ["🤝 *مهام الإحالة التلقائية*\n\n"]
+        kb_rows = []
+        if tasks:
+            for t in tasks:
+                stats = get_referral_task_stats(t["id"])
+                st = "🟢" if t["active"] else "🔴"
+                lines.append(
+                    f"{st} *{t['label']}*\n"
+                    f"   📌 @{t['bot_username']} | كود: `{t['start_param']}`\n"
+                    f"   ✅ {stats['done']} | ❌ {stats['failed']} | ⏳ {stats['pending']}\n"
+                )
+                kb_rows.append([InlineKeyboardButton(
+                    f"⚙️ {t['label']}", callback_data=f"os:ref_task:{t['id']}"
+                )])
+        else:
+            lines.append("لا توجد مهام إحالة بعد. أضف أولى مهامك!")
+        lines.append(
+            "\n📌 *كيف تعمل؟*\n"
+            "أضف مهمة إحالة بـ يوزر البوت وكود الإحالة، سيدخل كل رقم في مخزونك "
+            "تلقائياً ويُرسل /start مع الكود كإحالة حقيقية (كأنه ضغط على رابط t.me/Bot?start=CODE)."
+        )
+        kb_rows.append([InlineKeyboardButton("➕ إضافة مهمة إحالة جديدة", callback_data="os:ref_task_add")])
+        kb_rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="os:manage_numbers")])
+        await q.edit_message_text(
+            "\n".join(lines),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(kb_rows)
+        )
+        return
+
+    if data == "os:ref_task_add" and is_own:
+        context.user_data["state"] = "os_await_ref_task_link"
+        await q.edit_message_text(
+            "🤝 *إضافة مهمة إحالة جديدة*\n\n"
+            "أرسل رابط الإحالة كاملاً بهذا الشكل:\n\n"
+            "`t.me/BotUsername?start=REFERRAL_CODE`\n\n"
+            "أو أرسل اليوزر والكود منفصلَين بمسافة:\n"
+            "`BotUsername REFERRAL_CODE`\n\n"
+            "سيُكمل كل رقم في مخزونك هذه الإحالة تلقائياً.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:ref_tasks")]])
+        )
+        return
+
+    if data.startswith("os:ref_task:") and is_own:
+        task_id = int(data.split(":")[-1])
+        task = get_referral_task(task_id)
+        if not task:
+            await q.edit_message_text("⚠️ مهمة غير موجودة.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:ref_tasks")]]))
+            return
+        stats = get_referral_task_stats(task_id)
+        pending_cnt = len(get_pending_numbers_for_task(task_id))
+        status_icon = "🟢 نشطة" if task["active"] else "🔴 موقوفة"
+        text = (
+            f"⚙️ *{task['label']}*\n\n"
+            f"📌 البوت: @{task['bot_username']}\n"
+            f"🔑 كود الإحالة: `{task['start_param']}`\n"
+            f"الحالة: {status_icon}\n\n"
+            f"📊 *الإحصاء:*\n"
+            f"✅ أكملت الإحالة: {stats['done']} رقم\n"
+            f"❌ فشلت: {stats['failed']} رقم\n"
+            f"⏳ معلّقة (لم تُنفَّذ بعد): {pending_cnt} رقم\n"
+        )
+        toggle_label = "🔴 إيقاف المهمة" if task["active"] else "🟢 تفعيل المهمة"
+        await q.edit_message_text(
+            text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("▶️ تشغيل الآن على كل الأرقام المعلّقة", callback_data=f"os:ref_run:{task_id}")],
+                [InlineKeyboardButton(toggle_label, callback_data=f"os:ref_toggle:{task_id}")],
+                [InlineKeyboardButton("🗑 حذف هذه المهمة", callback_data=f"os:ref_delete:{task_id}")],
+                [InlineKeyboardButton("🔙 رجوع", callback_data="os:ref_tasks")],
+            ])
+        )
+        return
+
+    if data.startswith("os:ref_toggle:") and is_own:
+        task_id = int(data.split(":")[-1])
+        new_active = toggle_referral_task(task_id)
+        status = "مفعّلة 🟢" if new_active else "موقوفة 🔴"
+        await q.answer(f"المهمة الآن {status}", show_alert=False)
+        # أعد عرض صفحة المهمة
+        context.user_data["_ref_task_redirect"] = task_id
+        # استدعاء نفس الـ handler
+        class _FakeData:
+            def __init__(self, d): self.data = d
+            async def edit_message_text(self, *a, **kw): return await q.edit_message_text(*a, **kw)
+            async def answer(self, *a, **kw): return await q.answer(*a, **kw)
+        update.callback_query.data = f"os:ref_task:{task_id}"
+        # إعادة التوجيه اليدوية
+        task = get_referral_task(task_id)
+        if not task:
+            await q.edit_message_text("⚠️ مهمة غير موجودة.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:ref_tasks")]]))
+            return
+        stats = get_referral_task_stats(task_id)
+        pending_cnt = len(get_pending_numbers_for_task(task_id))
+        status_icon = "🟢 نشطة" if task["active"] else "🔴 موقوفة"
+        await q.edit_message_text(
+            f"⚙️ *{task['label']}*\n\n"
+            f"📌 البوت: @{task['bot_username']}\n"
+            f"🔑 كود الإحالة: `{task['start_param']}`\n"
+            f"الحالة: {status_icon}\n\n"
+            f"📊 *الإحصاء:*\n"
+            f"✅ أكملت الإحالة: {stats['done']} رقم\n"
+            f"❌ فشلت: {stats['failed']} رقم\n"
+            f"⏳ معلّقة (لم تُنفَّذ بعد): {pending_cnt} رقم\n",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("▶️ تشغيل الآن على كل الأرقام المعلّقة", callback_data=f"os:ref_run:{task_id}")],
+                [InlineKeyboardButton("🔴 إيقاف المهمة" if task["active"] else "🟢 تفعيل المهمة", callback_data=f"os:ref_toggle:{task_id}")],
+                [InlineKeyboardButton("🗑 حذف هذه المهمة", callback_data=f"os:ref_delete:{task_id}")],
+                [InlineKeyboardButton("🔙 رجوع", callback_data="os:ref_tasks")],
+            ])
+        )
+        return
+
+    if data.startswith("os:ref_run:") and is_own:
+        task_id = int(data.split(":")[-1])
+        task = get_referral_task(task_id)
+        if not task:
+            await q.edit_message_text("⚠️ مهمة غير موجودة.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:ref_tasks")]]))
+            return
+        if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
+            await q.edit_message_text(
+                "⚠️ يجب إضافة `TELEGRAM_API_ID` و `TELEGRAM_API_HASH` في Railway أولاً.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data=f"os:ref_task:{task_id}")]])
+            )
+            return
+        pending = get_pending_numbers_for_task(task_id)
+        if not pending:
+            await q.answer("✅ جميع الأرقام أكملت هذه الإحالة بالفعل!", show_alert=True)
+            return
+        await q.edit_message_text(
+            f"⏳ جاري تشغيل مهمة الإحالة على {len(pending)} رقم...\n\n"
+            f"سيصلك إشعار فور الانتهاء. هذا قد يستغرق بضع دقائق.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:ref_tasks")]])
+        )
+        # تشغيل بالخلفية كي لا يتجمد البوت
+        async def _run_task_bg():
+            done = failed = 0
+            for num in pending:
+                success, detail = await do_referral_for_number(
+                    num["phone_number"], num["session_string"],
+                    task["bot_username"], task["start_param"]
+                )
+                mark_referral_completion(task_id, num["id"],
+                                         "done" if success else "failed",
+                                         None if success else detail)
+                if success:
+                    done += 1
+                else:
+                    failed += 1
+                await asyncio.sleep(2)
+            try:
+                await context.bot.send_message(
+                    OWNER_ID,
+                    f"🤝 *انتهت مهمة إحالة: {task['label']}*\n\n"
+                    f"✅ نجحت: {done} رقم\n❌ فشلت: {failed} رقم",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            except Exception:
+                pass
+        asyncio.create_task(_run_task_bg())
+        return
+
+    if data.startswith("os:ref_delete:") and is_own:
+        task_id = int(data.split(":")[-1])
+        task = get_referral_task(task_id)
+        if task:
+            delete_referral_task(task_id)
+        await q.edit_message_text(
+            f"🗑 تم حذف مهمة الإحالة *{task['label'] if task else ''}* بنجاح.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:ref_tasks")]])
         )
         return
 
@@ -6459,6 +6925,8 @@ def main():
         logger.info("⏱️ تم تفعيل الفحص الدوري لحالة الطلبات (كل 5 دقائق)")
         app.job_queue.run_repeating(retry_pending_session_resets, interval=600, first=90)
         logger.info("🔒 تم تفعيل إعادة المحاولة الدورية لطرد جلسات الأرقام (كل 10 دقائق)")
+        app.job_queue.run_repeating(run_referral_tasks_job, interval=3600, first=120)
+        logger.info("🤝 تم تفعيل مهام الإحالة التلقائية (كل ساعة)")
 
     logger.info("🤖 Bot started!")
     app.run_polling(
