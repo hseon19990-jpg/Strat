@@ -366,6 +366,7 @@ def init_db():
               "ALTER TABLE prize_exchanges ADD COLUMN IF NOT EXISTS order_code TEXT",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS session_string TEXT",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS sessions_reset BOOLEAN DEFAULT FALSE",
+              "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS force_listed BOOLEAN DEFAULT FALSE",
           ]:
               try: c.execute(_alt)
               except Exception: pass
@@ -768,9 +769,10 @@ async def fetch_last_login_code(client: TelegramClient):
 
 
 def list_available_numbers():
+    """كل الأرقام غير المباعة (بما فيها المنتظرة طرد جلساتها بعد)، لعرضها بلوحة المالك."""
     with db_conn() as c:
         rows = c.execute(
-            "SELECT id, phone_number, session_string FROM number_stock "
+            "SELECT id, phone_number, session_string, sessions_reset, force_listed FROM number_stock "
             "WHERE assigned_to IS NULL ORDER BY id ASC"
         ).fetchall()
         return [dict(r) for r in rows]
@@ -779,15 +781,30 @@ def list_available_numbers():
 def get_stock_number(stock_id: int):
     with db_conn() as c:
         row = c.execute(
-            "SELECT id, phone_number, session_string, assigned_to FROM number_stock WHERE id=%s",
+            "SELECT id, phone_number, session_string, assigned_to, sessions_reset, force_listed "
+            "FROM number_stock WHERE id=%s",
             (stock_id,)
         ).fetchone()
         return dict(row) if row else None
 
 
+def set_force_listed(stock_id: int) -> bool:
+    with db_conn() as c:
+        c.execute("UPDATE number_stock SET force_listed=TRUE WHERE id=%s", (stock_id,))
+        return True
+
+
+def _sellable_filter_sql() -> str:
+    """رقم يُعتبر قابلاً للبيع/التسليم إذا: أُضيف يدوياً بدون جلسة (لا داعي لطرد جلسات)،
+    أو نجح طرد جلساته الأخرى فعلاً، أو فعّل المالك له "عرض مباشر" متجاوزاً الانتظار."""
+    return "(session_string IS NULL OR sessions_reset=TRUE OR force_listed=TRUE)"
+
+
 def get_available_number_count() -> int:
     with db_conn() as c:
-        row = c.execute("SELECT COUNT(*) as cnt FROM number_stock WHERE assigned_to IS NULL").fetchone()
+        row = c.execute(
+            f"SELECT COUNT(*) as cnt FROM number_stock WHERE assigned_to IS NULL AND {_sellable_filter_sql()}"
+        ).fetchone()
         return row["cnt"] if row else 0
 
 
@@ -808,7 +825,8 @@ def assign_next_number(user_id: int):
     with db_conn() as c:
         row = c.execute(
             "UPDATE number_stock SET assigned_to=%s, assigned_at=NOW() "
-            "WHERE id = (SELECT id FROM number_stock WHERE assigned_to IS NULL ORDER BY id ASC LIMIT 1 FOR UPDATE SKIP LOCKED) "
+            "WHERE id = (SELECT id FROM number_stock WHERE assigned_to IS NULL AND "
+            f"{_sellable_filter_sql()} ORDER BY id ASC LIMIT 1 FOR UPDATE SKIP LOCKED) "
             "RETURNING phone_number, session_string",
             (user_id,)
         ).fetchone()
@@ -4948,6 +4966,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             label = f"📱 {n['phone_number']} — {guess_country(n['phone_number'])}"
             if not n["session_string"]:
                 label += " (بدون جلسة)"
+            elif n["force_listed"]:
+                label += " 🚀 معروض مباشرة"
+            elif n["sessions_reset"]:
+                label += " ✅ جاهز للبيع"
+            else:
+                label += " ⏳ بانتظار طرد الجلسات"
             rows.append([InlineKeyboardButton(label, callback_data=f"os:number_info:{n['id']}")])
         rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="os:manage_numbers")])
         note = "" if len(numbers) <= 40 else f"\n\n(يظهر أول 40 من إجمالي {len(numbers)})"
@@ -4982,20 +5006,28 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             devices = await get_device_count(client)
             spam = await check_spam_status(client)
             age = estimate_registration_year(me.id) if me else "غير معروف"
+            if rec["force_listed"]:
+                sale_status = "🚀 معروض مباشرة للبيع (تجاوز انتظار طرد الجلسات)"
+            elif rec["sessions_reset"]:
+                sale_status = "✅ جاهز للبيع (البوت وحده بالحساب)"
+            else:
+                sale_status = "⏳ بانتظار طرد الجلسات الأخرى — غير معروض للبيع بعد"
             text = (
                 f"📱 *{rec['phone_number']}*\n"
                 f"🌍 الدولة: {guess_country(rec['phone_number'])}\n"
                 f"🕰️ عمر الحساب (تقريبي): {age}\n"
                 f"💻 عدد الأجهزة المسجّلة: {devices if devices >= 0 else 'غير متاح'}\n"
                 f"🚫 الحالة: {spam}\n"
+                f"🛒 حالة العرض للبيع: {sale_status}\n"
             )
+            kb_rows = [[InlineKeyboardButton("🔑 جلب آخر كود دخول", callback_data=f"os:number_code:{stock_id}")]]
+            if not rec["sessions_reset"] and not rec["force_listed"]:
+                kb_rows.append([InlineKeyboardButton("🚀 عرض مباشر للبيع الآن (تجاوز الانتظار)", callback_data=f"os:force_list:{stock_id}")])
+            kb_rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")])
             await q.edit_message_text(
                 text,
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔑 جلب آخر كود دخول", callback_data=f"os:number_code:{stock_id}")],
-                    [InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")],
-                ])
+                reply_markup=InlineKeyboardMarkup(kb_rows)
             )
         except Exception as e:
             logger.error(f"❌ خطأ في جلب معلومات الرقم {rec['phone_number']}: {e}")
@@ -5008,6 +5040,27 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await client.disconnect()
             except Exception:
                 pass
+        return
+
+    if data.startswith("os:force_list:") and is_own:
+        stock_id = int(data.split(":")[-1])
+        rec = get_stock_number(stock_id)
+        if not rec or rec["assigned_to"] is not None:
+            await q.edit_message_text(
+                "⚠️ هذا الرقم غير متاح (تم بيعه أو حذفه).",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")]])
+            )
+            return
+        set_force_listed(stock_id)
+        await q.edit_message_text(
+            f"🚀 *تم تفعيل العرض المباشر*\n\n"
+            f"📱 {rec['phone_number']} أصبح الآن متاحاً للبيع والتسليم التلقائي فوراً، "
+            "حتى لو لم ينتهِ طرد الجلسات الأخرى بعد.\n\n"
+            "⚠️ تنبيه: إذا كانت هناك جلسة قديمة لصاحب الرقم السابق لم تُطرد بعد، فقد يبقى بإمكانه رؤية رسائل المشتري الجديد "
+            "حتى تنجح إعادة المحاولة التلقائية بالخلفية.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")]])
+        )
         return
 
     if data.startswith("os:number_code:") and is_own:
