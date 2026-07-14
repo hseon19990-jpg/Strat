@@ -38,7 +38,7 @@ from telethon.errors import (
     PhoneNumberInvalidError, FloodWaitError, PasswordHashInvalidError
 )
 from telethon.tl.functions.auth import ResetAuthorizationsRequest
-from telethon.tl.functions.account import GetAuthorizationsRequest
+from telethon.tl.functions.account import GetAuthorizationsRequest, ResetAuthorizationRequest
 
 logging.basicConfig(
     level=logging.INFO,
@@ -367,6 +367,7 @@ def init_db():
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS session_string TEXT",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS sessions_reset BOOLEAN DEFAULT FALSE",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS force_listed BOOLEAN DEFAULT FALSE",
+              "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS frozen_at TIMESTAMPTZ",
           ]:
               try: c.execute(_alt)
               except Exception: pass
@@ -755,6 +756,75 @@ async def get_device_count(client: TelegramClient) -> int:
         return -1
 
 
+async def get_authorizations_detail(client: TelegramClient) -> list:
+    """يُرجع قائمة تفصيلية بكل الأجهزة: الاسم، تاريخ التسجيل، آخر نشاط، هل هو الجهاز الحالي."""
+    try:
+        result = await client(GetAuthorizationsRequest())
+        devices = []
+        for auth in result.authorizations:
+            devices.append({
+                "hash":         auth.hash,
+                "current":      auth.current,
+                "device":       auth.device_model or "غير معروف",
+                "app":          auth.app_name or "غير معروف",
+                "platform":     auth.platform or "",
+                "country":      auth.country or "",
+                "date_created": auth.date_created,
+                "date_active":  auth.date_active,
+            })
+        return devices
+    except Exception as e:
+        logger.error(f"❌ خطأ في جلب تفاصيل الأجهزة: {e}")
+        return []
+
+
+async def check_account_frozen(client: TelegramClient, stock_id: int | None = None) -> tuple:
+    """
+    يفحص إذا كان الحساب مجمّداً/محذوفاً.
+    يحفظ تاريخ أول اكتشاف للتجميد في قاعدة البيانات (frozen_at).
+    يُرجع (is_frozen: bool, status_text: str, frozen_at_str: str | None).
+    """
+    is_frozen = False
+    status_text = "🟢 نشط"
+    frozen_at_str = None
+    try:
+        me = await client.get_me()
+        if me is None or getattr(me, "deleted", False):
+            is_frozen = True
+            status_text = "🔴 جامد / حساب محذوف"
+    except Exception as e:
+        err = str(e).lower()
+        if any(k in err for k in ("auth_key_unregistered", "user_deactivated", "session_revoked", "deactivated_ban")):
+            is_frozen = True
+            status_text = "🔴 جامد (جلسة ألغيت أو حساب محظور)"
+        else:
+            status_text = f"⚠️ تعذّر الفحص: {e}"
+
+    if is_frozen and stock_id is not None:
+        # حفظ تاريخ التجميد إن لم يكن محفوظاً من قبل
+        try:
+            with db_conn() as c:
+                row = c.execute(
+                    "SELECT frozen_at FROM number_stock WHERE id=%s", (stock_id,)
+                ).fetchone()
+                if row:
+                    if row["frozen_at"] is None:
+                        c.execute(
+                            "UPDATE number_stock SET frozen_at=NOW() WHERE id=%s", (stock_id,)
+                        )
+                        frozen_at_str = "الآن (تم اكتشافه للتو)"
+                    else:
+                        fa = row["frozen_at"]
+                        if hasattr(fa, "strftime"):
+                            frozen_at_str = fa.strftime("%Y-%m-%d %H:%M UTC")
+                        else:
+                            frozen_at_str = str(fa)
+        except Exception as db_err:
+            logger.error(f"❌ خطأ في حفظ frozen_at: {db_err}")
+
+    return is_frozen, status_text, frozen_at_str
+
+
 async def fetch_last_login_code(client: TelegramClient):
     """يجلب آخر رسالة كود تفعيل وصلت من حساب تيليجرام الرسمي (777000) لهذا الرقم."""
     try:
@@ -781,7 +851,7 @@ def list_available_numbers():
 def get_stock_number(stock_id: int):
     with db_conn() as c:
         row = c.execute(
-            "SELECT id, phone_number, session_string, assigned_to, sessions_reset, force_listed "
+            "SELECT id, phone_number, session_string, assigned_to, sessions_reset, force_listed, frozen_at "
             "FROM number_stock WHERE id=%s",
             (stock_id,)
         ).fetchone()
@@ -5002,25 +5072,58 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         client = TelegramClient(StringSession(rec["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
         try:
             await client.connect()
-            me = await client.get_me()
+            # ─── فحص التجميد أولاً ───
+            is_frozen, frozen_status, frozen_at_str = await check_account_frozen(client, stock_id)
+            me = None
+            age = "غير معروف"
+            if not is_frozen:
+                try:
+                    me = await client.get_me()
+                    age = estimate_registration_year(me.id) if me else "غير معروف"
+                except Exception:
+                    pass
             devices = await get_device_count(client)
             spam = await check_spam_status(client)
-            age = estimate_registration_year(me.id) if me else "غير معروف"
+            # ─── حالة التجميد المحفوظة في DB ───
+            db_frozen_at = rec.get("frozen_at")
+            if db_frozen_at and not frozen_at_str:
+                if hasattr(db_frozen_at, "strftime"):
+                    frozen_at_str = db_frozen_at.strftime("%Y-%m-%d %H:%M UTC")
+                else:
+                    frozen_at_str = str(db_frozen_at)
+            # ─── حالة البيع ───
             if rec["force_listed"]:
                 sale_status = "🚀 معروض مباشرة للبيع (تجاوز انتظار طرد الجلسات)"
             elif rec["sessions_reset"]:
                 sale_status = "✅ جاهز للبيع (البوت وحده بالحساب)"
             else:
                 sale_status = "⏳ بانتظار طرد الجلسات الأخرى — غير معروض للبيع بعد"
+            # ─── اسم المستخدم ───
+            display_name = ""
+            if me:
+                display_name = (
+                    f"\n👤 الاسم: {(me.first_name or '')} {(me.last_name or '')}".rstrip()
+                )
+                if me.username:
+                    display_name += f" (@{me.username})"
+            # ─── معلومات التجميد ───
+            frozen_line = f"\n🧊 حالة التجميد: {frozen_status}"
+            if is_frozen and frozen_at_str:
+                frozen_line += f"\n📅 تاريخ التجميد: {frozen_at_str}"
             text = (
-                f"📱 *{rec['phone_number']}*\n"
+                f"📱 *{rec['phone_number']}*"
+                f"{display_name}\n"
                 f"🌍 الدولة: {guess_country(rec['phone_number'])}\n"
                 f"🕰️ عمر الحساب (تقريبي): {age}\n"
                 f"💻 عدد الأجهزة المسجّلة: {devices if devices >= 0 else 'غير متاح'}\n"
-                f"🚫 الحالة: {spam}\n"
+                f"🚫 حالة الحظر (SpamBot): {spam}"
+                f"{frozen_line}\n"
                 f"🛒 حالة العرض للبيع: {sale_status}\n"
             )
-            kb_rows = [[InlineKeyboardButton("🔑 جلب آخر كود دخول", callback_data=f"os:number_code:{stock_id}")]]
+            kb_rows = [
+                [InlineKeyboardButton("📋 تفاصيل الأجهزة وتواريخ التسجيل", callback_data=f"os:number_devices:{stock_id}")],
+                [InlineKeyboardButton("🔑 جلب آخر كود دخول", callback_data=f"os:number_code:{stock_id}")],
+            ]
             if not rec["sessions_reset"] and not rec["force_listed"]:
                 kb_rows.append([InlineKeyboardButton("🚀 عرض مباشر للبيع الآن (تجاوز الانتظار)", callback_data=f"os:force_list:{stock_id}")])
             kb_rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")])
@@ -5061,6 +5164,114 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")]])
         )
+        return
+
+    # ─── تفاصيل الأجهزة مع تواريخ التسجيل ───
+    if data.startswith("os:number_devices:") and is_own:
+        stock_id = int(data.split(":")[-1])
+        rec = get_stock_number(stock_id)
+        if not rec or not rec["session_string"]:
+            await q.edit_message_text(
+                "⚠️ لا تتوفر جلسة لهذا الرقم.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data=f"os:number_info:{stock_id}")]])
+            )
+            return
+        await q.edit_message_text(f"⏳ يتم جلب قائمة الأجهزة لـ {rec['phone_number']}...")
+        client = TelegramClient(StringSession(rec["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+        try:
+            await client.connect()
+            devices = await get_authorizations_detail(client)
+            if not devices:
+                await q.edit_message_text(
+                    "⚠️ لم يتم جلب أي جهاز (ربما الحساب جامد أو الجلسة منتهية).",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data=f"os:number_info:{stock_id}")]])
+                )
+                return
+            lines = [f"📱 *{rec['phone_number']}* — {len(devices)} جهاز مسجّل\n"]
+            kb_rows = []
+            for i, d in enumerate(devices, 1):
+                created = d["date_created"]
+                active  = d["date_active"]
+                created_str = created.strftime("%Y-%m-%d %H:%M") if hasattr(created, "strftime") else str(created)
+                active_str  = active.strftime("%Y-%m-%d %H:%M")  if hasattr(active,  "strftime") else str(active)
+                current_tag = " *(الجهاز الحالي — البوت)*" if d["current"] else ""
+                lines.append(
+                    f"*{i}.* {d['device']} — {d['app']}{current_tag}\n"
+                    f"   🌍 {d['country']}  |  📅 سُجِّل: {created_str}\n"
+                    f"   🕑 آخر نشاط: {active_str}\n"
+                )
+                if not d["current"]:
+                    # زر طرد هذا الجهاز تحديداً
+                    kb_rows.append([InlineKeyboardButton(
+                        f"🚫 طرد الجهاز {i}: {d['device'][:30]}",
+                        callback_data=f"os:kick_device:{stock_id}:{d['hash']}"
+                    )])
+            kb_rows.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"os:number_info:{stock_id}")])
+            await q.edit_message_text(
+                "\n".join(lines),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup(kb_rows)
+            )
+        except Exception as e:
+            logger.error(f"❌ خطأ في جلب الأجهزة للرقم {rec['phone_number']}: {e}")
+            await q.edit_message_text(
+                "❌ حدث خطأ أثناء جلب الأجهزة.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data=f"os:number_info:{stock_id}")]])
+            )
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+        return
+
+    # ─── طرد جهاز محدد بالـ hash ───
+    if data.startswith("os:kick_device:") and is_own:
+        parts = data.split(":")
+        # format: os:kick_device:{stock_id}:{hash}
+        stock_id    = int(parts[2])
+        device_hash = int(parts[3])
+        rec = get_stock_number(stock_id)
+        if not rec or not rec["session_string"]:
+            await q.edit_message_text(
+                "⚠️ لا تتوفر جلسة لهذا الرقم.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data=f"os:number_info:{stock_id}")]])
+            )
+            return
+        await q.edit_message_text("⏳ يتم طرد الجهاز...")
+        client = TelegramClient(StringSession(rec["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+        try:
+            await client.connect()
+            await client(ResetAuthorizationRequest(hash=device_hash))
+            # تحقق من الأجهزة المتبقية
+            remaining = await get_authorizations_detail(client)
+            non_current = [d for d in remaining if not d["current"]]
+            if not non_current:
+                # كل الجلسات الأخرى طُردت
+                with db_conn() as c:
+                    c.execute("UPDATE number_stock SET sessions_reset=TRUE WHERE id=%s", (stock_id,))
+            await q.edit_message_text(
+                f"✅ *تم طرد الجهاز بنجاح!*\n\n"
+                f"📱 {rec['phone_number']}\n"
+                f"الأجهزة المتبقية الآن: {len(remaining)} "
+                f"({'البوت فقط ✅' if not non_current else f'{len(non_current)} جهاز خارجي ⚠️'})",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📋 عرض الأجهزة المتبقية", callback_data=f"os:number_devices:{stock_id}")],
+                    [InlineKeyboardButton("🔙 رجوع لمعلومات الرقم", callback_data=f"os:number_info:{stock_id}")],
+                ])
+            )
+        except Exception as e:
+            logger.error(f"❌ خطأ في طرد الجهاز للرقم {rec['phone_number']}: {e}")
+            await q.edit_message_text(
+                f"❌ تعذّر طرد الجهاز: {e}",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data=f"os:number_devices:{stock_id}")]])
+            )
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
         return
 
     if data.startswith("os:number_code:") and is_own:
