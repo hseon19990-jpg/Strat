@@ -374,6 +374,7 @@ def init_db():
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS force_listed BOOLEAN DEFAULT FALSE",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS frozen_at TIMESTAMPTZ",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS twofa_password TEXT",
+              "ALTER TABLE promo_uses ADD COLUMN IF NOT EXISTS used_at TIMESTAMPTZ DEFAULT NOW()",
           ]:
               try: c.execute(_alt)
               except Exception: pass
@@ -406,6 +407,7 @@ def init_db():
           CREATE TABLE IF NOT EXISTS promo_uses (
               code    TEXT,
               user_id BIGINT,
+              used_at TIMESTAMPTZ DEFAULT NOW(),
               PRIMARY KEY (code, user_id)
           )""")
           c.execute("""
@@ -3012,7 +3014,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             # نحاول إدراج الاستخدام أولاً — إن فشل بسبب PRIMARY KEY فهو مستخدم مسبقاً
             c.execute(
-                "INSERT INTO promo_uses (code, user_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                "INSERT INTO promo_uses (code, user_id, used_at) VALUES (%s, %s, NOW()) ON CONFLICT (code, user_id) DO NOTHING",
                 (code, user.id)
             )
             inserted = c.rowcount
@@ -6342,13 +6344,66 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             tog = "❌ تعطيل" if p["active"] else "✅ تفعيل"
             rows.append([
-                InlineKeyboardButton(p["code"], callback_data="noop"),
+                InlineKeyboardButton(f"👥 {p['code']}", callback_data=f"os:promo_users:{p['code']}"),
                 InlineKeyboardButton(tog, callback_data=f"os_tog_promo:{p['code']}:{0 if p['active'] else 1}"),
                 InlineKeyboardButton("🗑", callback_data=f"os_del_promo:{p['code']}")
             ])
         rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
         await q.edit_message_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN,
                                    reply_markup=InlineKeyboardMarkup(rows))
+        return
+
+    if data.startswith("os:promo_users:") and is_own:
+        code = data[len("os:promo_users:"):]
+        with db_conn() as c:
+            promo = c.execute("SELECT * FROM promo_codes WHERE code=%s", (code,)).fetchone()
+            uses  = c.execute(
+                """
+                SELECT pu.user_id, pu.used_at,
+                       u.username, u.first_name, u.last_name, u.points
+                FROM promo_uses pu
+                LEFT JOIN users u ON u.user_id = pu.user_id
+                WHERE pu.code = %s
+                ORDER BY pu.used_at DESC NULLS LAST
+                """,
+                (code,)
+            ).fetchall()
+        if not promo:
+            await q.answer("⚠️ الكود غير موجود", show_alert=True)
+            return
+        header = (
+            f"👥 *من استخدم الكود:* `{code}`\n"
+            f"🎁 النقاط: {promo['points']} | الاستخدامات: {promo['used_count']}/{promo['max_uses']}\n"
+        )
+        if not uses:
+            body = "\n_لم يستخدمه أحد بعد._"
+        else:
+            lines = []
+            for i, u in enumerate(uses, 1):
+                name = (u["first_name"] or "") + (" " + u["last_name"] if u["last_name"] else "")
+                name = name.strip() or "—"
+                uname = f"@{u['username']}" if u["username"] else f"ID: {u['user_id']}"
+                pts   = u["points"] if u["points"] is not None else "؟"
+                ts_raw = u["used_at"]
+                if ts_raw:
+                    if hasattr(ts_raw, "strftime"):
+                        ts = ts_raw.strftime("%Y-%m-%d %H:%M")
+                    else:
+                        ts = str(ts_raw)[:16]
+                else:
+                    ts = "—"
+                lines.append(
+                    f"{i}. {name} ({uname})\n"
+                    f"   💰 رصيده: {pts} نقطة | 🕐 {ts}"
+                )
+            body = "\n\n" + "\n\n".join(lines)
+        await q.edit_message_text(
+            header + body,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 رجوع للأكواد", callback_data="os:list_promos")]
+            ])
+        )
         return
 
     if data.startswith("os_tog_promo:") and is_own:
