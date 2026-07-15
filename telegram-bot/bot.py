@@ -1762,14 +1762,26 @@ CATEGORY_MAP = {
 # ────────────────────────────────────────────────────────────
 #  إدارة أزرار القوائم (يتحكم بها المالك: إضافة/حذف/ترتيب/تحجيم)
 # ────────────────────────────────────────────────────────────
-MENU_LABELS = {"main": "القائمة الرئيسية", "owner_settings": "قائمة إعدادات المالك", "collect_points": "تجميع نقاط", "contact_support": "تواصل مع الدعم", "services_menu": "قائمة الخدمات", "services_menu_tg": "خدمات: تيلجرام"}
+# منصات "خدمات": كل منصة قائمة فرعية مستقلة يمكن للمالك تعبئتها بفئات/أزرار خاصة بها.
+SERVICE_PLATFORMS = [
+    ("📱 تيلجرام", "services_menu_tg"),
+    ("📸 انستغرام", "services_menu_ig"),
+    ("🎵 تيك توك", "services_menu_tt"),
+    ("💬 واتساب", "services_menu_wa"),
+    ("📘 فيس بوك", "services_menu_fb"),
+    ("▶️ يوتيوب", "services_menu_yt"),
+]
+SERVICE_PLATFORM_MENUS = {v for _, v in SERVICE_PLATFORMS}
+
+MENU_LABELS = {"main": "القائمة الرئيسية", "owner_settings": "قائمة إعدادات المالك", "collect_points": "تجميع نقاط", "contact_support": "تواصل مع الدعم", "services_menu": "قائمة الخدمات"}
+MENU_LABELS.update({v: f"خدمات: {lbl.split(' ', 1)[1]}" for lbl, v in SERVICE_PLATFORMS})
 MENU_LABELS.update({f"cat:{k}": f"قائمة فئة: {v}" for k, v in CATEGORY_MAP.items()})
 
 # فئات "الرشق" الأساسية بالإضافة إلى التعزيز والنجوم، التي تم دمجها جميعها
 # ضمن قائمة فرعية "📱 تيلجرام" داخل "🛍 خدمات" (تمهيداً لإضافة منصات أخرى مستقبلاً).
 SERVICES_MENU_CATEGORIES = ["followers", "views", "interactions", "story_views", "start_bot", "boost", "post_stars"]
 
-MANAGEABLE_MENUS = ["main", "owner_settings", "services_menu", "services_menu_tg"] + [f"cat:{k}" for k in CATEGORY_MAP]
+MANAGEABLE_MENUS = ["main", "owner_settings", "services_menu"] + [v for _, v in SERVICE_PLATFORMS] + [f"cat:{k}" for k in CATEGORY_MAP]
 
 BUILTIN_DEFAULTS = {
     "main": [
@@ -1782,15 +1794,19 @@ BUILTIN_DEFAULTS = {
         ("🏆 الأكثر دعوةً اليوم", "top_ref_today", 2),
         ("🛎 تواصل مع الدعم", "contact_support", 1),
     ],
-    "services_menu": [
-        ("📱 تيلجرام", "services_menu_tg", 1),
-    ],
+    "services_menu": [(label, value, 2) for label, value in SERVICE_PLATFORMS],
     "services_menu_tg": [
         ("👥 رشق متابعين", "cat:followers", 2), ("👁 رشق مشاهدات", "cat:views", 2),
         ("💬 رشق تفاعلات", "cat:interactions", 2), ("📖 رشق مشاهدات ستوري", "cat:story_views", 2),
         ("🤖 رشق بدء (ستارت) بوت", "cat:start_bot", 2), ("📣 تعزيز قناة أو كروب", "cat:boost", 2),
         ("⭐ نجوم على بوست قناة", "cat:post_stars", 1),
     ],
+    # المنصات التالية جديدة وفارغة حالياً؛ يضيف المالك خدماتها من "🧩 إضافة/إزالة خيار" داخل كل منصة.
+    "services_menu_ig": [],
+    "services_menu_tt": [],
+    "services_menu_wa": [],
+    "services_menu_fb": [],
+    "services_menu_yt": [],
     "owner_settings": [
         ("➕ إضافة خدمة", "os:add_service", 2), ("📋 قائمة الخدمات", "os:list_services", 2),
         ("🗂 عرض الخدمات", "os:view_services", 2), ("📦 قسم الطلبات", "os:orders_section", 2),
@@ -1820,12 +1836,12 @@ BUILTIN_DEFAULTS = {
 }
 
 GOTO_TARGETS = [
-    ("🏠 القائمة الرئيسية", "main_menu"), ("🛍 خدمات", "services_menu"), ("📱 تيلجرام", "services_menu_tg"),
+    ("🏠 القائمة الرئيسية", "main_menu"), ("🛍 خدمات", "services_menu"),
     ("🔗 رابط دعوة", "referral"), ("💰 تجميع نقاط", "collect_points"),
     ("💎 شحن نقاط", "charge_points"),
     ("🏆 استبدال نقاط بجوائز", "exchange_points"), ("↔️ تحويل النقاط", "transfer_points"),
     ("🎟 استخدام كود", "use_promo"), ("ℹ️ معلوماتي", "my_info"), ("📺 تمويل قناتك حقيقي", "fund_channel"),
-] + [(v, f"cat:{k}") for k, v in CATEGORY_MAP.items()]
+] + SERVICE_PLATFORMS + [(v, f"cat:{k}") for k, v in CATEGORY_MAP.items()]
 
 
 def seed_menu_items(menu: str):
@@ -4223,15 +4239,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ── قائمة "تيلجرام" (دمج فئات الرشق الأساسية + التعزيز + النجوم داخل خدمات) ──
-    if data == "services_menu_tg":
-        context.user_data["state"] = "services_menu_tg"
-        rows = build_kb_rows(get_menu_items("services_menu_tg"))
+    # ── قائمة أي منصة داخل "خدمات" (تيلجرام/انستغرام/تيك توك/واتساب/فيس بوك/يوتيوب) ──
+    if data in SERVICE_PLATFORM_MENUS:
+        context.user_data["state"] = data
+        items = get_menu_items(data)
+        rows = build_kb_rows(items)
+        platform_label = next((lbl for lbl, val in SERVICE_PLATFORMS if val == data), "خدمات")
         if is_own:
-            rows.append([InlineKeyboardButton("🧩 إضافة/إزالة خيار", callback_data="mb_menu:services_menu_tg")])
+            rows.append([InlineKeyboardButton("🧩 إضافة/إزالة خيار", callback_data=f"mb_menu:{data}")])
         rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="services_menu")])
+        body = "اختر الخدمة المطلوبة:" if items else "⚠️ لا توجد خدمات مضافة هنا حالياً.\nتواصل مع المالك لإضافتها."
         await q.edit_message_text(
-            "📱 *تيلجرام*\nاختر نوع الرشق المطلوب:",
+            f"{platform_label}\n{body}",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(rows)
         )
