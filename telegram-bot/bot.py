@@ -2079,6 +2079,14 @@ async def show_orders_section(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 def owner_settings_kb():
     rows = build_kb_rows(get_menu_items("owner_settings"))
+    # يعرض حالة وضع الصيانة (مفعل/مغلق) مباشرة على نص الزر نفسه، لا فقط في رسالة التبديل
+    _maint_on = is_maintenance_on()
+    _maint_suffix = " (مفعل ✅)" if _maint_on else " (مغلق ❌)"
+    for row in rows:
+        for i, btn in enumerate(row):
+            if btn.callback_data == "os:toggle_maintenance":
+                base_label = btn.text.split(" (")[0]
+                row[i] = InlineKeyboardButton(base_label + _maint_suffix, callback_data="os:toggle_maintenance")
     rows.append([InlineKeyboardButton("🧩 إضافة/إزالة خيار", callback_data="mb_menu:owner_settings")])
     rows.append([InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")])
     return InlineKeyboardMarkup(rows)
