@@ -1315,12 +1315,7 @@ async def enable_2fa_for_number(phone: str, session_str: str, stock_id: int, bot
             elif verified is False:
                 if bot is not None:
                     try:
-                        await notify_account_change(
-                            bot, phone,
-                            f"⚠️ كلمة التحقق الثابتة \"{OWNER_FIXED_2FA_PASSWORD}\" خاطئة على هذا الحساب! "
-                            f"ما هي كلمة المرور الصحيحة الفعلية له؟",
-                            stock_id=stock_id
-                        )
+                        await request_manual_2fa_password(bot, phone, stock_id)
                     except Exception:
                         pass
                 return False, f"كلمة المرور الثابتة \"{OWNER_FIXED_2FA_PASSWORD}\" غير صحيحة لهذا الحساب", None
@@ -1645,6 +1640,29 @@ async def notify_account_change(bot, phone: str, change_desc: str, added_at=None
         await bot.send_message(OWNER_ID, text, parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
         logger.error(f"❌ فشل إرسال تنبيه تغيّر الحساب {phone}: {e}")
+
+
+async def request_manual_2fa_password(bot, phone: str, stock_id: int):
+    """يُرسل للمالك طلباً فعلياً (مع زر) لإدخال كلمة مرور التحقق بخطوتين الصحيحة لرقم معيّن،
+    بعد أن فشل التحقق من الكلمة الثابتة المعتمدة على حسابه. عند الضغط يبدأ البوت بانتظار
+    رد نصي يحتوي كلمة المرور الفعلية، ويتحقق منها فعلياً قبل حفظها."""
+    if not OWNER_ID:
+        return
+    try:
+        await bot.send_message(
+            OWNER_ID,
+            f"🔑 *طلب كلمة مرور التحقق بخطوتين الصحيحة*\n\n"
+            f"رقم الحساب: `{phone}`\n"
+            f"الدولة: {guess_country(phone)}\n\n"
+            f"الكلمة الثابتة المعتمدة \"{OWNER_FIXED_2FA_PASSWORD}\" غير صحيحة على هذا الحساب. "
+            f"اضغط الزر أدناه وأرسل كلمة المرور الصحيحة الفعلية لهذا الرقم.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("📤 إرسال كلمة المرور الصحيحة الآن", callback_data=f"os:set_2fa_manual:{stock_id}")
+            ]])
+        )
+    except Exception as e:
+        logger.error(f"❌ فشل إرسال طلب كلمة مرور 2FA اليدوية للرقم {phone}: {e}")
 
 
 async def monitor_number_changes_job(context: ContextTypes.DEFAULT_TYPE):
@@ -3835,6 +3853,49 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["state"] = "main_menu"
             return
         await _finish_number_login(update, context, user.id)
+        return
+
+    if is_own and state == "os_await_manual_2fa_pwd":
+        stock_id = context.user_data.get("manual_2fa_stock_id")
+        pwd = text.strip()
+        context.user_data["state"] = "main_menu"
+        context.user_data.pop("manual_2fa_stock_id", None)
+        if not stock_id:
+            await update.message.reply_text("⚠️ انتهت صلاحية الطلب، افتح معلومات الرقم من جديد.")
+            return
+        with db_conn() as c:
+            rec = c.execute(
+                "SELECT phone_number, session_string FROM number_stock WHERE id=%s", (stock_id,)
+            ).fetchone()
+        if not rec or not rec["session_string"]:
+            await update.message.reply_text("⚠️ لم يُعثر على هذا الرقم بعد الآن.")
+            return
+        await update.message.reply_text("⏳ جاري التحقق من كلمة المرور مع تيليجرام...")
+        client = TelegramClient(StringSession(rec["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+        try:
+            await client.connect()
+            verified = await verify_current_2fa_password(client, pwd)
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+        if verified is True:
+            with db_conn() as c:
+                c.execute("UPDATE number_stock SET twofa_password=%s WHERE id=%s", (pwd, stock_id))
+            await update.message.reply_text(
+                f"✅ تم التحقق من كلمة المرور وحفظها بنجاح لرقم `{rec['phone_number']}`.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        elif verified is False:
+            context.user_data["state"] = "os_await_manual_2fa_pwd"
+            context.user_data["manual_2fa_stock_id"] = stock_id
+            await update.message.reply_text(
+                f"❌ كلمة المرور خاطئة لرقم `{rec['phone_number']}`. أرسل الكلمة الصحيحة مجدداً:",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        else:
+            await update.message.reply_text("⚠️ تعذّر التحقق الآن (خطأ شبكي)، حاول مجدداً بعد قليل.")
         return
 
     if is_own and state == "os_await_ref_task_link":
@@ -6267,6 +6328,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     [InlineKeyboardButton("🔙 رجوع", callback_data=f"os:number_info:{stock_id}")],
                 ])
             )
+        return
+
+    if data.startswith("os:set_2fa_manual:") and is_own:
+        stock_id = int(data.split(":")[-1])
+        rec = get_stock_number(stock_id)
+        if not rec:
+            await q.edit_message_text("⚠️ الرقم غير موجود.")
+            return
+        context.user_data["state"] = "os_await_manual_2fa_pwd"
+        context.user_data["manual_2fa_stock_id"] = stock_id
+        await q.message.reply_text(
+            f"🔑 أرسل الآن كلمة مرور التحقق بخطوتين الصحيحة لرقم `{rec['phone_number']}`:",
+            parse_mode=ParseMode.MARKDOWN
+        )
         return
 
     if data.startswith("os:number_2fa_enable:") and is_own:
