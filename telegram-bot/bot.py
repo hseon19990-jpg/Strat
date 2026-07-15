@@ -1762,14 +1762,14 @@ CATEGORY_MAP = {
 # ────────────────────────────────────────────────────────────
 #  إدارة أزرار القوائم (يتحكم بها المالك: إضافة/حذف/ترتيب/تحجيم)
 # ────────────────────────────────────────────────────────────
-MENU_LABELS = {"main": "القائمة الرئيسية", "owner_settings": "قائمة إعدادات المالك", "collect_points": "تجميع نقاط", "contact_support": "تواصل مع الدعم", "services_menu": "قائمة الخدمات"}
+MENU_LABELS = {"main": "القائمة الرئيسية", "owner_settings": "قائمة إعدادات المالك", "collect_points": "تجميع نقاط", "contact_support": "تواصل مع الدعم", "services_menu": "قائمة الخدمات", "services_menu_tg": "خدمات: تيلجرام"}
 MENU_LABELS.update({f"cat:{k}": f"قائمة فئة: {v}" for k, v in CATEGORY_MAP.items()})
 
 # فئات "الرشق" الأساسية بالإضافة إلى التعزيز والنجوم، التي تم دمجها جميعها
-# ضمن زر واحد في القائمة الرئيسية باسم "🛍 خدمات" يفتح قائمة فرعية بها.
+# ضمن قائمة فرعية "📱 تيلجرام" داخل "🛍 خدمات" (تمهيداً لإضافة منصات أخرى مستقبلاً).
 SERVICES_MENU_CATEGORIES = ["followers", "views", "interactions", "story_views", "start_bot", "boost", "post_stars"]
 
-MANAGEABLE_MENUS = ["main", "owner_settings", "services_menu"] + [f"cat:{k}" for k in CATEGORY_MAP]
+MANAGEABLE_MENUS = ["main", "owner_settings", "services_menu", "services_menu_tg"] + [f"cat:{k}" for k in CATEGORY_MAP]
 
 BUILTIN_DEFAULTS = {
     "main": [
@@ -1783,6 +1783,9 @@ BUILTIN_DEFAULTS = {
         ("🛎 تواصل مع الدعم", "contact_support", 1),
     ],
     "services_menu": [
+        ("📱 تيلجرام", "services_menu_tg", 1),
+    ],
+    "services_menu_tg": [
         ("👥 رشق متابعين", "cat:followers", 2), ("👁 رشق مشاهدات", "cat:views", 2),
         ("💬 رشق تفاعلات", "cat:interactions", 2), ("📖 رشق مشاهدات ستوري", "cat:story_views", 2),
         ("🤖 رشق بدء (ستارت) بوت", "cat:start_bot", 2), ("📣 تعزيز قناة أو كروب", "cat:boost", 2),
@@ -1817,7 +1820,7 @@ BUILTIN_DEFAULTS = {
 }
 
 GOTO_TARGETS = [
-    ("🏠 القائمة الرئيسية", "main_menu"), ("🛍 خدمات", "services_menu"),
+    ("🏠 القائمة الرئيسية", "main_menu"), ("🛍 خدمات", "services_menu"), ("📱 تيلجرام", "services_menu_tg"),
     ("🔗 رابط دعوة", "referral"), ("💰 تجميع نقاط", "collect_points"),
     ("💎 شحن نقاط", "charge_points"),
     ("🏆 استبدال نقاط بجوائز", "exchange_points"), ("↔️ تحويل النقاط", "transfer_points"),
@@ -1852,6 +1855,16 @@ def seed_menu_items(menu: str):
             c.execute(
                 "UPDATE menu_items SET sort_order=? WHERE menu='main' AND action_value='services_menu'",
                 (min_order - 1,)
+            )
+    # ترحيل إضافي: فئات "الرشق"/"التعزيز"/"النجوم" كانت مباشرة داخل قائمة "خدمات" (services_menu)،
+    # أصبحت الآن تحت قائمة فرعية جديدة "📱 تيلجرام" (services_menu_tg) تمهيداً لإضافة منصات أخرى مستقبلاً.
+    if menu == "services_menu":
+        with db_conn() as c:
+            old_cats = tuple(f"cat:{k}" for k in SERVICES_MENU_CATEGORIES)
+            c.execute(
+                f"DELETE FROM menu_items WHERE menu='services_menu' AND action_type='builtin' AND action_value IN "
+                f"({','.join('?' for _ in old_cats)})",
+                old_cats
             )
     with db_conn() as c:
         existing = c.execute(
@@ -2221,8 +2234,8 @@ async def notify_prize_exchange_owner(context, pe_id: int, text_html: str):
 #  عرض خدمات الفئة
 # ────────────────────────────────────────────────────────────
 async def show_category_services(update: Update, context: ContextTypes.DEFAULT_TYPE, category: str):
-    # فئات الرشق الأساسية أصبحت داخل قائمة "🛍 خدمات"، فيجب الرجوع إليها بدل القائمة الرئيسية مباشرة
-    back_target = "services_menu" if category in SERVICES_MENU_CATEGORIES else "main_menu"
+    # فئات الرشق الأساسية أصبحت داخل قائمة "📱 تيلجرام" ضمن "🛍 خدمات"، فيجب الرجوع إليها بدل القائمة الرئيسية مباشرة
+    back_target = "services_menu_tg" if category in SERVICES_MENU_CATEGORIES else "main_menu"
     with db_conn() as c:
         svcs = c.execute(
             "SELECT * FROM services WHERE category=? AND active=1", (category,)
@@ -4196,7 +4209,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ── قائمة "خدمات" (دمج فئات الرشق الأساسية: متابعين/مشاهدات/تفاعلات/مشاهدات ستوري/بدء بوت) ──
+    # ── قائمة "خدمات" (منصات: تيلجرام، وأي منصات أخرى تُضاف مستقبلاً) ──
     if data == "services_menu":
         context.user_data["state"] = "services_menu"
         rows = build_kb_rows(get_menu_items("services_menu"))
@@ -4204,7 +4217,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             rows.append([InlineKeyboardButton("🧩 إضافة/إزالة خيار", callback_data="mb_menu:services_menu")])
         rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")])
         await q.edit_message_text(
-            "🛍 *خدمات*\nاختر نوع الرشق المطلوب:",
+            "🛍 *خدمات*\nاختر المنصة المطلوبة:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
+        return
+
+    # ── قائمة "تيلجرام" (دمج فئات الرشق الأساسية + التعزيز + النجوم داخل خدمات) ──
+    if data == "services_menu_tg":
+        context.user_data["state"] = "services_menu_tg"
+        rows = build_kb_rows(get_menu_items("services_menu_tg"))
+        if is_own:
+            rows.append([InlineKeyboardButton("🧩 إضافة/إزالة خيار", callback_data="mb_menu:services_menu_tg")])
+        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="services_menu")])
+        await q.edit_message_text(
+            "📱 *تيلجرام*\nاختر نوع الرشق المطلوب:",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(rows)
         )
