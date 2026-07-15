@@ -11,6 +11,7 @@
 """
 
 import os
+import re
 import asyncio
 import time
 import random
@@ -781,23 +782,63 @@ def estimate_registration_year(user_id: int) -> str:
     return "2026 أو أحدث"
 
 
+def parse_spam_reply(raw_text: str) -> dict:
+    """يحلّل رد @SpamBot الرسمي ليستخرج: هل هناك تقييد حالياً، وحتى أي وقت/تاريخ ينتهي (إن ذُكر صريحاً)."""
+    text = (raw_text or "").strip()
+    result = {"restricted": None, "until": None, "raw": text}
+    if not text:
+        return result
+    lower = text.lower()
+    if any(k in lower for k in ("good news", "no limits", "free as a bird", "لا يوجد", "no restrictions")):
+        result["restricted"] = False
+        return result
+    result["restricted"] = True
+    # محاولة استخراج تاريخ/وقت انتهاء القيد الصريح من نص الرد (الصيغ الشائعة من SpamBot الرسمي)
+    patterns = [
+        r"until\s+([0-9]{1,2}[:.][0-9]{2}(?:\s*(?:UTC|GMT))?[^.\n]{0,40})",
+        r"until\s+([A-Za-z0-9,\s\-\/]{4,40}?(?:UTC|GMT|\d{4}))",
+        r"limited for\s+([A-Za-z0-9\s]{2,30})",
+    ]
+    for p in patterns:
+        m = re.search(p, text, re.IGNORECASE)
+        if m:
+            result["until"] = m.group(1).strip().rstrip(". ")
+            break
+    return result
+
+
 async def check_spam_status(client: TelegramClient) -> str:
-    """يفحص حالة الحظر/التقييد عبر إرسال رسالة تلقائية لبوت @SpamBot الرسمي وقراءة رده."""
+    """يفحص حالة الحظر/التقييد عبر إرسال رسالة تلقائية لبوت @SpamBot الرسمي وقراءة رده.
+    للحصول على تفاصيل منفصلة (مقيّد أم لا، ومتى ينتهي)، استخدم check_spam_status_detailed."""
+    detail = await check_spam_status_detailed(client)
+    return detail["display"]
+
+
+async def check_spam_status_detailed(client: TelegramClient) -> dict:
+    """نسخة تفصيلية من فحص @SpamBot: تُرجع dict فيه restricted (True/False/None) و until (نص وقت الانتهاء إن وُجد)
+    والنص الكامل الأصلي، بالإضافة إلى نص عرض جاهز display."""
     try:
         await client.send_message("SpamBot", "/start")
         await asyncio.sleep(3)
         msgs = await client.get_messages("SpamBot", limit=1)
-        if not msgs:
-            return "⚠️ لم يصل رد من SpamBot، حاول مجدداً"
-        txt = (msgs[0].message or "").lower()
-        if "good news" in txt or "no limits" in txt or "لا يوجد" in txt:
-            return "✅ غير محظور (حساب سليم)"
-        if "limited" in txt or "restrict" in txt:
-            return f"🚫 محظور/مقيّد جزئياً:\n{msgs[0].message[:300]}"
-        return f"ℹ️ رد SpamBot:\n{msgs[0].message[:300]}"
+        if not msgs or not msgs[0].message:
+            return {"restricted": None, "until": None, "raw": None,
+                     "display": "⚠️ لم يصل رد من SpamBot، حاول مجدداً"}
+        parsed = parse_spam_reply(msgs[0].message)
+        if parsed["restricted"] is False:
+            parsed["display"] = "✅ غير مقيّد (حساب سليم)"
+        elif parsed["restricted"] is True:
+            if parsed["until"]:
+                parsed["display"] = f"🚫 مقيّد من الإرسال — ينتهي القيد: {parsed['until']}"
+            else:
+                parsed["display"] = f"🚫 مقيّد من الإرسال (لم يُذكر وقت انتهاء صريح):\n{msgs[0].message[:300]}"
+        else:
+            parsed["display"] = f"ℹ️ رد SpamBot غير واضح:\n{msgs[0].message[:300]}"
+        return parsed
     except Exception as e:
         logger.error(f"❌ خطأ في فحص SpamBot: {e}")
-        return "⚠️ تعذر الفحص حالياً، حاول لاحقاً"
+        return {"restricted": None, "until": None, "raw": None,
+                "display": "⚠️ تعذر الفحص حالياً، حاول لاحقاً"}
 
 
 async def get_device_count(client: TelegramClient) -> int:
@@ -5928,7 +5969,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception:
                     pass
             devices = await get_device_count(client)
-            spam = await check_spam_status(client)
+            spam_detail = await check_spam_status_detailed(client)
             # ─── حالة التجميد المحفوظة في DB ───
             db_frozen_at = rec.get("frozen_at")
             if db_frozen_at and not frozen_at_str:
@@ -5951,10 +5992,22 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 if me.username:
                     display_name += f" (@{me.username})"
-            # ─── معلومات التجميد ───
-            frozen_line = f"\n🧊 حالة التجميد: {frozen_status}"
+            # ─── معلومات التجميد/الحظر الكامل (نفس الحالة تقنياً: حساب معطّل/محذوف بالكامل من تيليجرام) ───
+            frozen_line = (
+                f"\n🧊 جامد: {'✅ نعم' if is_frozen else '❌ لا'}"
+                f"\n⛔ محظور بالكامل: {'✅ نعم' if is_frozen else '❌ لا'}"
+            )
             if is_frozen and frozen_at_str:
                 frozen_line += f"\n📅 تاريخ التجميد: {frozen_at_str}"
+            # ─── حالة التقييد المؤقت من الإرسال (Spam Block عبر @SpamBot) ───
+            restricted = spam_detail.get("restricted")
+            if restricted is True:
+                until_txt = spam_detail.get("until")
+                spam_line = f"\n📵 مقيّد من الإرسال: ✅ نعم" + (f"\n⏳ ينتهي القيد: {until_txt}" if until_txt else "\n⏳ ينتهي القيد: غير محدد بدقة في رد تيليجرام")
+            elif restricted is False:
+                spam_line = f"\n📵 مقيّد من الإرسال: ❌ لا"
+            else:
+                spam_line = f"\n📵 مقيّد من الإرسال: ⚠️ تعذّر التأكد الآن"
             # ─── حالة 2FA: فحص مباشر وفعلي من تيليجرام، مع تحقق حقيقي من الكلمة الثابتة إن كانت غير محفوظة
             # (لا نعتمد فقط على القيمة المحفوظة سابقاً، لأنها قد تكون غير محدَّثة إن فُعِّل 2FA يدوياً
             # قبل أن تفحصه أي مهمة دورية؛ ولا نفترض أن الكلمة الثابتة صحيحة بدون تحقق فعلي) ───
@@ -5979,9 +6032,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"{display_name}\n"
                 f"🌍 الدولة: {guess_country(rec['phone_number'])}\n"
                 f"🕰️ عمر الحساب (تقريبي): {age}\n"
-                f"💻 عدد الأجهزة المسجّلة: {devices if devices >= 0 else 'غير متاح'}\n"
-                f"🚫 حالة الحظر (SpamBot): {spam}"
+                f"💻 عدد الأجهزة المسجّلة: {devices if devices >= 0 else 'غير متاح'}"
                 f"{frozen_line}"
+                f"{spam_line}"
                 f"{twofa_line}\n"
                 f"🛒 حالة العرض للبيع: {sale_status}\n"
             )
