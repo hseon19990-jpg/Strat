@@ -1051,16 +1051,19 @@ def list_stock_numbers(filter_type: str = "all"):
     - "trash": الأرقام المحذوفة (سلة المهملات)، بغض النظر عن حالة البيع.
     """
     if filter_type == "trash":
-        sql = "SELECT id, phone_number, session_string, sessions_reset, force_listed FROM number_stock WHERE deleted_at IS NOT NULL"
+        sql = "SELECT id, phone_number, session_string, sessions_reset, force_listed, deleted_at, added_at FROM number_stock WHERE deleted_at IS NOT NULL"
+    elif filter_type == "kicked":
+        sql = (
+            "SELECT id, phone_number, session_string, sessions_reset, force_listed, kicked_at, added_at "
+            "FROM number_stock WHERE assigned_to IS NULL AND deleted_at IS NULL AND last_authorized=FALSE"
+        )
     else:
-        sql = "SELECT id, phone_number, session_string, sessions_reset, force_listed FROM number_stock WHERE assigned_to IS NULL AND deleted_at IS NULL"
+        sql = "SELECT id, phone_number, session_string, sessions_reset, force_listed, added_at FROM number_stock WHERE assigned_to IS NULL AND deleted_at IS NULL"
         if filter_type == "listed":
             sql += f" AND {_sellable_filter_sql()}"
         elif filter_type == "pending":
             sql += f" AND NOT ({_sellable_filter_sql()})"
-        elif filter_type == "kicked":
-            sql += " AND last_authorized=FALSE"
-    sql += " ORDER BY id ASC"
+    sql += " ORDER BY kicked_at DESC NULLS LAST, id ASC" if filter_type == "kicked" else " ORDER BY id ASC"
     with db_conn() as c:
         rows = c.execute(sql).fetchall()
         return [dict(r) for r in rows]
@@ -6547,7 +6550,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         filter_type = data.split(":")[-1]
         titles = {
             "all": "📦 جميع الأرقام", "listed": "🚀 الأرقام المعروضة", "pending": "⏳ الأرقام المنتظرة",
-            "kicked": "🚫 الحسابات المطرودة", "trash": "🗑 سلة المهملات",
+            "kicked": "🚫 الأرقام المطرودة", "trash": "🗑 سلة المهملات",
         }
         title = titles.get(filter_type, "الأرقام")
         numbers = list_stock_numbers(filter_type)
@@ -6556,19 +6559,53 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if filter_type == "trash":
                 empty_note = "سلة المهملات فارغة حالياً."
             elif filter_type == "kicked":
-                empty_note = "لا توجد حسابات مطرودة حالياً — كل الحسابات متصلة."
+                empty_note = "✅ لا توجد أرقام مطرودة حالياً — كل الأرقام متصلة."
             await q.edit_message_text(
                 f"{title}\n\n{empty_note}",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")]])
             )
             return
+
+        # ── عرض مخصص للأرقام المطرودة: جدول نصي بالتواريخ مباشرة ──
+        if filter_type == "kicked":
+            def _fmt_dt(val):
+                if val is None:
+                    return "غير مسجّل"
+                if hasattr(val, "strftime"):
+                    return val.strftime("%Y-%m-%d %H:%M")
+                return str(val)[:16]
+
+            shown = numbers[:50]
+            lines = [f"🚫 *الأرقام المطرودة ({len(numbers)})*\n"]
+            for n in shown:
+                country = guess_country(n["phone_number"])
+                added   = _fmt_dt(n.get("added_at"))
+                kicked  = _fmt_dt(n.get("kicked_at"))
+                lines.append(
+                    f"📱 `{n['phone_number']}` — {country}\n"
+                    f"   📅 تسجيل: {added}\n"
+                    f"   🚫 طُرد:   {kicked}"
+                )
+            text = "\n\n".join(lines)
+            if len(numbers) > 50:
+                text += f"\n\n_(يظهر أول 50 من إجمالي {len(numbers)})_"
+            btn_rows = [[InlineKeyboardButton(
+                f"📱 {n['phone_number']}",
+                callback_data=f"os:number_info:{n['id']}"
+            )] for n in shown]
+            btn_rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")])
+            await q.edit_message_text(
+                text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup(btn_rows)
+            )
+            return
+
         rows = []
         for n in numbers[:40]:
             label = f"📱 {n['phone_number']} — {guess_country(n['phone_number'])}"
             if filter_type == "trash":
                 label += " 🗑 محذوف"
-            elif filter_type == "kicked":
-                label += " 🚫 مطرود"
             elif not n["session_string"]:
                 label += " (بدون جلسة)"
             elif n["force_listed"]:
