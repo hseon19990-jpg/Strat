@@ -575,13 +575,50 @@ def init_db():
       except Exception as e:
           logger.warning(f"⚠️ فشل تنظيف أوصاف الأسعار: {e}")
 
+def _normalize_desc(desc: str) -> str:
+    """يُطبّع الاختصارات الشائعة في أوصاف خدمات SMM إلى العربية.
+    K → ألف  |  /D → /يوم  |  /H → /ساعة  |  /W → /أسبوع  |  /M → /شهر
+    كما يُصحّح 'كيلوجرام' و'كيلو' المكتوبة بدلاً من 'ألف' خطأً."""
+    if not desc:
+        return desc
+
+    t = desc
+
+    # تصحيح "كيلوجرام" / "كيلو جرام" / "كيلو" المكتوبة بدلاً من ألف
+    t = re.sub(r"كيلو\s*جرام", "ألف", t)
+    t = re.sub(r"كيلوجرام",     "ألف", t)
+    t = re.sub(r"\bكيلو\b",     "ألف", t)
+
+    # تطبيع الوحدات الزمنية: /Day /D /daily
+    t = re.sub(r"/\s*(?:day|daily)\b",   "/يوم",    t, flags=re.IGNORECASE)
+    t = re.sub(r"/\s*D\b",               "/يوم",    t, flags=re.IGNORECASE)
+    t = re.sub(r"\bper\s+day\b",         "يومياً",  t, flags=re.IGNORECASE)
+
+    t = re.sub(r"/\s*(?:hour|hr)\b",     "/ساعة",   t, flags=re.IGNORECASE)
+    t = re.sub(r"/\s*H\b",               "/ساعة",   t, flags=re.IGNORECASE)
+    t = re.sub(r"\bper\s+hour\b",        "بالساعة", t, flags=re.IGNORECASE)
+
+    t = re.sub(r"/\s*(?:week|wk)\b",     "/أسبوع",  t, flags=re.IGNORECASE)
+    t = re.sub(r"/\s*W\b",               "/أسبوع",  t, flags=re.IGNORECASE)
+
+    t = re.sub(r"/\s*(?:month|mo)\b",    "/شهر",    t, flags=re.IGNORECASE)
+    t = re.sub(r"/\s*M\b",               "/شهر",    t, flags=re.IGNORECASE)
+
+    # تطبيع K (ألف) — مثل 5K أو K/يوم
+    # نضع \b حول K حتى لا نؤثر على كلمات مثل OK
+    t = re.sub(r"(\d)\s*[Kk]\b", r"\1 ألف", t)   # 5K → 5 ألف
+    t = re.sub(r"\b[Kk]\b",      "ألف",     t)   # K وحيدة → ألف
+
+    return t.strip()
+
+
 def _strip_price_from_desc(desc: str, price_per_point: float = 0.0) -> str | None:
-    """يحذف جزء السعر فقط من الوصف ويُبقي باقي النص.
+    """يُطبّع الاختصارات أولاً ثم يحذف جزء السعر فقط، ويُبقي باقي النص.
     يعيد None إذا لم يتبق شيء بعد الحذف."""
     if not desc:
         return None
 
-    text = desc
+    text = _normalize_desc(desc)   # K→ألف، /D→/يوم، كيلوجرام→ألف … أولاً
 
     # 1) حذف أنماط الدولار: $0.5  /  0.5$  /  USD 0.5  /  $0.5/1000  /  0.5 USD
     text = re.sub(r"\$\s*\d+(?:[.,]\d+)?(?:\s*/\s*\d+)?", "", text, flags=re.IGNORECASE)
