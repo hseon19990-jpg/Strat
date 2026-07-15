@@ -3268,6 +3268,84 @@ async def cmd_addpoints(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
 # ────────────────────────────────────────────────────────────
+#  /grant_ref — منح نقاط إحالة ضائعة يدوياً (للمالك فقط)
+# ────────────────────────────────────────────────────────────
+async def cmd_grant_ref(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر المالك: /grant_ref <invited_user_id>
+    يمنح نقاط الإحالة للداعي في حال كانت ضائعة (referral_credited=1 لكن النقاط لم تُمنح فعلاً).
+    يستخدم لتصحيح حالات سببها مايغريشن قديم وضع referral_credited=1 بدون منح نقاط.
+    """
+    user = update.effective_user
+    if user.id != OWNER_ID:
+        await update.message.reply_text("⛔ هذا الأمر للمالك فقط.")
+        return
+
+    args = context.args
+    if not args or not args[0].isdigit():
+        await update.message.reply_text(
+            "📋 *الاستخدام:*\n`/grant_ref <user_id_المدعو>`\n\n"
+            "يمنح نقاط الإحالة للداعي إن كانت لم تُمنح سابقاً.\n\n"
+            "💡 *للعثور على الإحالات الضائعة:*\n"
+            "ابحث عن مستخدمين عندهم `invited_by != 0` وتم تسجيلهم قبل تفعيل نظام النقاط.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    invited_user_id = int(args[0])
+
+    with db_conn() as c:
+        row = c.execute(
+            "SELECT user_id, invited_by, referral_credited, full_name, username FROM users WHERE user_id=?",
+            (invited_user_id,)
+        ).fetchone()
+
+    if not row:
+        await update.message.reply_text(f"⚠️ لا يوجد مستخدم بالمعرف {invited_user_id} في قاعدة البيانات.")
+        return
+
+    invited_by = row["invited_by"]
+    if not invited_by or invited_by == 0:
+        await update.message.reply_text(f"⚠️ المستخدم {invited_user_id} لم يدخل عبر رابط دعوة (invited_by=0).")
+        return
+
+    inviter = get_user(invited_by)
+    if not inviter:
+        await update.message.reply_text(f"⚠️ الداعي (ID: {invited_by}) غير موجود في قاعدة البيانات.")
+        return
+
+    rp = int(get_setting("referral_points") or "30")
+
+    # منح النقاط للداعي وتسجيل credited_at إن لم تكن مسجّلة
+    with db_conn() as c:
+        c.execute("UPDATE users SET points=points+%s WHERE user_id=%s", (rp, invited_by))
+        # تأكد أن referral_credited=1 وcredited_at مضبوطة
+        c.execute(
+            "UPDATE users SET referral_credited=1, credited_at=COALESCE(credited_at, NOW()) WHERE user_id=%s",
+            (invited_user_id,)
+        )
+
+    invited_name = row.get("username") or row.get("full_name") or str(invited_user_id)
+    inviter_name = inviter.get("username") or inviter.get("full_name") or str(invited_by)
+
+    await update.message.reply_text(
+        f"✅ *تم منح نقاط الإحالة الضائعة*\n\n"
+        f"👤 المدعو: @{invited_name} (`{invited_user_id}`)\n"
+        f"🎁 الداعي: @{inviter_name} (`{invited_by}`) ← حصل على {rp} نقطة\n"
+        f"💰 رصيد الداعي الآن: {inviter['points'] + rp} نقطة",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+    # إشعار الداعي
+    try:
+        await context.bot.send_message(
+            chat_id=invited_by,
+            text=f"🎉 تم تصحيح إحالة ضائعة! حصلت على {rp} نقطة بسبب دعوة المستخدم {invited_name}."
+        )
+    except Exception:
+        pass
+
+
+# ────────────────────────────────────────────────────────────
 #  معالج الرسائل النصية (آلة الحالة)
 # ────────────────────────────────────────────────────────────
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -5135,11 +5213,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rp   = get_setting("referral_points") or "30"
         db_user = get_user(user.id)
         with db_conn() as c:
-            invited = c.execute("SELECT COUNT(*) as cnt FROM users WHERE invited_by=?", (user.id,)).fetchone()["cnt"]
+            credited  = c.execute(
+                "SELECT COUNT(*) as cnt FROM users WHERE invited_by=? AND referral_credited=1",
+                (user.id,)
+            ).fetchone()["cnt"]
+            pending   = c.execute(
+                "SELECT COUNT(*) as cnt FROM users WHERE invited_by=? AND referral_credited=0",
+                (user.id,)
+            ).fetchone()["cnt"]
+        pending_line = f"\n⏳ بانتظار إكمال التحقق: {pending} شخص" if pending else ""
         await q.edit_message_text(
             f"🔗 *رابط دعوتك الشخصي:*\n\n`{link}`\n\n"
-            f"✅ تحصل على *{rp} نقطة* لكل صديق يدخل عبر رابطك\n"
-            f"👥 دعوت حتى الآن: {invited} شخص\n"
+            f"✅ تحصل على *{rp} نقطة* لكل صديق يُكمل التحقق عبر رابطك\n"
+            f"👥 إحالات مكتملة (حصلت على نقاطها): {credited} شخص{pending_line}\n"
             f"💰 رصيدك: {db_user['points'] if db_user else 0} نقطة",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=back_kb()
@@ -5735,12 +5821,22 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text("⚠️ لم يتم العثور على بياناتك. أرسل /start أولاً.")
             return
         with db_conn() as c:
-            invited = c.execute("SELECT COUNT(*) as cnt FROM users WHERE invited_by=?", (user.id,)).fetchone()["cnt"]
+            inv_credited = c.execute(
+                "SELECT COUNT(*) as cnt FROM users WHERE invited_by=? AND referral_credited=1",
+                (user.id,)
+            ).fetchone()["cnt"]
+            inv_pending  = c.execute(
+                "SELECT COUNT(*) as cnt FROM users WHERE invited_by=? AND referral_credited=0",
+                (user.id,)
+            ).fetchone()["cnt"]
+        invited_line = f"{inv_credited} مكتمل"
+        if inv_pending:
+            invited_line += f" + {inv_pending} بانتظار التحقق"
         await q.edit_message_text(
             f"👤 *معلوماتك:*\n\n"
             f"🆔 معرفك: `{user.id}`\n"
             f"💰 نقاطك: {db_user['points']}\n"
-            f"👥 من دعوتهم: {invited} شخص\n"
+            f"👥 من دعوتهم: {invited_line}\n"
             f"📦 عدد طلباتك: {db_user['total_orders']}\n"
             f"🔢 رقمك في البوت: #{db_user['bot_user_num']}\n"
             f"📅 تاريخ الانضمام: {db_user['joined_at']}",
@@ -8306,6 +8402,7 @@ def main():
     app.add_handler(CommandHandler("start",     cmd_start))
     app.add_handler(CommandHandler("admin",     cmd_admin))
     app.add_handler(CommandHandler("addpoints", cmd_addpoints))
+    app.add_handler(CommandHandler("grant_ref", cmd_grant_ref))
     app.add_handler(CommandHandler("broadcast",           cmd_broadcast))
     app.add_handler(CommandHandler("status",              cmd_status_order))
     app.add_handler(CommandHandler("compensate_partial",  cmd_compensate_partial))
