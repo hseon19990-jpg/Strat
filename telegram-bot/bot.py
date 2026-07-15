@@ -97,6 +97,7 @@ ADMIN_GROUP_ID = _safe_int_env("ADMIN_GROUP_ID", 0)
 API_URL        = "https://smmmain.com/api/v2"
 
 JUSTANOTHERPANEL_API_KEY = os.getenv("JUSTANOTHERPANEL_API_KEY", "")
+SMMFOLLOWS_API_KEY       = os.getenv("SMMFOLLOWS_API_KEY", "")
 TELEGRAM_API_ID   = os.getenv("TELEGRAM_API_ID", "")
 TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "")
 
@@ -109,6 +110,7 @@ _expected_2fa_change = {}
 _EXPECTED_2FA_WINDOW_SEC = 180
 _monitor_tasks   = {}   # phone_number -> asyncio.Task لحلقة run_until_disconnected
 JUSTANOTHERPANEL_API_URL = "https://justanotherpanel.com/api/v2"
+SMMFOLLOWS_API_URL       = "https://smmfollows.io/api/v2"
 
 # ────────────────────────────────────────────────────────────
 #  المواقع (المصادر) المتاحة لسحب الخدمات منها
@@ -116,6 +118,7 @@ JUSTANOTHERPANEL_API_URL = "https://justanotherpanel.com/api/v2"
 PANEL_MAP = {
     1: {"name": "SMMMAIN",         "key": API_KEY,                  "url": API_URL},
     2: {"name": "JustAnotherPanel", "key": JUSTANOTHERPANEL_API_KEY, "url": JUSTANOTHERPANEL_API_URL},
+    3: {"name": "SmmFollows",       "key": SMMFOLLOWS_API_KEY,       "url": SMMFOLLOWS_API_URL},
 }
 
 # ────────────────────────────────────────────────────────────
@@ -396,6 +399,7 @@ def init_db():
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS last_device_count INTEGER DEFAULT -1",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS kicked_at TIMESTAMPTZ",
+              "ALTER TABLE services ADD COLUMN IF NOT EXISTS platform TEXT DEFAULT 'tg'",
           ]:
               try: c.execute(_alt)
               except Exception: pass
@@ -2185,6 +2189,28 @@ SERVICE_PLATFORMS = [
 ]
 SERVICE_PLATFORM_MENUS = {v for _, v in SERVICE_PLATFORMS}
 
+# ربط كل قائمة منصة بكود المنصة المستخدم في عمود platform بجدول services
+PLATFORM_MENU_MAP = {
+    "services_menu_tg": "tg",
+    "services_menu_ig": "ig",
+    "services_menu_tt": "tt",
+    "services_menu_wa": "wa",
+    "services_menu_fb": "fb",
+    "services_menu_yt": "yt",
+    "services_menu_sc": "sc",
+    "services_menu_tw": "tw",
+}
+PLATFORM_LABEL_MAP = {
+    "tg": "📱 تيلجرام",
+    "ig": "📸 انستغرام",
+    "tt": "🎵 تيك توك",
+    "wa": "💬 واتساب",
+    "fb": "📘 فيس بوك",
+    "yt": "▶️ يوتيوب",
+    "sc": "👻 سناب شات",
+    "tw": "🐦 تويتر",
+}
+
 MENU_LABELS = {"main": "القائمة الرئيسية", "owner_settings": "قائمة إعدادات المالك", "collect_points": "تجميع نقاط", "contact_support": "تواصل مع الدعم", "services_menu": "قائمة الخدمات"}
 MENU_LABELS.update({v: f"خدمات: {lbl.split(' ', 1)[1]}" for lbl, v in SERVICE_PLATFORMS})
 MENU_LABELS.update({f"cat:{k}": f"قائمة فئة: {v}" for k, v in CATEGORY_MAP.items()})
@@ -2685,11 +2711,22 @@ async def notify_prize_exchange_owner(context, pe_id: int, text_html: str):
 # ────────────────────────────────────────────────────────────
 async def show_category_services(update: Update, context: ContextTypes.DEFAULT_TYPE, category: str):
     # فئات الرشق الأساسية أصبحت داخل قائمة "📱 تيلجرام" ضمن "🛍 خدمات"، فيجب الرجوع إليها بدل القائمة الرئيسية مباشرة
-    back_target = "services_menu_tg" if category in SERVICES_MENU_CATEGORIES else "main_menu"
+    platform = context.user_data.get("current_platform", "tg") if context else "tg"
+    back_map = {"tg": "services_menu_tg", "ig": "services_menu_ig", "tt": "services_menu_tt",
+                "wa": "services_menu_wa", "fb": "services_menu_fb", "yt": "services_menu_yt",
+                "sc": "services_menu_sc", "tw": "services_menu_tw"}
+    back_target = back_map.get(platform, "services_menu_tg") if category in SERVICES_MENU_CATEGORIES else "main_menu"
     with db_conn() as c:
         svcs = c.execute(
-            "SELECT * FROM services WHERE category=? AND active=1", (category,)
+            "SELECT * FROM services WHERE category=%s AND platform=%s AND active=1", (category, platform)
         ).fetchall()
+    # احتياط: إذا لم تجد خدمات للمنصة المحددة، ابحث في 'tg' كاحتياط للخدمات القديمة غير المنقولة
+    if not svcs and platform != "tg":
+        with db_conn() as c:
+            svcs = c.execute(
+                "SELECT * FROM services WHERE category=%s AND (platform=%s OR platform IS NULL) AND active=1",
+                (category, platform)
+            ).fetchall()
     if not svcs:
         kb = back_kb(back_target)
         text = f"⚠️ لا توجد خدمات متاحة في ({CATEGORY_MAP.get(category, category)}) حالياً.\nتواصل مع المالك لإضافة خدمات."
@@ -4596,17 +4633,18 @@ async def handle_unsupported_message(update: Update, context: ContextTypes.DEFAU
 
 async def _save_service(update, context, price: float):
     """حفظ الخدمة الجديدة بعد تحديد جميع القيم"""
-    cat    = context.user_data.get("new_svc_cat", "followers")
-    api_id = context.user_data.get("new_svc_api_id")
-    panel  = context.user_data.get("new_svc_panel", 1)
-    name   = context.user_data.get("new_svc_name")
-    mn     = context.user_data.get("new_svc_min", 0)
-    mx     = context.user_data.get("new_svc_max", 0)
-    desc   = context.user_data.get("new_svc_desc", "")
+    cat      = context.user_data.get("new_svc_cat", "followers")
+    api_id   = context.user_data.get("new_svc_api_id")
+    panel    = context.user_data.get("new_svc_panel", 1)
+    platform = context.user_data.get("new_svc_platform", "tg")
+    name     = context.user_data.get("new_svc_name")
+    mn       = context.user_data.get("new_svc_min", 0)
+    mx       = context.user_data.get("new_svc_max", 0)
+    desc     = context.user_data.get("new_svc_desc", "")
     with db_conn() as c:
         c.execute(
-            "INSERT INTO services (category,api_service_id,panel,name_ar,description,min_qty,max_qty,price_per_point) VALUES (?,?,?,?,?,?,?,?)",
-            (cat, api_id, panel, name, desc, mn, mx, price)
+            "INSERT INTO services (category,api_service_id,panel,platform,name_ar,description,min_qty,max_qty,price_per_point) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (cat, api_id, panel, platform, name, desc, mn, mx, price)
         )
     site_name = PANEL_MAP.get(panel, PANEL_MAP[1])["name"]
     await update.message.reply_text(
@@ -4719,6 +4757,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── قائمة أي منصة داخل "خدمات" (تيلجرام/انستغرام/تيك توك/واتساب/فيس بوك/يوتيوب) ──
     if data in SERVICE_PLATFORM_MENUS:
         context.user_data["state"] = data
+        # نحفظ المنصة الحالية حتى تُفلتر خدمات الفئة (cat:) لهذه المنصة تحديداً
+        context.user_data["current_platform"] = PLATFORM_MENU_MAP.get(data, "tg")
         items = get_menu_items(data)
         rows = build_kb_rows(items)
         platform_label = next((lbl for lbl, val in SERVICE_PLATFORMS if val == data), "خدمات")
@@ -5780,24 +5820,47 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "os:add_service" and is_own:
+        # الخطوة 1: اختر المنصة
+        plat_rows = [[InlineKeyboardButton(lbl, callback_data=f"os_plat:{PLATFORM_MENU_MAP[val]}")] for lbl, val in SERVICE_PLATFORMS]
+        plat_rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
+        await q.edit_message_text(
+            "➕ *إضافة خدمة جديدة*\n\nالخطوة 1/3 — اختر *المنصة* التي تريد إضافة الخدمة لها:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(plat_rows)
+        )
+        return
+
+    if data.startswith("os_plat:") and is_own:
+        # الخطوة 2: اختر الفئة
+        platform = data.split(":")[1]
+        context.user_data["new_svc_platform"] = platform
+        plat_label = PLATFORM_LABEL_MAP.get(platform, platform)
         cats = list(CATEGORY_MAP.items())
         rows = [[InlineKeyboardButton(v, callback_data=f"os_cat:{k}")] for k, v in cats]
-        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
-        await q.edit_message_text("اختر الفئة التي تريد إضافة خدمة لها:", reply_markup=InlineKeyboardMarkup(rows))
+        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="os:add_service")])
+        await q.edit_message_text(
+            f"➕ *إضافة خدمة — {plat_label}*\n\nالخطوة 2/3 — اختر *الفئة:*",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
         return
 
     if data.startswith("os_cat:") and is_own:
+        # الخطوة 3: اختر الموقع
         cat = data.split(":")[1]
         context.user_data["new_svc_cat"] = cat
-        rows = [
-            [InlineKeyboardButton(f"1️⃣ {PANEL_MAP[1]['name']}", callback_data="os_panel:1")],
-            [InlineKeyboardButton(f"2️⃣ {PANEL_MAP[2]['name']}", callback_data="os_panel:2")],
-            [InlineKeyboardButton("🔙 رجوع", callback_data="os:add_service")],
+        platform = context.user_data.get("new_svc_platform", "tg")
+        plat_label = PLATFORM_LABEL_MAP.get(platform, platform)
+        panel_emojis = {1: "1️⃣", 2: "2️⃣", 3: "3️⃣"}
+        panel_rows = [
+            [InlineKeyboardButton(f"{panel_emojis.get(pid,'➡️')} {pinfo['name']}", callback_data=f"os_panel:{pid}")]
+            for pid, pinfo in PANEL_MAP.items() if pinfo["key"]
         ]
+        panel_rows.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"os_plat:{platform}")])
         await q.edit_message_text(
-            f"📌 الفئة: {CATEGORY_MAP.get(cat, cat)}\n\nاختر *الموقع* الذي تريد إضافة الخدمة منه:",
+            f"📌 المنصة: {plat_label} | الفئة: {CATEGORY_MAP.get(cat, cat)}\n\nالخطوة 3/3 — اختر *الموقع:*",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup(rows)
+            reply_markup=InlineKeyboardMarkup(panel_rows)
         )
         return
 
@@ -5851,24 +5914,26 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data.startswith("os_use_price:") and is_own:
-        price = float(data.split(":")[1])
+        price    = float(data.split(":")[1])
         context.user_data["state"] = "main_menu"
-        # نحتاج update.message لكن هنا callback — نرسل رسالة جديدة
-        cat    = context.user_data.get("new_svc_cat", "followers")
-        api_id = context.user_data.get("new_svc_api_id")
-        panel  = context.user_data.get("new_svc_panel", 1)
-        name   = context.user_data.get("new_svc_name")
-        mn     = context.user_data.get("new_svc_min", 0)
-        mx_val = context.user_data.get("new_svc_max", 0)
-        desc   = context.user_data.get("new_svc_desc", "")
+        cat      = context.user_data.get("new_svc_cat", "followers")
+        api_id   = context.user_data.get("new_svc_api_id")
+        panel    = context.user_data.get("new_svc_panel", 1)
+        platform = context.user_data.get("new_svc_platform", "tg")
+        name     = context.user_data.get("new_svc_name")
+        mn       = context.user_data.get("new_svc_min", 0)
+        mx_val   = context.user_data.get("new_svc_max", 0)
+        desc     = context.user_data.get("new_svc_desc", "")
         with db_conn() as c:
             c.execute(
-                "INSERT INTO services (category,api_service_id,panel,name_ar,description,min_qty,max_qty,price_per_point) VALUES (?,?,?,?,?,?,?,?)",
-                (cat, api_id, panel, name, desc, mn, mx_val, price)
+                "INSERT INTO services (category,api_service_id,panel,platform,name_ar,description,min_qty,max_qty,price_per_point) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (cat, api_id, panel, platform, name, desc, mn, mx_val, price)
             )
-        site_name = PANEL_MAP.get(panel, PANEL_MAP[1])["name"]
+        site_name  = PANEL_MAP.get(panel, PANEL_MAP[1])["name"]
+        plat_label = PLATFORM_LABEL_MAP.get(platform, platform)
         await q.edit_message_text(
             f"✅ تمت إضافة الخدمة *'{name}'* بنجاح!\n\n"
+            f"📱 المنصة: {plat_label}\n"
             f"🌐 الموقع: {site_name}\n"
             f"📉 الحد الأدنى: {mn}\n"
             f"📈 الحد الأعلى: {mx_val}\n"
@@ -5910,12 +5975,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 continue
             sent_any = True
             for s in svcs:
-                status = "✅ مفعّلة" if s["active"] else "❌ معطّلة"
-                site_name = PANEL_MAP.get(s["panel"] or 1, PANEL_MAP[1])["name"]
+                status     = "✅ مفعّلة" if s["active"] else "❌ معطّلة"
+                site_name  = PANEL_MAP.get(s["panel"] or 1, PANEL_MAP[1])["name"]
+                plat_label = PLATFORM_LABEL_MAP.get(s.get("platform") or "tg", "📱 تيلجرام")
                 svc_text = (
                     f"📂 *{cat_name}*\n"
                     f"🔹 *{s['name_ar']}*\n\n"
                     f"🟢 الحالة: {status}\n"
+                    f"📱 المنصة: {plat_label}\n"
                     f"🌐 الموقع: {site_name} (رقم: {s['api_service_id']})\n"
                     f"📝 الوصف: {s['description'] or '—'}\n"
                     f"📉 الحد الأدنى: {s['min_qty']:,}\n"
