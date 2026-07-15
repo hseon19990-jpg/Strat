@@ -2026,14 +2026,14 @@ MANAGEABLE_MENUS = ["main", "owner_settings", "services_menu"] + [v for _, v in 
 
 BUILTIN_DEFAULTS = {
     "main": [
-        ("🛍 خدمات", "services_menu", 1),
-        ("📺 تمويل قناتك حقيقي", "fund_channel", 2),
-        ("🔗 رابط دعوة", "referral", 2), ("💰 تجميع نقاط", "collect_points", 2),
-        ("💎 شحن نقاط", "charge_points", 2),
-        ("🏆 استبدال نقاط بجوائز", "exchange_points", 2), ("↔️ تحويل النقاط", "transfer_points", 2),
-        ("🎟 استخدام كود", "use_promo", 2), ("ℹ️ معلوماتي", "my_info", 2),
-        ("🏆 الأكثر دعوةً اليوم", "top_ref_today", 2),
-        ("🛎 تواصل مع الدعم", "contact_support", 1),
+        ("🐺 خدمات", "services_menu", 1),
+        ("🦇 تمويل قناتك حقيقي", "fund_channel", 1),
+        ("👻 رابط دعوة", "referral", 1),
+        ("👍 شحن نقاط", "charge_points", 2), ("⭐ تجميع نقاط", "collect_points", 2),
+        ("🎁 استبدال نقاط بجوائز", "exchange_points", 2), ("🎙 تحويل النقاط", "transfer_points", 2),
+        ("🎟 استخدام كود", "use_promo", 2), ("⭐ معلوماتي", "my_info", 2),
+        ("🎁 الأكثر دعوةً اليوم", "top_ref_today", 2),
+        ("✅ تواصل مع الدعم", "contact_support", 2),
     ],
     "services_menu": [(label, value, 2) for label, value in SERVICE_PLATFORMS],
     "services_menu_tg": [
@@ -2115,6 +2115,26 @@ def seed_menu_items(menu: str):
                 "UPDATE menu_items SET sort_order=? WHERE menu='main' AND action_value='services_menu'",
                 (min_order - 1,)
             )
+        # ترحيل تحديث الأيقونات/التخطيط لأزرار القائمة الرئيسية إلى الطابع الجديد (مستوحى من طلب المالك)،
+        # فقط للأزرار التي لا تزال بأيقوناتها القديمة الافتراضية (لا نلمس أي زر عدّله المالك يدوياً بنفسه).
+        _main_icon_migration = {
+            "services_menu":    ("🛍 خدمات", "🐺 خدمات", 1),
+            "fund_channel":     ("📺 تمويل قناتك حقيقي", "🦇 تمويل قناتك حقيقي", 1),
+            "referral":         ("🔗 رابط دعوة", "👻 رابط دعوة", 1),
+            "charge_points":    ("💎 شحن نقاط", "👍 شحن نقاط", 2),
+            "collect_points":   ("💰 تجميع نقاط", "⭐ تجميع نقاط", 2),
+            "exchange_points":  ("🏆 استبدال نقاط بجوائز", "🎁 استبدال نقاط بجوائز", 2),
+            "transfer_points":  ("↔️ تحويل النقاط", "🎙 تحويل النقاط", 2),
+            "my_info":          ("ℹ️ معلوماتي", "⭐ معلوماتي", 2),
+            "top_ref_today":    ("🏆 الأكثر دعوةً اليوم", "🎁 الأكثر دعوةً اليوم", 2),
+            "contact_support":  ("🛎 تواصل مع الدعم", "✅ تواصل مع الدعم", 2),
+        }
+        with db_conn() as c:
+            for action_value, (old_label, new_label, new_width) in _main_icon_migration.items():
+                c.execute(
+                    "UPDATE menu_items SET label=?, width=? WHERE menu='main' AND action_value=? AND label=?",
+                    (new_label, new_width, action_value, old_label)
+                )
     # ترحيل إضافي: فئات "الرشق"/"التعزيز"/"النجوم" كانت مباشرة داخل قائمة "خدمات" (services_menu)،
     # أصبحت الآن تحت قائمة فرعية جديدة "📱 تيلجرام" (services_menu_tg) تمهيداً لإضافة منصات أخرى مستقبلاً.
     if menu == "services_menu":
