@@ -557,6 +557,41 @@ def init_db():
               )
       except Exception:
           pass
+      # تنظيف تلقائي: حذف أي وصف خدمة يحتوي على سعر ($، USD، أو رقم قريب من سعر الخدمة بالدولار)
+      try:
+          with db_conn() as c:
+              svcs_with_desc = c.execute(
+                  "SELECT id, description, price_per_point FROM services WHERE description IS NOT NULL AND description != ''"
+              ).fetchall()
+          cleaned = 0
+          for s in svcs_with_desc:
+              if _desc_has_price(s["description"], float(s["price_per_point"] or 0)):
+                  with db_conn() as c:
+                      c.execute("UPDATE services SET description=NULL WHERE id=%s", (s["id"],))
+                  cleaned += 1
+          if cleaned:
+              logger.info(f"🧹 تم حذف وصف يحتوي على سعر من {cleaned} خدمة تلقائياً.")
+      except Exception as e:
+          logger.warning(f"⚠️ فشل تنظيف أوصاف الأسعار: {e}")
+
+def _desc_has_price(desc: str, price_per_point: float = 0.0) -> bool:
+    """يعيد True إذا كان الوصف يحتوي على سعر (علامة $ أو رقم يطابق سعر الخدمة بالدولار)."""
+    if not desc:
+        return False
+    # كشف علامة الدولار أو كلمة USD
+    if "$" in desc or "USD" in desc.upper():
+        return True
+    # مقارنة الأرقام الموجودة في الوصف بسعر الخدمة المحوَّل لدولار
+    # (السعر بالدولار لكل 1000 وحدة = price_per_point / 100_000)
+    if price_per_point and price_per_point > 0:
+        panel_price = price_per_point / 100_000
+        for token in re.findall(r"\d+(?:[.,]\d+)?", desc):
+            val = float(token.replace(",", "."))
+            if val > 0 and abs(val - panel_price) / panel_price <= 0.5:
+                return True
+    return False
+
+
 def get_setting(key: str) -> str:
     with db_conn() as c:
         row = c.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
@@ -3894,14 +3929,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if is_own and state == "os_await_custom_desc":
-        context.user_data["new_svc_desc"] = text
-        info = context.user_data.get("new_svc_info", {})
+        info          = context.user_data.get("new_svc_info", {})
+        tmp_price     = float(info.get("rate", 0)) * 100_000   # سعر تقريبي بالنقاط لفحص الوصف
+        clean_desc    = None if _desc_has_price(text, tmp_price) else text
+        context.user_data["new_svc_desc"] = clean_desc or ""
         mn   = info.get("min", 0)
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton(f"✅ استخدم ({mn})", callback_data=f"os_use_min:{mn}")]
         ])
+        notice = "⚠️ تم حذف الوصف تلقائياً لاحتوائه على سعر.\n\n" if not clean_desc and text.strip() else "✅ الوصف حُفظ.\n\n"
         await update.message.reply_text(
-            f"✅ الوصف حُفظ.\n\n📉 *الحد الأدنى من الموقع: {mn}*\n\nاضغط الزر لاستخدامه أو أرسل رقماً مختلفاً:",
+            f"{notice}📉 *الحد الأدنى من الموقع: {mn}*\n\nاضغط الزر لاستخدامه أو أرسل رقماً مختلفاً:",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=kb
         )
@@ -4634,14 +4672,25 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_own and state == "os_edit_await_desc":
         sid = context.user_data.get("edit_svc_id")
-        new_desc = None if text.strip() == "-" else text.strip()
+        if text.strip() == "-":
+            new_desc = None
+        else:
+            # جلب سعر الخدمة الحالي لفحص الوصف
+            with db_conn() as c:
+                svc_row = c.execute("SELECT price_per_point FROM services WHERE id=%s", (sid,)).fetchone()
+            ppp = float(svc_row["price_per_point"] or 0) if svc_row else 0.0
+            raw = text.strip()
+            new_desc = None if _desc_has_price(raw, ppp) else raw
         with db_conn() as c:
-            c.execute("UPDATE services SET description=? WHERE id=?", (new_desc, sid))
+            c.execute("UPDATE services SET description=%s WHERE id=%s", (new_desc, sid))
         context.user_data["state"] = "main_menu"
-        await update.message.reply_text(
-            "✅ تم حذف الوصف." if new_desc is None else f"✅ تم تحديث الوصف إلى:\n{new_desc}",
-            reply_markup=owner_settings_kb()
-        )
+        if new_desc is None and text.strip() != "-":
+            msg = "⚠️ تم حذف الوصف تلقائياً لاحتوائه على سعر."
+        elif new_desc is None:
+            msg = "✅ تم حذف الوصف."
+        else:
+            msg = f"✅ تم تحديث الوصف إلى:\n{new_desc}"
+        await update.message.reply_text(msg, reply_markup=owner_settings_kb())
         return
 
     if is_own and state == "os_edit_await_apiid":
