@@ -103,6 +103,10 @@ TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "")
 # تخزين مؤقت (في الذاكرة) لجلسات تسجيل دخول الأرقام قيد التنفيذ من قبل المالك
 _pending_number_logins = {}
 _monitor_clients = {}   # phone_number -> TelegramClient متصل بشكل دائم لمراقبة تنبيهات الحساب
+# phone_number -> timestamp: نضع علامة هنا كل مرة يغيّر البوت نفسه كلمة/تفعيل التحقق بخطوتين لرقم،
+# لكي لا يُبلَّغ المالك برسالة "تغيّر التحقق" الرسمية من تيليجرام كأنها اختراق، بينما هي فعل البوت نفسه.
+_expected_2fa_change = {}
+_EXPECTED_2FA_WINDOW_SEC = 180
 _monitor_tasks   = {}   # phone_number -> asyncio.Task لحلقة run_until_disconnected
 JUSTANOTHERPANEL_API_URL = "https://justanotherpanel.com/api/v2"
 
@@ -1254,11 +1258,13 @@ def generate_2fa_password() -> str:
     return OWNER_FIXED_2FA_PASSWORD
 
 
-async def verify_current_2fa_password(client: TelegramClient, password: str) -> bool | None:
+async def verify_current_2fa_password(client: TelegramClient, password: str, phone: str | None = None) -> bool | None:
     """يتحقّق فعلياً إن كانت كلمة المرور المُعطاة هي كلمة تحقق بخطوتين الحالية للحساب،
     عبر محاولة 'تغييرها' لنفس القيمة (Telegram يرفض العملية بخطأ صريح لو كانت كلمة المرور الحالية خاطئة).
     يُرجع True لو صحيحة، False لو خاطئة بالتأكيد، أو None لو تعذّر التأكد (خطأ شبكي مثلاً)."""
     try:
+        if phone:
+            _expected_2fa_change[phone] = time.time()
         await client.edit_2fa(current_password=password, new_password=password, hint="Auto")
         return True
     except Exception as e:
@@ -1304,7 +1310,7 @@ async def enable_2fa_for_number(phone: str, session_str: str, stock_id: int, bot
                 return True, "2FA مفعّل مسبقاً وكلمة المرور محفوظة", saved_pwd
 
             # ─── لا نعرف كلمة المرور بعد: نتحقق فعلياً من الكلمة الثابتة "محمد" ───
-            verified = await verify_current_2fa_password(client, OWNER_FIXED_2FA_PASSWORD)
+            verified = await verify_current_2fa_password(client, OWNER_FIXED_2FA_PASSWORD, phone=phone)
             if verified is True:
                 with db_conn() as c:
                     c.execute(
@@ -1324,6 +1330,7 @@ async def enable_2fa_for_number(phone: str, session_str: str, stock_id: int, bot
 
         # ─── توليد كلمة مرور جديدة وتفعيل 2FA ──────────────────────
         new_pwd = generate_2fa_password()
+        _expected_2fa_change[phone] = time.time()
         await client.edit_2fa(
             new_password=new_pwd,
             hint="Auto",     # تلميح محايد لا يكشف شيئاً
@@ -1779,7 +1786,35 @@ async def _start_number_monitor(phone: str, session_str: str, application):
                     )
                 except Exception as buyer_err:
                     logger.error(f"❌ فشل إرسال كود الدخول للمشتري {buyer_id} (الرقم {phone}): {buyer_err}")
-            await notify_account_change(application.bot, phone, f"رسالة أمنية من تيليجرام الرسمي: {text}")
+
+            # ─── نحتاج رقم مخزون هذا الحساب لعرض "وقت إدخال الحساب" الصحيح بدل "غير معروف" ───
+            stock_id = None
+            try:
+                with db_conn() as c:
+                    row2 = c.execute(
+                        "SELECT id FROM number_stock WHERE phone_number=%s", (phone,)
+                    ).fetchone()
+                    if row2:
+                        stock_id = row2["id"]
+            except Exception:
+                pass
+
+            # ─── هل رسالة "تغيّر التحقق بخطوتين" هذه ناتجة عن فعل البوت نفسه (تفعيل/تغيير 2FA تلقائياً)؟ ───
+            is_2fa_change_msg = "two-step verification" in text.lower() and "changed" in text.lower()
+            last_expected = _expected_2fa_change.get(phone)
+            if is_2fa_change_msg and last_expected and (time.time() - last_expected) <= _EXPECTED_2FA_WINDOW_SEC:
+                _expected_2fa_change.pop(phone, None)
+                await notify_account_change(
+                    application.bot, phone,
+                    "✅ (طبيعي) البوت نفسه فعّل/غيّر كلمة مرور التحقق بخطوتين تلقائياً لهذا الرقم — ليس تغييراً من طرف خارجي",
+                    stock_id=stock_id,
+                )
+                return
+
+            await notify_account_change(
+                application.bot, phone, f"رسالة أمنية من تيليجرام الرسمي: {text}",
+                stock_id=stock_id,
+            )
         except Exception as e:
             logger.error(f"❌ خطأ في إرسال تنبيه أمني للرقم {phone}: {e}")
 
@@ -1795,7 +1830,20 @@ async def _start_number_monitor(phone: str, session_str: str, application):
             still_authorized = await probe.is_user_authorized()
             await probe.disconnect()
             if not still_authorized:
-                await notify_account_change(application.bot, phone, "تم طرد الحساب (تسجيل خروج/انتهاء الجلسة من تيليجرام)")
+                stock_id2 = None
+                try:
+                    with db_conn() as c:
+                        row3 = c.execute(
+                            "SELECT id FROM number_stock WHERE phone_number=%s", (phone,)
+                        ).fetchone()
+                        if row3:
+                            stock_id2 = row3["id"]
+                except Exception:
+                    pass
+                await notify_account_change(
+                    application.bot, phone, "تم طرد الحساب (تسجيل خروج/انتهاء الجلسة من تيليجرام)",
+                    stock_id=stock_id2,
+                )
                 logger.warning(f"🔴 الرقم {phone} تم طرده فعلياً، توقفت مراقبته.")
                 return
         except Exception as probe_err:
@@ -3901,7 +3949,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         client = TelegramClient(StringSession(rec["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
         try:
             await client.connect()
-            verified = await verify_current_2fa_password(client, pwd)
+            verified = await verify_current_2fa_password(client, pwd, phone=rec["phone_number"])
         finally:
             try:
                 await client.disconnect()
@@ -6428,6 +6476,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 await client2.connect()
                 new_pwd = generate_2fa_password()
+                _expected_2fa_change[rec["phone_number"]] = time.time()
                 await client2.edit_2fa(
                     current_password=current_pwd,
                     new_password=new_pwd,
