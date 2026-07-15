@@ -1575,11 +1575,24 @@ def smm_service_info(service_id: int, panel: int = 1) -> dict:
     if cached and now - cached[0] < _SERVICES_CACHE_TTL:
         services = cached[1]
     else:
-        services = smm_request("services", panel=panel)
-        if isinstance(services, list):
-            _services_cache[panel] = (now, services)
+        raw = smm_request("services", panel=panel)
+        # بعض المواقع تُرجع قائمة [{service:1,...}, ...]
+        # وبعضها تُرجع قاموس {"1": {...}, "2": {...}}
+        if isinstance(raw, list):
+            services = raw
+        elif isinstance(raw, dict) and "error" not in raw:
+            # حوّل القاموس إلى قائمة وأضف مفتاح service إن لم يكن موجوداً
+            services = []
+            for k, v in raw.items():
+                if isinstance(v, dict):
+                    if "service" not in v:
+                        v = dict(v, service=k)
+                    services.append(v)
         else:
+            site_name = PANEL_MAP.get(panel, PANEL_MAP[1])["name"]
+            logger.warning(f"⚠️ smm_service_info: رد غير متوقع من {site_name} (panel={panel}): {str(raw)[:300]}")
             return {}
+        _services_cache[panel] = (now, services)
     for s in services:
         if str(s.get("service")) == str(service_id):
             return s
