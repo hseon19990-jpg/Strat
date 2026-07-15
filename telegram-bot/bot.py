@@ -1762,16 +1762,18 @@ CATEGORY_MAP = {
 # ────────────────────────────────────────────────────────────
 #  إدارة أزرار القوائم (يتحكم بها المالك: إضافة/حذف/ترتيب/تحجيم)
 # ────────────────────────────────────────────────────────────
-MENU_LABELS = {"main": "القائمة الرئيسية", "owner_settings": "قائمة إعدادات المالك", "collect_points": "تجميع نقاط", "contact_support": "تواصل مع الدعم"}
+MENU_LABELS = {"main": "القائمة الرئيسية", "owner_settings": "قائمة إعدادات المالك", "collect_points": "تجميع نقاط", "contact_support": "تواصل مع الدعم", "services_menu": "قائمة الخدمات"}
 MENU_LABELS.update({f"cat:{k}": f"قائمة فئة: {v}" for k, v in CATEGORY_MAP.items()})
 
-MANAGEABLE_MENUS = ["main", "owner_settings"] + [f"cat:{k}" for k in CATEGORY_MAP]
+# فئات "الرشق" الأساسية (متابعين/مشاهدات/تفاعلات/مشاهدات ستوري/بدء بوت) التي تم دمجها
+# ضمن زر واحد في القائمة الرئيسية باسم "🛍 خدمات" يفتح قائمة فرعية بها.
+SERVICES_MENU_CATEGORIES = ["followers", "views", "interactions", "story_views", "start_bot"]
+
+MANAGEABLE_MENUS = ["main", "owner_settings", "services_menu"] + [f"cat:{k}" for k in CATEGORY_MAP]
 
 BUILTIN_DEFAULTS = {
     "main": [
-        ("👥 رشق متابعين", "cat:followers", 2), ("📺 تمويل قناتك حقيقي", "fund_channel", 2),
-        ("👁 رشق مشاهدات", "cat:views", 2), ("💬 رشق تفاعلات", "cat:interactions", 2),
-        ("📖 رشق مشاهدات ستوري", "cat:story_views", 2), ("🤖 رشق بدء (ستارت) بوت", "cat:start_bot", 2),
+        ("🛍 خدمات", "services_menu", 2), ("📺 تمويل قناتك حقيقي", "fund_channel", 2),
         ("📣 تعزيز قناة أو كروب", "cat:boost", 2), ("⭐ نجوم على بوست قناة", "cat:post_stars", 2),
         ("🔗 رابط دعوة", "referral", 2), ("💰 تجميع نقاط", "collect_points", 2),
         ("💎 شحن نقاط", "charge_points", 2),
@@ -1779,6 +1781,11 @@ BUILTIN_DEFAULTS = {
         ("🎟 استخدام كود", "use_promo", 2), ("ℹ️ معلوماتي", "my_info", 2),
         ("🏆 الأكثر دعوةً اليوم", "top_ref_today", 2),
         ("🛎 تواصل مع الدعم", "contact_support", 1),
+    ],
+    "services_menu": [
+        ("👥 رشق متابعين", "cat:followers", 2), ("👁 رشق مشاهدات", "cat:views", 2),
+        ("💬 رشق تفاعلات", "cat:interactions", 2), ("📖 رشق مشاهدات ستوري", "cat:story_views", 2),
+        ("🤖 رشق بدء (ستارت) بوت", "cat:start_bot", 1),
     ],
     "owner_settings": [
         ("➕ إضافة خدمة", "os:add_service", 2), ("📋 قائمة الخدمات", "os:list_services", 2),
@@ -1809,7 +1816,8 @@ BUILTIN_DEFAULTS = {
 }
 
 GOTO_TARGETS = [
-    ("🏠 القائمة الرئيسية", "main_menu"), ("🔗 رابط دعوة", "referral"), ("💰 تجميع نقاط", "collect_points"),
+    ("🏠 القائمة الرئيسية", "main_menu"), ("🛍 خدمات", "services_menu"),
+    ("🔗 رابط دعوة", "referral"), ("💰 تجميع نقاط", "collect_points"),
     ("💎 شحن نقاط", "charge_points"),
     ("🏆 استبدال نقاط بجوائز", "exchange_points"), ("↔️ تحويل النقاط", "transfer_points"),
     ("🎟 استخدام كود", "use_promo"), ("ℹ️ معلوماتي", "my_info"), ("📺 تمويل قناتك حقيقي", "fund_channel"),
@@ -1822,6 +1830,17 @@ def seed_menu_items(menu: str):
         c.execute(
             "DELETE FROM menu_items WHERE menu='main' AND action_value IN ('daily_gift','join_channels')"
         )
+    # ترحيل التثبيتات القديمة: أزرار "الرشق" الأساسية الخمسة كانت منفصلة في القائمة الرئيسية،
+    # أصبحت الآن مدمجة داخل زر واحد "🛍 خدمات" (services_menu)، فتُحذف نسخها القديمة من "main"
+    # حتى لا تظهر مكررة، بشرط عدم حذف أي تعديل قام المالك بتخصيصه لغير هذه الأزرار.
+    if menu == "main":
+        with db_conn() as c:
+            old_cats = tuple(f"cat:{k}" for k in SERVICES_MENU_CATEGORIES)
+            c.execute(
+                f"DELETE FROM menu_items WHERE menu='main' AND action_type='builtin' AND action_value IN "
+                f"({','.join('?' for _ in old_cats)})",
+                old_cats
+            )
     with db_conn() as c:
         existing = c.execute(
             "SELECT action_value FROM menu_items WHERE menu=? AND action_type='builtin'", (menu,)
@@ -2190,12 +2209,14 @@ async def notify_prize_exchange_owner(context, pe_id: int, text_html: str):
 #  عرض خدمات الفئة
 # ────────────────────────────────────────────────────────────
 async def show_category_services(update: Update, context: ContextTypes.DEFAULT_TYPE, category: str):
+    # فئات الرشق الأساسية أصبحت داخل قائمة "🛍 خدمات"، فيجب الرجوع إليها بدل القائمة الرئيسية مباشرة
+    back_target = "services_menu" if category in SERVICES_MENU_CATEGORIES else "main_menu"
     with db_conn() as c:
         svcs = c.execute(
             "SELECT * FROM services WHERE category=? AND active=1", (category,)
         ).fetchall()
     if not svcs:
-        kb = back_kb("main_menu")
+        kb = back_kb(back_target)
         text = f"⚠️ لا توجد خدمات متاحة في ({CATEGORY_MAP.get(category, category)}) حالياً.\nتواصل مع المالك لإضافة خدمات."
         if update.callback_query:
             await update.callback_query.edit_message_text(text, reply_markup=kb)
@@ -2213,7 +2234,7 @@ async def show_category_services(update: Update, context: ContextTypes.DEFAULT_T
     _cat_user = update.effective_user
     if _cat_user and _cat_user.id == OWNER_ID:
         rows.append([InlineKeyboardButton("🧩 إضافة/إزالة خيار", callback_data=f"mb_menu:cat:{category}")])
-    rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")])
+    rows.append([InlineKeyboardButton("🔙 رجوع", callback_data=back_target)])
     text = f"📦 *{CATEGORY_MAP.get(category, category)}*\nاختر الخدمة المطلوبة:"
     if update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(rows),
@@ -4160,6 +4181,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🏠 *القائمة الرئيسية*\n💰 رصيدك: {pts} نقطة",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=main_menu_kb(is_own)
+        )
+        return
+
+    # ── قائمة "خدمات" (دمج فئات الرشق الأساسية: متابعين/مشاهدات/تفاعلات/مشاهدات ستوري/بدء بوت) ──
+    if data == "services_menu":
+        context.user_data["state"] = "services_menu"
+        rows = build_kb_rows(get_menu_items("services_menu"))
+        if is_own:
+            rows.append([InlineKeyboardButton("🧩 إضافة/إزالة خيار", callback_data="mb_menu:services_menu")])
+        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")])
+        await q.edit_message_text(
+            "🛍 *خدمات*\nاختر نوع الرشق المطلوب:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(rows)
         )
         return
 
