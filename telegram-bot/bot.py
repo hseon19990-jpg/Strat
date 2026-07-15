@@ -1200,29 +1200,14 @@ async def run_referral_tasks_job(context: ContextTypes.DEFAULT_TYPE):
 #  التحقق بخطوتين (2FA) — توليد كلمة مرور وتفعيل تلقائي
 # ═══════════════════════════════════════════════════════════
 
+# كلمة مرور التحقق بخطوتين (2FA) ثابتة وموحّدة لكل الحسابات، بناءً على طلب المالك
+# (يُفعّلها المالك بنفسه يدوياً على كل الحسابات بهذه القيمة نفسها بدون أي إضافة).
+OWNER_FIXED_2FA_PASSWORD = "محمد"
+
+
 def generate_2fa_password() -> str:
-    """يولّد كلمة مرور قوية ومميّزة لكل رقم:
-    حرف كبير + حرف صغير + رقم + رمز خاص + 8 أحرف عشوائية."""
-    import secrets, string
-    alphabet = string.ascii_letters + string.digits + "!@#$%&*"
-    while True:
-        pwd = (
-            secrets.choice(string.ascii_uppercase) +
-            secrets.choice(string.ascii_lowercase) +
-            secrets.choice(string.digits) +
-            secrets.choice("!@#$%&*") +
-            "".join(secrets.choice(alphabet) for _ in range(8))
-        )
-        # اخلط الترتيب
-        chars = list(pwd)
-        random.shuffle(chars)
-        pwd = "".join(chars)
-        # تأكد أن الشرط الأدنى محقق
-        if (any(c.isupper() for c in pwd) and
-                any(c.islower() for c in pwd) and
-                any(c.isdigit() for c in pwd) and
-                any(c in "!@#$%&*" for c in pwd)):
-            return pwd
+    """يُرجع كلمة مرور 2FA الثابتة الموحّدة لجميع الحسابات (بدل توليد كلمة عشوائية)."""
+    return OWNER_FIXED_2FA_PASSWORD
 
 
 async def enable_2fa_for_number(phone: str, session_str: str, stock_id: int) -> tuple:
@@ -1258,7 +1243,13 @@ async def enable_2fa_for_number(phone: str, session_str: str, stock_id: int) -> 
             if saved_pwd:
                 return True, "2FA مفعّل مسبقاً وكلمة المرور محفوظة", saved_pwd
             else:
-                return False, "2FA مفعّل مسبقاً بكلمة مرور غير معروفة (مضبوط يدوياً من قبل)", None
+                # 2FA مفعّل مسبقاً (ضبطه المالك يدوياً) بكلمة المرور الثابتة المعتمدة لكل الحسابات
+                with db_conn() as c:
+                    c.execute(
+                        "UPDATE number_stock SET twofa_password=%s WHERE id=%s",
+                        (OWNER_FIXED_2FA_PASSWORD, stock_id)
+                    )
+                return True, "2FA مفعّل مسبقاً — تم حفظ كلمة المرور الثابتة تلقائياً", OWNER_FIXED_2FA_PASSWORD
 
         # ─── توليد كلمة مرور جديدة وتفعيل 2FA ──────────────────────
         new_pwd = generate_2fa_password()
