@@ -1765,16 +1765,16 @@ CATEGORY_MAP = {
 MENU_LABELS = {"main": "القائمة الرئيسية", "owner_settings": "قائمة إعدادات المالك", "collect_points": "تجميع نقاط", "contact_support": "تواصل مع الدعم", "services_menu": "قائمة الخدمات"}
 MENU_LABELS.update({f"cat:{k}": f"قائمة فئة: {v}" for k, v in CATEGORY_MAP.items()})
 
-# فئات "الرشق" الأساسية (متابعين/مشاهدات/تفاعلات/مشاهدات ستوري/بدء بوت) التي تم دمجها
+# فئات "الرشق" الأساسية بالإضافة إلى التعزيز والنجوم، التي تم دمجها جميعها
 # ضمن زر واحد في القائمة الرئيسية باسم "🛍 خدمات" يفتح قائمة فرعية بها.
-SERVICES_MENU_CATEGORIES = ["followers", "views", "interactions", "story_views", "start_bot"]
+SERVICES_MENU_CATEGORIES = ["followers", "views", "interactions", "story_views", "start_bot", "boost", "post_stars"]
 
 MANAGEABLE_MENUS = ["main", "owner_settings", "services_menu"] + [f"cat:{k}" for k in CATEGORY_MAP]
 
 BUILTIN_DEFAULTS = {
     "main": [
-        ("🛍 خدمات", "services_menu", 2), ("📺 تمويل قناتك حقيقي", "fund_channel", 2),
-        ("📣 تعزيز قناة أو كروب", "cat:boost", 2), ("⭐ نجوم على بوست قناة", "cat:post_stars", 2),
+        ("🛍 خدمات", "services_menu", 1),
+        ("📺 تمويل قناتك حقيقي", "fund_channel", 2),
         ("🔗 رابط دعوة", "referral", 2), ("💰 تجميع نقاط", "collect_points", 2),
         ("💎 شحن نقاط", "charge_points", 2),
         ("🏆 استبدال نقاط بجوائز", "exchange_points", 2), ("↔️ تحويل النقاط", "transfer_points", 2),
@@ -1785,7 +1785,8 @@ BUILTIN_DEFAULTS = {
     "services_menu": [
         ("👥 رشق متابعين", "cat:followers", 2), ("👁 رشق مشاهدات", "cat:views", 2),
         ("💬 رشق تفاعلات", "cat:interactions", 2), ("📖 رشق مشاهدات ستوري", "cat:story_views", 2),
-        ("🤖 رشق بدء (ستارت) بوت", "cat:start_bot", 1),
+        ("🤖 رشق بدء (ستارت) بوت", "cat:start_bot", 2), ("📣 تعزيز قناة أو كروب", "cat:boost", 2),
+        ("⭐ نجوم على بوست قناة", "cat:post_stars", 1),
     ],
     "owner_settings": [
         ("➕ إضافة خدمة", "os:add_service", 2), ("📋 قائمة الخدمات", "os:list_services", 2),
