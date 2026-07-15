@@ -1842,6 +1842,17 @@ def seed_menu_items(menu: str):
                 f"({','.join('?' for _ in old_cats)})",
                 old_cats
             )
+        # زر "🛍 خدمات" يجب أن يبقى دائماً أول زر في القائمة الرئيسية، حتى في التثبيتات القديمة
+        # التي أُدرج فيها هذا الزر لاحقاً (بترتيب أُلحق في آخر القائمة عند أول ظهوره).
+        with db_conn() as c:
+            row = c.execute(
+                "SELECT MIN(sort_order) AS m FROM menu_items WHERE menu='main'"
+            ).fetchone()
+            min_order = row["m"] if row and row["m"] is not None else 0
+            c.execute(
+                "UPDATE menu_items SET sort_order=? WHERE menu='main' AND action_value='services_menu'",
+                (min_order - 1,)
+            )
     with db_conn() as c:
         existing = c.execute(
             "SELECT action_value FROM menu_items WHERE menu=? AND action_type='builtin'", (menu,)
