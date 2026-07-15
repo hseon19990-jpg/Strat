@@ -2254,14 +2254,41 @@ BUILTIN_DEFAULTS = {
         ("⭐ نجوم على بوست قناة", "cat:post_stars", 1),
         ("🔧 خدمات أخرى", "cat:other", 1),
     ],
-    # المنصات التالية جديدة وفارغة حالياً؛ يضيف المالك خدماتها من "🧩 إضافة/إزالة خيار" داخل كل منصة.
-    "services_menu_ig": [],
-    "services_menu_tt": [],
-    "services_menu_wa": [],
-    "services_menu_fb": [],
-    "services_menu_yt": [],
-    "services_menu_sc": [],
-    "services_menu_tw": [],
+    # المنصات الأخرى — نفس فئات تيلجرام الأساسية تظهر تلقائياً (دون start_bot/boost/post_stars)
+    "services_menu_ig": [
+        ("👥 متابعين",         "cat:followers",    2), ("👁 مشاهدات",        "cat:views",       2),
+        ("💬 تفاعلات",          "cat:interactions", 2), ("📖 مشاهدات ستوري",  "cat:story_views", 2),
+        ("🔧 خدمات أخرى",      "cat:other",        1),
+    ],
+    "services_menu_tt": [
+        ("👥 متابعين",         "cat:followers",    2), ("👁 مشاهدات",        "cat:views",       2),
+        ("💬 تفاعلات",          "cat:interactions", 2),
+        ("🔧 خدمات أخرى",      "cat:other",        1),
+    ],
+    "services_menu_wa": [
+        ("👥 أعضاء",           "cat:followers",    2), ("👁 مشاهدات",        "cat:views",       2),
+        ("🔧 خدمات أخرى",      "cat:other",        1),
+    ],
+    "services_menu_fb": [
+        ("👥 متابعين",         "cat:followers",    2), ("👁 مشاهدات",        "cat:views",       2),
+        ("💬 تفاعلات",          "cat:interactions", 2),
+        ("🔧 خدمات أخرى",      "cat:other",        1),
+    ],
+    "services_menu_yt": [
+        ("👥 مشتركين",         "cat:followers",    2), ("👁 مشاهدات",        "cat:views",       2),
+        ("💬 تفاعلات",          "cat:interactions", 2),
+        ("🔧 خدمات أخرى",      "cat:other",        1),
+    ],
+    "services_menu_sc": [
+        ("👥 متابعين",         "cat:followers",    2), ("👁 مشاهدات",        "cat:views",       2),
+        ("📖 مشاهدات ستوري",   "cat:story_views",  2),
+        ("🔧 خدمات أخرى",      "cat:other",        1),
+    ],
+    "services_menu_tw": [
+        ("👥 متابعين",         "cat:followers",    2), ("👁 مشاهدات",        "cat:views",       2),
+        ("💬 تفاعلات",          "cat:interactions", 2),
+        ("🔧 خدمات أخرى",      "cat:other",        1),
+    ],
     "owner_settings": [
         ("➕ إضافة خدمة", "os:add_service", 2), ("📋 قائمة الخدمات", "os:list_services", 2),
         ("🗂 عرض الخدمات", "os:view_services", 2), ("📦 قسم الطلبات", "os:orders_section", 2),
@@ -2358,9 +2385,16 @@ def seed_menu_items(menu: str):
                 old_cats
             )
     with db_conn() as c:
-        existing = c.execute(
-            "SELECT action_value FROM menu_items WHERE menu=? AND action_type='builtin'", (menu,)
-        ).fetchall()
+        # للمنصات (ig/tt/...) نتحقق من جميع الأزرار لا فقط builtin،
+        # لأن أزرار "ربط بقسم" التي يضيفها المالك تُحفظ بنوع goto وليس builtin.
+        if menu in SERVICE_PLATFORM_MENUS:
+            existing = c.execute(
+                "SELECT action_value FROM menu_items WHERE menu=?", (menu,)
+            ).fetchall()
+        else:
+            existing = c.execute(
+                "SELECT action_value FROM menu_items WHERE menu=? AND action_type='builtin'", (menu,)
+            ).fetchall()
         existing_values = {r["action_value"] for r in existing}
         defaults = BUILTIN_DEFAULTS.get(menu, [])
         if not existing:
