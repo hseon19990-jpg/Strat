@@ -2520,9 +2520,10 @@ def _render_service_list():
     for s in svcs:
         status = "✅" if s["active"] else "❌"
         site_name = PANEL_MAP.get(s["panel"] or 1, PANEL_MAP[1])["name"]
+        plat_lbl = PLATFORM_LABEL_MAP.get(s.get("platform") or "tg", "📱 تيلجرام")
         lines.append(
             f"{status} [{s['id']}] *{s['name_ar']}*\n"
-            f"الفئة: {CATEGORY_MAP.get(s['category'], s['category'])} | الموقع: {site_name} | Min:{s['min_qty']} Max:{s['max_qty']}\n"
+            f"{plat_lbl} | الفئة: {CATEGORY_MAP.get(s['category'], s['category'])} | الموقع: {site_name} | Min:{s['min_qty']} Max:{s['max_qty']}\n"
         )
     rows = []
     for s in svcs:
@@ -2554,8 +2555,10 @@ async def send_services_overview(update: Update, context: ContextTypes.DEFAULT_T
         for s in svcs:
             status = "✅ متاحة" if s["active"] else "❌ معطّلة"
             site_name = PANEL_MAP.get(s["panel"] or 1, PANEL_MAP[1])["name"]
+            plat_lbl = PLATFORM_LABEL_MAP.get(s.get("platform") or "tg", "📱 تيلجرام")
             lines.append(
                 f"{status} *{s['name_ar']}*\n"
+                f"📱 المنصة: {plat_lbl}\n"
                 f"💰 السعر: {fmt_price(s['price_per_point'])} نقطة / 1000 وحدة\n"
                 f"📝 الوصف: {s['description'] or '—'}\n"
                 f"📉 الحد الأدنى: {s['min_qty']} | 📈 الحد الأعلى: {s['max_qty']}\n"
@@ -6006,24 +6009,56 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "os:view_services" and is_own:
-        # عرض قائمة اختيار الفئة أولاً
+        # الخطوة 1: اختر المنصة
+        rows = []
+        for lbl, val in SERVICE_PLATFORMS:
+            plat_code = PLATFORM_MENU_MAP[val]
+            with db_conn() as c:
+                cnt = c.execute("SELECT COUNT(*) AS n FROM services WHERE platform=%s", (plat_code,)).fetchone()
+            n = cnt["n"] if cnt else 0
+            rows.append([InlineKeyboardButton(f"{lbl} ({n})", callback_data=f"os_view_plat:{plat_code}")])
+        with db_conn() as c:
+            total = c.execute("SELECT COUNT(*) AS n FROM services").fetchone()
+        rows.append([InlineKeyboardButton(f"📂 جميع المنصات ({total['n'] if total else 0})", callback_data="os_view_plat:ALL")])
+        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
+        await q.edit_message_text(
+            "🗂 *عرض الخدمات — اختر المنصة:*",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
+        return
+
+    if data.startswith("os_view_plat:") and is_own:
+        # الخطوة 2: اختر الفئة (مفلترة حسب المنصة)
+        platform = data.split(":", 1)[1]   # "tg" / "ig" / ... / "ALL"
         rows = []
         for cat_key, cat_name in CATEGORY_MAP.items():
             with db_conn() as c:
-                cnt = c.execute("SELECT COUNT(*) AS n FROM services WHERE category=?", (cat_key,)).fetchone()
+                if platform == "ALL":
+                    cnt = c.execute("SELECT COUNT(*) AS n FROM services WHERE category=%s", (cat_key,)).fetchone()
+                else:
+                    cnt = c.execute("SELECT COUNT(*) AS n FROM services WHERE category=%s AND platform=%s", (cat_key, platform)).fetchone()
             n = cnt["n"] if cnt else 0
-            rows.append([InlineKeyboardButton(f"{cat_name} ({n})", callback_data=f"os_view_cat:{cat_key}")])
-        rows.append([InlineKeyboardButton("📂 عرض الجميع", callback_data="os_view_cat:ALL")])
-        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
+            if n == 0:
+                continue
+            rows.append([InlineKeyboardButton(f"{cat_name} ({n})", callback_data=f"os_view_cat:{platform}:{cat_key}")])
+        rows.append([InlineKeyboardButton("📂 عرض الجميع", callback_data=f"os_view_cat:{platform}:ALL")])
+        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="os:view_services")])
+        plat_label = "جميع المنصات" if platform == "ALL" else PLATFORM_LABEL_MAP.get(platform, platform)
         await q.edit_message_text(
-            "🗂 *عرض الخدمات — اختر الفئة:*",
+            f"🗂 *عرض الخدمات — {plat_label}*\nاختر الفئة:",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(rows)
         )
         return
 
     if data.startswith("os_view_cat:") and is_own:
-        cat_filter = data.split(":", 1)[1]
+        # دعم الصيغتين: القديمة os_view_cat:{cat} والجديدة os_view_cat:{platform}:{cat}
+        rest = data[len("os_view_cat:"):]
+        if ":" in rest:
+            platform, cat_filter = rest.split(":", 1)
+        else:
+            platform, cat_filter = "ALL", rest
         if cat_filter == "ALL":
             cats_to_show = list(CATEGORY_MAP.items())
         else:
@@ -6032,7 +6067,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         first = True
         for cat_key, cat_name in cats_to_show:
             with db_conn() as c:
-                svcs = c.execute("SELECT * FROM services WHERE category=? ORDER BY id", (cat_key,)).fetchall()
+                if platform == "ALL":
+                    svcs = c.execute("SELECT * FROM services WHERE category=%s ORDER BY platform, id", (cat_key,)).fetchall()
+                else:
+                    svcs = c.execute("SELECT * FROM services WHERE category=%s AND platform=%s ORDER BY id", (cat_key, platform)).fetchall()
             if not svcs:
                 continue
             sent_any = True
@@ -6052,6 +6090,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"💰 السعر: {fmt_price(s['price_per_point'])} نقطة / 1000 وحدة\n"
                 )
                 tog = "❌ تعطيل" if s["active"] else "✅ تفعيل"
+                back_cb = f"os_view_plat:{platform}"
                 svc_kb = InlineKeyboardMarkup([
                     [InlineKeyboardButton("✏️ تعديل", callback_data=f"os_edit_svc:{s['id']}"),
                      InlineKeyboardButton(tog, callback_data=f"os_tog_svc:{s['id']}:{0 if s['active'] else 1}"),
@@ -6068,17 +6107,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         reply_markup=svc_kb
                     )
         if not sent_any:
-            cat_name = "الجميع" if cat_filter == "ALL" else CATEGORY_MAP.get(cat_filter, cat_filter)
-            msg = f"📋 لا توجد خدمات في فئة ({cat_name}) بعد."
+            cat_name   = "الجميع" if cat_filter == "ALL" else CATEGORY_MAP.get(cat_filter, cat_filter)
+            plat_label = "جميع المنصات" if platform == "ALL" else PLATFORM_LABEL_MAP.get(platform, platform)
+            msg = f"📋 لا توجد خدمات في فئة ({cat_name}) للمنصة ({plat_label})."
             if first and update.callback_query:
                 await q.edit_message_text(msg, reply_markup=owner_settings_kb())
             else:
                 await context.bot.send_message(update.effective_chat.id, msg)
         else:
+            back_cb = f"os_view_plat:{platform}"
             await context.bot.send_message(
                 update.effective_chat.id,
                 "⬆️ هذه جميع الخدمات المطلوبة.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع للعرض", callback_data="os:view_services"),
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع للعرض", callback_data=back_cb),
                                                     InlineKeyboardButton("⚙️ الإعدادات", callback_data="owner_settings")]])
             )
         return
