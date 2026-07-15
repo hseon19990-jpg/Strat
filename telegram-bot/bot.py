@@ -889,14 +889,35 @@ async def fetch_last_login_code(client: TelegramClient):
         return None
 
 
-def list_available_numbers():
-    """كل الأرقام غير المباعة (بما فيها المنتظرة طرد جلساتها بعد)، لعرضها بلوحة المالك."""
+def list_stock_numbers(filter_type: str = "all"):
+    """أرقام المخزون غير المباعة، مع تصنيف اختياري:
+    - "all": كل الأرقام غير المباعة (المعروضة + المنتظرة).
+    - "listed": المعروضة للبيع فعلاً (تُسلَّم فوراً عند الشراء).
+    - "pending": بانتظار طرد الجلسات الأخرى قبل أن تصبح قابلة للبيع.
+    """
+    sql = "SELECT id, phone_number, session_string, sessions_reset, force_listed FROM number_stock WHERE assigned_to IS NULL"
+    if filter_type == "listed":
+        sql += f" AND {_sellable_filter_sql()}"
+    elif filter_type == "pending":
+        sql += f" AND NOT ({_sellable_filter_sql()})"
+    sql += " ORDER BY id ASC"
     with db_conn() as c:
-        rows = c.execute(
-            "SELECT id, phone_number, session_string, sessions_reset, force_listed FROM number_stock "
-            "WHERE assigned_to IS NULL ORDER BY id ASC"
-        ).fetchall()
+        rows = c.execute(sql).fetchall()
         return [dict(r) for r in rows]
+
+
+def get_number_counts() -> dict:
+    """يحسب عدد كل تصنيف من أرقام المخزون غير المباعة، دفعة واحدة."""
+    with db_conn() as c:
+        row = c.execute(
+            "SELECT "
+            "COUNT(*) AS total, "
+            f"COUNT(*) FILTER (WHERE {_sellable_filter_sql()}) AS listed "
+            "FROM number_stock WHERE assigned_to IS NULL"
+        ).fetchone()
+        total = row["total"] if row else 0
+        listed = row["listed"] if row else 0
+        return {"all": total, "listed": listed, "pending": total - listed}
 
 
 def get_stock_number(stock_id: int):
@@ -5645,11 +5666,28 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "os:list_numbers" and is_own:
-        numbers = list_available_numbers()
+        counts = get_number_counts()
+        await q.edit_message_text(
+            "📋 *قائمة الأرقام*\n\nاختر التصنيف الذي تريد عرض أرقامه ومعلوماتها التفصيلية:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"📦 جميع الأرقام ({counts['all']})", callback_data="os:nums:all")],
+                [InlineKeyboardButton(f"🚀 الأرقام المعروضة ({counts['listed']})", callback_data="os:nums:listed")],
+                [InlineKeyboardButton(f"⏳ الأرقام المنتظرة ({counts['pending']})", callback_data="os:nums:pending")],
+                [InlineKeyboardButton("🔙 رجوع", callback_data="os:manage_numbers")],
+            ])
+        )
+        return
+
+    if data.startswith("os:nums:") and is_own:
+        filter_type = data.split(":")[-1]
+        titles = {"all": "📦 جميع الأرقام", "listed": "🚀 الأرقام المعروضة", "pending": "⏳ الأرقام المنتظرة"}
+        title = titles.get(filter_type, "الأرقام")
+        numbers = list_stock_numbers(filter_type)
         if not numbers:
             await q.edit_message_text(
-                "📋 لا توجد أرقام متاحة حالياً بالمخزون.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:manage_numbers")]])
+                f"{title}\n\nلا توجد أرقام حالياً ضمن هذا التصنيف.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")]])
             )
             return
         rows = []
@@ -5664,10 +5702,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 label += " ⏳ بانتظار طرد الجلسات"
             rows.append([InlineKeyboardButton(label, callback_data=f"os:number_info:{n['id']}")])
-        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="os:manage_numbers")])
+        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")])
         note = "" if len(numbers) <= 40 else f"\n\n(يظهر أول 40 من إجمالي {len(numbers)})"
         await q.edit_message_text(
-            f"📋 *الأرقام المتاحة بالمخزون ({len(numbers)})*\n\nاضغط على رقم لعرض معلوماته التفصيلية.{note}",
+            f"*{title} ({len(numbers)})*\n\nاضغط على رقم لعرض معلوماته التفصيلية، بما فيها حالة التحقق.{note}",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(rows)
         )
