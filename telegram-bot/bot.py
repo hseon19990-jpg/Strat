@@ -2184,6 +2184,7 @@ CATEGORY_MAP = {
     "start_bot":    "رشق بدء (ستارت) بوت",
     "boost":        "تعزيز قناة أو كروب",
     "post_stars":   "نجوم على بوست قناة",
+    "other":        "خدمات أخرى",
 }
 
 # ────────────────────────────────────────────────────────────
@@ -2230,7 +2231,7 @@ MENU_LABELS.update({f"cat:{k}": f"قائمة فئة: {v}" for k, v in CATEGORY_M
 
 # فئات "الرشق" الأساسية بالإضافة إلى التعزيز والنجوم، التي تم دمجها جميعها
 # ضمن قائمة فرعية "📱 تيلجرام" داخل "🛍 خدمات" (تمهيداً لإضافة منصات أخرى مستقبلاً).
-SERVICES_MENU_CATEGORIES = ["followers", "views", "interactions", "story_views", "start_bot", "boost", "post_stars"]
+SERVICES_MENU_CATEGORIES = ["followers", "views", "interactions", "story_views", "start_bot", "boost", "post_stars", "other"]
 
 MANAGEABLE_MENUS = ["main", "owner_settings", "services_menu"] + [v for _, v in SERVICE_PLATFORMS] + [f"cat:{k}" for k in CATEGORY_MAP]
 
@@ -2251,6 +2252,7 @@ BUILTIN_DEFAULTS = {
         ("💬 رشق تفاعلات", "cat:interactions", 2), ("📖 رشق مشاهدات ستوري", "cat:story_views", 2),
         ("🤖 رشق بدء (ستارت) بوت", "cat:start_bot", 2), ("📣 تعزيز قناة أو كروب", "cat:boost", 2),
         ("⭐ نجوم على بوست قناة", "cat:post_stars", 1),
+        ("🔧 خدمات أخرى", "cat:other", 1),
     ],
     # المنصات التالية جديدة وفارغة حالياً؛ يضيف المالك خدماتها من "🧩 إضافة/إزالة خيار" داخل كل منصة.
     "services_menu_ig": [],
