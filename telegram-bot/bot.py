@@ -386,6 +386,9 @@ def init_db():
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS force_listed BOOLEAN DEFAULT FALSE",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS frozen_at TIMESTAMPTZ",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS twofa_password TEXT",
+              "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS last_frozen BOOLEAN DEFAULT FALSE",
+              "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS last_authorized BOOLEAN DEFAULT TRUE",
+              "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS last_device_count INTEGER DEFAULT -1",
           ]:
               try: c.execute(_alt)
               except Exception: pass
@@ -1529,6 +1532,111 @@ def _format_elapsed(added_at) -> str:
         return "غير معروف"
 
 
+_ARABIC_WEEKDAYS = ["الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد"]
+
+
+def format_account_datetime(dt) -> str:
+    """يهيّئ تاريخاً/وقتاً بالصيغة المطلوبة: 2028/8/8 الأربعاء 19:55"""
+    try:
+        if dt is None:
+            return "غير معروف"
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        weekday_ar = _ARABIC_WEEKDAYS[dt.weekday()]
+        return f"{dt.year}/{dt.month}/{dt.day} {weekday_ar} {dt.strftime('%H:%M')}"
+    except Exception:
+        return "غير معروف"
+
+
+async def notify_account_change(bot, phone: str, change_desc: str, added_at=None, stock_id: int | None = None):
+    """يُرسل للمالك تنبيهاً موحّد الشكل عن أي تغيّر في حساب (طرد/تجميد/تغيّر أجهزة/تنبيه أمني...):
+    التغيّر / رقم الحساب / الدولة / وقت إدخال الحساب."""
+    if not OWNER_ID:
+        return
+    if added_at is None and stock_id is not None:
+        try:
+            with db_conn() as c:
+                row = c.execute("SELECT added_at FROM number_stock WHERE id=%s", (stock_id,)).fetchone()
+                if row:
+                    added_at = row["added_at"]
+        except Exception:
+            pass
+    text = (
+        f"🔔 *تنبيه تغيّر في حساب*\n\n"
+        f"التغيّر: {change_desc}\n"
+        f"رقم الحساب: `{phone}`\n"
+        f"الدولة: {guess_country(phone)}\n"
+        f"وقت ادخال الحساب: {format_account_datetime(added_at)}"
+    )
+    try:
+        await bot.send_message(OWNER_ID, text, parse_mode=ParseMode.MARKDOWN)
+    except Exception as e:
+        logger.error(f"❌ فشل إرسال تنبيه تغيّر الحساب {phone}: {e}")
+
+
+async def monitor_number_changes_job(context: ContextTypes.DEFAULT_TYPE):
+    """مهمة دورية: تفحص كل رقم بالمخزون له جلسة، وتقارن حالته الحالية (تجميد/تصريح/عدد الأجهزة)
+    بآخر حالة معروفة محفوظة بقاعدة البيانات. أي اختلاف عن آخر مرة يُبلَّغ للمالك فوراً
+    بالصيغة الموحّدة (التغيّر/رقم الحساب/الدولة/وقت الإدخال)، ثم تُحفظ الحالة الجديدة كمرجع للمقارنة القادمة.
+    لا تُرسل أي رسائل فعلية لأي بوت خارجي (مثل SpamBot) لتجنّب أي نشاط آلي مكثّف قد يرفع خطر الحظر."""
+    if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
+        return
+    with db_conn() as c:
+        rows = c.execute(
+            "SELECT id, phone_number, session_string, added_at, last_frozen, last_authorized, last_device_count "
+            "FROM number_stock WHERE session_string IS NOT NULL"
+        ).fetchall()
+    for row in rows:
+        rec = dict(row)
+        client = TelegramClient(StringSession(rec["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+        try:
+            await client.connect()
+            authorized = await client.is_user_authorized()
+            is_frozen, _, _ = (False, None, None)
+            devices = -1
+            if authorized:
+                is_frozen, _, _ = await check_account_frozen(client, rec["id"])
+                devices = await get_device_count(client)
+
+            changes = []
+            last_authorized = rec["last_authorized"] if rec["last_authorized"] is not None else True
+            last_frozen = bool(rec["last_frozen"])
+            last_devices = rec["last_device_count"] if rec["last_device_count"] is not None else -1
+
+            if last_authorized and not authorized:
+                changes.append("تم طرد الحساب (تسجيل خروج/انتهاء الجلسة من تيليجرام)")
+            elif not last_authorized and authorized:
+                changes.append("عاد الحساب مصرَّحاً (تسجيل الدخول سليم من جديد)")
+
+            if authorized:
+                if is_frozen and not last_frozen:
+                    changes.append("تم تجميد الحساب 🔴")
+                elif last_frozen and not is_frozen:
+                    changes.append("تم رفع التجميد عن الحساب (نشط الآن)")
+                if devices >= 0 and last_devices >= 0 and devices != last_devices:
+                    changes.append(f"تغيّر عدد الأجهزة المسجّلة من {last_devices} إلى {devices}")
+
+            if changes:
+                await notify_account_change(
+                    context.bot, rec["phone_number"], "، ".join(changes),
+                    added_at=rec["added_at"], stock_id=rec["id"]
+                )
+
+            with db_conn() as c2:
+                c2.execute(
+                    "UPDATE number_stock SET last_authorized=%s, last_frozen=%s, last_device_count=%s WHERE id=%s",
+                    (authorized, is_frozen if authorized else last_frozen, devices if devices >= 0 else last_devices, rec["id"])
+                )
+        except Exception as e:
+            logger.debug(f"⏳ تعذّر فحص تغيّرات الرقم {rec['phone_number']} بهذه الدورة: {e}")
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+        await asyncio.sleep(2)  # تباعد بين كل حساب والآخر لتجنّب أي نشاط مكثّف من نفس السيرفر
+
+
 async def _start_number_monitor(phone: str, session_str: str, application):
     """يفتح اتصالاً دائماً بحساب هذا الرقم ليراقب أي تنبيهات أمنية تصله من تيليجرام الرسمي
     (جلسة دخول جديدة، تغيير كلمة المرور، إضافة/تغيير بريد الاسترجاع، ...) ويبلّغ المالك فوراً.
@@ -1553,19 +1661,27 @@ async def _start_number_monitor(phone: str, session_str: str, application):
             text = (event.raw_text or "").strip()
             if not text:
                 return
-            if OWNER_ID:
-                await application.bot.send_message(
-                    OWNER_ID,
-                    f"🔔 *تنبيه أمني على الرقم* `{phone}`\n\n{text}",
-                    parse_mode=ParseMode.MARKDOWN,
-                )
+            await notify_account_change(application.bot, phone, f"رسالة أمنية من تيليجرام الرسمي: {text}")
         except Exception as e:
             logger.error(f"❌ خطأ في إرسال تنبيه أمني للرقم {phone}: {e}")
 
     async def _on_disconnect():
-        """إعادة تشغيل المراقبة تلقائياً عند انقطاع الاتصال (مثلاً انقطاع شبكة Railway)."""
+        """إعادة تشغيل المراقبة تلقائياً عند انقطاع الاتصال (مثلاً انقطاع شبكة Railway).
+        قبل إعادة المحاولة، يفحص إن كان الانقطاع طرداً فعلياً (جلسة أُلغيت) لا انقطاع شبكة عابر،
+        فيُبلّغ المالك بالصيغة الموحّدة إن كان طرداً حقيقياً."""
         _monitor_clients.pop(phone, None)
         _monitor_tasks.pop(phone, None)
+        try:
+            probe = TelegramClient(StringSession(session_str), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+            await probe.connect()
+            still_authorized = await probe.is_user_authorized()
+            await probe.disconnect()
+            if not still_authorized:
+                await notify_account_change(application.bot, phone, "تم طرد الحساب (تسجيل خروج/انتهاء الجلسة من تيليجرام)")
+                logger.warning(f"🔴 الرقم {phone} تم طرده فعلياً، توقفت مراقبته.")
+                return
+        except Exception as probe_err:
+            logger.debug(f"⏳ تعذّر التأكد من سبب انقطاع مراقبة الرقم {phone}: {probe_err}")
         logger.warning(f"⚠️ انقطع اتصال مراقبة الرقم {phone}، سيُعاد المحاولة خلال 30 ثانية...")
         await asyncio.sleep(30)
         await _start_number_monitor(phone, session_str, application)
@@ -5760,12 +5876,25 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             frozen_line = f"\n🧊 حالة التجميد: {frozen_status}"
             if is_frozen and frozen_at_str:
                 frozen_line += f"\n📅 تاريخ التجميد: {frozen_at_str}"
-            # ─── حالة 2FA من DB ───
+            # ─── حالة 2FA: فحص مباشر وفعلي من تيليجرام (لا نعتمد فقط على القيمة المحفوظة سابقاً،
+            # لأنها قد تكون غير محدَّثة إن فُعِّل 2FA يدوياً قبل أن تفحصه أي مهمة دورية) ───
             saved_pwd = rec.get("twofa_password") or ""
+            try:
+                pwd_state = await client(GetPasswordRequest())
+                live_has_pwd = bool(pwd_state.has_password)
+            except Exception:
+                live_has_pwd = None
+            if live_has_pwd is True and not saved_pwd:
+                # مفعّل فعلياً على تيليجرام لكن لم يُحفظ عندنا بعد — نحفظ كلمة المرور الثابتة المعتمدة تلقائياً
+                with db_conn() as c:
+                    c.execute("UPDATE number_stock SET twofa_password=%s WHERE id=%s", (OWNER_FIXED_2FA_PASSWORD, stock_id))
+                saved_pwd = OWNER_FIXED_2FA_PASSWORD
             if saved_pwd:
                 twofa_line = "\n🔐 التحقق بخطوتين: ✅ مفعّل (انظر زر كلمة المرور)"
-            else:
+            elif live_has_pwd is False:
                 twofa_line = "\n🔐 التحقق بخطوتين: ❌ غير مفعّل بعد"
+            else:
+                twofa_line = "\n🔐 التحقق بخطوتين: ⚠️ تعذّر التأكد من الحالة الآن، حاول لاحقاً"
             text = (
                 f"📱 *{rec['phone_number']}*"
                 f"{display_name}\n"
@@ -7459,6 +7588,8 @@ def main():
         logger.info("🤝 تم تفعيل مهام الإحالة التلقائية (كل ساعة)")
         app.job_queue.run_repeating(enable_pending_2fa_job, interval=1800, first=180)
         logger.info("🔐 تم تفعيل مهمة التحقق بخطوتين التلقائي (كل 30 دقيقة)")
+        app.job_queue.run_repeating(monitor_number_changes_job, interval=1800, first=210)
+        logger.info("🔔 تم تفعيل مراقبة تغيّرات حسابات الأرقام (طرد/تجميد/أجهزة) كل 30 دقيقة")
 
     logger.info("🤖 Bot started!")
     app.run_polling(
