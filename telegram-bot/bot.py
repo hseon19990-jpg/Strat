@@ -498,6 +498,7 @@ def init_db():
               ('asiacell_text', '⚠️ الشحن التلقائي عبر اسيا سيل غير متاح حالياً.\nيرجى التواصل مع المالك.'),
               ('captcha_enabled', '0'),
               ('maintenance_mode', '0'),
+              ('number_exchange_enabled', '0'),
               ('exchange_success_msg', ''),
               ('mandatory_channel_min_members', '0'),
               ('internal_channel_min_members', '0'),
@@ -571,6 +572,9 @@ def set_setting(key: str, value: str):
 
 def is_maintenance_on() -> bool:
     return int(get_setting("maintenance_mode") or "0") == 1
+
+def is_number_exchange_on() -> bool:
+    return int(get_setting("number_exchange_enabled") or "0") == 1
 
 MAINTENANCE_MESSAGE = (
     "🛠 *البوت في وضع الصيانة حالياً*\n\n"
@@ -2310,6 +2314,7 @@ BUILTIN_DEFAULTS = {
         ("✏️ نص زر الدعم بالقائمة", "os:edit_support_label", 2), ("📢 رسالة جماعية", "os:broadcast", 2),
         ("🔐 تفعيل/تعطيل التحقق", "os:toggle_captcha", 2), ("📊 إحصائيات", "os:stats", 2),
         ("🛠 وضع الصيانة", "os:toggle_maintenance", 2),
+        ("📱 استبدال الأرقام", "os:toggle_number_exchange", 2),
         ("🏆 الأكثر إرسالاً لرابط الدعوة", "os:top_referrers", 2),
         ("💵 رصيد موقع الرشق", "os:site_balance", 1),
         ("🧩 إدارة الأزرار", "os:manage_buttons", 1),
@@ -2651,11 +2656,16 @@ def owner_settings_kb():
     # يعرض حالة وضع الصيانة (مفعل/مغلق) مباشرة على نص الزر نفسه، لا فقط في رسالة التبديل
     _maint_on = is_maintenance_on()
     _maint_suffix = " (مفعل ✅)" if _maint_on else " (مغلق ❌)"
+    _numex_on = is_number_exchange_on()
+    _numex_suffix = " (مفعل ✅)" if _numex_on else " (مغلق ❌)"
     for row in rows:
         for i, btn in enumerate(row):
             if btn.callback_data == "os:toggle_maintenance":
                 base_label = btn.text.split(" (")[0]
                 row[i] = InlineKeyboardButton(base_label + _maint_suffix, callback_data="os:toggle_maintenance")
+            elif btn.callback_data == "os:toggle_number_exchange":
+                base_label = btn.text.split(" (")[0]
+                row[i] = InlineKeyboardButton(base_label + _numex_suffix, callback_data="os:toggle_number_exchange")
     rows.append([InlineKeyboardButton("🧩 إضافة/إزالة خيار", callback_data="mb_menu:owner_settings")])
     rows.append([InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")])
     return InlineKeyboardMarkup(rows)
@@ -5459,6 +5469,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "exchange:number":
+        if not is_number_exchange_on():
+            await q.answer("🔒 استبدال الأرقام مغلق حالياً. تواصل مع المالك.", show_alert=True)
+            return
         cost = int(get_setting("telegram_number_cost") or "5000")
         db_user = get_user(user.id)
         if db_user["points"] < cost:
@@ -7363,6 +7376,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(
             f"🛠 *وضع الصيانة الآن: {status}*\n\n"
             f"{'سيشاهد جميع الأعضاء (عدا المالك) رسالة الصيانة بدل البوت.' if new_val == '1' else 'البوت يعمل بشكل طبيعي لجميع الأعضاء.'}",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=owner_settings_kb()
+        )
+        return
+
+    if data == "os:toggle_number_exchange" and is_own:
+        current = int(get_setting("number_exchange_enabled") or "0")
+        new_val = "0" if current else "1"
+        set_setting("number_exchange_enabled", new_val)
+        status = "مفعّل ✅" if new_val == "1" else "مغلق ❌"
+        await q.edit_message_text(
+            f"📱 *استبدال الأرقام الآن: {status}*\n\n"
+            f"{'المستخدمون يستطيعون الآن شراء أرقام تيلغرام بالنقاط.' if new_val == '1' else 'زر شراء الرقم مغلق أمام جميع المستخدمين حتى تعيد تفعيله.'}",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=owner_settings_kb()
         )
