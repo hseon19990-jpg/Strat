@@ -77,10 +77,22 @@ def start_health_server():
 # ────────────────────────────────────────────────────────────
 #  إعدادات البيئة
 # ────────────────────────────────────────────────────────────
+def _safe_int_env(name: str, default: int = 0) -> int:
+    """يقرأ متغير بيئة كرقم صحيح، ويرجع القيمة الافتراضية إذا كانت القيمة غير موجودة أو غير صالحة."""
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning(f"⚠️ المتغير البيئي {name} له قيمة غير صالحة كرقم ({raw!r})، سيتم استخدام {default}.")
+        return default
+
+
 BOT_TOKEN      = os.getenv("BOT_TOKEN", "")
-OWNER_ID       = int(os.getenv("OWNER_ID", "0"))
+OWNER_ID       = _safe_int_env("OWNER_ID", 0)
 API_KEY        = os.getenv("API_KEY", "")
-ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID", "0"))
+ADMIN_GROUP_ID = _safe_int_env("ADMIN_GROUP_ID", 0)
 API_URL        = "https://smmmain.com/api/v2"
 
 JUSTANOTHERPANEL_API_KEY = os.getenv("JUSTANOTHERPANEL_API_KEY", "")
@@ -374,7 +386,6 @@ def init_db():
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS force_listed BOOLEAN DEFAULT FALSE",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS frozen_at TIMESTAMPTZ",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS twofa_password TEXT",
-              "ALTER TABLE promo_uses ADD COLUMN IF NOT EXISTS used_at TIMESTAMPTZ DEFAULT NOW()",
           ]:
               try: c.execute(_alt)
               except Exception: pass
@@ -410,6 +421,10 @@ def init_db():
               used_at TIMESTAMPTZ DEFAULT NOW(),
               PRIMARY KEY (code, user_id)
           )""")
+          try:
+              c.execute("ALTER TABLE promo_uses ADD COLUMN IF NOT EXISTS used_at TIMESTAMPTZ DEFAULT NOW()")
+          except Exception:
+              pass
           c.execute("""
           CREATE TABLE IF NOT EXISTS exchange_star_packages (
               id     SERIAL PRIMARY KEY,
@@ -468,6 +483,7 @@ def init_db():
               ('total_bot_users', '0'),
               ('asiacell_text', '⚠️ الشحن التلقائي عبر اسيا سيل غير متاح حالياً.\nيرجى التواصل مع المالك.'),
               ('captcha_enabled', '0'),
+              ('maintenance_mode', '0'),
               ('exchange_success_msg', ''),
               ('mandatory_channel_min_members', '0'),
               ('internal_channel_min_members', '0'),
@@ -538,6 +554,15 @@ def _do_set_setting(key: str, value: str):
 def set_setting(key: str, value: str):
     """حفظ إعداد مع إعادة محاولة تلقائية عند انقطاع الاتصال"""
     with_db_retry(_do_set_setting, key, value)
+
+def is_maintenance_on() -> bool:
+    return int(get_setting("maintenance_mode") or "0") == 1
+
+MAINTENANCE_MESSAGE = (
+    "🛠 *البوت في وضع الصيانة حالياً*\n\n"
+    "نعمل على تحسين تجربتك، ونعتذر عن أي إزعاج.\n"
+    "سيعود البوت للعمل خلال وقت قصير — شكراً لتفهّمك 💙"
+)
 
 def get_or_create_user(user_id: int, username: str, full_name: str, invited_by: int = 0) -> dict:
     with db_conn() as c:
@@ -1775,6 +1800,7 @@ BUILTIN_DEFAULTS = {
         ("📲 تعديل نص اسيا سيل", "os:edit_asiacell", 2),
         ("✏️ نص زر الدعم بالقائمة", "os:edit_support_label", 2), ("📢 رسالة جماعية", "os:broadcast", 2),
         ("🔐 تفعيل/تعطيل التحقق", "os:toggle_captcha", 2), ("📊 إحصائيات", "os:stats", 2),
+        ("🛠 وضع الصيانة", "os:toggle_maintenance", 2),
         ("🏆 الأكثر إرسالاً لرابط الدعوة", "os:top_referrers", 2),
         ("💵 رصيد موقع الرشق", "os:site_balance", 1),
         ("🧩 إدارة الأزرار", "os:manage_buttons", 1),
@@ -2454,6 +2480,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db_user = get_or_create_user(user.id, user.username or "", user.full_name or "", invited_by)
     is_own = (user.id == OWNER_ID)
 
+    # ── وضع الصيانة: يُحجب كل شيء عن غير المالك، حتى يستطيع المالك دائماً الوصول للوحته لإلغائها ──
+    if is_maintenance_on() and not is_own:
+        await update.message.reply_text(MAINTENANCE_MESSAGE, parse_mode=ParseMode.MARKDOWN)
+        return
+
     # مستخدم متحقق مسبقاً → تحقق من قنوات إجبارية جديدة أولاً (الاشتراك الإجباري مقدس)
     if db_user.get("verified", 0):
         unjoined = await get_unjoined_mandatory_channels(context, user.id)
@@ -2548,6 +2579,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text   = (update.message.text or update.message.caption or "").strip()
     state  = context.user_data.get("state", "")
     is_own = (user.id == OWNER_ID)
+
+    # ── وضع الصيانة: يُحجب كل شيء عن غير المالك، حتى يستطيع المالك دائماً الوصول للوحته لإلغائها ──
+    if is_maintenance_on() and not is_own:
+        await update.message.reply_text(MAINTENANCE_MESSAGE, parse_mode=ParseMode.MARKDOWN)
+        return
 
     # ── فرض الاشتراك الإجباري على جميع المستخدمين المتحققين عبر الرسائل، بمن فيهم المالك ──
     # (استثناء وحيد: المالك أثناء استخدامه فعلياً لخطوات لوحة التحكم os_/confirm_*_order،
@@ -4052,6 +4088,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data   = q.data
     user   = q.from_user
     is_own = (user.id == OWNER_ID)
+
+    # ── وضع الصيانة: يُحجب كل شيء عن غير المالك، حتى يستطيع المالك دائماً الوصول للوحته لإلغائها ──
+    if is_maintenance_on() and not is_own:
+        await q.answer()
+        await q.edit_message_text(MAINTENANCE_MESSAGE, parse_mode=ParseMode.MARKDOWN)
+        return
 
     # ── فرض الاشتراك الإجباري على جميع المستخدمين المتحققين، بمن فيهم المالك (الاشتراك مقدس) ──
     # ملاحظة: "main_menu" لم يعد مستثنى — الضغط على زر «القائمة الرئيسية» يعيد فحص
@@ -6447,6 +6489,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if data == "os:toggle_maintenance" and is_own:
+        current = int(get_setting("maintenance_mode") or "0")
+        new_val = "0" if current else "1"
+        set_setting("maintenance_mode", new_val)
+        status = "مفعّل 🛠" if new_val == "1" else "معطّل ✅"
+        await q.edit_message_text(
+            f"🛠 *وضع الصيانة الآن: {status}*\n\n"
+            f"{'سيشاهد جميع الأعضاء (عدا المالك) رسالة الصيانة بدل البوت.' if new_val == '1' else 'البوت يعمل بشكل طبيعي لجميع الأعضاء.'}",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=owner_settings_kb()
+        )
+        return
+
     if data == "os:stats" and is_own:
         with db_conn() as c:
             total_users     = c.execute("SELECT COUNT(*) as cnt FROM users").fetchone()["cnt"]
@@ -7222,19 +7277,25 @@ def main():
             BotCommand("start", "🏠 القائمة الرئيسية"),
         ])
         # أوامر إضافية للمالك فقط
+        # ملاحظة: تيليجرام يرفض تعيين أوامر خاصة بمحادثة (BotCommandScopeChat) إذا لم
+        # يكن هناك تواصل سابق بين البوت وهذا الـ chat_id (خطأ "Chat not found").
+        # هذا متوقع قبل أن يرسل المالك /start للبوت لأول مرة، فلا يجب أن يوقف تشغيل البوت.
         if OWNER_ID:
-            await application.bot.set_my_commands(
-                [
-                    BotCommand("start",     "🏠 القائمة الرئيسية"),
-                    BotCommand("admin",     "⚙️ لوحة المالك"),
-                    BotCommand("addpoints", "💰 إضافة/خصم نقاط لمستخدم"),
-                    BotCommand("broadcast",          "📢 إرسال رسالة جماعية"),
-                    BotCommand("status",             "🔍 فحص حالة طلب"),
-                    BotCommand("compensate_partial", "💰 تعويض أصحاب الطلبات الجزئية"),
-                    BotCommand("refund_mandatory", "🔁 استرجاع تمويلات الاشتراك الإجباري"),
-                ],
-                scope=BotCommandScopeChat(chat_id=OWNER_ID)
-            )
+            try:
+                await application.bot.set_my_commands(
+                    [
+                        BotCommand("start",     "🏠 القائمة الرئيسية"),
+                        BotCommand("admin",     "⚙️ لوحة المالك"),
+                        BotCommand("addpoints", "💰 إضافة/خصم نقاط لمستخدم"),
+                        BotCommand("broadcast",          "📢 إرسال رسالة جماعية"),
+                        BotCommand("status",             "🔍 فحص حالة طلب"),
+                        BotCommand("compensate_partial", "💰 تعويض أصحاب الطلبات الجزئية"),
+                        BotCommand("refund_mandatory", "🔁 استرجاع تمويلات الاشتراك الإجباري"),
+                    ],
+                    scope=BotCommandScopeChat(chat_id=OWNER_ID)
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ تعذّر تعيين أوامر المالك الخاصة (ربما لم يبدأ المالك محادثة مع البوت بعد): {e}")
         logger.info("✅ Bot commands set")
         try:
             await start_all_number_monitors(application)
