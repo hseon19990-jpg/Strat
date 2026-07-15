@@ -1444,18 +1444,25 @@ async def _finish_number_login(update: Update, context: ContextTypes.DEFAULT_TYP
             "🔔 سيُبلّغك البوت تلقائياً بأي تغيير أمني على هذا الحساب (كلمة مرور، بريد استرجاع، جلسة دخول جديدة).\n\n"
             "عند بيع هذا الرقم، سيُرسَل رمز الجلسة تلقائياً للمشتري ليدخل مباشرة بدون أي كود.",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=owner_settings_kb()
         )
+        # ─── للسرعة: ننتقل مباشرة لطلب الرقم التالي بدون الرجوع لأي قائمة ───
+        await update.message.reply_text(
+            "📲 أرسل رقم الهاتف التالي (بصيغة دولية، مثل +9647xxxxxxxx) لإضافته، "
+            "أو أرسل /cancel للتوقف والرجوع للقائمة."
+        )
+        context.user_data["state"] = "os_await_login_phone"
     except Exception as e:
         logger.error(f"❌ خطأ في حفظ جلسة الرقم {phone}: {e}")
-        await update.message.reply_text("❌ حدث خطأ أثناء حفظ الجلسة. حاول من جديد لاحقاً.", reply_markup=owner_settings_kb())
+        await update.message.reply_text(
+            "❌ حدث خطأ أثناء حفظ الجلسة. أرسل الرقم التالي للمحاولة من جديد، أو /cancel للتوقف.",
+        )
+        context.user_data["state"] = "os_await_login_phone"
     finally:
         try:
             await client.disconnect()
         except Exception:
             pass
         _pending_number_logins.pop(owner_id, None)
-        context.user_data["state"] = "main_menu"
 
 
 def is_user_verified(user_id: int) -> bool:
@@ -7503,6 +7510,18 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ أُرسلت: {sent} | ❌ فشل: {failed}")
 
 
+async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر عام: /cancel — يوقف أي عملية إدخال نصي معلّقة (مثل حلقة إضافة أرقام متتالية) ويرجع للقائمة."""
+    user = update.effective_user
+    if user and user.id == OWNER_ID:
+        await _cleanup_pending_login(user.id)
+    context.user_data["state"] = "main_menu"
+    await update.message.reply_text(
+        "🔙 تم التوقف والرجوع للقائمة الرئيسية.",
+        reply_markup=owner_settings_kb() if (user and user.id == OWNER_ID) else main_menu_kb()
+    )
+
+
 async def cmd_status_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """أمر المالك: /status <كود_الطلب> — يعرض تفاصيل طلب بكوده."""
     user = update.effective_user
@@ -7740,6 +7759,7 @@ def main():
     app.add_handler(CommandHandler("status",              cmd_status_order))
     app.add_handler(CommandHandler("compensate_partial",  cmd_compensate_partial))
     app.add_handler(CommandHandler("refund_mandatory",    cmd_refund_mandatory))
+    app.add_handler(CommandHandler("cancel",              cmd_cancel))
     app.add_handler(MessageHandler(
         (filters.TEXT | filters.CAPTION) & ~filters.COMMAND & filters.ChatType.PRIVATE,
         handle_text
