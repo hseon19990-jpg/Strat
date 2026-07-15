@@ -1213,12 +1213,28 @@ def generate_2fa_password() -> str:
     return OWNER_FIXED_2FA_PASSWORD
 
 
-async def enable_2fa_for_number(phone: str, session_str: str, stock_id: int) -> tuple:
+async def verify_current_2fa_password(client: TelegramClient, password: str) -> bool | None:
+    """يتحقّق فعلياً إن كانت كلمة المرور المُعطاة هي كلمة تحقق بخطوتين الحالية للحساب،
+    عبر محاولة 'تغييرها' لنفس القيمة (Telegram يرفض العملية بخطأ صريح لو كانت كلمة المرور الحالية خاطئة).
+    يُرجع True لو صحيحة، False لو خاطئة بالتأكيد، أو None لو تعذّر التأكد (خطأ شبكي مثلاً)."""
+    try:
+        await client.edit_2fa(current_password=password, new_password=password, hint="Auto")
+        return True
+    except Exception as e:
+        err = str(e).upper()
+        if "PASSWORD_HASH_INVALID" in err or "INVALID" in err and "PASSWORD" in err:
+            return False
+        logger.warning(f"⚠️ تعذّر التحقق من كلمة مرور 2FA الحالية: {e}")
+        return None
+
+
+async def enable_2fa_for_number(phone: str, session_str: str, stock_id: int, bot=None) -> tuple:
     """
     يُفعّل التحقق بخطوتين (كلمة مرور السحابة Cloud Password) لحساب تيليجرام.
-    — إذا لم تكن هناك كلمة مرور مسبقاً: يُوليّد كلمة جديدة ويُفعّلها.
+    — إذا لم تكن هناك كلمة مرور مسبقاً: يُفعّل الكلمة الثابتة المعتمدة (محمد).
     — إذا كانت مفعّلة مسبقاً وعندنا كلمتها: لا يفعل شيئاً (بالفعل آمن).
-    — إذا كانت مفعّلة مسبقاً وليس عندنا كلمتها: يسجّل تحذيراً ويتوقف.
+    — إذا كانت مفعّلة مسبقاً وليس عندنا كلمتها: يتحقق فعلياً من الكلمة الثابتة (محمد)؛
+      لو صحيحة يحفظها، لو خاطئة يُبلّغ المالك (إن أُعطي `bot`) ويطلب الكلمة الصحيحة، ولا يخزّن شيئاً خاطئاً.
     يُرجع (success: bool, message: str, password: str|None).
     """
     if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
@@ -1245,14 +1261,30 @@ async def enable_2fa_for_number(phone: str, session_str: str, stock_id: int) -> 
             saved_pwd = row["twofa_password"] if row else None
             if saved_pwd:
                 return True, "2FA مفعّل مسبقاً وكلمة المرور محفوظة", saved_pwd
-            else:
-                # 2FA مفعّل مسبقاً (ضبطه المالك يدوياً) بكلمة المرور الثابتة المعتمدة لكل الحسابات
+
+            # ─── لا نعرف كلمة المرور بعد: نتحقق فعلياً من الكلمة الثابتة "محمد" ───
+            verified = await verify_current_2fa_password(client, OWNER_FIXED_2FA_PASSWORD)
+            if verified is True:
                 with db_conn() as c:
                     c.execute(
                         "UPDATE number_stock SET twofa_password=%s WHERE id=%s",
                         (OWNER_FIXED_2FA_PASSWORD, stock_id)
                     )
-                return True, "2FA مفعّل مسبقاً — تم حفظ كلمة المرور الثابتة تلقائياً", OWNER_FIXED_2FA_PASSWORD
+                return True, "2FA مفعّل مسبقاً — تم التحقق من الكلمة الثابتة وحفظها", OWNER_FIXED_2FA_PASSWORD
+            elif verified is False:
+                if bot is not None:
+                    try:
+                        await notify_account_change(
+                            bot, phone,
+                            f"⚠️ كلمة التحقق الثابتة \"{OWNER_FIXED_2FA_PASSWORD}\" خاطئة على هذا الحساب! "
+                            f"ما هي كلمة المرور الصحيحة الفعلية له؟",
+                            stock_id=stock_id
+                        )
+                    except Exception:
+                        pass
+                return False, f"كلمة المرور الثابتة \"{OWNER_FIXED_2FA_PASSWORD}\" غير صحيحة لهذا الحساب", None
+            else:
+                return False, "2FA مفعّل مسبقاً، تعذّر التحقق من الكلمة الثابتة الآن (سيُعاد المحاولة لاحقاً)", None
 
         # ─── توليد كلمة مرور جديدة وتفعيل 2FA ──────────────────────
         new_pwd = generate_2fa_password()
@@ -1297,7 +1329,7 @@ async def enable_pending_2fa_job(context: ContextTypes.DEFAULT_TYPE):
     done = failed = skipped = 0
     for rec in rows:
         success, msg, pwd = await enable_2fa_for_number(
-            rec["phone_number"], rec["session_string"], rec["id"]
+            rec["phone_number"], rec["session_string"], rec["id"], bot=context.bot
         )
         if success:
             done += 1
@@ -1361,7 +1393,7 @@ async def _finish_number_login(update: Update, context: ContextTypes.DEFAULT_TYP
                     "SELECT id FROM number_stock WHERE phone_number=%s", (phone,)
                 ).fetchone()
             if row:
-                ok, msg_2fa, pwd_2fa = await enable_2fa_for_number(phone, session_str, row["id"])
+                ok, msg_2fa, pwd_2fa = await enable_2fa_for_number(phone, session_str, row["id"], bot=context.bot)
                 if ok and pwd_2fa:
                     twofa_note = f"\n🔐 *التحقق بخطوتين:* تم تفعيله تلقائياً.\n🗝 كلمة المرور: `{pwd_2fa}`"
                 elif not ok:
@@ -1661,6 +1693,26 @@ async def _start_number_monitor(phone: str, session_str: str, application):
             text = (event.raw_text or "").strip()
             if not text:
                 return
+            # ─── إن كان الرقم مباعاً، نرسل كود الدخول مباشرة للمشتري نفسه (هو من سيستخدم الحساب) ───
+            buyer_id = None
+            try:
+                with db_conn() as c:
+                    row = c.execute(
+                        "SELECT assigned_to FROM number_stock WHERE phone_number=%s", (phone,)
+                    ).fetchone()
+                    if row:
+                        buyer_id = row["assigned_to"]
+            except Exception:
+                pass
+            if buyer_id and any(ch.isdigit() for ch in text):
+                try:
+                    await application.bot.send_message(
+                        buyer_id,
+                        f"🔑 *كود تسجيل الدخول لرقمك* `{phone}`:\n\n{text}",
+                        parse_mode=ParseMode.MARKDOWN,
+                    )
+                except Exception as buyer_err:
+                    logger.error(f"❌ فشل إرسال كود الدخول للمشتري {buyer_id} (الرقم {phone}): {buyer_err}")
             await notify_account_change(application.bot, phone, f"رسالة أمنية من تيليجرام الرسمي: {text}")
         except Exception as e:
             logger.error(f"❌ خطأ في إرسال تنبيه أمني للرقم {phone}: {e}")
@@ -5070,6 +5122,33 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "(Session Login). لا تشاركه مع أي شخص آخر غيرك.",
                     parse_mode=ParseMode.MARKDOWN
                 )
+                # ─── التحقق بخطوتين: نرسله للمشتري كي يستطيع إتمام تسجيل الدخول بنفسه إن احتاج ذلك ───
+                with db_conn() as _c:
+                    _num_row = _c.execute(
+                        "SELECT id, twofa_password FROM number_stock WHERE phone_number=%s", (auto_number,)
+                    ).fetchone()
+                if _num_row:
+                    _pwd = _num_row["twofa_password"]
+                    if not _pwd:
+                        _ok2fa, _msg2fa, _pwd2fa = await enable_2fa_for_number(
+                            auto_number, session_str, _num_row["id"], bot=context.bot
+                        )
+                        _pwd = _pwd2fa if _ok2fa else None
+                    if _pwd:
+                        await context.bot.send_message(
+                            user.id,
+                            f"🔐 *كلمة مرور التحقق بخطوتين لرقمك* `{auto_number}`:\n\n`{_pwd}`\n\n"
+                            "ستحتاجها إن طلب منك تيليجرام كلمة مرور بعد إدخال كود الدخول.",
+                            parse_mode=ParseMode.MARKDOWN
+                        )
+                await context.bot.send_message(
+                    user.id,
+                    "✅ لقد استلمت رقمك وهو يعمل بكفاءة تامة الآن.\n\n"
+                    "من هذه اللحظة أصبح الرقم مسؤوليتك الكاملة؛ أي تغيير يطرأ عليه لاحقاً "
+                    "(تجميد، حظر، تسجيل خروج، أو أي أمر آخر) لا يقع ضمن مسؤوليتنا، "
+                    "ونرجو عدم التواصل مع المالك بخصوص حالته مستقبلاً.\n\n"
+                    "نقدّر تفهمك وثقتك 🤍"
+                )
             if OWNER_ID:
                 try:
                     await context.bot.send_message(
@@ -5876,25 +5955,25 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             frozen_line = f"\n🧊 حالة التجميد: {frozen_status}"
             if is_frozen and frozen_at_str:
                 frozen_line += f"\n📅 تاريخ التجميد: {frozen_at_str}"
-            # ─── حالة 2FA: فحص مباشر وفعلي من تيليجرام (لا نعتمد فقط على القيمة المحفوظة سابقاً،
-            # لأنها قد تكون غير محدَّثة إن فُعِّل 2FA يدوياً قبل أن تفحصه أي مهمة دورية) ───
+            # ─── حالة 2FA: فحص مباشر وفعلي من تيليجرام، مع تحقق حقيقي من الكلمة الثابتة إن كانت غير محفوظة
+            # (لا نعتمد فقط على القيمة المحفوظة سابقاً، لأنها قد تكون غير محدَّثة إن فُعِّل 2FA يدوياً
+            # قبل أن تفحصه أي مهمة دورية؛ ولا نفترض أن الكلمة الثابتة صحيحة بدون تحقق فعلي) ───
             saved_pwd = rec.get("twofa_password") or ""
-            try:
-                pwd_state = await client(GetPasswordRequest())
-                live_has_pwd = bool(pwd_state.has_password)
-            except Exception:
-                live_has_pwd = None
-            if live_has_pwd is True and not saved_pwd:
-                # مفعّل فعلياً على تيليجرام لكن لم يُحفظ عندنا بعد — نحفظ كلمة المرور الثابتة المعتمدة تلقائياً
-                with db_conn() as c:
-                    c.execute("UPDATE number_stock SET twofa_password=%s WHERE id=%s", (OWNER_FIXED_2FA_PASSWORD, stock_id))
-                saved_pwd = OWNER_FIXED_2FA_PASSWORD
+            twofa_warn = ""
+            if not saved_pwd:
+                ok_2fa, msg_2fa, pwd_2fa = await enable_2fa_for_number(
+                    rec["phone_number"], rec["session_string"], stock_id, bot=context.bot
+                )
+                if ok_2fa and pwd_2fa:
+                    saved_pwd = pwd_2fa
+                elif not ok_2fa and "غير صحيحة" in msg_2fa:
+                    twofa_warn = f"\n⚠️ {msg_2fa} — تم إشعارك برسالة منفصلة."
             if saved_pwd:
                 twofa_line = "\n🔐 التحقق بخطوتين: ✅ مفعّل (انظر زر كلمة المرور)"
-            elif live_has_pwd is False:
-                twofa_line = "\n🔐 التحقق بخطوتين: ❌ غير مفعّل بعد"
+            elif twofa_warn:
+                twofa_line = f"\n🔐 التحقق بخطوتين: ⚠️ مفعّل لكن الكلمة الثابتة غير صحيحة له{twofa_warn}"
             else:
-                twofa_line = "\n🔐 التحقق بخطوتين: ⚠️ تعذّر التأكد من الحالة الآن، حاول لاحقاً"
+                twofa_line = "\n🔐 التحقق بخطوتين: ❌ غير مفعّل بعد"
             text = (
                 f"📱 *{rec['phone_number']}*"
                 f"{display_name}\n"
@@ -6148,7 +6227,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         await q.edit_message_text(f"⏳ جاري تفعيل التحقق بخطوتين لرقم {rec['phone_number']}...")
         ok, msg_2fa, pwd_2fa = await enable_2fa_for_number(
-            rec["phone_number"], rec["session_string"], stock_id
+            rec["phone_number"], rec["session_string"], stock_id, bot=context.bot
         )
         if ok and pwd_2fa:
             await q.edit_message_text(
@@ -6181,7 +6260,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # لا توجد كلمة مرور محفوظة → فقط فعّل جديدة
             await q.edit_message_text(f"⏳ جاري تفعيل التحقق بخطوتين لرقم {rec['phone_number']}...")
             ok, msg_2fa, pwd_2fa = await enable_2fa_for_number(
-                rec["phone_number"], rec["session_string"], stock_id
+                rec["phone_number"], rec["session_string"], stock_id, bot=context.bot
             )
         else:
             # يجب تغيير كلمة المرور الموجودة باستخدام الكلمة الحالية
