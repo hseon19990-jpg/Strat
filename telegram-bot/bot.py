@@ -1770,6 +1770,8 @@ SERVICE_PLATFORMS = [
     ("💬 واتساب", "services_menu_wa"),
     ("📘 فيس بوك", "services_menu_fb"),
     ("▶️ يوتيوب", "services_menu_yt"),
+    ("👻 سناب شات", "services_menu_sc"),
+    ("🐦 تويتر", "services_menu_tw"),
 ]
 SERVICE_PLATFORM_MENUS = {v for _, v in SERVICE_PLATFORMS}
 
@@ -1807,6 +1809,8 @@ BUILTIN_DEFAULTS = {
     "services_menu_wa": [],
     "services_menu_fb": [],
     "services_menu_yt": [],
+    "services_menu_sc": [],
+    "services_menu_tw": [],
     "owner_settings": [
         ("➕ إضافة خدمة", "os:add_service", 2), ("📋 قائمة الخدمات", "os:list_services", 2),
         ("🗂 عرض الخدمات", "os:view_services", 2), ("📦 قسم الطلبات", "os:orders_section", 2),
