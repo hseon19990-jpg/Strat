@@ -5235,7 +5235,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             display_number = auto_number.lstrip("+")
             await q.edit_message_text(
                 f"✅ *تمت العملية بنجاح!*\n\n"
-                f"📱 رقمك: `{display_number}` (أضف علامة + في بداية الرقم عند إدخاله في تيليجرام)\n"
+                f"📱 رقمك: `{display_number}`\n"
                 f"💰 التكلفة: {cost} نقطة\n\n"
                 f"📌 كود عمليتك: `{code}`\n\n"
                 + ("سيصلك رمز الجلسة (Session) في رسالة منفصلة — استخدمه لتسجيل الدخول مباشرة بدون أي كود."
