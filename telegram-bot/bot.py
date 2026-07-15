@@ -557,7 +557,7 @@ def init_db():
               )
       except Exception:
           pass
-      # تنظيف تلقائي: حذف أي وصف خدمة يحتوي على سعر ($، USD، أو رقم قريب من سعر الخدمة بالدولار)
+      # تنظيف تلقائي: حذف جزء السعر فقط من أوصاف الخدمات وإبقاء باقي النص
       try:
           with db_conn() as c:
               svcs_with_desc = c.execute(
@@ -565,31 +565,54 @@ def init_db():
               ).fetchall()
           cleaned = 0
           for s in svcs_with_desc:
-              if _desc_has_price(s["description"], float(s["price_per_point"] or 0)):
+              stripped = _strip_price_from_desc(s["description"], float(s["price_per_point"] or 0))
+              if stripped != (s["description"] or "").strip():
                   with db_conn() as c:
-                      c.execute("UPDATE services SET description=NULL WHERE id=%s", (s["id"],))
+                      c.execute("UPDATE services SET description=%s WHERE id=%s", (stripped, s["id"]))
                   cleaned += 1
           if cleaned:
-              logger.info(f"🧹 تم حذف وصف يحتوي على سعر من {cleaned} خدمة تلقائياً.")
+              logger.info(f"🧹 تم تنظيف السعر من وصف {cleaned} خدمة تلقائياً.")
       except Exception as e:
           logger.warning(f"⚠️ فشل تنظيف أوصاف الأسعار: {e}")
 
-def _desc_has_price(desc: str, price_per_point: float = 0.0) -> bool:
-    """يعيد True إذا كان الوصف يحتوي على سعر (علامة $ أو رقم يطابق سعر الخدمة بالدولار)."""
+def _strip_price_from_desc(desc: str, price_per_point: float = 0.0) -> str | None:
+    """يحذف جزء السعر فقط من الوصف ويُبقي باقي النص.
+    يعيد None إذا لم يتبق شيء بعد الحذف."""
     if not desc:
-        return False
-    # كشف علامة الدولار أو كلمة USD
-    if "$" in desc or "USD" in desc.upper():
-        return True
-    # مقارنة الأرقام الموجودة في الوصف بسعر الخدمة المحوَّل لدولار
-    # (السعر بالدولار لكل 1000 وحدة = price_per_point / 100_000)
+        return None
+
+    text = desc
+
+    # 1) حذف أنماط الدولار: $0.5  /  0.5$  /  USD 0.5  /  $0.5/1000  /  0.5 USD
+    text = re.sub(r"\$\s*\d+(?:[.,]\d+)?(?:\s*/\s*\d+)?", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\d+(?:[.,]\d+)?\s*\$", "", text)
+    text = re.sub(r"USD\s*\d+(?:[.,]\d+)?", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\d+(?:[.,]\d+)?\s*USD", "", text, flags=re.IGNORECASE)
+
+    # 2) حذف أرقام قريبة من سعر الخدمة بالدولار (price_per_point / 100_000)
     if price_per_point and price_per_point > 0:
         panel_price = price_per_point / 100_000
-        for token in re.findall(r"\d+(?:[.,]\d+)?", desc):
-            val = float(token.replace(",", "."))
+        def _remove_price_num(m):
+            val = float(m.group(0).replace(",", "."))
             if val > 0 and abs(val - panel_price) / panel_price <= 0.5:
-                return True
-    return False
+                return ""
+            return m.group(0)
+        text = re.sub(r"\d+(?:[.,]\d+)?", _remove_price_num, text)
+
+    # 3) تنظيف علامات الترقيم والمسافات الزائدة الناتجة عن الحذف
+    text = re.sub(r"[-|/\\،,;:\s]+$", "", text.strip())
+    text = re.sub(r"^[-|/\\،,;:\s]+", "", text.strip())
+    text = re.sub(r"\s{2,}", " ", text).strip()
+
+    return text if text else None
+
+
+# للتوافق مع الاستدعاءات القديمة (init_db)
+def _desc_has_price(desc: str, price_per_point: float = 0.0) -> bool:
+    if not desc:
+        return False
+    stripped = _strip_price_from_desc(desc, price_per_point)
+    return stripped != desc.strip()
 
 
 def get_setting(key: str) -> str:
@@ -3931,13 +3954,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_own and state == "os_await_custom_desc":
         info          = context.user_data.get("new_svc_info", {})
         tmp_price     = float(info.get("rate", 0)) * 100_000   # سعر تقريبي بالنقاط لفحص الوصف
-        clean_desc    = None if _desc_has_price(text, tmp_price) else text
+        clean_desc    = _strip_price_from_desc(text, tmp_price)
         context.user_data["new_svc_desc"] = clean_desc or ""
         mn   = info.get("min", 0)
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton(f"✅ استخدم ({mn})", callback_data=f"os_use_min:{mn}")]
         ])
-        notice = "⚠️ تم حذف الوصف تلقائياً لاحتوائه على سعر.\n\n" if not clean_desc and text.strip() else "✅ الوصف حُفظ.\n\n"
+        if clean_desc and clean_desc != text.strip():
+            notice = f"✅ تم حذف السعر من الوصف تلقائياً.\nالوصف بعد التنظيف: _{clean_desc}_\n\n"
+        elif not clean_desc and text.strip():
+            notice = "⚠️ تم حذف الوصف كاملاً لأنه لم يتبق سوى السعر.\n\n"
+        else:
+            notice = "✅ الوصف حُفظ.\n\n"
         await update.message.reply_text(
             f"{notice}📉 *الحد الأدنى من الموقع: {mn}*\n\nاضغط الزر لاستخدامه أو أرسل رقماً مختلفاً:",
             parse_mode=ParseMode.MARKDOWN,
@@ -4680,12 +4708,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 svc_row = c.execute("SELECT price_per_point FROM services WHERE id=%s", (sid,)).fetchone()
             ppp = float(svc_row["price_per_point"] or 0) if svc_row else 0.0
             raw = text.strip()
-            new_desc = None if _desc_has_price(raw, ppp) else raw
+            new_desc = _strip_price_from_desc(raw, ppp)
         with db_conn() as c:
             c.execute("UPDATE services SET description=%s WHERE id=%s", (new_desc, sid))
         context.user_data["state"] = "main_menu"
-        if new_desc is None and text.strip() != "-":
-            msg = "⚠️ تم حذف الوصف تلقائياً لاحتوائه على سعر."
+        if new_desc and new_desc != text.strip() and text.strip() != "-":
+            msg = f"✅ تم حذف السعر من الوصف تلقائياً.\nالوصف بعد التنظيف:\n{new_desc}"
+        elif new_desc is None and text.strip() != "-":
+            msg = "⚠️ تم حذف الوصف كاملاً لأنه لم يتبق سوى السعر."
         elif new_desc is None:
             msg = "✅ تم حذف الوصف."
         else:
