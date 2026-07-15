@@ -394,6 +394,8 @@ def init_db():
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS last_frozen BOOLEAN DEFAULT FALSE",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS last_authorized BOOLEAN DEFAULT TRUE",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS last_device_count INTEGER DEFAULT -1",
+              "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ",
+              "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS kicked_at TIMESTAMPTZ",
           ]:
               try: c.execute(_alt)
               except Exception: pass
@@ -939,15 +941,22 @@ async def fetch_last_login_code(client: TelegramClient):
 
 def list_stock_numbers(filter_type: str = "all"):
     """أرقام المخزون غير المباعة، مع تصنيف اختياري:
-    - "all": كل الأرقام غير المباعة (المعروضة + المنتظرة).
+    - "all": كل الأرقام غير المباعة (المعروضة + المنتظرة)، بدون المحذوفة.
     - "listed": المعروضة للبيع فعلاً (تُسلَّم فوراً عند الشراء).
     - "pending": بانتظار طرد الجلسات الأخرى قبل أن تصبح قابلة للبيع.
+    - "kicked": الأرقام المطرودة (فُصلت جلستها من تيليجرام) وما زالت غير محذوفة.
+    - "trash": الأرقام المحذوفة (سلة المهملات)، بغض النظر عن حالة البيع.
     """
-    sql = "SELECT id, phone_number, session_string, sessions_reset, force_listed FROM number_stock WHERE assigned_to IS NULL"
-    if filter_type == "listed":
-        sql += f" AND {_sellable_filter_sql()}"
-    elif filter_type == "pending":
-        sql += f" AND NOT ({_sellable_filter_sql()})"
+    if filter_type == "trash":
+        sql = "SELECT id, phone_number, session_string, sessions_reset, force_listed FROM number_stock WHERE deleted_at IS NOT NULL"
+    else:
+        sql = "SELECT id, phone_number, session_string, sessions_reset, force_listed FROM number_stock WHERE assigned_to IS NULL AND deleted_at IS NULL"
+        if filter_type == "listed":
+            sql += f" AND {_sellable_filter_sql()}"
+        elif filter_type == "pending":
+            sql += f" AND NOT ({_sellable_filter_sql()})"
+        elif filter_type == "kicked":
+            sql += " AND last_authorized=FALSE"
     sql += " ORDER BY id ASC"
     with db_conn() as c:
         rows = c.execute(sql).fetchall()
@@ -955,27 +964,54 @@ def list_stock_numbers(filter_type: str = "all"):
 
 
 def get_number_counts() -> dict:
-    """يحسب عدد كل تصنيف من أرقام المخزون غير المباعة، دفعة واحدة."""
+    """يحسب عدد كل تصنيف من أرقام المخزون (غير المباعة وغير المحذوفة)، دفعة واحدة."""
     with db_conn() as c:
         row = c.execute(
             "SELECT "
             "COUNT(*) AS total, "
-            f"COUNT(*) FILTER (WHERE {_sellable_filter_sql()}) AS listed "
-            "FROM number_stock WHERE assigned_to IS NULL"
+            f"COUNT(*) FILTER (WHERE {_sellable_filter_sql()}) AS listed, "
+            "COUNT(*) FILTER (WHERE last_authorized=FALSE) AS kicked "
+            "FROM number_stock WHERE assigned_to IS NULL AND deleted_at IS NULL"
         ).fetchone()
         total = row["total"] if row else 0
         listed = row["listed"] if row else 0
-        return {"all": total, "listed": listed, "pending": total - listed}
+        kicked = row["kicked"] if row else 0
+        with db_conn() as c2:
+            trow = c2.execute("SELECT COUNT(*) AS cnt FROM number_stock WHERE deleted_at IS NOT NULL").fetchone()
+            trash = trow["cnt"] if trow else 0
+        return {"all": total, "listed": listed, "pending": total - listed, "kicked": kicked, "trash": trash}
 
 
 def get_stock_number(stock_id: int):
     with db_conn() as c:
         row = c.execute(
-            "SELECT id, phone_number, session_string, assigned_to, sessions_reset, force_listed, frozen_at, twofa_password "
+            "SELECT id, phone_number, session_string, assigned_to, sessions_reset, force_listed, frozen_at, "
+            "twofa_password, deleted_at, last_authorized "
             "FROM number_stock WHERE id=%s",
             (stock_id,)
         ).fetchone()
         return dict(row) if row else None
+
+
+def soft_delete_number(stock_id: int) -> bool:
+    """ينقل رقماً إلى سلة المهملات (حذف مؤقت) بدل حذفه نهائياً."""
+    with db_conn() as c:
+        c.execute("UPDATE number_stock SET deleted_at=NOW() WHERE id=%s", (stock_id,))
+        return True
+
+
+def restore_deleted_number(stock_id: int) -> bool:
+    """يستعيد رقماً من سلة المهملات."""
+    with db_conn() as c:
+        c.execute("UPDATE number_stock SET deleted_at=NULL WHERE id=%s", (stock_id,))
+        return True
+
+
+def permanently_delete_number(stock_id: int) -> bool:
+    """يحذف رقماً نهائياً من قاعدة البيانات (لا يمكن التراجع بعده)."""
+    with db_conn() as c:
+        c.execute("DELETE FROM number_stock WHERE id=%s", (stock_id,))
+        return True
 
 
 def set_force_listed(stock_id: int) -> bool:
@@ -993,7 +1029,7 @@ def _sellable_filter_sql() -> str:
 def get_available_number_count() -> int:
     with db_conn() as c:
         row = c.execute(
-            f"SELECT COUNT(*) as cnt FROM number_stock WHERE assigned_to IS NULL AND {_sellable_filter_sql()}"
+            f"SELECT COUNT(*) as cnt FROM number_stock WHERE assigned_to IS NULL AND deleted_at IS NULL AND {_sellable_filter_sql()}"
         ).fetchone()
         return row["cnt"] if row else 0
 
@@ -1002,8 +1038,8 @@ def add_number_with_session(phone: str, session_str: str) -> bool:
     """يضيف رقماً جاهزاً (مسجّل دخول مسبقاً) مع جلسته إلى المخزون. يُرجع False إن كان الرقم موجوداً مسبقاً."""
     with db_conn() as c:
         c.execute(
-            "INSERT INTO number_stock (phone_number, session_string) VALUES (%s,%s) "
-            "ON CONFLICT (phone_number) DO UPDATE SET session_string=EXCLUDED.session_string",
+            "INSERT INTO number_stock (phone_number, session_string, deleted_at) VALUES (%s,%s,NULL) "
+            "ON CONFLICT (phone_number) DO UPDATE SET session_string=EXCLUDED.session_string, deleted_at=NULL",
             (phone, session_str)
         )
         return True
@@ -1015,7 +1051,7 @@ def assign_next_number(user_id: int):
     with db_conn() as c:
         row = c.execute(
             "UPDATE number_stock SET assigned_to=%s, assigned_at=NOW() "
-            "WHERE id = (SELECT id FROM number_stock WHERE assigned_to IS NULL AND "
+            "WHERE id = (SELECT id FROM number_stock WHERE assigned_to IS NULL AND deleted_at IS NULL AND "
             f"{_sellable_filter_sql()} ORDER BY id ASC LIMIT 1 FOR UPDATE SKIP LOCKED) "
             "RETURNING phone_number, session_string",
             (user_id,)
@@ -1381,19 +1417,10 @@ async def enable_pending_2fa_job(context: ContextTypes.DEFAULT_TYPE):
         else:
             failed += 1
         await asyncio.sleep(3)
+    # ─── هذه المهمة الدورية صامتة: لا تُرسل تقريراً للمالك في كل دورة (بناءً على طلبه)،
+    # يكفي تسجيلها في السجلات الداخلية (logs). يُبلَّغ المالك فعلياً فقط عند فشل فعلي
+    # يحتاج تدخله (مثل طلب كلمة 2FA اليدوية عبر request_manual_2fa_password) ───
     logger.info(f"✅ مهمة 2FA: {done} نجحت | {skipped} مُتجاوزة | {failed} فشلت")
-    if (done or failed) and OWNER_ID:
-        try:
-            await context.bot.send_message(
-                OWNER_ID,
-                f"🔐 *مهمة التحقق بخطوتين (2FA)*\n\n"
-                f"✅ فُعِّل لـ: {done} رقم\n"
-                f"⏭ مُتجاوزة (مضبوطة يدوياً): {skipped}\n"
-                f"❌ فشلت: {failed}",
-                parse_mode=ParseMode.MARKDOWN
-            )
-        except Exception:
-            pass
 
 
 async def _cleanup_pending_login(owner_id: int):
@@ -1630,6 +1657,70 @@ def format_account_datetime(dt) -> str:
         return "غير معروف"
 
 
+_ARABIC_MONTHS = {
+    1: "يناير", 2: "فبراير", 3: "مارس", 4: "أبريل", 5: "مايو", 6: "يونيو",
+    7: "يوليو", 8: "أغسطس", 9: "سبتمبر", 10: "أكتوبر", 11: "نوفمبر", 12: "ديسمبر",
+}
+
+
+def translate_official_notice(text: str) -> str:
+    """يترجم أشهر أنماط رسائل تيليجرام الرسمية الأمنية (من 777000) إلى العربية.
+    تيليجرام يرسل هذه الرسائل بصيغ إنجليزية ثابتة معدودة؛ نطابقها بأنماط (regex)
+    ونستخرج منها الحقول (التاريخ/الوقت/الجهاز/الموقع) ثم نعيد صياغتها عربياً.
+    إن لم يُطابَق أي نمط معروف، تُعاد النسخة الأصلية كما هي بدلاً من كسر الرسالة."""
+    if not text:
+        return text
+    original = text
+    low = text.lower()
+
+    def _fmt_date(y, mo, d):
+        try:
+            return f"{int(d)} {_ARABIC_MONTHS.get(int(mo), mo)} {y}"
+        except Exception:
+            return f"{d}/{mo}/{y}"
+
+    # ─── نمط: "Two-Step Verification settings changed. ... changed on DD/MM/YYYY at HH:MM:SS UTC. Device: ... Location: ..."
+    if "two-step verification" in low and "changed" in low:
+        m_date = re.search(r"changed on\s+(\d{1,2})/(\d{1,2})/(\d{4})\s+at\s+([\d:]+)\s*(UTC)?", text, re.IGNORECASE)
+        m_device = re.search(r"Device:\s*(.+?)(?:\n|$)", text)
+        m_loc = re.search(r"Location:\s*(.+?)(?:\n|$)", text)
+        parts = ["🔐 *تغيّرت إعدادات التحقق بخطوتين*", "تم تغيير كلمة مرور التحقق بخطوتين و/أو البريد الاحتياطي لهذا الحساب."]
+        if m_date:
+            day, mon, year, time_str = m_date.group(1), m_date.group(2), m_date.group(3), m_date.group(4)
+            parts.append(f"🗓 الوقت: {_fmt_date(year, mon, day)} — {time_str} (توقيت UTC)")
+        if m_device:
+            parts.append(f"📱 الجهاز: {m_device.group(1).strip()}")
+        if m_loc:
+            parts.append(f"📍 الموقع: {m_loc.group(1).strip()}")
+        parts.append("⚠️ إن لم يكن هذا التغيير معروفاً لك، راجع الجلسات النشطة فوراً.")
+        return "\n".join(parts)
+
+    # ─── نمط: "New login. We noticed a login into your account from a new device on ... Device: ... Location: ..."
+    if ("new login" in low or "login from a new device" in low) and "device:" in low:
+        m_device = re.search(r"Device:\s*(.+?)(?:\n|$)", text)
+        m_loc = re.search(r"Location:\s*(.+?)(?:\n|$)", text)
+        parts = ["🆕 *تسجيل دخول جديد على هذا الحساب*"]
+        if m_device:
+            parts.append(f"📱 الجهاز: {m_device.group(1).strip()}")
+        if m_loc:
+            parts.append(f"📍 الموقع: {m_loc.group(1).strip()}")
+        parts.append("⚠️ إن لم يكن هذا تسجيل دخولك، راجع الجلسات النشطة فوراً.")
+        return "\n".join(parts)
+
+    # ─── نمط: رسالة كود تسجيل الدخول العادية ───
+    if "login code" in low or "this code can be used to log" in low:
+        m_code = re.search(r"\b(\d{4,7})\b", text)
+        if m_code:
+            return f"🔑 *كود تسجيل دخول*\n\nالكود: `{m_code.group(1)}`\n⚠️ لا تُعطِ هذا الكود لأي شخص، حتى لو زعم أنه من تيليجرام."
+
+    # ─── نمط: تعطيل/تسجيل خروج الحساب ───
+    if "account was" in low and ("deactivat" in low or "terminated" in low or "logged out" in low):
+        return f"🔴 *تم تسجيل الخروج/تعطيل هذا الحساب من تيليجرام.*\n\n(النص الأصلي: {original})"
+
+    # ─── لم يُطابَق أي نمط معروف: نُعيد النص الأصلي مع توضيح أنه لم تتم ترجمته تلقائياً ───
+    return f"{original}\n\n(⚠️ لم تُترجم هذه الرسالة تلقائياً — نمط غير معروف)"
+
+
 async def notify_account_change(bot, phone: str, change_desc: str, added_at=None, stock_id: int | None = None):
     """يُرسل للمالك تنبيهاً موحّد الشكل عن أي تغيّر في حساب (طرد/تجميد/تغيّر أجهزة/تنبيه أمني...):
     التغيّر / رقم الحساب / الدولة / وقت إدخال الحساب."""
@@ -1689,7 +1780,7 @@ async def monitor_number_changes_job(context: ContextTypes.DEFAULT_TYPE):
     with db_conn() as c:
         rows = c.execute(
             "SELECT id, phone_number, session_string, added_at, last_frozen, last_authorized, last_device_count "
-            "FROM number_stock WHERE session_string IS NOT NULL"
+            "FROM number_stock WHERE session_string IS NOT NULL AND deleted_at IS NULL"
         ).fetchall()
     for row in rows:
         rec = dict(row)
@@ -1708,8 +1799,10 @@ async def monitor_number_changes_job(context: ContextTypes.DEFAULT_TYPE):
             last_frozen = bool(rec["last_frozen"])
             last_devices = rec["last_device_count"] if rec["last_device_count"] is not None else -1
 
+            just_kicked = False
             if last_authorized and not authorized:
                 changes.append("تم طرد الحساب (تسجيل خروج/انتهاء الجلسة من تيليجرام)")
+                just_kicked = True
             elif not last_authorized and authorized:
                 changes.append("عاد الحساب مصرَّحاً (تسجيل الدخول سليم من جديد)")
 
@@ -1728,10 +1821,16 @@ async def monitor_number_changes_job(context: ContextTypes.DEFAULT_TYPE):
                 )
 
             with db_conn() as c2:
-                c2.execute(
-                    "UPDATE number_stock SET last_authorized=%s, last_frozen=%s, last_device_count=%s WHERE id=%s",
-                    (authorized, is_frozen if authorized else last_frozen, devices if devices >= 0 else last_devices, rec["id"])
-                )
+                if just_kicked:
+                    c2.execute(
+                        "UPDATE number_stock SET last_authorized=%s, last_frozen=%s, last_device_count=%s, kicked_at=NOW() WHERE id=%s",
+                        (authorized, is_frozen if authorized else last_frozen, devices if devices >= 0 else last_devices, rec["id"])
+                    )
+                else:
+                    c2.execute(
+                        "UPDATE number_stock SET last_authorized=%s, last_frozen=%s, last_device_count=%s WHERE id=%s",
+                        (authorized, is_frozen if authorized else last_frozen, devices if devices >= 0 else last_devices, rec["id"])
+                    )
         except Exception as e:
             logger.debug(f"⏳ تعذّر فحص تغيّرات الرقم {rec['phone_number']} بهذه الدورة: {e}")
         finally:
@@ -1740,6 +1839,22 @@ async def monitor_number_changes_job(context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
         await asyncio.sleep(2)  # تباعد بين كل حساب والآخر لتجنّب أي نشاط مكثّف من نفس السيرفر
+
+
+async def _stop_number_monitor(phone: str):
+    """يوقف مراقبة رقم معيّن نهائياً (يُستخدم عند حذف الرقم نهائياً من سلة المهملات)."""
+    client = _monitor_clients.pop(phone, None)
+    task = _monitor_tasks.pop(phone, None)
+    if client is not None:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+    if task is not None:
+        try:
+            task.cancel()
+        except Exception:
+            pass
 
 
 async def _start_number_monitor(phone: str, session_str: str, application):
@@ -1811,8 +1926,9 @@ async def _start_number_monitor(phone: str, session_str: str, application):
                 )
                 return
 
+            translated = translate_official_notice(text)
             await notify_account_change(
-                application.bot, phone, f"رسالة أمنية من تيليجرام الرسمي: {text}",
+                application.bot, phone, f"رسالة أمنية من تيليجرام الرسمي:\n\n{translated}",
                 stock_id=stock_id,
             )
         except Exception as e:
@@ -6038,6 +6154,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton(f"📦 جميع الأرقام ({counts['all']})", callback_data="os:nums:all")],
                 [InlineKeyboardButton(f"🚀 الأرقام المعروضة ({counts['listed']})", callback_data="os:nums:listed")],
                 [InlineKeyboardButton(f"⏳ الأرقام المنتظرة ({counts['pending']})", callback_data="os:nums:pending")],
+                [InlineKeyboardButton(f"🚫 الحسابات المطرودة ({counts['kicked']})", callback_data="os:nums:kicked")],
+                [InlineKeyboardButton(f"🗑 سلة المهملات ({counts['trash']})", callback_data="os:nums:trash")],
                 [InlineKeyboardButton("🔙 رجوع", callback_data="os:manage_numbers")],
             ])
         )
@@ -6045,19 +6163,31 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("os:nums:") and is_own:
         filter_type = data.split(":")[-1]
-        titles = {"all": "📦 جميع الأرقام", "listed": "🚀 الأرقام المعروضة", "pending": "⏳ الأرقام المنتظرة"}
+        titles = {
+            "all": "📦 جميع الأرقام", "listed": "🚀 الأرقام المعروضة", "pending": "⏳ الأرقام المنتظرة",
+            "kicked": "🚫 الحسابات المطرودة", "trash": "🗑 سلة المهملات",
+        }
         title = titles.get(filter_type, "الأرقام")
         numbers = list_stock_numbers(filter_type)
         if not numbers:
+            empty_note = "لا توجد أرقام حالياً ضمن هذا التصنيف."
+            if filter_type == "trash":
+                empty_note = "سلة المهملات فارغة حالياً."
+            elif filter_type == "kicked":
+                empty_note = "لا توجد حسابات مطرودة حالياً — كل الحسابات متصلة."
             await q.edit_message_text(
-                f"{title}\n\nلا توجد أرقام حالياً ضمن هذا التصنيف.",
+                f"{title}\n\n{empty_note}",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")]])
             )
             return
         rows = []
         for n in numbers[:40]:
             label = f"📱 {n['phone_number']} — {guess_country(n['phone_number'])}"
-            if not n["session_string"]:
+            if filter_type == "trash":
+                label += " 🗑 محذوف"
+            elif filter_type == "kicked":
+                label += " 🚫 مطرود"
+            elif not n["session_string"]:
                 label += " (بدون جلسة)"
             elif n["force_listed"]:
                 label += " 🚀 معروض مباشرة"
@@ -6078,10 +6208,25 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("os:number_info:") and is_own:
         stock_id = int(data.split(":")[-1])
         rec = get_stock_number(stock_id)
-        if not rec or rec["assigned_to"] is not None:
+        if not rec or (rec["assigned_to"] is not None and not rec.get("deleted_at")):
             await q.edit_message_text(
-                "⚠️ هذا الرقم غير متاح (تم بيعه أو حذفه).",
+                "⚠️ هذا الرقم غير متاح (تم بيعه).",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")]])
+            )
+            return
+        if rec.get("deleted_at"):
+            # ─── الرقم في سلة المهملات: عرض مبسّط بدون فحص مباشر من تيليجرام + خيارات الاستعادة/الحذف النهائي ───
+            del_str = rec["deleted_at"].strftime("%Y-%m-%d %H:%M UTC") if hasattr(rec["deleted_at"], "strftime") else str(rec["deleted_at"])
+            await q.edit_message_text(
+                f"🗑 *{rec['phone_number']}* — في سلة المهملات\n\n"
+                f"🌍 الدولة: {guess_country(rec['phone_number'])}\n"
+                f"📅 وقت الحذف: {del_str}\n",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("♻️ استعادة الرقم", callback_data=f"os:number_restore:{stock_id}")],
+                    [InlineKeyboardButton("🗑 حذف نهائي (لا يمكن التراجع)", callback_data=f"os:number_purge:{stock_id}")],
+                    [InlineKeyboardButton("🔙 رجوع", callback_data="os:nums:trash")],
+                ])
             )
             return
         if not rec["session_string"]:
@@ -6182,6 +6327,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]
             if not rec["sessions_reset"] and not rec["force_listed"]:
                 kb_rows.append([InlineKeyboardButton("🚀 عرض مباشر للبيع الآن (تجاوز الانتظار)", callback_data=f"os:force_list:{stock_id}")])
+            kb_rows.append([InlineKeyboardButton("🗑 نقل إلى سلة المهملات", callback_data=f"os:number_delete:{stock_id}")])
             kb_rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")])
             await q.edit_message_text(
                 text,
@@ -6219,6 +6365,63 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "حتى تنجح إعادة المحاولة التلقائية بالخلفية.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")]])
+        )
+        return
+
+    if data.startswith("os:number_delete:") and is_own:
+        stock_id = int(data.split(":")[-1])
+        rec = get_stock_number(stock_id)
+        if not rec:
+            await q.edit_message_text(
+                "⚠️ لم يُعثر على هذا الرقم.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")]])
+            )
+            return
+        soft_delete_number(stock_id)
+        await q.edit_message_text(
+            f"🗑 تم نقل الرقم `{rec['phone_number']}` إلى سلة المهملات.\n\n"
+            "يمكنك استعادته في أي وقت من 🗑 سلة المهملات.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع لقائمة الأرقام", callback_data="os:list_numbers")]])
+        )
+        return
+
+    if data.startswith("os:number_restore:") and is_own:
+        stock_id = int(data.split(":")[-1])
+        rec = get_stock_number(stock_id)
+        if not rec:
+            await q.edit_message_text(
+                "⚠️ لم يُعثر على هذا الرقم.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:nums:trash")]])
+            )
+            return
+        restore_deleted_number(stock_id)
+        await q.edit_message_text(
+            f"♻️ تم استعادة الرقم `{rec['phone_number']}` من سلة المهملات.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع لقائمة الأرقام", callback_data="os:list_numbers")]])
+        )
+        return
+
+    if data.startswith("os:number_purge:") and is_own:
+        stock_id = int(data.split(":")[-1])
+        rec = get_stock_number(stock_id)
+        if not rec:
+            await q.edit_message_text(
+                "⚠️ لم يُعثر على هذا الرقم.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:nums:trash")]])
+            )
+            return
+        phone_del = rec["phone_number"]
+        try:
+            await _stop_number_monitor(phone_del)
+        except Exception:
+            pass
+        permanently_delete_number(stock_id)
+        await q.edit_message_text(
+            f"🗑 تم حذف الرقم `{phone_del}` نهائياً من قاعدة البيانات.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع لسلة المهملات", callback_data="os:nums:trash")]])
         )
         return
 
