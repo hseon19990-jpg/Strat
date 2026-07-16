@@ -1146,14 +1146,17 @@ def set_force_listed(stock_id: int) -> bool:
 
 
 def _sellable_filter_sql() -> str:
-    """رقم يُعتبر قابلاً للبيع/التسليم (جاهز فعلاً) إذا:
-    • أُضيف يدوياً بدون جلسة (لا داعي لطرد جلسات)، أو
-    • نجح طرد جلساته الأخرى (sessions_reset=TRUE) أو عُيِّن "عرض مباشر" (force_listed=TRUE)
-      وفي كلا الحالتين يجب أن تكون كلمة مرور 2FA محفوظة لدينا.
+    """رقم يُعتبر قابلاً للبيع/التسليم (جاهز فعلاً) إذا تحقّق أحد الشروط الثلاثة:
+    1. session_string IS NULL  → رقم أُضيف يدوياً بلا جلسة (مباشرة للبيع).
+    2. last_authorized = FALSE → المالك سجّل خروج يدوياً؛ لا جلسة نشطة فعلاً،
+                                 يُعامَل معاملة الرقم اليدوي.
+    3. (sessions_reset=TRUE أو force_listed=TRUE) + twofa_password محفوظ
+                               → طُردت الجلسات الأخرى وكلمة المرور معروفة، جاهز للتسليم مع جلسة.
     الحسابات المجمّدة مُستثناة دائماً."""
     return (
         "("
         "  session_string IS NULL"
+        "  OR last_authorized = FALSE"
         "  OR ("
         "    (sessions_reset=TRUE OR force_listed=TRUE)"
         "    AND twofa_password IS NOT NULL"
@@ -1259,15 +1262,16 @@ async def assign_verified_number(user_id: int, bot=None) -> dict | None:
                 await cli_check.connect()
                 authorized = await cli_check.is_user_authorized()
                 if not authorized:
-                    # الجلسة منتهية → مجمّد أو مطرود
+                    # المالك سجّل خروج يدوياً من هذا الرقم — لا نجمّده، بل نعرضه كرقم يدوي
                     with db_conn() as c:
                         c.execute(
-                            "UPDATE number_stock SET assigned_to=NULL, assigned_at=NULL, frozen_at=COALESCE(frozen_at,NOW()) WHERE id=%s",
+                            "UPDATE number_stock SET sessions_reset=TRUE, last_authorized=FALSE WHERE id=%s",
                             (stock_id,)
                         )
-                    skipped_ids.append(stock_id)
+                    logger.info(f"📴 الرقم {phone} جلسته غير نشطة (خرج المالك) — يُعرض كرقم يدوي")
                     await cli_check.disconnect()
-                    continue
+                    # نُرجعه بدون session_string حتى لا يُسلَّم للمشتري جلسة منتهية
+                    return {"phone_number": phone, "session_string": None, "twofa_password": saved_pw}
 
                 is_frz, _, _ = await check_account_frozen(cli_check, stock_id)
                 if is_frz:
@@ -2139,8 +2143,10 @@ async def monitor_number_changes_job(context: ContextTypes.DEFAULT_TYPE):
 
             with db_conn() as c2:
                 if just_kicked:
+                    # عند الطرد/الخروج: نُعلَّم sessions_reset=TRUE حتى يظهر الرقم في الفلتر
                     c2.execute(
-                        "UPDATE number_stock SET last_authorized=%s, last_frozen=%s, last_device_count=%s, kicked_at=NOW() WHERE id=%s",
+                        "UPDATE number_stock SET last_authorized=%s, last_frozen=%s, last_device_count=%s, "
+                        "kicked_at=NOW(), sessions_reset=TRUE WHERE id=%s",
                         (authorized, is_frozen if authorized else last_frozen, devices if devices >= 0 else last_devices, rec["id"])
                     )
                 else:
