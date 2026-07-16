@@ -7754,12 +7754,36 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("📋 قائمة الأرقام ومعلوماتها", callback_data="os:list_numbers")],
                 [InlineKeyboardButton("🔍 فحص جميع الحسابات الآن", callback_data="os:scan_all_numbers")],
                 [InlineKeyboardButton("➕ إضافة أرقام بدون تسجيل دخول (يدوي)", callback_data="os:add_numbers")],
+                [InlineKeyboardButton("🔄 إرجاع جميع الأرقام المباعة للبيع", callback_data="os:release_all_numbers")],
                 [InlineKeyboardButton("🤝 مهام الإحالة التلقائية", callback_data="os:ref_tasks")],
                 [InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")],
             ])
         )
         return
 
+
+    if data == "os:release_all_numbers" and is_own:
+        with db_conn() as c:
+            rows = c.execute(
+                "SELECT phone_number FROM number_stock WHERE assigned_to IS NOT NULL AND deleted_at IS NULL"
+            ).fetchall()
+            count = len(rows)
+            if count == 0:
+                await q.answer("✅ لا توجد أرقام مباعة حالياً.", show_alert=True)
+                return
+            c.execute(
+                "UPDATE number_stock SET assigned_to=NULL, assigned_at=NULL, force_listed=TRUE "
+                "WHERE assigned_to IS NOT NULL AND deleted_at IS NULL"
+            )
+        await q.edit_message_text(
+            f"✅ *تم إرجاع {count} رقم للبيع بنجاح!*\n\n"
+            f"جميع الأرقام المباعة أصبحت متاحة للشراء مجدداً.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 رجوع للمخزون", callback_data="os:manage_numbers")],
+            ])
+        )
+        return
 
     if data == "os:scan_all_numbers" and is_own:
         await q.edit_message_text(
