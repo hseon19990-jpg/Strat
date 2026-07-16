@@ -6538,7 +6538,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             display_number = auto_number.lstrip("+")
             # ─── إرسال الرقم فقط مع زر طلب الكود ───
             result_kb = [
-                [InlineKeyboardButton("📩 إرسال كود", callback_data=f"buyer:request_code:{auto_number}")],
+                [InlineKeyboardButton("🔑 عرض رمز التحقق", callback_data=f"buyer:request_code:{auto_number}")],
                 [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
             ]
             await q.edit_message_text(
@@ -9256,16 +9256,32 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(txt, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(rows))
         return
 
-    # ─── زر المشتري: طلب كود (يعرض الكود المستلم من الذاكرة أو يجلبه مباشرة من 777000) ───
+    # ─── زر المشتري: عرض رمز التحقق (يرسله كرسالة في المحادثة) ───
     if data.startswith("buyer:request_code:"):
         number_for_code = data[len("buyer:request_code:"):]
+
+        async def _send_code_msg(code_val: str):
+            """يرسل الكود كرسالة نصية واضحة في المحادثة ويُعلم المستخدم بنبضة."""
+            await q.answer("✅ تم إرسال الكود أدناه", show_alert=False)
+            await context.bot.send_message(
+                chat_id=user.id,
+                text=(
+                    f"🔑 *رمز التحقق الخاص بك*\n\n"
+                    f"`{code_val}`\n\n"
+                    f"📱 للرقم: `{number_for_code.lstrip('+')}`\n"
+                    f"⚠️ لا تشاركه مع أحد."
+                ),
+                parse_mode=ParseMode.MARKDOWN,
+            )
+
+        # 1️⃣ تحقق أولاً من الذاكرة المؤقتة
         entry = _buyer_received_codes.get(user.id)
         if entry and entry.get("phone") == number_for_code:
-            await q.answer(f"🔑 الكود: {entry['code']}", show_alert=True)
+            await _send_code_msg(entry["code"])
             return
 
-        # ─── fallback: جلب الكود مباشرة من 777000 عبر جلسة الرقم ───
-        # يحل مشكلة إعادة تشغيل البوت على Railway أو أي حالة تُفقَد فيها الذاكرة
+        # 2️⃣ fallback: جلب الكود مباشرة من 777000 عبر جلسة الرقم
+        # (يحل مشكلة إعادة تشغيل Railway حيث تُفقَد _buyer_received_codes)
         fetched_code = None
         try:
             with db_conn() as _fc:
@@ -9304,7 +9320,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _buyer_received_codes[user.id] = {
                 "code": fetched_code, "time": time.time(), "phone": number_for_code
             }
-            await q.answer(f"🔑 الكود: {fetched_code}", show_alert=True)
+            await _send_code_msg(fetched_code)
         else:
             await q.answer(
                 "⏳ لم يصل أي كود بعد.\n\nافتح تيليجرام على جهازك، أدخل الرقم، ثم اضغط هنا مجدداً.",
