@@ -9256,14 +9256,60 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(txt, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(rows))
         return
 
-    # ─── زر المشتري: طلب كود (يعرض الكود المستلم من الذاكرة أو يخبره لم يصل شيء) ───
+    # ─── زر المشتري: طلب كود (يعرض الكود المستلم من الذاكرة أو يجلبه مباشرة من 777000) ───
     if data.startswith("buyer:request_code:"):
         number_for_code = data[len("buyer:request_code:"):]
         entry = _buyer_received_codes.get(user.id)
         if entry and entry.get("phone") == number_for_code:
             await q.answer(f"🔑 الكود: {entry['code']}", show_alert=True)
+            return
+
+        # ─── fallback: جلب الكود مباشرة من 777000 عبر جلسة الرقم ───
+        # يحل مشكلة إعادة تشغيل البوت على Railway أو أي حالة تُفقَد فيها الذاكرة
+        fetched_code = None
+        try:
+            with db_conn() as _fc:
+                _frow = _fc.execute(
+                    "SELECT session_string, assigned_to FROM number_stock WHERE phone_number=%s",
+                    (number_for_code,)
+                ).fetchone()
+            if (
+                _frow
+                and _frow["session_string"]
+                and _frow["assigned_to"] == user.id
+                and TELEGRAM_API_ID
+                and TELEGRAM_API_HASH
+            ):
+                _fcli = TelegramClient(
+                    StringSession(_frow["session_string"]),
+                    int(TELEGRAM_API_ID), TELEGRAM_API_HASH
+                )
+                await _fcli.connect()
+                try:
+                    if await _fcli.is_user_authorized():
+                        raw_msg = await fetch_last_login_code(_fcli)
+                        if raw_msg:
+                            _m = re.search(r'(\d{4,7})', raw_msg)
+                            if _m:
+                                fetched_code = _m.group(1)
+                finally:
+                    try:
+                        await _fcli.disconnect()
+                    except Exception:
+                        pass
+        except Exception as _fe:
+            logger.warning(f"⚠️ تعذّر جلب كود الدخول مباشرةً للرقم {number_for_code}: {_fe}")
+
+        if fetched_code:
+            _buyer_received_codes[user.id] = {
+                "code": fetched_code, "time": time.time(), "phone": number_for_code
+            }
+            await q.answer(f"🔑 الكود: {fetched_code}", show_alert=True)
         else:
-            await q.answer("⏳ لم يصل أي كود بعد. سيُرسَل إليك تلقائياً فور وصوله.", show_alert=True)
+            await q.answer(
+                "⏳ لم يصل أي كود بعد.\n\nافتح تيليجرام على جهازك، أدخل الرقم، ثم اضغط هنا مجدداً.",
+                show_alert=True
+            )
         return
 
     if data == "buyer:stay_account":
