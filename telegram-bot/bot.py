@@ -106,6 +106,7 @@ TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "")
 _pending_number_logins = {}
 _monitor_clients = {}   # phone_number -> TelegramClient متصل بشكل دائم لمراقبة تنبيهات الحساب
 _buyer_received_codes = {}  # buyer_user_id -> {"code": str, "time": float} آخر كود وصل بعد البيع
+_pending_bulk_import  = set()  # user_ids ينتظرون إرسال JSON للاستيراد الجماعي
 # phone_number -> timestamp: نضع علامة هنا كل مرة يغيّر البوت نفسه كلمة/تفعيل التحقق بخطوتين لرقم،
 # لكي لا يُبلَّغ المالك برسالة "تغيّر التحقق" الرسمية من تيليجرام كأنها اختراق، بينما هي فعل البوت نفسه.
 _expected_2fa_change = {}
@@ -3544,6 +3545,28 @@ async def cmd_import_session(update: Update, context: ContextTypes.DEFAULT_TYPE)
     except Exception as e:
         await msg.edit_text(f"❌ خطأ أثناء الاستيراد:\n`{e}`", parse_mode=ParseMode.MARKDOWN)
 
+async def cmd_import_sessions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر المالك: /import_sessions — استيراد جماعي للجلسات عبر JSON."""
+    user = update.effective_user
+    if user.id != OWNER_ID:
+        await update.message.reply_text("⛔ هذا الأمر للمالك فقط.")
+        return
+    _pending_bulk_import.add(user.id)
+    context.user_data["state"] = "os_bulk_import"
+    await update.message.reply_text(
+        "📥 *استيراد جماعي للحسابات*\n\n"
+        "أرسل JSON بالصيغة التالية:\n\n"
+        "```\n"
+        '["SESSION1", "SESSION2", "SESSION3"]\n'
+        "```\n\n"
+        "أو مع أرقام (اختياري):\n\n"
+        "```\n"
+        '[{"session": "SESSION1", "phone": "+212xxxxxxx"},\n'
+        ' {"session": "SESSION2"}]\n'
+        "```",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
 async def cmd_addpoints(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """أمر المالك: /addpoints <user_id> <points> — يضيف (أو يخصم برقم سالب) نقاطاً لمستخدم معيّن."""
     user = update.effective_user
@@ -3706,6 +3729,75 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as _gate_err:
             logger.warning(f"⚠️ خطأ في فحص القنوات الإجبارية للمستخدم {user.id}: {_gate_err}")
             # نتابع التنفيذ الطبيعي حتى لا يصمت البوت
+
+    # ── استيراد جماعي للجلسات (JSON) ──
+    if state == "os_bulk_import" and is_own:
+        _pending_bulk_import.discard(user.id)
+        context.user_data["state"] = ""
+        import json as _json
+        try:
+            raw = _json.loads(text)
+        except Exception:
+            await update.message.reply_text("❌ الصيغة غير صحيحة. تأكد أنه JSON صالح وأعد المحاولة.\nأرسل /import_sessions للمحاولة مجدداً.")
+            return
+        # نقبل: list of strings أو list of dicts {"session":..., "phone":...}
+        if isinstance(raw, str):
+            raw = [raw]
+        sessions = []
+        for item in raw:
+            if isinstance(item, str):
+                sessions.append({"session": item.strip(), "phone": None})
+            elif isinstance(item, dict):
+                s = (item.get("session") or item.get("session_string") or "").strip()
+                p = item.get("phone") or item.get("phone_number") or None
+                if s:
+                    sessions.append({"session": s, "phone": p})
+        if not sessions:
+            await update.message.reply_text("❌ لم أجد أي جلسة في البيانات المرسلة.")
+            return
+        prog = await update.message.reply_text(f"⏳ جاري معالجة {len(sessions)} جلسة...")
+        ok_list, fail_list = [], []
+        for idx, entry in enumerate(sessions):
+            sess = entry["session"]
+            hint_phone = entry["phone"]
+            try:
+                if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
+                    fail_list.append(hint_phone or f"#{idx+1}: لا توجد API credentials")
+                    continue
+                client = TelegramClient(StringSession(sess), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+                await client.connect()
+                if not await client.is_user_authorized():
+                    await client.disconnect()
+                    fail_list.append(hint_phone or f"#{idx+1}: جلسة منتهية")
+                    continue
+                me = await client.get_me()
+                phone = me.phone if me.phone.startswith("+") else f"+{me.phone}"
+                await client.disconnect()
+                with db_conn() as _c:
+                    existing = _c.execute("SELECT id FROM number_stock WHERE phone_number=%s", (phone,)).fetchone()
+                    if existing:
+                        _c.execute(
+                            "UPDATE number_stock SET session_string=%s, assigned_to=NULL, assigned_at=NULL WHERE phone_number=%s",
+                            (sess, phone)
+                        )
+                    else:
+                        _c.execute(
+                            "INSERT INTO number_stock (phone_number, session_string) VALUES (%s, %s)",
+                            (phone, sess)
+                        )
+                asyncio.create_task(_start_number_monitor(phone, sess, context.application))
+                ok_list.append(phone)
+            except Exception as _be:
+                fail_list.append(hint_phone or f"#{idx+1}: {_be}")
+        result_lines = [f"✅ *تم استيراد {len(ok_list)} حساب بنجاح:*"]
+        for p in ok_list:
+            result_lines.append(f"  • `{p}`")
+        if fail_list:
+            result_lines.append(f"\n❌ *فشل {len(fail_list)}:*")
+            for f_ in fail_list:
+                result_lines.append(f"  • {f_}")
+        await prog.edit_text("\n".join(result_lines), parse_mode=ParseMode.MARKDOWN)
+        return
 
     # ── التحقق الرياضي ──
     if state == "verify_math":
@@ -9437,6 +9529,7 @@ def main():
     app.add_handler(CommandHandler("refund_mandatory",    cmd_refund_mandatory))
     app.add_handler(CommandHandler("cancel",              cmd_cancel))
     app.add_handler(CommandHandler("import_session",      cmd_import_session))
+    app.add_handler(CommandHandler("import_sessions",     cmd_import_sessions))
     app.add_handler(MessageHandler(
         (filters.TEXT | filters.CAPTION) & ~filters.COMMAND & filters.ChatType.PRIVATE,
         handle_text
