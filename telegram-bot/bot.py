@@ -4346,9 +4346,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["new_num_code"] = nc
         context.user_data["state"] = "os_await_num_code_uses"
         await update.message.reply_text(
-            f"✅ الكود: `{nc}`
-
-كم عدد المرات التي يمكن استخدام هذا الكود؟ (أرسل رقماً)",
+            f"✅ الكود: `{nc}`\n\nكم عدد المرات التي يمكن استخدام هذا الكود؟ (أرسل رقماً)",
             parse_mode=ParseMode.MARKDOWN
         )
         return
@@ -4373,12 +4371,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 (nc, uses)
             )
         await update.message.reply_text(
-            f"✅ *تم إنشاء كود الشراء بنجاح!*
-
-"
-            f"🎟 الكود: `{nc}`
-"
-            f"🔢 الاستخدامات: {uses} مرة",
+            f"✅ *تم إنشاء كود الشراء بنجاح!*\n\n🎟 الكود: `{nc}`\n🔢 الاستخدامات: {uses} مرة",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=owner_settings_kb()
         )
