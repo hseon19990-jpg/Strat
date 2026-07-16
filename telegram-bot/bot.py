@@ -4228,6 +4228,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 title="شحن نقاط",
                 description=f"شراء {context.user_data.get('charge_pts')} نقطة مقابل {stars} نجمة",
                 payload=f"charge_stars:{stars}:{user.id}",
+                provider_token="",
                 currency="XTR",
                 prices=[LabeledPrice("نجوم", stars)],
             )
@@ -6533,6 +6534,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             title="شحن نقاط",
             description=f"شراء {pts} نقطة مقابل {stars} نجمة",
             payload=f"charge_stars:{stars}:{user.id}",
+            provider_token="",
             currency="XTR",
             prices=[LabeledPrice("نجوم", stars)],
         )
@@ -9521,20 +9523,27 @@ async def pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query   = update.pre_checkout_query
     payload = query.invoice_payload
 
-    valid = False
-    if payload.startswith("charge_stars:"):
-        parts = payload.split(":")
-        if len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
-            expected_stars  = int(parts[1])
-            uid_in_payload  = int(parts[2])
-            actual_stars    = query.total_amount
-            if query.from_user.id == uid_in_payload and actual_stars == expected_stars:
-                valid = True
+    try:
+        valid = False
+        if payload.startswith("charge_stars:"):
+            parts = payload.split(":")
+            if len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
+                expected_stars = int(parts[1])
+                uid_in_payload = int(parts[2])
+                actual_stars   = query.total_amount
+                if query.from_user.id == uid_in_payload and actual_stars == expected_stars:
+                    valid = True
 
-    if valid:
-        await query.answer(ok=True)
-    else:
-        await query.answer(ok=False, error_message="حدث خطأ في التحقق من الدفع.")
+        if valid:
+            await query.answer(ok=True)
+        else:
+            await query.answer(ok=False, error_message="حدث خطأ في التحقق من الدفع.")
+    except Exception as _pce:
+        logger.error(f"❌ خطأ في pre_checkout: {_pce}")
+        try:
+            await query.answer(ok=False, error_message="خطأ داخلي، حاول مجدداً.")
+        except Exception:
+            pass
 
 # ────────────────────────────────────────────────────────────
 #  Telegram Stars — Successful Payment
