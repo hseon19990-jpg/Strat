@@ -7756,6 +7756,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("➕ إضافة أرقام بدون تسجيل دخول (يدوي)", callback_data="os:add_numbers")],
                 [InlineKeyboardButton("🔄 إرجاع جميع الأرقام المباعة للبيع", callback_data="os:release_all_numbers")],
                 [InlineKeyboardButton("🔍 فحص جاهزية الأرقام (كود + 2FA)", callback_data="os:check_readiness")],
+                [InlineKeyboardButton("🗑️ حذف الأرقام اليدوية + تعويض المشترين", callback_data="os:delete_manual_numbers")],
                 [InlineKeyboardButton("🤝 مهام الإحالة التلقائية", callback_data="os:ref_tasks")],
                 [InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")],
             ])
@@ -7806,6 +7807,79 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await q.edit_message_text(
             "\n".join(lines),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 رجوع للمخزون", callback_data="os:manage_numbers")],
+            ])
+        )
+        return
+
+    if data == "os:delete_manual_numbers" and is_own:
+        with db_conn() as c:
+            # الأرقام اليدوية = بدون session_string في المخزون (غير محذوفة)
+            manual_rows = c.execute(
+                "SELECT id, phone_number, assigned_to FROM number_stock "
+                "WHERE session_string IS NULL AND deleted_at IS NULL"
+            ).fetchall()
+
+            if not manual_rows:
+                await q.answer("✅ لا توجد أرقام يدوية في المخزون.", show_alert=True)
+                return
+
+            deleted_count  = 0
+            compensated    = 0
+            buyers_notified = []
+
+            for row in manual_rows:
+                phone = row["phone_number"]
+                # ابحث عن آخر عملية شراء مكتملة لهذا الرقم
+                pe = c.execute(
+                    "SELECT user_id, points_cost FROM prize_exchanges "
+                    "WHERE prize_value=%s AND prize_type IN ('telegram_number','telegram_number_code') "
+                    "AND status='completed' ORDER BY id DESC LIMIT 1",
+                    (phone,)
+                ).fetchone()
+
+                # احذف الرقم (soft delete)
+                c.execute(
+                    "UPDATE number_stock SET deleted_at=NOW(), assigned_to=NULL, assigned_at=NULL WHERE id=%s",
+                    (row["id"],)
+                )
+                deleted_count += 1
+
+                if pe and pe["points_cost"]:
+                    pts = pe["points_cost"]
+                    uid = pe["user_id"]
+                    add_points(uid, pts)
+                    compensated += 1
+                    buyers_notified.append((uid, phone, pts))
+
+        # أبلغ كل مشترٍ عُوِّض
+        for uid, phone, pts in buyers_notified:
+            try:
+                await context.bot.send_message(
+                    chat_id=uid,
+                    text=(
+                        f"⚠️ *تنبيه مهم*\n\n"
+                        f"الرقم الذي حصلت عليه `{phone}` تبيّن أنه لا يدعم الميزات الكاملة "
+                        f"(تم إضافته يدوياً بدون جلسة).\n\n"
+                        f"تم حذفه وإعادة *{pts:,}* نقطة إلى رصيدك تلقائياً.\n"
+                        f"يمكنك استخدامها لشراء رقم جديد متى توفّر. 🙏"
+                    ),
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            except Exception:
+                pass
+
+        summary = (
+            f"🗑️ *تم حذف {deleted_count} رقم يدوي*\n\n"
+            f"💰 *عُوِّض {compensated} مشترٍ* وأُعيدت لهم نقاطهم كاملةً.\n"
+        )
+        if deleted_count - compensated > 0:
+            summary += f"📦 *{deleted_count - compensated}* رقم لم يُباع (لا يحتاج تعويض)."
+
+        await q.edit_message_text(
+            summary,
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔙 رجوع للمخزون", callback_data="os:manage_numbers")],
