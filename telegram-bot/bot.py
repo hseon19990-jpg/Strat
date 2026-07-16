@@ -2230,10 +2230,7 @@ async def _start_number_monitor(phone: str, session_str: str, application):
                         ])
                         await application.bot.send_message(
                             buyer_id,
-                            "🔔 *تسجيل دخول جديد تم اكتشافه على رقمك.*
-
-"
-                            "هل تريد مني أن أغادر الحساب الآن وأحذف جلستي؟",
+                            "🔔 *تسجيل دخول جديد تم اكتشافه على رقمك.*\n\nهل تريد مني أن أغادر الحساب الآن وأحذف جلستي؟",
                             parse_mode="Markdown",
                             reply_markup=_leave_kb
                         )
