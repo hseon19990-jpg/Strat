@@ -105,6 +105,7 @@ TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "")
 # تخزين مؤقت (في الذاكرة) لجلسات تسجيل دخول الأرقام قيد التنفيذ من قبل المالك
 _pending_number_logins = {}
 _monitor_clients = {}   # phone_number -> TelegramClient متصل بشكل دائم لمراقبة تنبيهات الحساب
+_buyer_received_codes = {}  # buyer_user_id -> {"code": str, "time": float} آخر كود وصل بعد البيع
 # phone_number -> timestamp: نضع علامة هنا كل مرة يغيّر البوت نفسه كلمة/تفعيل التحقق بخطوتين لرقم،
 # لكي لا يُبلَّغ المالك برسالة "تغيّر التحقق" الرسمية من تيليجرام كأنها اختراق، بينما هي فعل البوت نفسه.
 _expected_2fa_change = {}
@@ -2219,6 +2220,27 @@ async def _start_number_monitor(phone: str, session_str: str, application):
                 # الحالة 2: الرقم مُباع ومشترٍ موجود (المشتري يستخدم الحساب)
                 buyer_owns_it = bool(buyer_id)
 
+                if buyer_owns_it and not owner_is_logging_in:
+                    # المشتري سجّل دخول — اسأله هل يريد البوت أن يغادر الحساب الآن
+                    try:
+                        from telegram import InlineKeyboardButton as _IKB, InlineKeyboardMarkup as _IKM
+                        _leave_kb = _IKM([
+                            [_IKB("✅ نعم، غادر الحساب الآن", callback_data=f"buyer:leave_account:{phone}")],
+                            [_IKB("❌ لا، ابقَ متصلاً", callback_data="buyer:stay_account")],
+                        ])
+                        await application.bot.send_message(
+                            buyer_id,
+                            "🔔 *تسجيل دخول جديد تم اكتشافه على رقمك.*
+
+"
+                            "هل تريد مني أن أغادر الحساب الآن وأحذف جلستي؟",
+                            parse_mode="Markdown",
+                            reply_markup=_leave_kb
+                        )
+                    except Exception as _le:
+                        logger.warning(f"⚠️ تعذّر إرسال سؤال المغادرة للمشتري {buyer_id}: {_le}")
+                    return
+
                 if not owner_is_logging_in and not buyer_owns_it:
                     # ─── جلسة غير مصرّح بها → نطردها فوراً ───
                     logger.warning(f"🔐 جلسة دخول غير مصرّح بها على الرقم {phone} — يتم الطرد الفوري...")
@@ -2240,12 +2262,35 @@ async def _start_number_monitor(phone: str, session_str: str, application):
                         logger.error(f"❌ فشل طرد الجلسة للرقم {phone}: {kick_err}")
                     return  # لا ترسل أي إشعار آخر لهذه الرسالة
 
-            # ─── إرسال الكود للمشتري — أرقام فقط بدون أي مقدمات ───
+            # ─── إرسال الكود للمشتري — أرقام فقط، بعد تاريخ البيع فقط ───
             if buyer_id and any(ch.isdigit() for ch in text):
-
-                code_match = re.search(r'(\d{4,7})', text)
+                # تحقق: الرسالة وصلت بعد تاريخ تخصيص الرقم
+                _skip_old = False
+                try:
+                    with db_conn() as _c2:
+                        _row_at = _c2.execute(
+                            "SELECT assigned_at FROM number_stock WHERE phone_number=%s", (phone,)
+                        ).fetchone()
+                    if _row_at and _row_at["assigned_at"]:
+                        _assigned_ts = _row_at["assigned_at"]
+                        _msg_date = getattr(event, "date", None)
+                        if _msg_date and _assigned_ts:
+                            import datetime as _dt
+                            if _msg_date.tzinfo is None:
+                                _msg_date = _msg_date.replace(tzinfo=_dt.timezone.utc)
+                            if hasattr(_assigned_ts, "tzinfo") and _assigned_ts.tzinfo is None:
+                                _assigned_ts = _assigned_ts.replace(tzinfo=_dt.timezone.utc)
+                            if _msg_date < _assigned_ts:
+                                _skip_old = True
+                except Exception:
+                    pass
+                if _skip_old:
+                    return  # كود قديم قبل البيع — تجاهله
+                code_match = re.search(r'(\d{4,7})', text)
                 if code_match:
                     code_only = code_match.group(1)
+                    # حفظ الكود في الذاكرة ليمكن جلبه عبر زر "طلب كود"
+                    _buyer_received_codes[buyer_id] = {"code": code_only, "time": time.time(), "phone": phone}
                     try:
                         await application.bot.send_message(buyer_id, code_only)
                     except Exception as buyer_err:
@@ -6168,63 +6213,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "VALUES (?,?,?,?,'completed',?) RETURNING id",
                     (user.id, "telegram_number", auto_number, cost, code)
                 ).fetchone()
-            result_kb = [[InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")]]
             display_number = auto_number.lstrip("+")
+            # ─── إرسال الرقم فقط مع زر طلب الكود ───
+            result_kb = [
+                [InlineKeyboardButton("📩 إرسال كود", callback_data=f"buyer:request_code:{auto_number}")],
+                [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
+            ]
             await q.edit_message_text(
-                f"✅ *تمت العملية بنجاح!*\n\n"
-                f"📱 رقمك: `{display_number}`\n"
-                f"💰 التكلفة: {cost} نقطة\n\n"
-                f"📌 كود عمليتك: `{code}`\n\n"
-                + ("سيصلك رمز الجلسة (Session) في رسالة منفصلة — استخدمه لتسجيل الدخول مباشرة بدون أي كود."
-                   if session_str else "سيتواصل معك المالك لإتمام تسليم بيانات الدخول."),
+                f"`{display_number}`",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup(result_kb)
-            )
-            if session_str:
-                await context.bot.send_message(
-                    user.id,
-                    f"🔑 *رمز جلسة الدخول (Session String) للرقم* `{auto_number}`:\n\n"
-                    f"`{session_str}`\n\n"
-                    "⚠️ هذا الرمز يعطي دخولاً كاملاً للحساب فور استيراده في أحد برامج تسجيل الدخول بالجلسة "
-                    "(Session Login). لا تشاركه مع أي شخص آخر غيرك.",
-                    parse_mode=ParseMode.MARKDOWN
-                )
-                # ─── التحقق بخطوتين: كلمة المرور تأتي مباشرة من نتيجة assign_verified_number ───
-                _pwd = auto.get("twofa_password") or ""
-                if not _pwd:
-                    # محاولة أخيرة لتفعيل 2FA إن غابت
-                    with db_conn() as _c:
-                        _num_row2 = _c.execute("SELECT id FROM number_stock WHERE phone_number=%s", (auto_number,)).fetchone()
-                    if _num_row2:
-                        _ok2fa, _msg2fa, _pwd2fa = await enable_2fa_for_number(
-                            auto_number, session_str, _num_row2["id"], bot=context.bot
-                        )
-                        _pwd = _pwd2fa if _ok2fa else ""
-                if _pwd:
-                    await context.bot.send_message(
-                        user.id,
-                        (
-                            "🔐 *كلمة مرور التحقق بخطوتين لرقمك* "
-                            f"`{auto_number}`:\n\n`{_pwd}`\n\n"
-                            "ستحتاجها إن طلب منك تيليجرام كلمة مرور بعد إدخال كود الدخول."
-                        ),
-                        parse_mode=ParseMode.MARKDOWN
-                    )
-            # ─── رسالة التبرئة — تُرسل لكل مشترٍ بغض النظر عن نوع التسليم ───
-            await context.bot.send_message(
-                user.id,
-                "📋 *إشعار تبرئة ذمة — يُرجى القراءة بعناية*\n\n"
-                "بإتمامك عملية الشراء فإنك تُقرّ وتوافق على ما يلي:\n\n"
-                "① لا يتحمّل البائع أي مسؤولية عن أي محتوى موجود داخل الحساب سابقاً، "
-                "سواء كان مجموعات، قنوات، محادثات، جهات اتصال، صور، ملفات، أو أي بيانات أخرى.\n\n"
-                "② لا يتحمّل البائع أي مسؤولية عن أي حظر، تقييد، أو إجراء تتخذه منصة تيليغرام "
-                "على الحساب لاحقاً بسبب أي نشاط سابق أو لاحق.\n\n"
-                "③ لا يتحمّل البائع أي مسؤولية عن أي استخدام سابق للرقم أو الحساب قبل تاريخ بيعه.\n\n"
-                "④ من لحظة الاستلام يُصبح الحساب والرقم مسؤوليتك الكاملة والمطلقة؛ "
-                "أي حظر، تجميد، أو تغيير يطرأ عليه لاحقاً لا يخصّ البائع بأي شكل.\n\n"
-                "⑤ لا يحق المطالبة باسترداد أو تعويض بعد استلام بيانات الدخول.\n\n"
-                "شكراً لثقتك 🤍",
-                parse_mode=ParseMode.MARKDOWN
             )
             if OWNER_ID:
                 try:
@@ -8934,6 +8932,61 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
         txt = "🎀 *الجوائز المخصصة:*\n\nاضغط على الجائزة لتفعيل/تعطيل · 🗑 للحذف" if prizes else "🎀 لا توجد جوائز مخصصة بعد."
         await q.edit_message_text(txt, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(rows))
+        return
+
+    # ─── زر المشتري: طلب كود (يعرض الكود المستلم من الذاكرة أو يخبره لم يصل شيء) ───
+    if data.startswith("buyer:request_code:"):
+        number_for_code = data[len("buyer:request_code:"):]
+        entry = _buyer_received_codes.get(user.id)
+        if entry and entry.get("phone") == number_for_code:
+            await q.answer(f"🔑 الكود: {entry['code']}", show_alert=True)
+        else:
+            await q.answer("⏳ لم يصل أي كود بعد. سيُرسَل إليك تلقائياً فور وصوله.", show_alert=True)
+        return
+
+    if data == "buyer:stay_account":
+        await q.answer("✅ البوت سيبقى متصلاً بالحساب.", show_alert=True)
+        return
+
+    if data.startswith("buyer:leave_account:"):
+        leave_phone = data[len("buyer:leave_account:"):]
+        # تحقق أن هذا المستخدم هو فعلاً مشتري هذا الرقم
+        with db_conn() as c_lv:
+            row_lv = c_lv.execute(
+                "SELECT id, session_string, assigned_to FROM number_stock WHERE phone_number=%s", (leave_phone,)
+            ).fetchone()
+        if not row_lv or row_lv["assigned_to"] != user.id:
+            await q.answer("⚠️ لا تملك صلاحية تنفيذ هذا الإجراء.", show_alert=True)
+            return
+        # إجراء المغادرة: طرد كل الجلسات وتحرير الرقم من DB
+        try:
+            if row_lv["session_string"] and TELEGRAM_API_ID and TELEGRAM_API_HASH:
+                _cli_leave = TelegramClient(
+                    StringSession(row_lv["session_string"]),
+                    int(TELEGRAM_API_ID), TELEGRAM_API_HASH
+                )
+                await _cli_leave.connect()
+                try:
+                    await _cli_leave(ResetAuthorizationsRequest())
+                except Exception:
+                    pass
+                finally:
+                    try: await _cli_leave.disconnect()
+                    except Exception: pass
+        except Exception as _le2:
+            logger.warning(f"⚠️ تعذّر طرد جلسات الرقم {leave_phone} عند مغادرة البوت: {_le2}")
+        with db_conn() as c_lv2:
+            c_lv2.execute(
+                "UPDATE number_stock SET assigned_to=NULL, assigned_at=NULL WHERE phone_number=%s", (leave_phone,)
+            )
+        # حذف الكود المخزون للمشتري
+        _buyer_received_codes.pop(user.id, None)
+        await q.edit_message_text(
+            "✅ *تم.* البوت غادر الحساب وحذف جلسته.
+
+شكراً لاستخدامك الخدمة 🤍",
+            parse_mode=ParseMode.MARKDOWN
+        )
         return
 
     if data == "noop":
