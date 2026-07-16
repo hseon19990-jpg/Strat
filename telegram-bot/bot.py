@@ -1145,10 +1145,21 @@ def set_force_listed(stock_id: int) -> bool:
 
 
 def _sellable_filter_sql() -> str:
-    """رقم يُعتبر قابلاً للبيع/التسليم إذا: أُضيف يدوياً بدون جلسة (لا داعي لطرد جلسات)،
-    أو نجح طرد جلساته الأخرى فعلاً، أو فعّل المالك له "عرض مباشر" متجاوزاً الانتظار.
-    الحسابات المجمّدة (frozen_at IS NOT NULL) مُستثناة دائماً من البيع."""
-    return "(session_string IS NULL OR sessions_reset=TRUE OR force_listed=TRUE) AND frozen_at IS NULL"
+    """رقم يُعتبر قابلاً للبيع/التسليم (جاهز فعلاً) إذا:
+    • أُضيف يدوياً بدون جلسة (لا داعي لطرد جلسات)، أو
+    • نجح طرد جلساته الأخرى (sessions_reset=TRUE) أو عُيِّن "عرض مباشر" (force_listed=TRUE)
+      وفي كلا الحالتين يجب أن تكون كلمة مرور 2FA محفوظة لدينا.
+    الحسابات المجمّدة مُستثناة دائماً."""
+    return (
+        "("
+        "  session_string IS NULL"
+        "  OR ("
+        "    (sessions_reset=TRUE OR force_listed=TRUE)"
+        "    AND twofa_password IS NOT NULL"
+        "    AND twofa_password <> ''"
+        "  )"
+        ") AND frozen_at IS NULL"
+    )
 
 
 def get_available_number_count() -> int:
@@ -2096,6 +2107,25 @@ async def monitor_number_changes_job(context: ContextTypes.DEFAULT_TYPE):
                     changes.append("تم رفع التجميد عن الحساب (نشط الآن)")
                 if devices >= 0 and last_devices >= 0 and devices != last_devices:
                     changes.append(f"تغيّر عدد الأجهزة المسجّلة من {last_devices} إلى {devices}")
+
+            # ─── طرد فوري إن وُجد أكثر من جهاز واحد على رقم غير مبيع ───
+            if authorized and devices > 1:
+                owner_logging = any(
+                    p.get("phone") == rec["phone_number"]
+                    for p in _pending_number_logins.values()
+                )
+                with db_conn() as _ca:
+                    _ass = _ca.execute(
+                        "SELECT assigned_to FROM number_stock WHERE id=%s", (rec["id"],)
+                    ).fetchone()
+                    is_assigned = bool(_ass and _ass["assigned_to"])
+                if not owner_logging and not is_assigned:
+                    try:
+                        await client(ResetAuthorizationsRequest())
+                        logger.info(f"🔐 monitor: طُردت جلسات إضافية للرقم {rec['phone_number']} (كانت {devices})")
+                        changes.append(f"🔐 تم طرد {devices - 1} جلسة غير مصرّح بها تلقائياً")
+                    except Exception as _ke:
+                        logger.warning(f"⚠️ monitor: فشل طرد جلسات {rec['phone_number']}: {_ke}")
 
             if changes:
                 await notify_account_change(
