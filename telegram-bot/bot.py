@@ -6678,13 +6678,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     (user.id, "telegram_number", auto_number, cost, code)
                 ).fetchone()
             display_number = auto_number.lstrip("+")
-            # ─── إرسال الرقم فقط مع زر طلب الكود ───
+            auto_twofa    = (auto.get("twofa_password") or "").strip()
+            twofa_delivery = (
+                f"\n🔐 *كلمة مرور المصادقة الثنائية (2FA):*\n`{auto_twofa}`"
+                if auto_twofa else ""
+            )
+            # ─── إرسال الرقم + 2FA مع زر طلب الكود ───
             result_kb = [
                 [InlineKeyboardButton("🔑 عرض رمز التحقق", callback_data=f"buyer:request_code:{auto_number}")],
                 [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
             ]
             await q.edit_message_text(
-                f"`{display_number}`",
+                f"📱 *رقمك:*\n`{display_number}`{twofa_delivery}",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup(result_kb)
             )
@@ -9402,15 +9407,33 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("buyer:request_code:"):
         number_for_code = data[len("buyer:request_code:"):]
 
+        # جلب كلمة مرور المصادقة الثنائية (2FA) المحفوظة لهذا الرقم
+        _twofa_pw = ""
+        try:
+            with db_conn() as _tdb:
+                _trow = _tdb.execute(
+                    "SELECT twofa_password FROM number_stock WHERE phone_number=%s AND assigned_to=%s",
+                    (number_for_code, user.id)
+                ).fetchone()
+                if _trow:
+                    _twofa_pw = (_trow["twofa_password"] or "").strip()
+        except Exception:
+            pass
+
         async def _send_code_msg(code_val: str):
-            """يرسل الكود كرسالة نصية واضحة في المحادثة ويُعلم المستخدم بنبضة."""
+            """يرسل الكود وكلمة 2FA كرسالة نصية واضحة في المحادثة."""
+            twofa_line = (
+                f"\n🔐 *كلمة مرور المصادقة الثنائية (2FA):*\n`{_twofa_pw}`"
+                if _twofa_pw else ""
+            )
             await q.answer("✅ تم إرسال الكود أدناه", show_alert=False)
             await context.bot.send_message(
                 chat_id=user.id,
                 text=(
                     f"🔑 *رمز التحقق الخاص بك*\n\n"
                     f"`{code_val}`\n\n"
-                    f"📱 للرقم: `{number_for_code.lstrip('+')}`\n"
+                    f"📱 للرقم: `{number_for_code.lstrip('+')}`"
+                    f"{twofa_line}\n\n"
                     f"⚠️ لا تشاركه مع أحد."
                 ),
                 parse_mode=ParseMode.MARKDOWN,
