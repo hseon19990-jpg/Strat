@@ -6974,125 +6974,179 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
     if data == "os:scan_all_numbers" and is_own:
-        # ─── نُبلّغ المالك أن الفحص بدأ ثم نشغّله في الخلفية ───
         await q.edit_message_text(
             "🔍 *بدأ فحص جميع الحسابات...*\n\n"
-            "سيصلك تقرير شامل عند الانتهاء. قد يستغرق الفحص دقيقة أو أكثر حسب عدد الأرقام.",
+            "سيصلك تقرير عند الانتهاء (عادةً أقل من دقيقة).",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:manage_numbers")]])
         )
+
+        async def _scan_one(rec) -> dict:
+            """يفحص رقماً واحداً ويُرجع نتيجة مختصرة. محاط بـ timeout=25ث."""
+            phone_r  = rec["phone_number"]
+            sess_r   = rec["session_string"]
+            saved_pw = rec["twofa_password"] or ""
+            result   = {"phone": phone_r, "id": rec["id"], "status": "ok", "note": "", "devs": 1}
+            cli = None
+            try:
+                cli = TelegramClient(StringSession(sess_r), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+                await asyncio.wait_for(cli.connect(), timeout=15)
+
+                if not await asyncio.wait_for(cli.is_user_authorized(), timeout=10):
+                    result["status"] = "kicked"
+                    result["note"] = "جلسة منتهية/مطرودة"
+                    with db_conn() as _c:
+                        _c.execute("UPDATE number_stock SET last_authorized=FALSE WHERE id=%s", (rec["id"],))
+                    return result
+
+                # فحص التجميد
+                is_frz, frz_status, _ = await asyncio.wait_for(
+                    check_account_frozen(cli, rec["id"]), timeout=10
+                )
+                if is_frz:
+                    result["status"] = "frozen"
+                    result["note"] = frz_status
+                    return result
+
+                # عدد الأجهزة (GetAuthorizationsRequest بدون wait_for — سريع عادةً)
+                devs = await asyncio.wait_for(get_device_count(cli), timeout=10)
+                result["devs"] = devs
+
+                # فحص 2FA عبر GetPasswordRequest (المُستورد في أعلى الملف)
+                pwd_state = await asyncio.wait_for(cli(GetPasswordRequest()), timeout=10)
+                if pwd_state.has_password:
+                    if saved_pw:
+                        result["status"] = "ok"   # لدينا كلمة مرور محفوظة → بخير
+                    else:
+                        # 2FA مفعّل لكن كلمة المرور غير معروفة → نتحقق من الكلمة الثابتة
+                        try:
+                            verified = await asyncio.wait_for(
+                                verify_current_2fa_password(cli, OWNER_FIXED_2FA_PASSWORD, phone=phone_r),
+                                timeout=12
+                            )
+                        except asyncio.TimeoutError:
+                            verified = None
+                        if verified is True:
+                            with db_conn() as _c:
+                                _c.execute("UPDATE number_stock SET twofa_password=%s WHERE id=%s",
+                                           (OWNER_FIXED_2FA_PASSWORD, rec["id"]))
+                            result["status"] = "ok"
+                        else:
+                            result["status"] = "no_2fa"
+                            result["note"] = "2FA مفعّل لكن كلمة المرور غير معروفة"
+                else:
+                    # 2FA غير مفعّل أصلاً
+                    result["status"] = "no_2fa"
+                    result["note"] = "2FA غير مفعّل"
+
+            except asyncio.TimeoutError:
+                result["status"] = "timeout"
+                result["note"] = "انتهت مهلة الاتصال (25ث)"
+            except Exception as e:
+                result["status"] = "error"
+                result["note"] = str(e)[:100]
+            finally:
+                try:
+                    if cli:
+                        await cli.disconnect()
+                except Exception:
+                    pass
+            return result
 
         async def _run_full_scan():
             if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
                 await context.bot.send_message(OWNER_ID, "❌ TELEGRAM_API_ID/HASH غير مضبوط — تعذّر الفحص.")
                 return
-
-            with db_conn() as c:
-                rows = c.execute(
+            with db_conn() as _c:
+                rows = _c.execute(
                     "SELECT id, phone_number, session_string, twofa_password "
                     "FROM number_stock WHERE session_string IS NOT NULL AND deleted_at IS NULL"
                 ).fetchall()
-
             if not rows:
                 await context.bot.send_message(OWNER_ID, "📭 لا توجد أرقام مضافة بجلسة للفحص.")
                 return
 
-            total  = len(rows)
-            ok_cnt = frz_cnt = kick_cnt = no_2fa_cnt = multi_dev_cnt = 0
+            total = len(rows)
+            ok_cnt = frz_cnt = kick_cnt = no_2fa_cnt = timeout_cnt = err_cnt = multi_dev_cnt = 0
             problem_lines = []
+            needs_2fa_fix = []   # أرقام تحتاج تفعيل/تصحيح 2FA
 
+            # ─── فحص واحد بالواحد لتجنب حظر Telegram من الاتصالات المتزامنة الكثيرة ───
             for rec in rows:
-                phone_r = rec["phone_number"]
-                sess_r  = rec["session_string"]
-                saved_pw = rec["twofa_password"] or ""
-                cli = None
-                try:
-                    cli = TelegramClient(StringSession(sess_r), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
-                    await cli.connect()
+                res = await asyncio.wait_for(_scan_one(dict(rec)), timeout=30)
+                st = res["status"]
 
-                    if not await cli.is_user_authorized():
-                        kick_cnt += 1
-                        problem_lines.append(f"⚠️ `{phone_r}` — الجلسة منتهية/مطرودة")
-                        with db_conn() as c:
-                            c.execute("UPDATE number_stock SET last_authorized=FALSE WHERE id=%s", (rec["id"],))
-                        continue
-
-                    # ─ فحص التجميد ─
-                    is_frz, frz_status, _ = await check_account_frozen(cli, rec["id"])
-                    if is_frz:
-                        frz_cnt += 1
-                        problem_lines.append(f"🧊 `{phone_r}` — مجمّد ({frz_status})")
-                        continue
-
-                    # ─ فحص عدد الأجهزة ─
-                    devs = await get_device_count(cli)
-                    if devs > 1:
+                if st == "ok":
+                    ok_cnt += 1
+                    if res["devs"] > 1:
                         multi_dev_cnt += 1
-                        problem_lines.append(f"📲 `{phone_r}` — {devs} أجهزة مسجّلة (يجب أن يكون 1)")
+                        problem_lines.append(f"📲 `{res['phone']}` — {res['devs']} أجهزة (يُفضَّل جهاز واحد)")
+                elif st == "frozen":
+                    frz_cnt += 1
+                    problem_lines.append(f"🧊 `{res['phone']}` — مجمّد: {res['note']}")
+                elif st == "kicked":
+                    kick_cnt += 1
+                    problem_lines.append(f"⚠️ `{res['phone']}` — {res['note']}")
+                elif st == "no_2fa":
+                    no_2fa_cnt += 1
+                    problem_lines.append(f"🔑 `{res['phone']}` — {res['note']}")
+                    needs_2fa_fix.append(res)
+                elif st == "timeout":
+                    timeout_cnt += 1
+                    problem_lines.append(f"⏱ `{res['phone']}` — {res['note']}")
+                else:
+                    err_cnt += 1
+                    problem_lines.append(f"❓ `{res['phone']}` — {res['note']}")
 
-                    # ─ فحص 2FA ─
-                    from telethon.functions.account import GetPasswordRequest as _GetPwd
-                    pwd_state = await cli(_GetPwd())
-                    if pwd_state.has_password:
-                        if saved_pw:
-                            verified = await verify_current_2fa_password(cli, saved_pw, phone=phone_r)
-                            if verified is True:
-                                ok_cnt += 1
-                            else:
-                                no_2fa_cnt += 1
-                                problem_lines.append(f"🔑 `{phone_r}` — كلمة مرور 2FA المحفوظة *خاطئة*")
-                                await request_manual_2fa_password(context.bot, phone_r, rec["id"])
-                        else:
-                            # ليس عندنا كلمة مرور → نحاول الثابتة
-                            verified = await verify_current_2fa_password(cli, OWNER_FIXED_2FA_PASSWORD, phone=phone_r)
-                            if verified is True:
-                                with db_conn() as c:
-                                    c.execute("UPDATE number_stock SET twofa_password=%s WHERE id=%s",
-                                              (OWNER_FIXED_2FA_PASSWORD, rec["id"]))
-                                ok_cnt += 1
-                            else:
-                                no_2fa_cnt += 1
-                                problem_lines.append(f"🔑 `{phone_r}` — كلمة مرور 2FA غير معروفة")
-                                await request_manual_2fa_password(context.bot, phone_r, rec["id"])
-                    else:
-                        # 2FA غير مفعّل → فعّله تلقائياً
-                        ok2, msg2, pwd2 = await enable_2fa_for_number(phone_r, sess_r, rec["id"], bot=context.bot)
-                        if ok2:
-                            ok_cnt += 1
-                        else:
-                            no_2fa_cnt += 1
-                            problem_lines.append(f"🔑 `{phone_r}` — فشل تفعيل 2FA: {msg2}")
+                await asyncio.sleep(0.4)   # فترة قصيرة بين الأرقام
 
-                except Exception as scan_err:
-                    problem_lines.append(f"❓ `{phone_r}` — خطأ: {str(scan_err)[:80]}")
-                finally:
-                    try:
-                        if cli:
-                            await cli.disconnect()
-                    except Exception:
-                        pass
-                    await asyncio.sleep(2)
+            # ─── تفعيل 2FA للأرقام التي تحتاجه (في الخلفية بعد التقرير) ───
+            async def _fix_2fa_later():
+                for item in needs_2fa_fix:
+                    with db_conn() as _c2:
+                        row2 = _c2.execute(
+                            "SELECT session_string FROM number_stock WHERE id=%s", (item["id"],)
+                        ).fetchone()
+                    if row2 and row2["session_string"]:
+                        ok2, _, pwd2 = await enable_2fa_for_number(
+                            item["phone"], row2["session_string"], item["id"], bot=context.bot
+                        )
+                        if not ok2:
+                            await request_manual_2fa_password(context.bot, item["phone"], item["id"])
+                    await asyncio.sleep(1)
+
+            if needs_2fa_fix:
+                asyncio.create_task(_fix_2fa_later())
 
             # ─── إرسال التقرير ───
+            icons = []
+            if ok_cnt:      icons.append(f"✅ سليمة: *{ok_cnt}*")
+            if frz_cnt:     icons.append(f"🧊 مجمّدة: *{frz_cnt}*")
+            if kick_cnt:    icons.append(f"⚠️ جلسة منتهية: *{kick_cnt}*")
+            if no_2fa_cnt:  icons.append(f"🔑 مشكلة 2FA: *{no_2fa_cnt}*")
+            if multi_dev_cnt: icons.append(f"📲 أجهزة متعددة: *{multi_dev_cnt}*")
+            if timeout_cnt: icons.append(f"⏱ timeout: *{timeout_cnt}*")
+            if err_cnt:     icons.append(f"❓ أخطاء: *{err_cnt}*")
+
             summary = (
                 f"📊 *تقرير فحص جميع الحسابات*\n"
-                f"إجمالي الأرقام المفحوصة: *{total}*\n\n"
-                f"✅ سليمة ومؤمّنة: *{ok_cnt}*\n"
-                f"🧊 مجمّدة: *{frz_cnt}*\n"
-                f"⚠️ جلسة منتهية: *{kick_cnt}*\n"
-                f"🔑 مشكلة في 2FA: *{no_2fa_cnt}*\n"
-                f"📲 أجهزة متعددة: *{multi_dev_cnt}*"
+                f"الإجمالي المفحوص: *{total}*\n\n"
+                + "\n".join(icons)
             )
             if problem_lines:
-                detail = "\n".join(problem_lines[:30])
-                if len(problem_lines) > 30:
-                    detail += f"\n... و{len(problem_lines) - 30} مشكلة أخرى"
+                detail = "\n".join(problem_lines[:25])
+                if len(problem_lines) > 25:
+                    detail += f"\n... و{len(problem_lines)-25} أخرى"
                 summary += f"\n\n*التفاصيل:*\n{detail}"
+            if needs_2fa_fix:
+                summary += f"\n\n_⏳ جاري تفعيل/إصلاح 2FA على {len(needs_2fa_fix)} رقم في الخلفية..._"
 
             await context.bot.send_message(
                 OWNER_ID, summary,
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📋 عرض قائمة الأرقام", callback_data="os:list_numbers")]])
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("📋 قائمة الأرقام", callback_data="os:list_numbers")
+                ]])
             )
 
         asyncio.create_task(_run_full_scan())
