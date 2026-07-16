@@ -1196,8 +1196,10 @@ def get_number_counts() -> dict:
         with db_conn() as c2:
             trow = c2.execute("SELECT COUNT(*) AS cnt FROM number_stock WHERE deleted_at IS NOT NULL").fetchone()
             trash = trow["cnt"] if trow else 0
+            srow = c2.execute("SELECT COUNT(*) AS cnt FROM number_stock WHERE ever_sold IS TRUE AND deleted_at IS NULL").fetchone()
+            sold = srow["cnt"] if srow else 0
         auto_2fa = row["auto_2fa"] if row else 0
-        return {"all": total, "listed": listed, "pending": total - listed, "kicked": kicked, "trash": trash, "frozen": frozen, "auto_2fa": auto_2fa}
+        return {"all": total, "listed": listed, "pending": total - listed, "kicked": kicked, "trash": trash, "frozen": frozen, "auto_2fa": auto_2fa, "sold": sold}
 
 
 def get_stock_number(stock_id: int):
@@ -1279,12 +1281,28 @@ def assign_next_number(user_id: int):
     """يسحب رقماً متاحاً من المخزون ويحجزه لهذا المستخدم بشكل ذرّي (يمنع تكرار تسليم نفس الرقم
     لشخصين عند الطلب المتزامن). يُرجع dict {phone_number, session_string} إن وُجد، أو None إن كان المخزون فارغاً."""
     with db_conn() as c:
+        # جلب الأرقام التي سبق بيعها لهذا المستخدم بشكل مكتمل — لمنع إعطائه نفس الرقم مرتين
+        already_sold = c.execute(
+            "SELECT prize_value FROM prize_exchanges "
+            "WHERE user_id=%s AND status IN ('completed','duplicate_compensated') "
+            "AND prize_type IN ('telegram_number','telegram_number_code') "
+            "AND prize_value NOT IN ('number','manual')",
+            (user_id,)
+        ).fetchall()
+        exclude_phones = [r["prize_value"] for r in already_sold] if already_sold else []
+        excl_sql = ""
+        excl_params = []
+        if exclude_phones:
+            placeholders = ",".join(["%s"] * len(exclude_phones))
+            excl_sql = f" AND phone_number NOT IN ({placeholders})"
+            excl_params = exclude_phones
+
         row = c.execute(
             "UPDATE number_stock SET assigned_to=%s, assigned_at=NOW(), ever_sold=TRUE "
             "WHERE id = (SELECT id FROM number_stock WHERE assigned_to IS NULL AND deleted_at IS NULL AND "
-            f"{_sellable_filter_sql()} ORDER BY id ASC LIMIT 1 FOR UPDATE SKIP LOCKED) "
+            f"{_sellable_filter_sql()}{excl_sql} ORDER BY id ASC LIMIT 1 FOR UPDATE SKIP LOCKED) "
             "RETURNING phone_number, session_string",
-            (user_id,)
+            [user_id] + excl_params
         ).fetchone()
         if not row:
             return None
@@ -1308,17 +1326,36 @@ async def assign_verified_number(user_id: int, bot=None) -> dict | None:
     MAX_TRIES = 5
     skipped_ids = []
 
+    # الأرقام المبيوعة سابقاً لهذا المستخدم — لمنع إعطائه نفس الرقم مرتين
+    with db_conn() as _dup_c:
+        _already = _dup_c.execute(
+            "SELECT prize_value FROM prize_exchanges "
+            "WHERE user_id=%s AND status IN ('completed','duplicate_compensated') "
+            "AND prize_type IN ('telegram_number','telegram_number_code') "
+            "AND prize_value NOT IN ('number','manual')",
+            (user_id,)
+        ).fetchall()
+    _exclude_phones = [r["prize_value"] for r in (_already or [])]
+
     for _attempt in range(MAX_TRIES):
         # اسحب رقماً بشكل ذري (متجاهلاً ما جرى تخطيه)
         with db_conn() as c:
-            excl = f"AND id NOT IN ({','.join(str(i) for i in skipped_ids)})" if skipped_ids else ""
+            excl_parts = []
+            excl_vals  = []
+            if skipped_ids:
+                excl_parts.append(f"AND id NOT IN ({','.join(str(i) for i in skipped_ids)})")
+            if _exclude_phones:
+                ph_phs = ",".join(["%s"] * len(_exclude_phones))
+                excl_parts.append(f"AND phone_number NOT IN ({ph_phs})")
+                excl_vals.extend(_exclude_phones)
+            excl = " ".join(excl_parts)
             row = c.execute(
                 f"UPDATE number_stock SET assigned_to=%s, assigned_at=NOW(), ever_sold=TRUE "
                 f"WHERE id = (SELECT id FROM number_stock "
                 f"WHERE assigned_to IS NULL AND deleted_at IS NULL AND {_sellable_filter_sql()} "
                 f"{excl} ORDER BY RANDOM() LIMIT 1 FOR UPDATE SKIP LOCKED) "
                 f"RETURNING id, phone_number, session_string, twofa_password",
-                (user_id,)
+                [user_id] + excl_vals
             ).fetchone()
 
         if not row:
@@ -2338,21 +2375,40 @@ async def _start_number_monitor(phone: str, session_str: str, application):
                 buyer_owns_it = bool(buyer_id)
 
                 if buyer_owns_it and not owner_is_logging_in:
-                    # المشتري سجّل دخول — اسأله هل يريد البوت أن يغادر الحساب الآن
+                    # المشتري دخل الحساب بالكامل (يمكنه المراسلة) → نغادر تلقائياً بدون سؤال
                     try:
-                        from telegram import InlineKeyboardButton as _IKB, InlineKeyboardMarkup as _IKM
-                        _leave_kb = _IKM([
-                            [_IKB("✅ نعم، غادر الحساب الآن", callback_data=f"buyer:leave_account:{phone}")],
-                            [_IKB("❌ لا، ابقَ متصلاً", callback_data="buyer:stay_account")],
-                        ])
+                        await _stop_number_monitor(phone)
+                    except Exception as _lm:
+                        logger.warning(f"⚠️ تعذّر إيقاف مراقبة الرقم {phone} عند خروج البوت التلقائي: {_lm}")
+                    try:
+                        with db_conn() as _clv:
+                            _clv.execute(
+                                "UPDATE number_stock SET assigned_to=NULL, assigned_at=NULL WHERE phone_number=%s",
+                                (phone,)
+                            )
+                        _buyer_received_codes.pop(buyer_id, None)
                         await application.bot.send_message(
                             buyer_id,
-                            "🔔 *تسجيل دخول جديد تم اكتشافه على رقمك.*\n\nهل تريد مني أن أغادر الحساب الآن وأحذف جلستي؟",
-                            parse_mode="Markdown",
-                            reply_markup=_leave_kb
+                            "✅ *دخلت للحساب بنجاح!*\n\n"
+                            "البوت غادر الحساب تلقائياً الآن. الحساب أصبح بيدك كاملاً.\n"
+                            "شكراً لثقتك 🤍",
+                            parse_mode="Markdown"
                         )
+                        # إشعار المالك بالخروج التلقائي
+                        if OWNER_ID:
+                            try:
+                                await application.bot.send_message(
+                                    OWNER_ID,
+                                    f"🔔 <b>خروج تلقائي — دخل المشتري</b>\n\n"
+                                    f"📱 الرقم: <code>{phone}</code>\n"
+                                    f"👤 المشتري: <a href='tg://user?id={buyer_id}'>{buyer_id}</a>\n"
+                                    f"✅ غادر البوت الحساب تلقائياً بعد تأكيد دخول المشتري الكامل.",
+                                    parse_mode="HTML"
+                                )
+                            except Exception:
+                                pass
                     except Exception as _le:
-                        logger.warning(f"⚠️ تعذّر إرسال سؤال المغادرة للمشتري {buyer_id}: {_le}")
+                        logger.warning(f"⚠️ تعذّر المغادرة التلقائية للرقم {phone}: {_le}")
                     return
 
                 # جلب ever_sold للتمييز بين اختراق حقيقي ومشتري سابق يستخدم حسابه
@@ -7960,6 +8016,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("🔍 فحص جاهزية الأرقام (كود + 2FA)", callback_data="os:check_readiness")],
                 [InlineKeyboardButton("🗑️ حذف الأرقام اليدوية + تعويض المشترين", callback_data="os:delete_manual_numbers")],
                 [InlineKeyboardButton("🤝 مهام الإحالة التلقائية", callback_data="os:ref_tasks")],
+                [InlineKeyboardButton("🛒 الحسابات المبيوعة", callback_data="os:sold_accounts")],
+                [InlineKeyboardButton("⚠️ العمليات الفاشلة (ظُلم أصحابها)", callback_data="os:failed_deliveries")],
                 [InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")],
             ])
         )
@@ -8303,6 +8361,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton(f"📦 جميع الأرقام ({counts['all']})", callback_data="os:nums:all")],
                 [InlineKeyboardButton(f"🚀 الأرقام المعروضة ({counts['listed']})", callback_data="os:nums:listed")],
                 [InlineKeyboardButton(f"⏳ الأرقام المنتظرة ({counts['pending']})", callback_data="os:nums:pending")],
+                [InlineKeyboardButton(f"🛒 الحسابات المبيوعة ({counts.get('sold', 0)})", callback_data="os:sold_accounts")],
                 [InlineKeyboardButton(f"🚫 الحسابات المطرودة ({counts['kicked']})", callback_data="os:nums:kicked")],
                 [InlineKeyboardButton(f"🧊 قائمة المجمّدين ({counts.get('frozen', 0)})", callback_data="os:nums:frozen")],
                 [InlineKeyboardButton(f"🔐 حسابات التحقق التلقائي ({counts.get('auto_2fa', 0)})", callback_data="os:nums:auto_2fa")],
@@ -10310,6 +10369,252 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "noop":
+        return
+
+    # ══════════════════════════════════════════════════════════
+    #  الحسابات المبيوعة — عرض كامل للمالك
+    # ══════════════════════════════════════════════════════════
+    if data == "os:sold_accounts" and is_own:
+        with db_conn() as c:
+            # الحسابات المبيوعة حالياً (لها مشترٍ نشط)
+            active_sold = c.execute(
+                "SELECT ns.id, ns.phone_number, ns.assigned_to, ns.assigned_at, ns.ever_sold, "
+                "       pe.order_code, pe.created_at AS sale_date, pe.points_cost, "
+                "       u.full_name AS buyer_name "
+                "FROM number_stock ns "
+                "LEFT JOIN prize_exchanges pe ON pe.prize_value = ns.phone_number "
+                "     AND pe.status = 'completed' "
+                "     AND pe.prize_type IN ('telegram_number','telegram_number_code') "
+                "LEFT JOIN users u ON u.user_id = ns.assigned_to "
+                "WHERE ns.assigned_to IS NOT NULL AND ns.deleted_at IS NULL "
+                "ORDER BY ns.assigned_at DESC LIMIT 50"
+            ).fetchall()
+
+            # الحسابات التي بيعت ولا يوجد مشترٍ نشط الآن (ever_sold=TRUE لكن assigned_to IS NULL)
+            past_sold = c.execute(
+                "SELECT ns.id, ns.phone_number, ns.ever_sold, "
+                "       pe.order_code, pe.created_at AS sale_date, pe.user_id AS buyer_id, "
+                "       pe.points_cost, u.full_name AS buyer_name "
+                "FROM number_stock ns "
+                "LEFT JOIN prize_exchanges pe ON pe.prize_value = ns.phone_number "
+                "     AND pe.status = 'completed' "
+                "     AND pe.prize_type IN ('telegram_number','telegram_number_code') "
+                "LEFT JOIN users u ON u.user_id = pe.user_id "
+                "WHERE ns.ever_sold IS TRUE AND ns.assigned_to IS NULL AND ns.deleted_at IS NULL "
+                "ORDER BY pe.created_at DESC NULLS LAST LIMIT 30"
+            ).fetchall()
+
+            # فحص: هل يوجد حساب بيع لأكثر من شخص؟
+            dupes_check = c.execute(
+                "SELECT prize_value, COUNT(*) AS cnt "
+                "FROM prize_exchanges "
+                "WHERE prize_type IN ('telegram_number','telegram_number_code') "
+                "  AND prize_value NOT IN ('number','manual') "
+                "  AND status IN ('completed','duplicate_compensated') "
+                "GROUP BY prize_value HAVING COUNT(*) > 1"
+            ).fetchall()
+
+        def _fmt_dt(v):
+            if v is None: return "—"
+            if hasattr(v, "strftime"): return v.strftime("%Y-%m-%d %H:%M")
+            return str(v)[:16]
+
+        lines = ["🛒 *الحسابات المبيوعة*\n"]
+
+        if active_sold:
+            lines.append(f"🟢 *نشطة الآن ({len(active_sold)})*")
+            for r in active_sold:
+                buyer_name = r["buyer_name"] or f"ID:{r['assigned_to']}"
+                lines.append(
+                    f"📱 `{r['phone_number']}`\n"
+                    f"   👤 المشتري: {buyer_name} (`{r['assigned_to']}`)\n"
+                    f"   📅 تاريخ البيع: {_fmt_dt(r['assigned_at'])}\n"
+                    f"   📌 كود: {r['order_code'] or '—'}"
+                )
+        else:
+            lines.append("🟢 *نشطة الآن:* لا يوجد حالياً")
+
+        lines.append("")
+
+        if past_sold:
+            lines.append(f"⬜ *مبيوعة سابقاً — البوت غادرها ({len(past_sold)})*")
+            for r in past_sold:
+                buyer_name = r["buyer_name"] or f"ID:{r.get('buyer_id','?')}"
+                lines.append(
+                    f"📱 `{r['phone_number']}`\n"
+                    f"   👤 المشتري: {buyer_name}\n"
+                    f"   📅 تاريخ البيع: {_fmt_dt(r['sale_date'])}\n"
+                    f"   📌 كود: {r['order_code'] or '—'}"
+                )
+        else:
+            lines.append("⬜ *مبيوعة سابقاً:* لا يوجد")
+
+        if dupes_check:
+            lines.append("")
+            lines.append(f"⚠️ *حسابات بيعت أكثر من مرة ({len(dupes_check)}):*")
+            for d in dupes_check:
+                lines.append(f"📱 `{d['prize_value']}` — بيعت {d['cnt']} مرة")
+
+        text = "\n".join(lines)
+        # تقسيم الرسالة إن طالت
+        if len(text) > 4000:
+            text = text[:3950] + "\n\n_(قُطع لطول القائمة)_"
+
+        await q.edit_message_text(
+            text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⚠️ العمليات الفاشلة", callback_data="os:failed_deliveries")],
+                [InlineKeyboardButton("🔙 رجوع للمخزون", callback_data="os:manage_numbers")],
+            ])
+        )
+        return
+
+    # ══════════════════════════════════════════════════════════
+    #  العمليات الفاشلة — من ظُلم ولم يتسلم حقه
+    # ══════════════════════════════════════════════════════════
+    if data == "os:failed_deliveries" and is_own:
+        with db_conn() as c:
+            # طلبات لم تكتمل بعد 2 ساعة (pending قديمة)
+            old_pending = c.execute(
+                "SELECT pe.id, pe.user_id, pe.prize_type, pe.prize_value, pe.points_cost, "
+                "       pe.order_code, pe.created_at, u.full_name "
+                "FROM prize_exchanges pe "
+                "LEFT JOIN users u ON u.user_id = pe.user_id "
+                "WHERE pe.status = 'pending' "
+                "  AND pe.prize_type IN ('telegram_number','telegram_number_code') "
+                "  AND pe.created_at < NOW() - INTERVAL '2 hours' "
+                "ORDER BY pe.created_at DESC LIMIT 30"
+            ).fetchall()
+
+            # حسابات بيعت مكررة وعُوّض أصحابها
+            dup_comp = c.execute(
+                "SELECT pe.id, pe.user_id, pe.prize_value, pe.points_cost, "
+                "       pe.order_code, pe.created_at, u.full_name "
+                "FROM prize_exchanges pe "
+                "LEFT JOIN users u ON u.user_id = pe.user_id "
+                "WHERE pe.status = 'duplicate_compensated' "
+                "ORDER BY pe.created_at DESC LIMIT 20"
+            ).fetchall()
+
+            # حسابات مضت على تعيينها أكثر من 24 ساعة ولم يُسجّل خروج المشتري
+            stale_assigned = c.execute(
+                "SELECT ns.id, ns.phone_number, ns.assigned_to, ns.assigned_at, "
+                "       u.full_name AS buyer_name "
+                "FROM number_stock ns "
+                "LEFT JOIN users u ON u.user_id = ns.assigned_to "
+                "WHERE ns.assigned_to IS NOT NULL AND ns.deleted_at IS NULL "
+                "  AND ns.assigned_at < NOW() - INTERVAL '24 hours' "
+                "ORDER BY ns.assigned_at ASC LIMIT 20"
+            ).fetchall()
+
+        def _fmt_dt(v):
+            if v is None: return "—"
+            if hasattr(v, "strftime"): return v.strftime("%Y-%m-%d %H:%M")
+            return str(v)[:16]
+
+        lines = ["⚠️ *العمليات الفاشلة / المشبوهة*\n"]
+
+        if old_pending:
+            lines.append(f"🔴 *طلبات لم تكتمل بعد +2 ساعة ({len(old_pending)}):*")
+            for r in old_pending:
+                uid = r["user_id"]
+                name = r["full_name"] or f"ID:{uid}"
+                lines.append(
+                    f"📌 `{r['order_code'] or r['id']}`\n"
+                    f"   👤 <a href='tg://user?id={uid}'>{name}</a>\n"
+                    f"   📱 الحساب: `{r['prize_value']}`\n"
+                    f"   💰 النقاط: {r['points_cost'] or 0:,}\n"
+                    f"   📅 {_fmt_dt(r['created_at'])}"
+                )
+        else:
+            lines.append("🔴 *طلبات معلقة قديمة:* لا يوجد ✅")
+
+        lines.append("")
+
+        if dup_comp:
+            lines.append(f"🟡 *حسابات بيعت مكررة — تم تعويض أصحابها ({len(dup_comp)}):*")
+            for r in dup_comp:
+                uid = r["user_id"]
+                name = r["full_name"] or f"ID:{uid}"
+                lines.append(
+                    f"📱 `{r['prize_value']}`\n"
+                    f"   👤 <a href='tg://user?id={uid}'>{name}</a>\n"
+                    f"   💰 عُوِّض بـ {r['points_cost'] or 0:,} نقطة\n"
+                    f"   📅 {_fmt_dt(r['created_at'])}"
+                )
+        else:
+            lines.append("🟡 *بيع مكرر مع تعويض:* لا يوجد ✅")
+
+        lines.append("")
+
+        if stale_assigned:
+            lines.append(f"🔵 *حسابات مُعيَّنة +24 ساعة بدون خروج البوت ({len(stale_assigned)}):*")
+            for r in stale_assigned:
+                buyer_name = r["buyer_name"] or f"ID:{r['assigned_to']}"
+                lines.append(
+                    f"📱 `{r['phone_number']}`\n"
+                    f"   👤 {buyer_name} (`{r['assigned_to']}`)\n"
+                    f"   📅 منذ: {_fmt_dt(r['assigned_at'])}"
+                )
+        else:
+            lines.append("🔵 *حسابات طويلة بدون خروج:* لا يوجد ✅")
+
+        text = "\n".join(lines)
+        if len(text) > 4000:
+            text = text[:3950] + "\n\n_(قُطع لطول القائمة)_"
+
+        # أزرار الإجراءات لكل طلب pending قديم
+        action_rows = []
+        for r in (old_pending or [])[:5]:
+            uid = r["user_id"]
+            pe_id = r["id"]
+            pts = r["points_cost"] or 0
+            action_rows.append([
+                InlineKeyboardButton(
+                    f"↩️ إعادة {pts:,} نقطة لـ{uid}",
+                    callback_data=f"admin:refund_pe:{pe_id}"
+                )
+            ])
+        action_rows.append([InlineKeyboardButton("🛒 الحسابات المبيوعة", callback_data="os:sold_accounts")])
+        action_rows.append([InlineKeyboardButton("🔙 رجوع للمخزون", callback_data="os:manage_numbers")])
+
+        await q.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(action_rows)
+        )
+        return
+
+    # ── معالجة إعادة النقاط لطلب فاشل ──
+    if data.startswith("admin:refund_pe:") and is_own:
+        pe_id = int(data.split(":")[-1])
+        with db_conn() as c:
+            pe = c.execute(
+                "SELECT id, user_id, points_cost, status, order_code FROM prize_exchanges WHERE id=%s", (pe_id,)
+            ).fetchone()
+        if not pe:
+            await q.answer("⚠️ العملية غير موجودة.", show_alert=True)
+            return
+        if pe["status"] not in ("pending", "failed"):
+            await q.answer(f"⚠️ حالة العملية: {pe['status']} — لا يمكن استرداد نقاطها.", show_alert=True)
+            return
+        pts = int(pe["points_cost"] or 0)
+        uid = pe["user_id"]
+        with db_conn() as c:
+            c.execute("UPDATE prize_exchanges SET status='refunded_by_owner' WHERE id=%s", (pe_id,))
+        if pts > 0:
+            add_points(uid, pts)
+        try:
+            await context.bot.send_message(
+                uid,
+                f"✅ *إعادة نقاط*\n\nأعاد المالك نقاطك لعملية `{pe['order_code'] or pe_id}`.\n"
+                f"💰 أُعيد إليك: *{pts:,} نقطة*.\n\nنعتذر عن الإزعاج 🙏",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception:
+            pass
+        await q.answer(f"✅ تمت إعادة {pts:,} نقطة للمستخدم {uid}.", show_alert=True)
         return
 
 # ────────────────────────────────────────────────────────────
