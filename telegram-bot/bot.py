@@ -400,6 +400,9 @@ def init_db():
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS kicked_at TIMESTAMPTZ",
               "ALTER TABLE services ADD COLUMN IF NOT EXISTS platform TEXT DEFAULT 'tg'",
+              "ALTER TABLE users ADD COLUMN IF NOT EXISTS banned INTEGER DEFAULT 0",
+              "ALTER TABLE users ADD COLUMN IF NOT EXISTS banned_at TIMESTAMPTZ",
+              "ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT",
           ]:
               try: c.execute(_alt)
               except Exception: pass
@@ -1609,6 +1612,46 @@ def is_user_verified(user_id: int) -> bool:
     with db_conn() as c:
         row = c.execute("SELECT verified FROM users WHERE user_id=?", (user_id,)).fetchone()
         return bool(row and row["verified"])
+
+# ── حظر الأعضاء ──
+
+def is_user_banned(user_id: int) -> bool:
+    with db_conn() as c:
+        row = c.execute("SELECT banned FROM users WHERE user_id=%s", (user_id,)).fetchone()
+        return bool(row and row["banned"])
+
+def ban_user_db(user_id: int, reason: str = "") -> bool:
+    """يحظر عضواً ويسجّل توقيت الحظر وسببه. يُرجع True إن وُجد المستخدم بالقاعدة."""
+    with db_conn() as c:
+        c.execute(
+            "UPDATE users SET banned=1, banned_at=NOW(), ban_reason=%s WHERE user_id=%s",
+            (reason or None, user_id)
+        )
+        return c.rowcount > 0
+
+def unban_user_db(user_id: int) -> bool:
+    with db_conn() as c:
+        c.execute(
+            "UPDATE users SET banned=0, banned_at=NULL, ban_reason=NULL WHERE user_id=%s",
+            (user_id,)
+        )
+        return c.rowcount > 0
+
+def lookup_user_by_id_or_username(text: str) -> dict | None:
+    """يبحث عن مستخدم بالـ ID أو بالـ username (بدون أو مع @).
+    يُرجع صف المستخدم كـ dict أو None إن لم يُوجد."""
+    text = text.strip().lstrip("@")
+    with db_conn() as c:
+        # جرّب ID رقمياً أولاً
+        if text.isdigit():
+            row = c.execute("SELECT * FROM users WHERE user_id=%s", (int(text),)).fetchone()
+            if row:
+                return dict(row)
+        # وإلا ابحث بالـ username (غير حساس لحالة الأحرف)
+        row = c.execute(
+            "SELECT * FROM users WHERE LOWER(username)=LOWER(%s)", (text,)
+        ).fetchone()
+        return dict(row) if row else None
 
 def add_points(user_id: int, pts: int):
     with db_conn() as c:
@@ -3359,6 +3402,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state  = context.user_data.get("state", "")
     is_own = (user.id == OWNER_ID)
 
+    # ── فحص الحظر: العضو المحظور لا يستطيع استخدام البوت (المالك مستثنى دائماً) ──
+    if not is_own and is_user_banned(user.id):
+        await update.message.reply_text("🚫 تم حظرك من استخدام هذا البوت.")
+        return
+
     # ── وضع الصيانة: يُحجب كل شيء عن غير المالك، حتى يستطيع المالك دائماً الوصول للوحته لإلغائها ──
     if is_maintenance_on() and not is_own:
         await update.message.reply_text(MAINTENANCE_MESSAGE, parse_mode=ParseMode.MARKDOWN)
@@ -4745,6 +4793,153 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
+    # ── حظر عضو (مالك) ──
+    if is_own and state == "os_await_ban_target":
+        target = lookup_user_by_id_or_username(text)
+        if not target:
+            await update.message.reply_text(
+                "⚠️ لم يتم إيجاد المستخدم. أرسل الـ ID الرقمي أو @يوزرنيم مسجّل في البوت.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:ban_menu")]]),
+            )
+            return
+        if target["user_id"] == OWNER_ID:
+            await update.message.reply_text("⚠️ لا يمكن حظر المالك.", reply_markup=owner_settings_kb())
+            context.user_data["state"] = "main_menu"
+            return
+        if target.get("banned"):
+            uname = f"@{target['username']}" if target.get("username") else f"ID: {target['user_id']}"
+            await update.message.reply_text(
+                f"ℹ️ *{target.get('full_name', '')}* ({uname}) محظور مسبقاً.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔓 رفع الحظر عنه", callback_data=f"os:unban_confirm:{target['user_id']}")],
+                    [InlineKeyboardButton("🔙 رجوع", callback_data="os:ban_menu")],
+                ]),
+            )
+            context.user_data["state"] = "main_menu"
+            return
+        context.user_data["ban_target_id"] = target["user_id"]
+        context.user_data["state"] = "os_await_ban_reason"
+        uname = f"@{target['username']}" if target.get("username") else f"ID: {target['user_id']}"
+        await update.message.reply_text(
+            f"🚫 *حظر:* {target.get('full_name', '')} ({uname})\n\n"
+            "أرسل سبب الحظر (أو أرسل - لتخطي السبب):",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:ban_menu")]]),
+        )
+        return
+
+    if is_own and state == "os_await_ban_reason":
+        target_id = context.user_data.get("ban_target_id")
+        reason = text.strip() if text.strip() != "-" else ""
+        if not target_id:
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text("⚠️ انتهت الجلسة.", reply_markup=owner_settings_kb())
+            return
+        found = ban_user_db(target_id, reason)
+        target = get_user(target_id)
+        uname = f"@{target['username']}" if target and target.get("username") else f"ID: {target_id}"
+        name  = (target.get("full_name") or "") if target else ""
+        context.user_data["state"] = "main_menu"
+        if found:
+            await update.message.reply_text(
+                f"✅ *تم حظر العضو بنجاح*\n\n"
+                f"👤 {name} ({uname})\n"
+                f"📝 السبب: {reason or '—'}",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔓 رفع الحظر", callback_data=f"os:unban_confirm:{target_id}")],
+                    [InlineKeyboardButton("🔙 رجوع", callback_data="os:ban_menu")],
+                ]),
+            )
+        else:
+            await update.message.reply_text("⚠️ المستخدم غير موجود في قاعدة البيانات.", reply_markup=owner_settings_kb())
+        return
+
+    # ── رفع حظر عضو عبر إدخال ID/username يدوياً (مالك) ──
+    if is_own and state == "os_await_unban_target":
+        target = lookup_user_by_id_or_username(text)
+        context.user_data["state"] = "main_menu"
+        if not target:
+            await update.message.reply_text(
+                "⚠️ لم يتم إيجاد المستخدم.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:ban_menu")]]),
+            )
+            return
+        if not target.get("banned"):
+            uname = f"@{target['username']}" if target.get("username") else f"ID: {target['user_id']}"
+            await update.message.reply_text(
+                f"ℹ️ {target.get('full_name', '')} ({uname}) غير محظور.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:ban_menu")]]),
+            )
+            return
+        unban_user_db(target["user_id"])
+        uname = f"@{target['username']}" if target.get("username") else f"ID: {target['user_id']}"
+        await update.message.reply_text(
+            f"✅ *تم رفع الحظر عن:* {target.get('full_name', '')} ({uname})",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:ban_menu")]]),
+        )
+        return
+
+    # ── بحث عن مستخدمي كود (حتى القديمة المحذوفة) ──
+    if is_own and state == "os_await_code_search":
+        code = text.strip().upper()
+        context.user_data["state"] = "main_menu"
+        with db_conn() as c:
+            promo = c.execute("SELECT * FROM promo_codes WHERE code=%s", (code,)).fetchone()
+            uses  = c.execute(
+                """
+                SELECT pu.user_id, pu.used_at,
+                       u.username, u.full_name, u.points
+                FROM promo_uses pu
+                LEFT JOIN users u ON u.user_id = pu.user_id
+                WHERE pu.code = %s
+                ORDER BY pu.used_at DESC NULLS LAST
+                """,
+                (code,)
+            ).fetchall()
+        if not uses and not promo:
+            await update.message.reply_text(
+                f"⚠️ لا توجد سجلات لاستخدام الكود `{code}` (لا الآن ولا في السابق).",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:list_promos")]]),
+            )
+            return
+        if promo:
+            header = (
+                f"🔍 *نتائج البحث عن الكود:* `{code}`\n"
+                f"🎁 النقاط: {promo['points']} | الاستخدامات: {promo['used_count']}/{promo['max_uses']}"
+                f" | {'✅ فعّال' if promo['active'] else '❌ معطّل'}\n"
+            )
+        else:
+            header = (
+                f"🔍 *نتائج البحث عن الكود:* `{code}`\n"
+                "⚠️ الكود محذوف من القائمة الحالية لكن تتوفر سجلات استخدام قديمة:\n"
+            )
+        if not uses:
+            body = "\n_لم يستخدمه أحد._"
+        else:
+            lines = []
+            for i, u in enumerate(uses, 1):
+                name  = (u["full_name"] or "").strip() or "—"
+                uname = f"@{u['username']}" if u["username"] else f"ID: {u['user_id']}"
+                pts   = u["points"] if u["points"] is not None else "؟"
+                ts_raw = u["used_at"]
+                if ts_raw:
+                    ts = ts_raw.strftime("%Y-%m-%d %H:%M") if hasattr(ts_raw, "strftime") else str(ts_raw)[:16]
+                else:
+                    ts = "—"
+                lines.append(f"{i}. {name} ({uname})\n   💰 رصيده: {pts} نقطة | 🕐 {ts}")
+            body = "\n\n" + "\n\n".join(lines)
+        msg = header + body
+        # تقسيم الرسالة إن طالت
+        chunks = [msg[i:i+4000] for i in range(0, len(msg), 4000)]
+        for idx, chunk in enumerate(chunks):
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع للأكواد", callback_data="os:list_promos")]]) if idx == len(chunks) - 1 else None
+            await update.message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+        return
+
     # ── إضافة باقة استبدال نجوم (مالك) ──
     if is_own and state == "os_await_pkg_stars":
         try:
@@ -4932,6 +5127,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data   = q.data
     user   = q.from_user
     is_own = (user.id == OWNER_ID)
+
+    # ── فحص الحظر: العضو المحظور لا يستطيع استخدام البوت (المالك مستثنى دائماً) ──
+    if not is_own and is_user_banned(user.id):
+        await q.answer("🚫 تم حظرك من استخدام هذا البوت.", show_alert=True)
+        return
 
     # ── وضع الصيانة: يُحجب كل شيء عن غير المالك، حتى يستطيع المالك دائماً الوصول للوحته لإلغائها ──
     if is_maintenance_on() and not is_own:
@@ -7531,6 +7731,88 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("📡 أرسل يوزرنيم القناة (مثال: @channel):")
         return
 
+    # ── قائمة إدارة الحظر (مالك) ──
+    if data == "os:ban_menu" and is_own:
+        with db_conn() as c:
+            banned_count = c.execute("SELECT COUNT(*) as cnt FROM users WHERE banned=1").fetchone()["cnt"]
+        await q.edit_message_text(
+            f"🚫 *إدارة الحظر*\n\nعدد الأعضاء المحظورين حالياً: *{banned_count}*\n\n"
+            "اختر الإجراء:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🚫 حظر عضو (ID أو @يوزر)", callback_data="os:ban_member")],
+                [InlineKeyboardButton("🔓 رفع حظر عضو", callback_data="os:unban_member")],
+                [InlineKeyboardButton("📋 قائمة المحظورين", callback_data="os:list_banned")],
+                [InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")],
+            ]),
+        )
+        return
+
+    if data == "os:ban_member" and is_own:
+        context.user_data["state"] = "os_await_ban_target"
+        await q.edit_message_text(
+            "🚫 *حظر عضو*\n\nأرسل الـ ID الرقمي للعضو أو @يوزرنيم:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:ban_menu")]]),
+        )
+        return
+
+    if data == "os:unban_member" and is_own:
+        context.user_data["state"] = "os_await_unban_target"
+        await q.edit_message_text(
+            "🔓 *رفع حظر عضو*\n\nأرسل الـ ID الرقمي للعضو أو @يوزرنيم:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:ban_menu")]]),
+        )
+        return
+
+    if data.startswith("os:unban_confirm:") and is_own:
+        target_id = int(data.split(":")[-1])
+        found = unban_user_db(target_id)
+        target = get_user(target_id)
+        if found and target:
+            uname = f"@{target['username']}" if target.get("username") else f"ID: {target_id}"
+            await q.edit_message_text(
+                f"✅ *تم رفع الحظر عن:* {target.get('full_name', '')} ({uname})",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:ban_menu")]]),
+            )
+        else:
+            await q.answer("⚠️ لم يُوجد المستخدم.", show_alert=True)
+        return
+
+    if data == "os:list_banned" and is_own:
+        with db_conn() as c:
+            banned = c.execute(
+                "SELECT user_id, username, full_name, banned_at, ban_reason FROM users "
+                "WHERE banned=1 ORDER BY banned_at DESC NULLS LAST LIMIT 50"
+            ).fetchall()
+        if not banned:
+            await q.edit_message_text(
+                "📋 لا يوجد أعضاء محظورون حالياً.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:ban_menu")]]),
+            )
+            return
+        lines = ["🚫 *الأعضاء المحظورون:*\n"]
+        kb_rows = []
+        for b in banned:
+            uname = f"@{b['username']}" if b["username"] else f"ID: {b['user_id']}"
+            ts_raw = b["banned_at"]
+            ts = ts_raw.strftime("%Y-%m-%d %H:%M") if ts_raw and hasattr(ts_raw, "strftime") else (str(ts_raw)[:16] if ts_raw else "—")
+            reason = b["ban_reason"] or "—"
+            lines.append(f"• {b['full_name'] or '—'} ({uname})\n  📝 {reason} | 🕐 {ts}")
+            kb_rows.append([InlineKeyboardButton(
+                f"🔓 رفع حظر {uname}",
+                callback_data=f"os:unban_confirm:{b['user_id']}"
+            )])
+        kb_rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="os:ban_menu")])
+        await q.edit_message_text(
+            "\n".join(lines),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(kb_rows),
+        )
+        return
+
     # ── الأكواد الترويجية (مالك) ──
     if data == "os:create_promo" and is_own:
         context.user_data["state"] = "os_await_promo_code_text"
@@ -7559,9 +7841,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 InlineKeyboardButton(tog, callback_data=f"os_tog_promo:{p['code']}:{0 if p['active'] else 1}"),
                 InlineKeyboardButton("🗑", callback_data=f"os_del_promo:{p['code']}")
             ])
+        rows.append([InlineKeyboardButton("🔍 بحث عن كود (حتى القديمة)", callback_data="os:search_code")])
         rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
         await q.edit_message_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN,
                                    reply_markup=InlineKeyboardMarkup(rows))
+        return
+
+    if data == "os:search_code" and is_own:
+        context.user_data["state"] = "os_await_code_search"
+        await q.edit_message_text(
+            "🔍 *البحث عن مستخدمي كود*\n\n"
+            "أرسل نص الكود (يعمل حتى للأكواد القديمة المحذوفة):",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:list_promos")]]),
+        )
         return
 
     if data.startswith("os:promo_users:") and is_own:
