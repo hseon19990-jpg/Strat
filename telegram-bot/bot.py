@@ -1239,23 +1239,7 @@ async def assign_verified_number(user_id: int, bot=None) -> dict | None:
         sess     = row["session_string"]
         saved_pw = row["twofa_password"] or ""
 
-        # ─── تحقق 1: هل تملك كلمة مرور 2FA؟ ───
-        if not saved_pw and sess:
-            # نحاول تفعيل/جلب كلمة المرور الآن
-            try:
-                ok2fa, _, pwd2fa = await enable_2fa_for_number(phone, sess, stock_id, bot=bot)
-                saved_pw = pwd2fa if ok2fa and pwd2fa else ""
-            except Exception:
-                pass
-
-        if not saved_pw:
-            logger.warning(f"⚠️ التحقق من الرقم {phone} فشل: 2FA غير معروف — يُتخطى")
-            with db_conn() as c:
-                c.execute("UPDATE number_stock SET assigned_to=NULL, assigned_at=NULL WHERE id=%s", (stock_id,))
-            skipped_ids.append(stock_id)
-            continue
-
-        # ─── تحقق 2: جهاز واحد فقط (جلسة البوت وحدها)؟ ───
+        # ─── تحقق: جهاز واحد فقط (جلسة البوت وحدها)؟ ───
         if sess:
             try:
                 cli_check = TelegramClient(StringSession(sess), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
@@ -7484,25 +7468,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 spam_line = f"\n📵 مقيّد من الإرسال: ❌ لا"
             else:
                 spam_line = f"\n📵 مقيّد من الإرسال: ⚠️ تعذّر التأكد الآن"
-            # ─── حالة 2FA: فحص مباشر وفعلي من تيليجرام، مع تحقق حقيقي من الكلمة الثابتة إن كانت غير محفوظة
-            # (لا نعتمد فقط على القيمة المحفوظة سابقاً، لأنها قد تكون غير محدَّثة إن فُعِّل 2FA يدوياً
-            # قبل أن تفحصه أي مهمة دورية؛ ولا نفترض أن الكلمة الثابتة صحيحة بدون تحقق فعلي) ───
+            # ─── حالة 2FA: يُعرض فقط ما هو محفوظ في قاعدة البيانات (بدون تفعيل تلقائي) ───
             saved_pwd = rec.get("twofa_password") or ""
-            twofa_warn = ""
-            if not saved_pwd:
-                ok_2fa, msg_2fa, pwd_2fa = await enable_2fa_for_number(
-                    rec["phone_number"], rec["session_string"], stock_id, bot=context.bot
-                )
-                if ok_2fa and pwd_2fa:
-                    saved_pwd = pwd_2fa
-                elif not ok_2fa and "غير صحيحة" in msg_2fa:
-                    twofa_warn = f"\n⚠️ {msg_2fa} — تم إشعارك برسالة منفصلة."
             if saved_pwd:
                 twofa_line = "\n🔐 التحقق بخطوتين: ✅ مفعّل (انظر زر كلمة المرور)"
-            elif twofa_warn:
-                twofa_line = f"\n🔐 التحقق بخطوتين: ⚠️ مفعّل لكن الكلمة الثابتة غير صحيحة له{twofa_warn}"
             else:
-                twofa_line = "\n🔐 التحقق بخطوتين: ❌ غير مفعّل بعد"
+                twofa_line = "\n🔐 التحقق بخطوتين: ❌ غير مفعّل / كلمة المرور غير محفوظة"
             text = (
                 f"📱 *{rec['phone_number']}*"
                 f"{display_name}\n"
@@ -9437,8 +9408,6 @@ def main():
         logger.info("🔒 تم تفعيل إعادة المحاولة الدورية لطرد جلسات الأرقام (كل 10 دقائق)")
         app.job_queue.run_repeating(run_referral_tasks_job, interval=3600, first=120)
         logger.info("🤝 تم تفعيل مهام الإحالة التلقائية (كل ساعة)")
-        app.job_queue.run_repeating(enable_pending_2fa_job, interval=1800, first=180)
-        logger.info("🔐 تم تفعيل مهمة التحقق بخطوتين التلقائي (كل 30 دقيقة)")
         app.job_queue.run_repeating(monitor_number_changes_job, interval=1800, first=210)
         logger.info("🔔 تم تفعيل مراقبة تغيّرات حسابات الأرقام (طرد/تجميد/أجهزة) كل 30 دقيقة")
 
