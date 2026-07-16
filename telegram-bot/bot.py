@@ -4403,7 +4403,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 context.user_data["state"] = "main_menu"
                 return
-            # تحقق أن المستخدم لم يستخدمه مسبقاً
             c.execute(
                 "INSERT INTO number_purchase_code_uses (code, user_id) VALUES (%s, %s) ON CONFLICT (code, user_id) DO NOTHING",
                 (entered_code, user.id)
@@ -4418,13 +4417,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             c.execute("UPDATE number_purchase_codes SET used_count=used_count+1 WHERE code=%s", (entered_code,))
 
-        # تسليم رقم مجاناً (بدون خصم نقاط)
         nc_order_code = next_order_code(user.id)
         auto_nc = await assign_verified_number(user.id, bot=context.bot)
         if auto_nc:
-            auto_nc_number  = auto_nc["phone_number"]
-            session_nc_str  = auto_nc["session_string"]
-            auto_nc_twofa   = (auto_nc.get("twofa_password") or "").strip()
+            auto_nc_number = auto_nc["phone_number"]
+            session_nc_str = auto_nc["session_string"]
+            auto_nc_twofa  = (auto_nc.get("twofa_password") or "").strip()
             with db_conn() as c:
                 c.execute(
                     "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,status,order_code) "
@@ -4440,36 +4438,23 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
             ]
             await update.message.reply_text(
-                f"🎉 *تم! رقمك:*
-`{display_nc_number}`",
+                f"🎉 *تم! رقمك:*\n`{display_nc_number}`",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup(result_kb_nc)
             )
-            # رسالة التبرئة
             try:
                 await context.bot.send_message(
                     user.id,
-                    "📋 *إشعار تبرئة ذمة — يُرجى القراءة بعناية*
-
-"
-                    "بإتمامك عملية الاستلام فإنك تُقرّ وتوافق على ما يلي:
-
-"
-                    "① لا يتحمّل البائع أي مسؤولية عن أي محتوى موجود داخل الحساب سابقاً.
-
-"
-                    "② لا يتحمّل البائع أي مسؤولية عن أي حظر أو تقييد تتخذه تيليغرام لاحقاً.
-
-"
-                    "③ من لحظة الاستلام يُصبح الحساب والرقم مسؤوليتك الكاملة.
-
-"
+                    "📋 *إشعار تبرئة ذمة — يُرجى القراءة بعناية*\n\n"
+                    "بإتمامك عملية الاستلام فإنك تُقرّ وتوافق على ما يلي:\n\n"
+                    "① لا يتحمّل البائع أي مسؤولية عن أي محتوى موجود داخل الحساب سابقاً.\n\n"
+                    "② لا يتحمّل البائع أي مسؤولية عن أي حظر أو تقييد تتخذه تيليغرام لاحقاً.\n\n"
+                    "③ من لحظة الاستلام يُصبح الحساب والرقم مسؤوليتك الكاملة.\n\n"
                     "شكراً لثقتك 🤍",
                     parse_mode=ParseMode.MARKDOWN
                 )
             except Exception:
                 pass
-            # سؤال البقاء/المغادرة
             try:
                 _nc_sl_kb = InlineKeyboardMarkup([
                     [InlineKeyboardButton("✅ بقاء البوت في الحساب", callback_data="buyer:stay_account")],
@@ -4477,11 +4462,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ])
                 await context.bot.send_message(
                     user.id,
-                    "🤖 *هل تريد أن يبقى البوت داخل الحساب أم يغادر؟*
-
-"
-                    "• *بقاء:* البوت يبقى متصلاً ويُرسل لك كود الدخول تلقائياً.
-"
+                    "🤖 *هل تريد أن يبقى البوت داخل الحساب أم يغادر؟*\n\n"
+                    "• *بقاء:* البوت يبقى متصلاً ويُرسل لك كود الدخول تلقائياً.\n"
                     "• *مغادرة:* البوت يُغادر الحساب الآن ويحذف جلسته.",
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=_nc_sl_kb
@@ -4492,25 +4474,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 try:
                     await context.bot.send_message(
                         OWNER_ID,
-                        f"📱 <b>تسليم رقم عبر كود شراء</b>
-"
-                        f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>
-"
-                        f"📱 {auto_nc_number}
-"
-                        f"🎟 الكود: {entered_code}
-"
+                        f"📱 <b>تسليم رقم عبر كود شراء</b>\n"
+                        f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
+                        f"📱 {auto_nc_number}\n"
+                        f"🎟 الكود: {entered_code}\n"
                         f"📌 {nc_order_code}",
                         parse_mode=ParseMode.HTML
                     )
                 except Exception:
                     pass
         else:
-            # لا يوجد رقم في المخزون
             await update.message.reply_text(
-                "✅ *تم قبول الكود!*
-
-"
+                "✅ *تم قبول الكود!*\n\n"
                 "📱 لا يوجد رقم متاح حالياً في المخزون. سيتواصل معك المالك قريباً لتسليم رقمك.",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=main_menu_kb(is_own)
@@ -4519,14 +4494,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 try:
                     await context.bot.send_message(
                         OWNER_ID,
-                        f"📱 <b>طلب رقم عبر كود شراء (يدوي)</b>
-"
-                        f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>
-"
-                        f"🎟 الكود: {entered_code}
-"
-                        f"📌 {nc_order_code}
-"
+                        f"📱 <b>طلب رقم عبر كود شراء (يدوي)</b>\n"
+                        f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
+                        f"🎟 الكود: {entered_code}\n"
+                        f"📌 {nc_order_code}\n"
                         f"⚠️ لا يوجد رقم في المخزون — يرجى التسليم يدوياً.",
                         parse_mode=ParseMode.HTML
                     )
