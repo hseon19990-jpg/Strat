@@ -1237,23 +1237,18 @@ def set_force_listed(stock_id: int) -> bool:
 
 
 def _sellable_filter_sql() -> str:
-    """رقم يُعتبر قابلاً للبيع/التسليم (جاهز فعلاً) إذا تحقّق أحد الشروط الثلاثة:
-    1. session_string IS NULL  → رقم أُضيف يدوياً بلا جلسة (مباشرة للبيع).
-    2. last_authorized = FALSE → المالك سجّل خروج يدوياً؛ لا جلسة نشطة فعلاً،
-                                 يُعامَل معاملة الرقم اليدوي.
-    3. (sessions_reset=TRUE أو force_listed=TRUE) + twofa_password محفوظ
-                               → طُردت الجلسات الأخرى وكلمة المرور معروفة، جاهز للتسليم مع جلسة.
-    الحسابات المجمّدة مُستثناة دائماً."""
+    """رقم يُعتبر قابلاً للبيع فقط إذا كان مكتمل الجاهزية:
+    - لديه جلسة نشطة (session_string IS NOT NULL)
+    - لم يُطرد من تيليغرام (last_authorized IS NOT FALSE)
+    - لديه كلمة مرور 2FA مخزّنة (ضمان وصول المشتري للحساب)
+    - غير مجمّد
+    الأرقام اليدوية (بلا جلسة) والمطرودة لا تُباع تلقائياً."""
     return (
-        "("
-        "  session_string IS NULL"
-        "  OR last_authorized = FALSE"
-        "  OR ("
-        "    (sessions_reset=TRUE OR force_listed=TRUE)"
-        "    AND twofa_password IS NOT NULL"
-        "    AND twofa_password <> ''"
-        "  )"
-        ") AND frozen_at IS NULL"
+        "session_string IS NOT NULL"
+        " AND last_authorized IS NOT FALSE"
+        " AND twofa_password IS NOT NULL"
+        " AND twofa_password <> ''"
+        " AND frozen_at IS NULL"
     )
 
 
@@ -7860,11 +7855,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(
                     chat_id=uid,
                     text=(
-                        f"⚠️ *تنبيه مهم*\n\n"
-                        f"الرقم الذي حصلت عليه `{phone}` تبيّن أنه لا يدعم الميزات الكاملة "
-                        f"(تم إضافته يدوياً بدون جلسة).\n\n"
-                        f"تم حذفه وإعادة *{pts:,}* نقطة إلى رصيدك تلقائياً.\n"
-                        f"يمكنك استخدامها لشراء رقم جديد متى توفّر. 🙏"
+                        f"💰 *إشعار تعويض*\n"
+                        f"{'─' * 28}\n\n"
+                        f"عزيزي العميل،\n"
+                        f"الرقم الذي حصلت عليه `{phone}` تبيّن أنه أُضيف يدوياً "
+                        f"ولا يضمن وصولك الكامل للحساب (بدون جلسة أو 2FA).\n\n"
+                        f"✅ *تم تعويضك فوراً بـ {pts:,} نقطة* أُضيفت لرصيدك.\n\n"
+                        f"يمكنك استخدامها لشراء رقم جديد متاح بالكامل.\n"
+                        f"نعتذر عن الإزعاج 🙏"
                     ),
                     parse_mode=ParseMode.MARKDOWN
                 )
