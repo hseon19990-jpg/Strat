@@ -2253,7 +2253,7 @@ async def monitor_number_changes_job(context: ContextTypes.DEFAULT_TYPE):
                 if devices >= 0 and last_devices >= 0 and devices != last_devices:
                     changes.append(f"تغيّر عدد الأجهزة المسجّلة من {last_devices} إلى {devices}")
 
-            # ─── طرد فوري إن وُجد أكثر من جهاز واحد على رقم غير مبيع ولم يُباع قط ───
+            # ─── منطق الجهاز الثاني ───────────────────────────────────────────────
             if authorized and devices > 1:
                 owner_logging = any(
                     p.get("phone") == rec["phone_number"]
@@ -2265,14 +2265,62 @@ async def monitor_number_changes_job(context: ContextTypes.DEFAULT_TYPE):
                     ).fetchone()
                     is_assigned  = bool(_ass and _ass["assigned_to"])
                     is_ever_sold = bool(_ass and _ass["ever_sold"])
-                # لا نطرد إذا: المالك يسجّل دخول، أو الرقم مُباع حالياً، أو سبق بيعه (المشتري قد يكون يستخدمه)
-                if not owner_logging and not is_assigned and not is_ever_sold:
-                    try:
-                        await client(ResetAuthorizationsRequest())
-                        logger.info(f"🔐 monitor: طُردت جلسات إضافية للرقم {rec['phone_number']} (كانت {devices})")
-                        changes.append(f"🔐 تم طرد {devices - 1} جلسة غير مصرّح بها تلقائياً")
-                    except Exception as _ke:
-                        logger.warning(f"⚠️ monitor: فشل طرد جلسات {rec['phone_number']}: {_ke}")
+
+                is_sold = is_assigned or is_ever_sold
+
+                if not owner_logging:
+                    if is_sold:
+                        # ✅ حساب مباع + جهاز ثانٍ ظهر → البوت يخرج تلقائياً ويترك الحساب للمشتري
+                        buyer_id_exit = _ass["assigned_to"] if _ass else None
+                        logger.info(
+                            f"🚪 bot_exit_sold_account: الرقم {rec['phone_number']} "
+                            f"له {devices} أجهزة وهو مباع — البوت يغادر."
+                        )
+                        try:
+                            await _stop_number_monitor(rec["phone_number"])
+                        except Exception:
+                            pass
+                        with db_conn() as _cx:
+                            _cx.execute(
+                                "UPDATE number_stock SET assigned_to=NULL, assigned_at=NULL "
+                                "WHERE id=%s",
+                                (rec["id"],)
+                            )
+                        _buyer_received_codes.pop(buyer_id_exit, None)
+                        # إشعار المشتري
+                        if buyer_id_exit:
+                            try:
+                                await context.bot.send_message(
+                                    buyer_id_exit,
+                                    "✅ *دخلت للحساب بنجاح!*\n\n"
+                                    "البوت غادر الحساب تلقائياً. الحساب أصبح بيدك كاملاً 🤍",
+                                    parse_mode="Markdown"
+                                )
+                            except Exception:
+                                pass
+                        # إشعار المالك
+                        if OWNER_ID:
+                            try:
+                                await context.bot.send_message(
+                                    OWNER_ID,
+                                    f"🚪 <b>خروج تلقائي — جهاز ثانٍ</b>\n\n"
+                                    f"📱 <code>{rec['phone_number']}</code>\n"
+                                    f"📲 الأجهزة المكتشفة: {devices}\n"
+                                    f"✅ البوت غادر الحساب تلقائياً.",
+                                    parse_mode="HTML"
+                                )
+                            except Exception:
+                                pass
+                        # لا نكمل تحديث DB بالأسفل لأن السجل تغيّر بالفعل
+                        continue
+                    else:
+                        # حساب غير مباع + جهاز ثانٍ → نطرد الجلسات الأخرى كما كان
+                        try:
+                            await client(ResetAuthorizationsRequest())
+                            logger.info(f"🔐 monitor: طُردت جلسات إضافية للرقم {rec['phone_number']} (كانت {devices})")
+                            changes.append(f"🔐 تم طرد {devices - 1} جلسة غير مصرّح بها تلقائياً")
+                        except Exception as _ke:
+                            logger.warning(f"⚠️ monitor: فشل طرد جلسات {rec['phone_number']}: {_ke}")
 
             if changes:
                 await notify_account_change(
