@@ -9964,22 +9964,31 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         # 2️⃣ fallback: جلب الكود مباشرة من 777000 عبر جلسة الرقم
-        # (يحل مشكلة إعادة تشغيل Railway حيث تُفقَد _buyer_received_codes)
+        # نتحقق من الملكية عبر prize_exchanges (assigned_to قد يتغير بعد الشراء)
         fetched_code = None
         try:
             with db_conn() as _fc:
                 _frow = _fc.execute(
-                    "SELECT session_string, assigned_to, assigned_at FROM number_stock WHERE phone_number=%s",
-                    (number_for_code,)
+                    """SELECT ns.session_string, ns.assigned_to, ns.assigned_at
+                       FROM number_stock ns
+                       WHERE ns.phone_number=%s
+                         AND (
+                             ns.assigned_to=%s
+                             OR EXISTS (
+                                 SELECT 1 FROM prize_exchanges pe
+                                 WHERE pe.prize_value=%s
+                                   AND pe.user_id=%s
+                                   AND pe.status='completed'
+                             )
+                         )""",
+                    (number_for_code, user.id, number_for_code, user.id)
                 ).fetchone()
             if (
                 _frow
                 and _frow["session_string"]
-                and _frow["assigned_to"] == user.id
                 and TELEGRAM_API_ID
                 and TELEGRAM_API_HASH
             ):
-                _purchase_date = _frow.get("assigned_at")  # تاريخ الشراء — لا نقبل كودًا قبله
                 _fcli = TelegramClient(
                     StringSession(_frow["session_string"]),
                     int(TELEGRAM_API_ID), TELEGRAM_API_HASH
@@ -9987,7 +9996,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await _fcli.connect()
                 try:
                     if await _fcli.is_user_authorized():
-                        raw_msg = await fetch_last_login_code(_fcli, after_date=_purchase_date)
+                        # نجلب آخر كود بدون قيد زمني صارم — المستخدم يضغط الزر بعد طلب الدخول مباشرة
+                        raw_msg = await fetch_last_login_code(_fcli, after_date=None)
                         if raw_msg:
                             _m = re.search(r'(\d{4,7})', raw_msg)
                             if _m:
