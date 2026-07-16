@@ -38,7 +38,8 @@ from telethon.errors import (
     SessionPasswordNeededError, PhoneCodeInvalidError, PhoneCodeExpiredError,
     PhoneNumberInvalidError, FloodWaitError, PasswordHashInvalidError
 )
-from telethon.tl.functions.auth import ResetAuthorizationsRequest
+from telethon.tl.functions.auth import ResetAuthorizationsRequest, CheckPasswordRequest
+from telethon.password import compute_check
 from telethon.tl.functions.account import (
     GetAuthorizationsRequest, ResetAuthorizationRequest,
     GetPasswordRequest,
@@ -1537,16 +1538,19 @@ def generate_2fa_password() -> str:
 
 async def verify_current_2fa_password(client: TelegramClient, password: str, phone: str | None = None) -> bool | None:
     """يتحقّق فعلياً إن كانت كلمة المرور المُعطاة هي كلمة تحقق بخطوتين الحالية للحساب،
-    عبر محاولة 'تغييرها' لنفس القيمة (Telegram يرفض العملية بخطأ صريح لو كانت كلمة المرور الحالية خاطئة).
+    عبر CheckPasswordRequest (SRP) — يتحقق فقط ولا يُعدّل الكلمة أبداً.
     يُرجع True لو صحيحة، False لو خاطئة بالتأكيد، أو None لو تعذّر التأكد (خطأ شبكي مثلاً)."""
     try:
-        if phone:
-            _expected_2fa_change[phone] = time.time()
-        await client.edit_2fa(current_password=password, new_password=password, hint="Auto")
+        pwd_state = await client(GetPasswordRequest())
+        if not pwd_state.has_password:
+            # لا يوجد 2FA على الحساب — لا مانع
+            return True
+        pwd_check = compute_check(pwd_state, password)
+        await client(CheckPasswordRequest(password=pwd_check))
         return True
     except Exception as e:
         err = str(e).upper()
-        if "PASSWORD_HASH_INVALID" in err or "INVALID" in err and "PASSWORD" in err:
+        if "PASSWORD_HASH_INVALID" in err or "SRP_ID_INVALID" in err:
             return False
         logger.warning(f"⚠️ تعذّر التحقق من كلمة مرور 2FA الحالية: {e}")
         return None
