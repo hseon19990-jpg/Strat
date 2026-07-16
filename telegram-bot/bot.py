@@ -3490,6 +3490,60 @@ async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=owner_settings_kb()
     )
 
+async def cmd_import_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر المالك: /import_session <session_string> — يستورد جلسة قديمة ويضيف رقمها للمخزون."""
+    user = update.effective_user
+    if user.id != OWNER_ID:
+        await update.message.reply_text("⛔ هذا الأمر للمالك فقط.")
+        return
+    if not context.args:
+        await update.message.reply_text(
+            "الاستخدام:\n`/import_session SESSION_STRING`\n\nالصق رمز الجلسة بعد الأمر.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    session_str = context.args[0].strip()
+    msg = await update.message.reply_text("⏳ جاري التحقق من الجلسة...")
+    if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
+        await msg.edit_text("❌ متغيرات TELEGRAM_API_ID أو TELEGRAM_API_HASH غير مضبوطة.")
+        return
+    try:
+        client = TelegramClient(StringSession(session_str), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+        await client.connect()
+        if not await client.is_user_authorized():
+            await client.disconnect()
+            await msg.edit_text("❌ الجلسة منتهية الصلاحية أو غير صالحة. لا يمكن الاستيراد.")
+            return
+        me = await client.get_me()
+        phone = me.phone if me.phone.startswith("+") else f"+{me.phone}"
+        await client.disconnect()
+        # أضف أو حدّث الرقم في المخزون
+        with db_conn() as c:
+            existing = c.execute(
+                "SELECT id FROM number_stock WHERE phone_number=%s", (phone,)
+            ).fetchone()
+            if existing:
+                c.execute(
+                    "UPDATE number_stock SET session_string=%s, assigned_to=NULL, assigned_at=NULL WHERE phone_number=%s",
+                    (session_str, phone)
+                )
+                action = "تم تحديث"
+            else:
+                c.execute(
+                    "INSERT INTO number_stock (phone_number, session_string) VALUES (%s, %s)",
+                    (phone, session_str)
+                )
+                action = "تمت إضافة"
+        await msg.edit_text(
+            f"✅ *{action} الرقم بنجاح!*\n\n📱 الرقم: `{phone}`\n\n"
+            "الرقم الآن موجود في المخزون وجاهز للبيع أو الاستخدام.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        # ابدأ مراقبة الرقم فوراً
+        asyncio.create_task(_start_number_monitor(phone, session_str, context.application))
+    except Exception as e:
+        await msg.edit_text(f"❌ خطأ أثناء الاستيراد:\n`{e}`", parse_mode=ParseMode.MARKDOWN)
+
 async def cmd_addpoints(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """أمر المالك: /addpoints <user_id> <points> — يضيف (أو يخصم برقم سالب) نقاطاً لمستخدم معيّن."""
     user = update.effective_user
@@ -9382,6 +9436,7 @@ def main():
     app.add_handler(CommandHandler("compensate_partial",  cmd_compensate_partial))
     app.add_handler(CommandHandler("refund_mandatory",    cmd_refund_mandatory))
     app.add_handler(CommandHandler("cancel",              cmd_cancel))
+    app.add_handler(CommandHandler("import_session",      cmd_import_session))
     app.add_handler(MessageHandler(
         (filters.TEXT | filters.CAPTION) & ~filters.COMMAND & filters.ChatType.PRIVATE,
         handle_text
