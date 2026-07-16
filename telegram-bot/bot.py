@@ -5733,8 +5733,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── شحن نقاط ──
     if data == "charge_points":
-        await q.edit_message_text("💎 *اختر طريقة الشحن:*", parse_mode=ParseMode.MARKDOWN,
-                                   reply_markup=charge_points_kb())
+        try:
+            await q.edit_message_text("💎 *اختر طريقة الشحن:*", parse_mode=ParseMode.MARKDOWN,
+                                       reply_markup=charge_points_kb())
+        except Exception as _e:
+            logger.error(f"❌ charge_points error: {_e}")
+            if is_own:
+                await q.answer(f"❌ خطأ: {_e}", show_alert=True)
         return
 
     if data == "charge:stars":
@@ -7783,35 +7788,43 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "os:list_banned" and is_own:
-        with db_conn() as c:
-            banned = c.execute(
-                "SELECT user_id, username, full_name, banned_at, ban_reason FROM users "
-                "WHERE banned=1 ORDER BY banned_at DESC NULLS LAST LIMIT 50"
-            ).fetchall()
-        if not banned:
+        try:
+            with db_conn() as c:
+                banned = c.execute(
+                    "SELECT user_id, username, full_name, banned_at, ban_reason FROM users "
+                    "WHERE banned=1 ORDER BY banned_at DESC NULLS LAST LIMIT 50"
+                ).fetchall()
+            if not banned:
+                await q.edit_message_text(
+                    "📋 لا يوجد أعضاء محظورون حالياً.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:ban_menu")]]),
+                )
+                return
+            lines = ["🚫 *الأعضاء المحظورون:*\n"]
+            kb_rows = []
+            for b in banned:
+                uname = f"@{b['username']}" if b["username"] else f"ID: {b['user_id']}"
+                ts_raw = b["banned_at"]
+                ts = ts_raw.strftime("%Y-%m-%d %H:%M") if ts_raw and hasattr(ts_raw, "strftime") else (str(ts_raw)[:16] if ts_raw else "—")
+                reason = b["ban_reason"] or "—"
+                lines.append(f"• {b['full_name'] or '—'} ({uname})\n  📝 {reason} | 🕐 {ts}")
+                kb_rows.append([InlineKeyboardButton(
+                    f"🔓 رفع حظر {uname}",
+                    callback_data=f"os:unban_confirm:{b['user_id']}"
+                )])
+            kb_rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="os:ban_menu")])
+            # تأكد أن النص لا يتجاوز 4096 حرفاً
+            full_text = "\n".join(lines)
+            if len(full_text) > 4000:
+                full_text = full_text[:4000] + "\n\n⚠️ القائمة طويلة، تم اقتصارها."
             await q.edit_message_text(
-                "📋 لا يوجد أعضاء محظورون حالياً.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:ban_menu")]]),
+                full_text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup(kb_rows),
             )
-            return
-        lines = ["🚫 *الأعضاء المحظورون:*\n"]
-        kb_rows = []
-        for b in banned:
-            uname = f"@{b['username']}" if b["username"] else f"ID: {b['user_id']}"
-            ts_raw = b["banned_at"]
-            ts = ts_raw.strftime("%Y-%m-%d %H:%M") if ts_raw and hasattr(ts_raw, "strftime") else (str(ts_raw)[:16] if ts_raw else "—")
-            reason = b["ban_reason"] or "—"
-            lines.append(f"• {b['full_name'] or '—'} ({uname})\n  📝 {reason} | 🕐 {ts}")
-            kb_rows.append([InlineKeyboardButton(
-                f"🔓 رفع حظر {uname}",
-                callback_data=f"os:unban_confirm:{b['user_id']}"
-            )])
-        kb_rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="os:ban_menu")])
-        await q.edit_message_text(
-            "\n".join(lines),
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup(kb_rows),
-        )
+        except Exception as _e:
+            logger.error(f"❌ os:list_banned error: {_e}")
+            await q.answer(f"❌ خطأ: {_e}", show_alert=True)
         return
 
     # ── الأكواد الترويجية (مالك) ──
@@ -7860,54 +7873,62 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("os:promo_users:") and is_own:
         code = data[len("os:promo_users:"):]
-        with db_conn() as c:
-            promo = c.execute("SELECT * FROM promo_codes WHERE code=%s", (code,)).fetchone()
-            uses  = c.execute(
-                """
-                SELECT pu.user_id, pu.used_at,
-                       u.username, u.full_name, u.points
-                FROM promo_uses pu
-                LEFT JOIN users u ON u.user_id = pu.user_id
-                WHERE pu.code = %s
-                ORDER BY pu.used_at DESC NULLS LAST
-                """,
-                (code,)
-            ).fetchall()
-        if not promo:
-            await q.answer("⚠️ الكود غير موجود", show_alert=True)
-            return
-        header = (
-            f"👥 *من استخدم الكود:* `{code}`\n"
-            f"🎁 النقاط: {promo['points']} | الاستخدامات: {promo['used_count']}/{promo['max_uses']}\n"
-        )
-        if not uses:
-            body = "\n_لم يستخدمه أحد بعد._"
-        else:
-            lines = []
-            for i, u in enumerate(uses, 1):
-                name = (u["full_name"] or "").strip() or "—"
-                uname = f"@{u['username']}" if u["username"] else f"ID: {u['user_id']}"
-                pts   = u["points"] if u["points"] is not None else "؟"
-                ts_raw = u["used_at"]
-                if ts_raw:
-                    if hasattr(ts_raw, "strftime"):
-                        ts = ts_raw.strftime("%Y-%m-%d %H:%M")
+        try:
+            with db_conn() as c:
+                promo = c.execute("SELECT * FROM promo_codes WHERE code=%s", (code,)).fetchone()
+            with db_conn() as c:
+                uses = c.execute(
+                    """
+                    SELECT pu.user_id, pu.used_at,
+                           u.username, u.full_name, u.points
+                    FROM promo_uses pu
+                    LEFT JOIN users u ON u.user_id = pu.user_id
+                    WHERE pu.code = %s
+                    ORDER BY pu.used_at DESC NULLS LAST
+                    """,
+                    (code,)
+                ).fetchall()
+            if not promo:
+                await q.answer("⚠️ الكود غير موجود", show_alert=True)
+                return
+            header = (
+                f"👥 *من استخدم الكود:* `{code}`\n"
+                f"🎁 النقاط: {promo['points']} | الاستخدامات: {promo['used_count']}/{promo['max_uses']}\n"
+            )
+            if not uses:
+                body = "\n_لم يستخدمه أحد بعد._"
+            else:
+                lines = []
+                for i, u in enumerate(uses, 1):
+                    name = (u["full_name"] or "").strip() or "—"
+                    uname = f"@{u['username']}" if u["username"] else f"ID: {u['user_id']}"
+                    pts   = u["points"] if u["points"] is not None else "؟"
+                    ts_raw = u["used_at"]
+                    if ts_raw:
+                        if hasattr(ts_raw, "strftime"):
+                            ts = ts_raw.strftime("%Y-%m-%d %H:%M")
+                        else:
+                            ts = str(ts_raw)[:16]
                     else:
-                        ts = str(ts_raw)[:16]
-                else:
-                    ts = "—"
-                lines.append(
-                    f"{i}. {name} ({uname})\n"
-                    f"   💰 رصيده: {pts} نقطة | 🕐 {ts}"
-                )
-            body = "\n\n" + "\n\n".join(lines)
-        await q.edit_message_text(
-            header + body,
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 رجوع للأكواد", callback_data="os:list_promos")]
-            ])
-        )
+                        ts = "—"
+                    lines.append(
+                        f"{i}. {name} ({uname})\n"
+                        f"   💰 رصيده: {pts} نقطة | 🕐 {ts}"
+                    )
+                body = "\n\n" + "\n\n".join(lines)
+            full_text = header + body
+            if len(full_text) > 4000:
+                full_text = full_text[:4000] + "\n\n⚠️ القائمة طويلة، تم اقتصارها."
+            await q.edit_message_text(
+                full_text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 رجوع للأكواد", callback_data="os:list_promos")]
+                ])
+            )
+        except Exception as _e:
+            logger.error(f"❌ os:promo_users error: {_e}")
+            await q.answer(f"❌ خطأ: {_e}", show_alert=True)
         return
 
     if data.startswith("os_tog_promo:") and is_own:
