@@ -2450,6 +2450,7 @@ BUILTIN_DEFAULTS = {
         ("👥 حد أدنى تمويل داخلي", "os:edit_internal_min", 2), ("❌ إلغاء صفقة", "os:cancel_order", 2),
         ("✅ إكمال طلب", "os:complete_order", 2),
         ("🎟 إنشاء كود ترويجي", "os:create_promo", 2), ("📋 أكواد ترويجية", "os:list_promos", 2),
+        ("🚫 إدارة الحظر", "os:ban_menu", 2),
         ("💬 رابط تواصل المالك", "os:edit_contact", 2), ("✏️ نص زر التواصل", "os:edit_contact_label", 2),
         ("📲 تعديل نص اسيا سيل", "os:edit_asiacell", 2),
         ("✏️ نص زر الدعم بالقائمة", "os:edit_support_label", 2), ("📢 رسالة جماعية", "os:broadcast", 2),
