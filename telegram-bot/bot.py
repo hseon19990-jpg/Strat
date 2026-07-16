@@ -2451,6 +2451,7 @@ BUILTIN_DEFAULTS = {
         ("✅ إكمال طلب", "os:complete_order", 2),
         ("🎟 إنشاء كود ترويجي", "os:create_promo", 2), ("📋 أكواد ترويجية", "os:list_promos", 2),
         ("🚫 إدارة الحظر", "os:ban_menu", 2),
+        ("🔍 من استخدم الكود", "os:search_code", 2),
         ("💰 منح/خصم نقاط", "os:manage_points", 2),
         ("💬 رابط تواصل المالك", "os:edit_contact", 2), ("✏️ نص زر التواصل", "os:edit_contact_label", 2),
         ("📲 تعديل نص اسيا سيل", "os:edit_asiacell", 2),
@@ -7945,7 +7946,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🔍 *البحث عن مستخدمي كود*\n\n"
             "أرسل نص الكود (يعمل حتى للأكواد القديمة المحذوفة):",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:list_promos")]]),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="owner_settings")]]),
         )
         return
 
