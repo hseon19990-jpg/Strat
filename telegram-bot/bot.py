@@ -5510,6 +5510,102 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🏠 القائمة الرئيسية:", reply_markup=main_menu_kb(is_own))
 
 
+async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """يستقبل ملف JSON من المالك ويستورد الجلسات المحتواة فيه مباشرة."""
+    user = update.effective_user
+    if user.id != OWNER_ID:
+        return
+    doc = update.message.document
+    if not doc:
+        return
+    msg = await update.message.reply_text("⏳ جاري قراءة الملف...")
+    try:
+        file = await context.bot.get_file(doc.file_id)
+        raw_bytes = await file.download_as_bytearray()
+        import json as _json
+        data = _json.loads(raw_bytes.decode("utf-8"))
+    except Exception as e:
+        await msg.edit_text(f"❌ تعذّر قراءة الملف:\n`{e}`", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    # نقبل: dict واحد أو list من dicts أو list من strings
+    if isinstance(data, dict):
+        data = [data]
+    elif isinstance(data, str):
+        data = [{"session_string": data}]
+
+    sessions = []
+    for item in data:
+        if isinstance(item, str):
+            sessions.append({"session": item.strip(), "phone": None})
+        elif isinstance(item, dict):
+            sess = (
+                item.get("session_string") or
+                item.get("session") or
+                item.get("string_session") or ""
+            ).strip()
+            phone = (
+                item.get("phone") or
+                item.get("phone_number") or
+                item.get("mobile") or None
+            )
+            if sess:
+                sessions.append({"session": sess, "phone": phone})
+
+    if not sessions:
+        await msg.edit_text("❌ لم أجد أي جلسة صالحة في الملف. تأكد أن الملف يحتوي حقل `session_string`.")
+        return
+
+    await msg.edit_text(f"⏳ تم العثور على {len(sessions)} جلسة، جاري التحقق والاستيراد...")
+    ok_list, fail_list = [], []
+
+    for idx, entry in enumerate(sessions):
+        sess  = entry["session"]
+        phone_hint = entry["phone"]
+        try:
+            if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
+                fail_list.append(phone_hint or f"#{idx+1}")
+                continue
+            client = TelegramClient(StringSession(sess), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+            await client.connect()
+            if not await client.is_user_authorized():
+                await client.disconnect()
+                fail_list.append(phone_hint or f"#{idx+1}: جلسة منتهية")
+                continue
+            me = await client.get_me()
+            phone = me.phone if me.phone.startswith("+") else f"+{me.phone}"
+            await client.disconnect()
+            with db_conn() as _c:
+                exists = _c.execute(
+                    "SELECT id FROM number_stock WHERE phone_number=%s", (phone,)
+                ).fetchone()
+                if exists:
+                    _c.execute(
+                        "UPDATE number_stock SET session_string=%s, assigned_to=NULL, assigned_at=NULL WHERE phone_number=%s",
+                        (sess, phone)
+                    )
+                else:
+                    _c.execute(
+                        "INSERT INTO number_stock (phone_number, session_string) VALUES (%s,%s)",
+                        (phone, sess)
+                    )
+            asyncio.create_task(_start_number_monitor(phone, sess, context.application))
+            ok_list.append(phone)
+        except Exception as _e:
+            fail_list.append(phone_hint or f"#{idx+1}: {_e}")
+
+    lines = [f"✅ *تم استيراد {len(ok_list)} حساب بنجاح:*"]
+    for p in ok_list:
+        lines.append(f"  • `{p}`")
+    if fail_list:
+        lines.append(f"\n❌ *فشل {len(fail_list)}:*")
+        for f_ in fail_list[:20]:
+            lines.append(f"  • {f_}")
+        if len(fail_list) > 20:
+            lines.append(f"  ... و{len(fail_list)-20} أخرى")
+    await msg.edit_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+
 async def handle_unsupported_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """شبكة أمان: تُستدعى لأي رسالة لا تحمل نصاً أو وصفاً (صورة/فيديو/ملصق بلا caption،
     جهة اتصال، موقع، ملف...) ولا تطابق أي معالج آخر. بدون هذا المعالج كان البوت يبقى
@@ -9537,6 +9633,10 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(PreCheckoutQueryHandler(pre_checkout))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
+    app.add_handler(MessageHandler(
+        filters.ChatType.PRIVATE & filters.Document.MimeType("application/json"),
+        handle_json_file
+    ))
     # ── شبكة أمان: أي رسالة أخرى (صورة/ملصق/جهة اتصال بلا نص) لا تطابق ما سبق ──
     # حتى لا يبقى البوت صامتاً تماماً بلا أي رد إذا أرسل المستخدم قناته/رده بطريقة غير متوقعة
     # (توجيه/مشاركة بدل الكتابة المباشرة).
