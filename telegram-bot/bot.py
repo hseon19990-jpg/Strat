@@ -502,6 +502,21 @@ def init_db():
               used_at TIMESTAMPTZ DEFAULT NOW(),
               PRIMARY KEY (code, user_id)
           )""")
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS number_purchase_codes (
+              code       TEXT PRIMARY KEY,
+              max_uses   INTEGER DEFAULT 1,
+              used_count INTEGER DEFAULT 0,
+              active     INTEGER DEFAULT 1,
+              created_at TEXT DEFAULT CURRENT_TIMESTAMP
+          )""")
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS number_purchase_code_uses (
+              code    TEXT,
+              user_id BIGINT,
+              used_at TIMESTAMPTZ DEFAULT NOW(),
+              PRIMARY KEY (code, user_id)
+          )""")
           try:
               c.execute("ALTER TABLE promo_uses ADD COLUMN IF NOT EXISTS used_at TIMESTAMPTZ DEFAULT NOW()")
           except Exception:
@@ -2742,6 +2757,7 @@ BUILTIN_DEFAULTS = {
         ("📦 باقات الاستبدال بنجوم", "os:manage_star_packages", 1),
         ("📱 سعر رقم تيلغرام", "os:edit_number_cost", 2), ("💌 رسالة الترحيب", "os:edit_welcome", 2),
         ("📥 مخزون أرقام تيلغرام", "os:manage_numbers", 2),
+        ("🎟 أكواد شراء رقم", "os:manage_num_codes", 2),
         ("📢 سعر تمويل إجباري", "os:edit_mandatory_cost", 2), ("🔄 سعر تمويل داخلي", "os:edit_internal_cost", 2),
         ("🎁 نقاط الانضمام للقنوات", "os:edit_join_reward", 1),
         ("❌ خصم مغادرة القناة", "os:edit_leave_penalty", 1),
@@ -3147,6 +3163,7 @@ def exchange_kb():
     rows = [
         [InlineKeyboardButton("⭐ استبدال نقاط بنجوم", callback_data="exchange:stars")],
         [InlineKeyboardButton("📱 شراء رقم تيلغرام",  callback_data="exchange:number")],
+        [InlineKeyboardButton("🎟 شراء عبر كود",       callback_data="exchange:num_code")],
     ]
     for p in prizes:
         # يُعرض الاسم فقط — السعر يظهر بعد الضغط
@@ -4312,6 +4329,216 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"⭐ {stars} نجمة مقابل {cost} نقطة\n"
             f"📌 {code}"
         )
+        context.user_data["state"] = "main_menu"
+        return
+
+    # ── إنشاء كود شراء رقم (مالك) ──
+    if is_own and state == "os_await_num_code_text":
+        nc = text.strip().upper()
+        if len(nc) < 3:
+            await update.message.reply_text("⚠️ الكود يجب أن يكون 3 أحرف على الأقل.")
+            return
+        with db_conn() as c:
+            existing = c.execute("SELECT 1 FROM number_purchase_codes WHERE code=%s", (nc,)).fetchone()
+        if existing:
+            await update.message.reply_text("⚠️ هذا الكود موجود مسبقاً. أرسل كوداً آخر.")
+            return
+        context.user_data["new_num_code"] = nc
+        context.user_data["state"] = "os_await_num_code_uses"
+        await update.message.reply_text(
+            f"✅ الكود: `{nc}`
+
+كم عدد المرات التي يمكن استخدام هذا الكود؟ (أرسل رقماً)",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    if is_own and state == "os_await_num_code_uses":
+        try:
+            uses = int(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً.")
+            return
+        if uses <= 0:
+            await update.message.reply_text("⚠️ يجب أن يكون أكبر من صفر.")
+            return
+        nc = context.user_data.get("new_num_code")
+        if not nc:
+            await update.message.reply_text("⚠️ حدث خطأ، أعد المحاولة.")
+            context.user_data["state"] = "main_menu"
+            return
+        with db_conn() as c:
+            c.execute(
+                "INSERT INTO number_purchase_codes (code, max_uses, used_count, active) VALUES (%s, %s, 0, 1) ON CONFLICT (code) DO NOTHING",
+                (nc, uses)
+            )
+        await update.message.reply_text(
+            f"✅ *تم إنشاء كود الشراء بنجاح!*
+
+"
+            f"🎟 الكود: `{nc}`
+"
+            f"🔢 الاستخدامات: {uses} مرة",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=owner_settings_kb()
+        )
+        context.user_data["state"] = "main_menu"
+        return
+
+    # ── استخدام كود شراء رقم (مستخدم) ──
+    if state == "await_num_purchase_code":
+        entered_code = text.strip().upper()
+        if not is_number_exchange_on():
+            await update.message.reply_text("🔒 شراء الأرقام مغلق حالياً.", reply_markup=main_menu_kb(is_own))
+            context.user_data["state"] = "main_menu"
+            return
+        with db_conn() as c:
+            nc = c.execute(
+                "SELECT * FROM number_purchase_codes WHERE code=%s AND active=1", (entered_code,)
+            ).fetchone()
+            if not nc:
+                await update.message.reply_text(
+                    "❌ الكود غير موجود أو غير فعّال.",
+                    reply_markup=main_menu_kb(is_own)
+                )
+                context.user_data["state"] = "main_menu"
+                return
+            if nc["used_count"] >= nc["max_uses"]:
+                await update.message.reply_text(
+                    "⚠️ هذا الكود استُنفد ولم تعد تتوفر منه استخدامات.",
+                    reply_markup=main_menu_kb(is_own)
+                )
+                context.user_data["state"] = "main_menu"
+                return
+            # تحقق أن المستخدم لم يستخدمه مسبقاً
+            c.execute(
+                "INSERT INTO number_purchase_code_uses (code, user_id) VALUES (%s, %s) ON CONFLICT (code, user_id) DO NOTHING",
+                (entered_code, user.id)
+            )
+            inserted_nc = c.rowcount
+            if not inserted_nc:
+                await update.message.reply_text(
+                    "⚠️ لقد استخدمت هذا الكود مسبقاً.",
+                    reply_markup=main_menu_kb(is_own)
+                )
+                context.user_data["state"] = "main_menu"
+                return
+            c.execute("UPDATE number_purchase_codes SET used_count=used_count+1 WHERE code=%s", (entered_code,))
+
+        # تسليم رقم مجاناً (بدون خصم نقاط)
+        nc_order_code = next_order_code(user.id)
+        auto_nc = await assign_verified_number(user.id, bot=context.bot)
+        if auto_nc:
+            auto_nc_number  = auto_nc["phone_number"]
+            session_nc_str  = auto_nc["session_string"]
+            auto_nc_twofa   = (auto_nc.get("twofa_password") or "").strip()
+            with db_conn() as c:
+                c.execute(
+                    "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,status,order_code) "
+                    "VALUES (%s,%s,%s,0,'completed',%s)",
+                    (user.id, "telegram_number_code", auto_nc_number, nc_order_code)
+                )
+            display_nc_number = auto_nc_number.lstrip("+")
+            result_kb_nc = [
+                [
+                    InlineKeyboardButton("🔐 رمز التحقق", callback_data=f"buyer:show_twofa:{auto_nc_number}"),
+                    InlineKeyboardButton("🔑 كود التحقق", callback_data=f"buyer:request_code:{auto_nc_number}"),
+                ],
+                [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
+            ]
+            await update.message.reply_text(
+                f"🎉 *تم! رقمك:*
+`{display_nc_number}`",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup(result_kb_nc)
+            )
+            # رسالة التبرئة
+            try:
+                await context.bot.send_message(
+                    user.id,
+                    "📋 *إشعار تبرئة ذمة — يُرجى القراءة بعناية*
+
+"
+                    "بإتمامك عملية الاستلام فإنك تُقرّ وتوافق على ما يلي:
+
+"
+                    "① لا يتحمّل البائع أي مسؤولية عن أي محتوى موجود داخل الحساب سابقاً.
+
+"
+                    "② لا يتحمّل البائع أي مسؤولية عن أي حظر أو تقييد تتخذه تيليغرام لاحقاً.
+
+"
+                    "③ من لحظة الاستلام يُصبح الحساب والرقم مسؤوليتك الكاملة.
+
+"
+                    "شكراً لثقتك 🤍",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            except Exception:
+                pass
+            # سؤال البقاء/المغادرة
+            try:
+                _nc_sl_kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ بقاء البوت في الحساب", callback_data="buyer:stay_account")],
+                    [InlineKeyboardButton("❌ مغادرة البوت للحساب", callback_data=f"buyer:leave_account:{auto_nc_number}")],
+                ])
+                await context.bot.send_message(
+                    user.id,
+                    "🤖 *هل تريد أن يبقى البوت داخل الحساب أم يغادر؟*
+
+"
+                    "• *بقاء:* البوت يبقى متصلاً ويُرسل لك كود الدخول تلقائياً.
+"
+                    "• *مغادرة:* البوت يُغادر الحساب الآن ويحذف جلسته.",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=_nc_sl_kb
+                )
+            except Exception:
+                pass
+            if OWNER_ID:
+                try:
+                    await context.bot.send_message(
+                        OWNER_ID,
+                        f"📱 <b>تسليم رقم عبر كود شراء</b>
+"
+                        f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>
+"
+                        f"📱 {auto_nc_number}
+"
+                        f"🎟 الكود: {entered_code}
+"
+                        f"📌 {nc_order_code}",
+                        parse_mode=ParseMode.HTML
+                    )
+                except Exception:
+                    pass
+        else:
+            # لا يوجد رقم في المخزون
+            await update.message.reply_text(
+                "✅ *تم قبول الكود!*
+
+"
+                "📱 لا يوجد رقم متاح حالياً في المخزون. سيتواصل معك المالك قريباً لتسليم رقمك.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=main_menu_kb(is_own)
+            )
+            if OWNER_ID:
+                try:
+                    await context.bot.send_message(
+                        OWNER_ID,
+                        f"📱 <b>طلب رقم عبر كود شراء (يدوي)</b>
+"
+                        f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>
+"
+                        f"🎟 الكود: {entered_code}
+"
+                        f"📌 {nc_order_code}
+"
+                        f"⚠️ لا يوجد رقم في المخزون — يرجى التسليم يدوياً.",
+                        parse_mode=ParseMode.HTML
+                    )
+                except Exception:
+                    pass
         context.user_data["state"] = "main_menu"
         return
 
@@ -6699,20 +6926,54 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ).fetchone()
             display_number = auto_number.lstrip("+")
             auto_twofa    = (auto.get("twofa_password") or "").strip()
-            twofa_delivery = (
-                f"\n🔐 *كلمة مرور المصادقة الثنائية (2FA):*\n`{auto_twofa}`"
-                if auto_twofa else ""
-            )
-            # ─── إرسال الرقم + 2FA مع زر طلب الكود ───
+            # ─── إرسال الرقم مع زري رمز التحقق + كود التحقق ───
             result_kb = [
-                [InlineKeyboardButton("🔑 عرض رمز التحقق", callback_data=f"buyer:request_code:{auto_number}")],
+                [
+                    InlineKeyboardButton("🔐 رمز التحقق", callback_data=f"buyer:show_twofa:{auto_number}"),
+                    InlineKeyboardButton("🔑 كود التحقق", callback_data=f"buyer:request_code:{auto_number}"),
+                ],
                 [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
             ]
             await q.edit_message_text(
-                f"📱 *رقمك:*\n`{display_number}`{twofa_delivery}",
+                f"📱 *رقمك:*\n`{display_number}`",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup(result_kb)
             )
+            # ─── رسالة التبرئة ───
+            try:
+                await context.bot.send_message(
+                    user.id,
+                    "📋 *إشعار تبرئة ذمة — يُرجى القراءة بعناية*\n\n"
+                    "بإتمامك عملية الشراء فإنك تُقرّ وتوافق على ما يلي:\n\n"
+                    "① لا يتحمّل البائع أي مسؤولية عن أي محتوى موجود داخل الحساب سابقاً، "
+                    "سواء كان مجموعات، قنوات، محادثات، جهات اتصال، صور، ملفات، أو أي بيانات أخرى.\n\n"
+                    "② لا يتحمّل البائع أي مسؤولية عن أي حظر، تقييد، أو إجراء تتخذه منصة تيليغرام "
+                    "على الحساب لاحقاً بسبب أي نشاط سابق أو لاحق.\n\n"
+                    "③ لا يتحمّل البائع أي مسؤولية عن أي استخدام سابق للرقم أو الحساب قبل تاريخ بيعه.\n\n"
+                    "④ من لحظة الاستلام يُصبح الحساب والرقم مسؤوليتك الكاملة والمطلقة؛ "
+                    "أي حظر، تجميد، أو تغيير يطرأ عليه لاحقاً لا يخصّ البائع بأي شكل.\n\n"
+                    "⑤ لا يحق المطالبة باسترداد أو تعويض بعد استلام بيانات الدخول.\n\n"
+                    "شكراً لثقتك 🤍",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            except Exception:
+                pass
+            # ─── سؤال البقاء/المغادرة ───
+            try:
+                _stay_leave_kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ بقاء البوت في الحساب", callback_data="buyer:stay_account")],
+                    [InlineKeyboardButton("❌ مغادرة البوت للحساب", callback_data=f"buyer:leave_account:{auto_number}")],
+                ])
+                await context.bot.send_message(
+                    user.id,
+                    "🤖 *هل تريد أن يبقى البوت داخل الحساب أم يغادر؟*\n\n"
+                    "• *بقاء:* البوت يبقى متصلاً ويُرسل لك كود الدخول تلقائياً عند تسجيل دخولك.\n"
+                    "• *مغادرة:* البوت يُغادر الحساب الآن ويحذف جلسته.",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=_stay_leave_kb
+                )
+            except Exception:
+                pass
             if OWNER_ID:
                 try:
                     await context.bot.send_message(
@@ -6774,6 +7035,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
             f"💰 {cost} نقطة\n"
             f"📌 {code}"
+        )
+        return
+
+    # ── شراء رقم عبر كود ──
+    if data == "exchange:num_code":
+        if not is_number_exchange_on():
+            await q.answer("🔒 شراء الأرقام مغلق حالياً. تواصل مع المالك.", show_alert=True)
+            return
+        context.user_data["state"] = "await_num_purchase_code"
+        await q.edit_message_text(
+            "🎟 *شراء رقم تيلغرام عبر كود*\n\n"
+            "أرسل الكود الخاص بك لإتمام عملية الشراء:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=back_kb("exchange_points")
         )
         return
 
@@ -9047,6 +9322,104 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if data == "os:manage_num_codes" and is_own:
+        with db_conn() as c:
+            ncodes = c.execute(
+                "SELECT code, max_uses, used_count, active FROM number_purchase_codes ORDER BY created_at DESC LIMIT 20"
+            ).fetchall()
+        rows = []
+        if ncodes:
+            for nc in ncodes:
+                status = "✅" if nc["active"] else "❌"
+                rows.append([InlineKeyboardButton(
+                    f"{status} {nc['code']} ({nc['used_count']}/{nc['max_uses']})",
+                    callback_data=f"os:num_code_info:{nc['code']}"
+                )])
+        rows.append([InlineKeyboardButton("➕ إنشاء كود شراء جديد", callback_data="os:create_num_code")])
+        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="os:back_settings")])
+        await q.edit_message_text(
+            "🎟 *أكواد شراء رقم تيلغرام*\n\n"
+            "كل كود يُتيح للمستخدم شراء رقم تيلغرام بدون نقاط.\n"
+            "يمكنك تحديد عدد مرات الاستخدام لكل كود.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
+        return
+
+    if data == "os:create_num_code" and is_own:
+        context.user_data["state"] = "os_await_num_code_text"
+        await q.edit_message_text(
+            "🎟 *إنشاء كود شراء رقم جديد*\n\nأرسل الكود المطلوب (حروف وأرقام فقط):",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    if data.startswith("os:num_code_info:") and is_own:
+        nc_code = data[len("os:num_code_info:"):]
+        with db_conn() as c:
+            nc = c.execute("SELECT * FROM number_purchase_codes WHERE code=%s", (nc_code,)).fetchone()
+        if not nc:
+            await q.answer("⚠️ الكود غير موجود.", show_alert=True)
+            return
+        status = "✅ فعّال" if nc["active"] else "❌ معطّل"
+        toggle_label = "❌ تعطيل الكود" if nc["active"] else "✅ تفعيل الكود"
+        rows = [
+            [InlineKeyboardButton(toggle_label, callback_data=f"os:toggle_num_code:{nc_code}")],
+            [InlineKeyboardButton("🗑 حذف الكود", callback_data=f"os:del_num_code:{nc_code}")],
+            [InlineKeyboardButton("🔙 رجوع", callback_data="os:manage_num_codes")],
+        ]
+        await q.edit_message_text(
+            f"🎟 *كود شراء رقم*\n\n"
+            f"الكود: `{nc_code}`\n"
+            f"الحالة: {status}\n"
+            f"مرات الاستخدام: {nc['used_count']}/{nc['max_uses']}\n"
+            f"تاريخ الإنشاء: {nc['created_at']}",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
+        return
+
+    if data.startswith("os:toggle_num_code:") and is_own:
+        nc_code = data[len("os:toggle_num_code:"):]
+        with db_conn() as c:
+            nc = c.execute("SELECT active FROM number_purchase_codes WHERE code=%s", (nc_code,)).fetchone()
+            if nc:
+                new_active = 0 if nc["active"] else 1
+                c.execute("UPDATE number_purchase_codes SET active=%s WHERE code=%s", (new_active, nc_code))
+        await q.answer("✅ تم تحديث حالة الكود.", show_alert=False)
+        # إعادة عرض المعلومات
+        with db_conn() as c:
+            nc2 = c.execute("SELECT * FROM number_purchase_codes WHERE code=%s", (nc_code,)).fetchone()
+        status = "✅ فعّال" if nc2["active"] else "❌ معطّل"
+        toggle_label = "❌ تعطيل الكود" if nc2["active"] else "✅ تفعيل الكود"
+        rows = [
+            [InlineKeyboardButton(toggle_label, callback_data=f"os:toggle_num_code:{nc_code}")],
+            [InlineKeyboardButton("🗑 حذف الكود", callback_data=f"os:del_num_code:{nc_code}")],
+            [InlineKeyboardButton("🔙 رجوع", callback_data="os:manage_num_codes")],
+        ]
+        await q.edit_message_text(
+            f"🎟 *كود شراء رقم*\n\n"
+            f"الكود: `{nc_code}`\n"
+            f"الحالة: {status}\n"
+            f"مرات الاستخدام: {nc2['used_count']}/{nc2['max_uses']}\n"
+            f"تاريخ الإنشاء: {nc2['created_at']}",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
+        return
+
+    if data.startswith("os:del_num_code:") and is_own:
+        nc_code = data[len("os:del_num_code:"):]
+        with db_conn() as c:
+            c.execute("DELETE FROM number_purchase_codes WHERE code=%s", (nc_code,))
+            c.execute("DELETE FROM number_purchase_code_uses WHERE code=%s", (nc_code,))
+        await q.edit_message_text(
+            f"✅ تم حذف الكود `{nc_code}` بنجاح.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=back_kb("os:manage_num_codes")
+        )
+        return
+
     if data == "os:toggle_number_exchange" and is_own:
         current = int(get_setting("number_exchange_enabled") or "0")
         new_val = "0" if current else "1"
@@ -9511,6 +9884,34 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "⏳ لم يصل أي كود بعد.\n\nافتح تيليجرام على جهازك، أدخل الرقم، ثم اضغط هنا مجدداً.",
                 show_alert=True
             )
+        return
+
+    if data.startswith("buyer:show_twofa:"):
+        twofa_phone = data[len("buyer:show_twofa:"):]
+        try:
+            with db_conn() as _twdb:
+                _twrow = _twdb.execute(
+                    "SELECT twofa_password FROM number_stock WHERE phone_number=%s AND assigned_to=%s",
+                    (twofa_phone, user.id)
+                ).fetchone()
+            _twofa_val = (_twrow["twofa_password"] or "").strip() if _twrow else ""
+            if _twofa_val:
+                await q.answer("✅ تم إرسال رمز التحقق أدناه", show_alert=False)
+                await context.bot.send_message(
+                    chat_id=user.id,
+                    text=(
+                        f"🔐 *رمز التحقق (المصادقة الثنائية)*\n\n"
+                        f"`{_twofa_val}`\n\n"
+                        f"📱 للرقم: `{twofa_phone.lstrip('+')}`\n\n"
+                        f"⚠️ لا تشاركه مع أحد."
+                    ),
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+            else:
+                await q.answer("⚠️ لا يوجد رمز تحقق ثنائي مضبوط لهذا الرقم.", show_alert=True)
+        except Exception as _twe:
+            logger.warning(f"⚠️ خطأ في جلب رمز التحقق: {_twe}")
+            await q.answer("❌ حدث خطأ. حاول مجدداً.", show_alert=True)
         return
 
     if data == "buyer:stay_account":
