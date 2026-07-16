@@ -34,6 +34,64 @@ from telegram.error import NetworkError, TimedOut, RetryAfter
 
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
+import struct, base64, socket as _socket
+
+# ────────────────────────────────────────────────────────────
+#  تحويل Pyrogram JSON → Telethon StringSession
+# ────────────────────────────────────────────────────────────
+_TG_DC = {
+    1: ("149.154.175.53",  443),
+    2: ("149.154.167.51",  443),
+    3: ("149.154.175.100", 443),
+    4: ("149.154.167.91",  443),
+    5: ("91.108.56.130",   443),
+}
+
+def pyrogram_json_to_telethon(data: dict) -> str | None:
+    """
+    يحوّل صيغة Pyrogram JSON إلى Telethon StringSession.
+    يتوقع dict يحتوي على:
+      - dc_id   : رقم مركز البيانات (1-5)
+      - auth_key: مفتاح المصادقة بصيغة hex (512 رمز = 256 بايت)
+    يُرجع StringSession string جاهز للاستخدام، أو None عند الفشل.
+    """
+    try:
+        dc_id    = int(data.get("dc_id") or 0)
+        auth_hex = (data.get("auth_key") or "").strip()
+        if not dc_id or not auth_hex:
+            return None
+        auth_key = bytes.fromhex(auth_hex)
+        if len(auth_key) != 256:
+            return None
+        ip, port = _TG_DC.get(dc_id, ("149.154.167.51", 443))
+        packed = struct.pack(
+            ">BH4sH256s",
+            1,                          # version
+            dc_id,                      # dc_id  (2 bytes)
+            _socket.inet_aton(ip),      # IP     (4 bytes)
+            port,                       # port   (2 bytes)
+            auth_key,                   # key    (256 bytes)
+        )
+        return base64.urlsafe_b64encode(packed).decode("ascii").rstrip("=")
+    except Exception:
+        return None
+
+def _maybe_convert_session(raw: str) -> str:
+    """
+    إذا كانت raw عبارة عن JSON يحتوي dc_id + auth_key (صيغة Pyrogram)
+    يحوّلها إلى Telethon StringSession ويُعيدها، وإلا يُعيد raw كما هي.
+    """
+    s = raw.strip()
+    if s.startswith("{"):
+        import json as _j
+        try:
+            d = _j.loads(s)
+            converted = pyrogram_json_to_telethon(d)
+            if converted:
+                return converted
+        except Exception:
+            pass
+    return s
 from telethon.errors import (
     SessionPasswordNeededError, PhoneCodeInvalidError, PhoneCodeExpiredError,
     PhoneNumberInvalidError, FloodWaitError, PasswordHashInvalidError
@@ -3504,6 +3562,8 @@ async def cmd_import_session(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return
     session_str = context.args[0].strip()
+    # دعم صيغة Pyrogram JSON (dc_id + auth_key) مباشرةً في الأمر
+    session_str = _maybe_convert_session(session_str)
     msg = await update.message.reply_text("⏳ جاري التحقق من الجلسة...")
     if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
         await msg.edit_text("❌ متغيرات TELEGRAM_API_ID أو TELEGRAM_API_HASH غير مضبوطة.")
@@ -3741,17 +3801,27 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ الصيغة غير صحيحة. تأكد أنه JSON صالح وأعد المحاولة.\nأرسل /import_sessions للمحاولة مجدداً.")
             return
         # نقبل: list of strings أو list of dicts {"session":..., "phone":...}
-        if isinstance(raw, str):
+        # أو dict واحد بصيغة Pyrogram JSON (dc_id + auth_key)
+        if isinstance(raw, dict):
+            raw = [raw]
+        elif isinstance(raw, str):
             raw = [raw]
         sessions = []
         for item in raw:
             if isinstance(item, str):
-                sessions.append({"session": item.strip(), "phone": None})
+                sessions.append({"session": _maybe_convert_session(item), "phone": None})
             elif isinstance(item, dict):
+                # صيغة Pyrogram JSON: dc_id + auth_key
+                if "dc_id" in item and "auth_key" in item:
+                    converted = pyrogram_json_to_telethon(item)
+                    if converted:
+                        p = item.get("phone") or item.get("phone_number") or None
+                        sessions.append({"session": converted, "phone": p})
+                    continue
                 s = (item.get("session") or item.get("session_string") or "").strip()
                 p = item.get("phone") or item.get("phone_number") or None
                 if s:
-                    sessions.append({"session": s, "phone": p})
+                    sessions.append({"session": _maybe_convert_session(s), "phone": p})
         if not sessions:
             await update.message.reply_text("❌ لم أجد أي جلسة في البيانات المرسلة.")
             return
@@ -5529,6 +5599,7 @@ async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # نقبل: dict واحد أو list من dicts أو list من strings
+    # بما في ذلك صيغة Pyrogram JSON (dc_id + auth_key)
     if isinstance(data, dict):
         data = [data]
     elif isinstance(data, str):
@@ -5537,8 +5608,20 @@ async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sessions = []
     for item in data:
         if isinstance(item, str):
-            sessions.append({"session": item.strip(), "phone": None})
+            sessions.append({"session": _maybe_convert_session(item.strip()), "phone": None})
         elif isinstance(item, dict):
+            # ── صيغة Pyrogram JSON (dc_id + auth_key hex) ──
+            if "dc_id" in item and "auth_key" in item:
+                converted = pyrogram_json_to_telethon(item)
+                if converted:
+                    phone = (
+                        item.get("phone") or
+                        item.get("phone_number") or
+                        item.get("mobile") or None
+                    )
+                    sessions.append({"session": converted, "phone": phone})
+                continue
+            # ── صيغة Telethon StringSession العادية ──
             sess = (
                 item.get("session_string") or
                 item.get("session") or
@@ -5550,10 +5633,10 @@ async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 item.get("mobile") or None
             )
             if sess:
-                sessions.append({"session": sess, "phone": phone})
+                sessions.append({"session": _maybe_convert_session(sess), "phone": phone})
 
     if not sessions:
-        await msg.edit_text("❌ لم أجد أي جلسة صالحة في الملف. تأكد أن الملف يحتوي حقل `session_string`.")
+        await msg.edit_text("❌ لم أجد أي جلسة صالحة في الملف. تأكد أن الملف يحتوي حقل `session_string` أو حقلي `dc_id` و`auth_key` (صيغة Pyrogram).")
         return
 
     await msg.edit_text(f"⏳ تم العثور على {len(sessions)} جلسة، جاري التحقق والاستيراد...")
