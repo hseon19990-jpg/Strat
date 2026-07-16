@@ -453,6 +453,7 @@ def init_db():
               "ALTER TABLE mandatory_channels ADD COLUMN IF NOT EXISTS queued INTEGER DEFAULT 0",
               "ALTER TABLE prize_exchanges ADD COLUMN IF NOT EXISTS order_code TEXT",
               "ALTER TABLE prize_exchanges ADD COLUMN IF NOT EXISTS owner_seen BOOLEAN DEFAULT FALSE",
+              "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS ever_sold BOOLEAN DEFAULT FALSE",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS session_string TEXT",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS sessions_reset BOOLEAN DEFAULT FALSE",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS force_listed BOOLEAN DEFAULT FALSE",
@@ -1243,6 +1244,7 @@ def _sellable_filter_sql() -> str:
     - لم يُطرد من تيليغرام (last_authorized IS NOT FALSE)
     - لديه كلمة مرور 2FA مخزّنة (ضمان وصول المشتري للحساب)
     - غير مجمّد
+    - لم يسبق بيعه (ever_sold IS FALSE) — إلا إذا أعاد المالك إدراجه صراحةً (force_listed=TRUE)
     الأرقام اليدوية (بلا جلسة) والمطرودة لا تُباع تلقائياً."""
     return (
         "session_string IS NOT NULL"
@@ -1250,6 +1252,7 @@ def _sellable_filter_sql() -> str:
         " AND twofa_password IS NOT NULL"
         " AND twofa_password <> ''"
         " AND frozen_at IS NULL"
+        " AND (ever_sold IS NOT TRUE OR force_listed IS TRUE)"
     )
 
 
@@ -1277,7 +1280,7 @@ def assign_next_number(user_id: int):
     لشخصين عند الطلب المتزامن). يُرجع dict {phone_number, session_string} إن وُجد، أو None إن كان المخزون فارغاً."""
     with db_conn() as c:
         row = c.execute(
-            "UPDATE number_stock SET assigned_to=%s, assigned_at=NOW() "
+            "UPDATE number_stock SET assigned_to=%s, assigned_at=NOW(), ever_sold=TRUE "
             "WHERE id = (SELECT id FROM number_stock WHERE assigned_to IS NULL AND deleted_at IS NULL AND "
             f"{_sellable_filter_sql()} ORDER BY id ASC LIMIT 1 FOR UPDATE SKIP LOCKED) "
             "RETURNING phone_number, session_string",
@@ -1310,7 +1313,7 @@ async def assign_verified_number(user_id: int, bot=None) -> dict | None:
         with db_conn() as c:
             excl = f"AND id NOT IN ({','.join(str(i) for i in skipped_ids)})" if skipped_ids else ""
             row = c.execute(
-                f"UPDATE number_stock SET assigned_to=%s, assigned_at=NOW() "
+                f"UPDATE number_stock SET assigned_to=%s, assigned_at=NOW(), ever_sold=TRUE "
                 f"WHERE id = (SELECT id FROM number_stock "
                 f"WHERE assigned_to IS NULL AND deleted_at IS NULL AND {_sellable_filter_sql()} "
                 f"{excl} ORDER BY RANDOM() LIMIT 1 FOR UPDATE SKIP LOCKED) "
@@ -2557,6 +2560,96 @@ async def retry_pending_session_resets(context: ContextTypes.DEFAULT_TYPE):
                 await client.disconnect()
             except Exception:
                 pass
+
+
+async def compensate_duplicate_sales_job(context: ContextTypes.DEFAULT_TYPE):
+    """يفحص دورياً أرقام الهاتف التي بيعت لأكثر من مشترٍ واحد ويُعوّض
+    جميع المشترين عدا الأول (صاحب أقدم سجل مكتمل).
+    يُغيّر حالة سجل المكرر إلى 'duplicate_compensated' لتجنب التعويض المزدوج."""
+    bot = context.bot
+    try:
+        with db_conn() as c:
+            dupes = c.execute("""
+                SELECT
+                    prize_value,
+                    array_agg(id          ORDER BY created_at ASC) AS pe_ids,
+                    array_agg(user_id     ORDER BY created_at ASC) AS user_ids,
+                    array_agg(points_cost ORDER BY created_at ASC) AS costs,
+                    array_agg(order_code  ORDER BY created_at ASC) AS codes
+                FROM prize_exchanges
+                WHERE prize_type IN ('telegram_number', 'telegram_number_code')
+                  AND prize_value NOT IN ('number', 'manual')
+                  AND status = 'completed'
+                GROUP BY prize_value
+                HAVING COUNT(*) > 1
+            """).fetchall()
+    except Exception as e:
+        logger.warning(f"⚠️ compensate_duplicate_sales: فشل جلب السجلات المكررة: {e}")
+        return
+
+    for dupe in (dupes or []):
+        pe_ids   = dupe["pe_ids"]
+        user_ids = dupe["user_ids"]
+        costs    = dupe["costs"]
+        codes    = dupe["codes"]
+        phone    = dupe["prize_value"]
+
+        # الأول (index 0) هو المشتري A — يحتفظ بالحساب بلا تعويض
+        for i in range(1, len(pe_ids)):
+            pe_id = pe_ids[i]
+            uid   = user_ids[i]
+            cost  = int(costs[i] or 0)
+            code  = codes[i] or str(pe_id)
+
+            try:
+                with db_conn() as c:
+                    c.execute(
+                        "UPDATE prize_exchanges SET status='duplicate_compensated' WHERE id=%s",
+                        (pe_id,)
+                    )
+            except Exception as e:
+                logger.warning(f"⚠️ compensate_duplicate_sales: فشل تحديث سجل {pe_id}: {e}")
+                continue
+
+            # إعادة النقاط إن كانت تُخصم
+            if cost > 0:
+                add_points(uid, cost)
+
+            # إشعار المشتري المتضرر
+            try:
+                msg = (
+                    f"⚠️ *تنبيه — تعويض تلقائي*\n\n"
+                    f"اكتشف النظام أن الرقم الذي حصلت عليه بكود `{code}` "
+                    f"قد سُلِّم بالخطأ لأكثر من شخص.\n\n"
+                )
+                if cost > 0:
+                    msg += f"✅ تم إعادة *{cost:,} نقطة* لرصيدك تلقائياً.\n\n"
+                else:
+                    msg += "✅ تم تسجيل الحادثة وسيتواصل معك المالك لحلها.\n\n"
+                msg += "نعتذر عن هذا الخلل ونقدّر صبرك 🙏"
+                await bot.send_message(uid, msg, parse_mode=ParseMode.MARKDOWN)
+            except Exception as e:
+                logger.warning(f"⚠️ compensate_duplicate_sales: فشل إشعار المستخدم {uid}: {e}")
+
+            # إشعار المالك
+            if OWNER_ID:
+                try:
+                    await bot.send_message(
+                        OWNER_ID,
+                        f"⚠️ <b>بيع مكرر — تعويض تلقائي</b>\n\n"
+                        f"📱 الرقم: <code>{phone}</code>\n"
+                        f"👤 المتضرر: <a href='tg://user?id={uid}'>{uid}</a>\n"
+                        f"💰 النقاط المُعادة: {cost:,}\n"
+                        f"📌 كود الطلب: {code}",
+                        parse_mode=ParseMode.HTML
+                    )
+                except Exception:
+                    pass
+
+            logger.info(
+                f"✅ compensate_duplicate_sales: عوّضنا المستخدم {uid} "
+                f"({cost:,} نقطة) بسبب بيع مكرر للرقم {phone} (pe_id={pe_id})"
+            )
 
 
 async def check_pending_orders_job(context: ContextTypes.DEFAULT_TYPE):
@@ -10643,6 +10736,13 @@ def main():
             await start_all_number_monitors(application)
         except Exception as e:
             logger.error(f"❌ خطأ في بدء مراقبة الأرقام: {e}")
+        # فحص فوري عند الإقلاع لاكتشاف أي بيع مكرر قديم وتعويض أصحابه
+        try:
+            await compensate_duplicate_sales_job(
+                type("_ctx", (), {"bot": application.bot})()
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ compensate_duplicate_sales (startup): {e}")
 
     # ── معالج الأخطاء العام ──
     async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -10667,6 +10767,8 @@ def main():
         logger.info("🤝 تم تفعيل مهام الإحالة التلقائية (كل ساعة)")
         app.job_queue.run_repeating(monitor_number_changes_job, interval=1800, first=210)
         logger.info("🔔 تم تفعيل مراقبة تغيّرات حسابات الأرقام (طرد/تجميد/أجهزة) كل 30 دقيقة")
+        app.job_queue.run_repeating(compensate_duplicate_sales_job, interval=21600, first=300)
+        logger.info("🔁 تم تفعيل فحص البيع المكرر وتعويض المتضررين (كل 6 ساعات)")
 
     logger.info("🤖 Bot started!")
     app.run_polling(
