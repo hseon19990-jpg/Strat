@@ -1246,15 +1246,15 @@ def _sellable_filter_sql() -> str:
     - لم يُطرد من تيليغرام (last_authorized IS NOT FALSE)
     - لديه كلمة مرور 2FA مخزّنة (ضمان وصول المشتري للحساب)
     - غير مجمّد
-    - لم يسبق بيعه (ever_sold IS FALSE) — إلا إذا أعاد المالك إدراجه صراحةً (force_listed=TRUE)
-    الأرقام اليدوية (بلا جلسة) والمطرودة لا تُباع تلقائياً."""
+    - لم يسبق بيعه أبداً (ever_sold IS NOT TRUE) — حظر نهائي لا استثناء فيه
+    الأرقام اليدوية (بلا جلسة) والمطرودة والمبيوعة سابقاً لا تُباع تلقائياً أبداً."""
     return (
         "session_string IS NOT NULL"
         " AND last_authorized IS NOT FALSE"
         " AND twofa_password IS NOT NULL"
         " AND twofa_password <> ''"
         " AND frozen_at IS NULL"
-        " AND (ever_sold IS NOT TRUE OR force_listed IS TRUE)"
+        " AND ever_sold IS NOT TRUE"
     )
 
 
@@ -2446,7 +2446,7 @@ async def _start_number_monitor(phone: str, session_str: str, application):
                         try:
                             with db_conn() as _clv:
                                 _clv.execute(
-                                    "UPDATE number_stock SET assigned_to=NULL, assigned_at=NULL "
+                                    "UPDATE number_stock SET assigned_to=NULL, assigned_at=NULL, force_listed=FALSE "
                                     "WHERE phone_number=%s",
                                     (_phone_snap,)
                                 )
@@ -3058,6 +3058,7 @@ BUILTIN_DEFAULTS = {
         ("💵 رصيد موقع الرشق", "os:site_balance", 1),
         ("🧩 إدارة الأزرار", "os:manage_buttons", 1),
         ("✏️ رسالة عند الاستبدال", "os:edit_exchange_msg", 1),
+        ("⚠️ تعويض المظلومين", "os:failed_deliveries", 1),
     ],
 }
 
@@ -4764,21 +4765,26 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             except Exception:
                 pass
-            try:
-                _nc_sl_kb = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✅ بقاء البوت في الحساب", callback_data="buyer:stay_account")],
-                    [InlineKeyboardButton("❌ مغادرة البوت للحساب", callback_data=f"buyer:leave_account:{auto_nc_number}")],
-                ])
-                await context.bot.send_message(
-                    user.id,
-                    "🤖 *هل تريد أن يبقى البوت داخل الحساب أم يغادر؟*\n\n"
-                    "• *بقاء:* البوت يبقى متصلاً ويُرسل لك كود الدخول تلقائياً.\n"
-                    "• *مغادرة:* البوت يُغادر الحساب الآن ويحذف جلسته.",
-                    parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=_nc_sl_kb
-                )
-            except Exception:
-                pass
+            # ─── مغادرة فورية بعد التسليم عبر الكود ───
+            async def _auto_leave_nc(_ph=auto_nc_number, _uid=user.id, _bot=context.bot):
+                await asyncio.sleep(15)
+                try:
+                    await _stop_number_monitor(_ph)
+                except Exception:
+                    pass
+                try:
+                    with db_conn() as _clx2:
+                        _clx2.execute(
+                            "UPDATE number_stock SET assigned_to=NULL, assigned_at=NULL, force_listed=FALSE "
+                            "WHERE phone_number=%s", (_ph,)
+                        )
+                except Exception:
+                    pass
+                try:
+                    await _bot.send_message(_uid, "🤖 البوت غادر الحساب تلقائياً. الحساب أصبح بيدك كاملاً 🤍")
+                except Exception:
+                    pass
+            asyncio.create_task(_auto_leave_nc())
             if OWNER_ID:
                 try:
                     _badge_nc = _unseen_badge_html(exclude_pe_id=_nc_pe_id)
@@ -5865,13 +5871,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ── بحث عن مستخدمي كود (حتى القديمة المحذوفة) ──
+    # ── بحث عن مستخدمي كود (حتى القديمة المحذوفة) — يبحث في الأكواد الترويجية وأكواد شراء الأرقام ──
     if is_own and state == "os_await_code_search":
         code = text.strip().upper()
         context.user_data["state"] = "main_menu"
         with db_conn() as c:
             promo = c.execute("SELECT * FROM promo_codes WHERE code=%s", (code,)).fetchone()
-            uses  = c.execute(
+            promo_uses = c.execute(
                 """
                 SELECT pu.user_id, pu.used_at,
                        u.username, u.full_name, u.points
@@ -5882,40 +5888,83 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 """,
                 (code,)
             ).fetchall()
-        if not uses and not promo:
+            # بحث في أكواد شراء الأرقام أيضاً
+            num_code = c.execute("SELECT * FROM number_purchase_codes WHERE code=%s", (code,)).fetchone()
+            num_code_uses = c.execute(
+                """
+                SELECT ncu.user_id, ncu.used_at,
+                       u.username, u.full_name, u.points,
+                       pe.prize_value AS number_given
+                FROM number_purchase_code_uses ncu
+                LEFT JOIN users u ON u.user_id = ncu.user_id
+                LEFT JOIN prize_exchanges pe ON pe.user_id = ncu.user_id
+                     AND pe.prize_type = 'telegram_number_code'
+                     AND pe.status = 'completed'
+                WHERE ncu.code = %s
+                ORDER BY ncu.used_at DESC NULLS LAST
+                """,
+                (code,)
+            ).fetchall()
+
+        if not promo_uses and not promo and not num_code_uses and not num_code:
             await update.message.reply_text(
                 f"⚠️ لا توجد سجلات لاستخدام الكود `{code}` (لا الآن ولا في السابق).",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:list_promos")]]),
             )
             return
-        if promo:
-            header = (
-                f"🔍 *نتائج البحث عن الكود:* `{code}`\n"
-                f"🎁 النقاط: {promo['points']} | الاستخدامات: {promo['used_count']}/{promo['max_uses']}"
-                f" | {'✅ فعّال' if promo['active'] else '❌ معطّل'}\n"
-            )
-        else:
-            header = (
-                f"🔍 *نتائج البحث عن الكود:* `{code}`\n"
-                "⚠️ الكود محذوف من القائمة الحالية لكن تتوفر سجلات استخدام قديمة:\n"
-            )
-        if not uses:
-            body = "\n_لم يستخدمه أحد._"
-        else:
-            lines = []
-            for i, u in enumerate(uses, 1):
-                name  = (u["full_name"] or "").strip() or "—"
-                uname = f"@{u['username']}" if u["username"] else f"ID: {u['user_id']}"
-                pts   = u["points"] if u["points"] is not None else "؟"
-                ts_raw = u["used_at"]
-                if ts_raw:
-                    ts = ts_raw.strftime("%Y-%m-%d %H:%M") if hasattr(ts_raw, "strftime") else str(ts_raw)[:16]
-                else:
-                    ts = "—"
-                lines.append(f"{i}. {name} ({uname})\n   💰 رصيده: {pts} نقطة | 🕐 {ts}")
-            body = "\n\n" + "\n\n".join(lines)
-        msg = header + body
+
+        parts = []
+
+        # ─── قسم الأكواد الترويجية ───
+        if promo or promo_uses:
+            if promo:
+                header = (
+                    f"🎟 *كود ترويجي:* `{code}`\n"
+                    f"🎁 النقاط: {promo['points']} | الاستخدامات: {promo['used_count']}/{promo['max_uses']}"
+                    f" | {'✅ فعّال' if promo['active'] else '❌ معطّل'}\n"
+                )
+            else:
+                header = f"🎟 *كود ترويجي (قديم):* `{code}`\n"
+            if not promo_uses:
+                body = "\n_لم يستخدمه أحد._"
+            else:
+                lines = []
+                for i, u in enumerate(promo_uses, 1):
+                    name  = (u["full_name"] or "").strip() or "—"
+                    uname = f"@{u['username']}" if u["username"] else f"ID: {u['user_id']}"
+                    pts   = u["points"] if u["points"] is not None else "؟"
+                    ts_raw = u["used_at"]
+                    ts = ts_raw.strftime("%Y-%m-%d %H:%M") if ts_raw and hasattr(ts_raw, "strftime") else (str(ts_raw)[:16] if ts_raw else "—")
+                    lines.append(f"{i}. {name} ({uname})\n   💰 رصيده: {pts} نقطة | 🕐 {ts}")
+                body = "\n\n" + "\n\n".join(lines)
+            parts.append(header + body)
+
+        # ─── قسم أكواد شراء الأرقام ───
+        if num_code or num_code_uses:
+            if num_code:
+                header2 = (
+                    f"📱 *كود شراء رقم:* `{code}`\n"
+                    f"الاستخدامات: {num_code['used_count']}/{num_code['max_uses']}"
+                    f" | {'✅ فعّال' if num_code['active'] else '❌ معطّل'}\n"
+                )
+            else:
+                header2 = f"📱 *كود شراء رقم (قديم):* `{code}`\n"
+            if not num_code_uses:
+                body2 = "\n_لم يستخدمه أحد._"
+            else:
+                lines2 = []
+                for i, u in enumerate(num_code_uses, 1):
+                    name  = (u["full_name"] or "").strip() or "—"
+                    uname = f"@{u['username']}" if u["username"] else f"ID: {u['user_id']}"
+                    num   = u["number_given"] or "—"
+                    ts_raw = u["used_at"]
+                    ts = ts_raw.strftime("%Y-%m-%d %H:%M") if ts_raw and hasattr(ts_raw, "strftime") else (str(ts_raw)[:16] if ts_raw else "—")
+                    lines2.append(f"{i}. {name} ({uname})\n   📱 الرقم المسلَّم: `{num}` | 🕐 {ts}")
+                body2 = "\n\n" + "\n\n".join(lines2)
+            parts.append(header2 + body2)
+
+        msg = f"🔍 *نتائج البحث عن الكود:* `{code}`\n\n" + "\n\n─────────────────\n\n".join(parts)
         # تقسيم الرسالة إن طالت
         chunks = [msg[i:i+4000] for i in range(0, len(msg), 4000)]
         for idx, chunk in enumerate(chunks):
@@ -7251,22 +7300,26 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             except Exception:
                 pass
-            # ─── سؤال البقاء/المغادرة ───
-            try:
-                _stay_leave_kb = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✅ بقاء البوت في الحساب", callback_data="buyer:stay_account")],
-                    [InlineKeyboardButton("❌ مغادرة البوت للحساب", callback_data=f"buyer:leave_account:{auto_number}")],
-                ])
-                await context.bot.send_message(
-                    user.id,
-                    "🤖 *هل تريد أن يبقى البوت داخل الحساب أم يغادر؟*\n\n"
-                    "• *بقاء:* البوت يبقى متصلاً ويُرسل لك كود الدخول تلقائياً عند تسجيل دخولك.\n"
-                    "• *مغادرة:* البوت يُغادر الحساب الآن ويحذف جلسته.",
-                    parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=_stay_leave_kb
-                )
-            except Exception:
-                pass
+            # ─── مغادرة فورية بعد التسليم ───
+            async def _auto_leave_after_exchange(_ph=auto_number, _uid=user.id, _bot=context.bot):
+                await asyncio.sleep(15)
+                try:
+                    await _stop_number_monitor(_ph)
+                except Exception:
+                    pass
+                try:
+                    with db_conn() as _clx:
+                        _clx.execute(
+                            "UPDATE number_stock SET assigned_to=NULL, assigned_at=NULL, force_listed=FALSE "
+                            "WHERE phone_number=%s", (_ph,)
+                        )
+                except Exception:
+                    pass
+                try:
+                    await _bot.send_message(_uid, "🤖 البوت غادر الحساب تلقائياً. الحساب أصبح بيدك كاملاً 🤍")
+                except Exception:
+                    pass
+            asyncio.create_task(_auto_leave_after_exchange())
             if OWNER_ID:
                 try:
                     _auto_pe_id = pe["id"] if pe else None
@@ -8081,7 +8134,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("🗑️ حذف الأرقام اليدوية + تعويض المشترين", callback_data="os:delete_manual_numbers")],
                 [InlineKeyboardButton("🤝 مهام الإحالة التلقائية", callback_data="os:ref_tasks")],
                 [InlineKeyboardButton("🛒 الحسابات المبيوعة", callback_data="os:sold_accounts")],
-                [InlineKeyboardButton("⚠️ العمليات الفاشلة (ظُلم أصحابها)", callback_data="os:failed_deliveries")],
+                [InlineKeyboardButton("⚠️ تعويض المظلومين / العمليات الفاشلة", callback_data="os:failed_deliveries")],
                 [InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")],
             ])
         )
@@ -8223,13 +8276,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if count == 0:
                 await q.answer("✅ لا توجد أرقام مباعة حالياً.", show_alert=True)
                 return
+            # نُعيد تعيين ever_sold=FALSE حتى تصبح الأرقام قابلة للبيع من جديد
             c.execute(
-                "UPDATE number_stock SET assigned_to=NULL, assigned_at=NULL, force_listed=TRUE "
+                "UPDATE number_stock SET assigned_to=NULL, assigned_at=NULL, "
+                "force_listed=FALSE, ever_sold=FALSE "
                 "WHERE assigned_to IS NOT NULL AND deleted_at IS NULL"
             )
         await q.edit_message_text(
             f"✅ *تم إرجاع {count} رقم للبيع بنجاح!*\n\n"
-            f"جميع الأرقام المباعة أصبحت متاحة للشراء مجدداً.",
+            f"جميع الأرقام المحددة أصبحت متاحة للشراء من جديد.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔙 رجوع للمخزون", callback_data="os:manage_numbers")],
@@ -9819,6 +9874,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status = "✅ فعّال" if nc["active"] else "❌ معطّل"
         toggle_label = "❌ تعطيل الكود" if nc["active"] else "✅ تفعيل الكود"
         rows = [
+            [InlineKeyboardButton(f"👥 من استخدم الكود ({nc['used_count']})", callback_data=f"os:num_code_users:{nc_code}")],
             [InlineKeyboardButton(toggle_label, callback_data=f"os:toggle_num_code:{nc_code}")],
             [InlineKeyboardButton("🗑 حذف الكود", callback_data=f"os:del_num_code:{nc_code}")],
             [InlineKeyboardButton("🔙 رجوع", callback_data="os:manage_num_codes")],
@@ -9832,6 +9888,65 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(rows)
         )
+        return
+
+    if data.startswith("os:num_code_users:") and is_own:
+        nc_code = data[len("os:num_code_users:"):]
+        try:
+            with db_conn() as c:
+                nc = c.execute("SELECT * FROM number_purchase_codes WHERE code=%s", (nc_code,)).fetchone()
+                uses = c.execute(
+                    """
+                    SELECT ncu.user_id, ncu.used_at,
+                           u.username, u.full_name, u.points,
+                           pe.prize_value AS number_given
+                    FROM number_purchase_code_uses ncu
+                    LEFT JOIN users u ON u.user_id = ncu.user_id
+                    LEFT JOIN prize_exchanges pe ON pe.user_id = ncu.user_id
+                         AND pe.prize_type = 'telegram_number_code'
+                         AND pe.status = 'completed'
+                    WHERE ncu.code = %s
+                    ORDER BY ncu.used_at DESC NULLS LAST
+                    """,
+                    (nc_code,)
+                ).fetchall()
+            if nc:
+                header = (
+                    f"👥 *من استخدم كود شراء الرقم:* `{nc_code}`\n"
+                    f"الاستخدامات: {nc['used_count']}/{nc['max_uses']} | "
+                    f"{'✅ فعّال' if nc['active'] else '❌ معطّل'}\n\n"
+                )
+            else:
+                header = f"👥 *من استخدم الكود (قديم):* `{nc_code}`\n\n"
+            if not uses:
+                body = "_لم يستخدمه أحد بعد._"
+            else:
+                lines = []
+                for i, u in enumerate(uses, 1):
+                    name  = md_escape((u["full_name"] or "").strip() or "—")
+                    uname = f"@{md_escape(u['username'])}" if u["username"] else f"ID: {u['user_id']}"
+                    num   = u["number_given"] or "—"
+                    ts_raw = u["used_at"]
+                    ts = ts_raw.strftime("%Y-%m-%d %H:%M") if ts_raw and hasattr(ts_raw, "strftime") else (str(ts_raw)[:16] if ts_raw else "—")
+                    lines.append(
+                        f"{i}. {name} ({uname})\n"
+                        f"   📱 الرقم المسلَّم: `{num}`\n"
+                        f"   🕐 {ts}"
+                    )
+                body = "\n\n".join(lines)
+            full_text = header + body
+            if len(full_text) > 4000:
+                full_text = full_text[:3950] + "\n\n⚠️ القائمة طويلة، تم اقتصارها."
+            await q.edit_message_text(
+                full_text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 رجوع للكود", callback_data=f"os:num_code_info:{nc_code}")]
+                ])
+            )
+        except Exception as _e:
+            logger.error(f"❌ os:num_code_users error: {_e}")
+            await q.answer(f"❌ خطأ: {_e}", show_alert=True)
         return
 
     if data.startswith("os:toggle_num_code:") and is_own:
@@ -9848,6 +9963,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status = "✅ فعّال" if nc2["active"] else "❌ معطّل"
         toggle_label = "❌ تعطيل الكود" if nc2["active"] else "✅ تفعيل الكود"
         rows = [
+            [InlineKeyboardButton(f"👥 من استخدم الكود ({nc2['used_count']})", callback_data=f"os:num_code_users:{nc_code}")],
             [InlineKeyboardButton(toggle_label, callback_data=f"os:toggle_num_code:{nc_code}")],
             [InlineKeyboardButton("🗑 حذف الكود", callback_data=f"os:del_num_code:{nc_code}")],
             [InlineKeyboardButton("🔙 رجوع", callback_data="os:manage_num_codes")],
@@ -10408,21 +10524,28 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("buyer:leave_account:"):
         leave_phone = data[len("buyer:leave_account:"):]
         # تحقق أن هذا المستخدم هو فعلاً مشتري هذا الرقم
+        # نتحقق من prize_exchanges أيضاً للتعامل مع حالة أن auto-leave سبق وأفرغ assigned_to
         with db_conn() as c_lv:
             row_lv = c_lv.execute(
                 "SELECT id, session_string, assigned_to FROM number_stock WHERE phone_number=%s", (leave_phone,)
             ).fetchone()
-        if not row_lv or row_lv["assigned_to"] != user.id:
+            was_buyer = c_lv.execute(
+                "SELECT id FROM prize_exchanges WHERE user_id=%s AND prize_value=%s "
+                "AND prize_type IN ('telegram_number','telegram_number_code') AND status='completed'",
+                (user.id, leave_phone)
+            ).fetchone()
+        if not row_lv or (row_lv["assigned_to"] != user.id and not was_buyer):
             await q.answer("⚠️ لا تملك صلاحية تنفيذ هذا الإجراء.", show_alert=True)
             return
-        # إجراء المغادرة: إيقاف المراقبة وقطع اتصال البوت فقط (لا نطرد جلسات المشتري)
+        # إجراء المغادرة: إيقاف المراقبة وقطع اتصال البوت نهائياً
         try:
             await _stop_number_monitor(leave_phone)
         except Exception as _le2:
             logger.warning(f"⚠️ تعذّر إيقاف مراقبة الرقم {leave_phone}: {_le2}")
         with db_conn() as c_lv2:
             c_lv2.execute(
-                "UPDATE number_stock SET assigned_to=NULL, assigned_at=NULL WHERE phone_number=%s", (leave_phone,)
+                "UPDATE number_stock SET assigned_to=NULL, assigned_at=NULL, force_listed=FALSE "
+                "WHERE phone_number=%s", (leave_phone,)
             )
         # حذف الكود المخزون للمشتري
         _buyer_received_codes.pop(user.id, None)
