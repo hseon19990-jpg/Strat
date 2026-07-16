@@ -7755,12 +7755,63 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("🔍 فحص جميع الحسابات الآن", callback_data="os:scan_all_numbers")],
                 [InlineKeyboardButton("➕ إضافة أرقام بدون تسجيل دخول (يدوي)", callback_data="os:add_numbers")],
                 [InlineKeyboardButton("🔄 إرجاع جميع الأرقام المباعة للبيع", callback_data="os:release_all_numbers")],
+                [InlineKeyboardButton("🔍 فحص جاهزية الأرقام (كود + 2FA)", callback_data="os:check_readiness")],
                 [InlineKeyboardButton("🤝 مهام الإحالة التلقائية", callback_data="os:ref_tasks")],
                 [InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")],
             ])
         )
         return
 
+
+    if data == "os:check_readiness" and is_own:
+        with db_conn() as c:
+            rows = c.execute(
+                "SELECT phone_number, session_string, twofa_password, last_authorized, deleted_at "
+                "FROM number_stock WHERE assigned_to IS NULL AND deleted_at IS NULL ORDER BY id ASC"
+            ).fetchall()
+        total = len(rows)
+        full_ready   = []  # session + 2FA
+        session_only = []  # session but no 2FA
+        no_session   = []  # no session (manual/kicked)
+        for r in rows:
+            has_session = bool(r["session_string"]) and r.get("last_authorized") is not False
+            has_twofa   = bool((r["twofa_password"] or "").strip())
+            if has_session and has_twofa:
+                full_ready.append(r["phone_number"])
+            elif has_session:
+                session_only.append(r["phone_number"])
+            else:
+                no_session.append(r["phone_number"])
+
+        lines = [f"🔍 *فحص جاهزية الأرقام ({total} رقم)*\n"]
+        lines.append(
+            f"✅ *جاهز بالكامل (كود + 2FA): {len(full_ready)}*\n"
+            + ("\n".join(f"   • `{p}`" for p in full_ready[:20])
+               + (f"\n   _(+{len(full_ready)-20} آخرين)_" if len(full_ready) > 20 else ""))
+            if full_ready else "✅ *جاهز بالكامل:* لا يوجد"
+        )
+        lines.append("")
+        lines.append(
+            f"⚠️ *يملك جلسة فقط (بدون 2FA): {len(session_only)}*\n"
+            + ("\n".join(f"   • `{p}`" for p in session_only[:20])
+               + (f"\n   _(+{len(session_only)-20} آخرين)_" if len(session_only) > 20 else ""))
+            if session_only else "⚠️ *بدون 2FA:* لا يوجد"
+        )
+        lines.append("")
+        lines.append(
+            f"❌ *بدون جلسة (لا كود ولا 2FA): {len(no_session)}*\n"
+            + ("\n".join(f"   • `{p}`" for p in no_session[:20])
+               + (f"\n   _(+{len(no_session)-20} آخرين)_" if len(no_session) > 20 else ""))
+            if no_session else "❌ *بدون جلسة:* لا يوجد"
+        )
+        await q.edit_message_text(
+            "\n".join(lines),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 رجوع للمخزون", callback_data="os:manage_numbers")],
+            ])
+        )
+        return
 
     if data == "os:release_all_numbers" and is_own:
         with db_conn() as c:
