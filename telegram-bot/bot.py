@@ -2254,7 +2254,7 @@ async def monitor_number_changes_job(context: ContextTypes.DEFAULT_TYPE):
                     changes.append(f"تغيّر عدد الأجهزة المسجّلة من {last_devices} إلى {devices}")
 
             # ─── منطق الجهاز الثاني ───────────────────────────────────────────────
-            if authorized and devices > 1:
+            if authorized and devices > 0:
                 owner_logging = any(
                     p.get("phone") == rec["phone_number"]
                     for p in _pending_number_logins.values()
@@ -2267,53 +2267,62 @@ async def monitor_number_changes_job(context: ContextTypes.DEFAULT_TYPE):
                     is_ever_sold = bool(_ass and _ass["ever_sold"])
 
                 is_sold = is_assigned or is_ever_sold
+                # هل ارتفع عدد الأجهزة منذ آخر فحص؟ (يعني دخول جديد حدث الآن)
+                device_count_rose = (
+                    last_devices >= 1 and devices > last_devices
+                )
 
                 if not owner_logging:
-                    if is_sold:
-                        # ✅ حساب مباع + جهاز ثانٍ ظهر → البوت يخرج تلقائياً ويترك الحساب للمشتري
+                    if is_sold and device_count_rose:
+                        # ✅ حساب مباع + ارتفع عدد الأجهزة = المشتري دخل الآن
+                        # ننتظر 10 ثوانٍ ثم نغادر
                         buyer_id_exit = _ass["assigned_to"] if _ass else None
+                        phone_exit    = rec["phone_number"]
+                        stock_id_exit = rec["id"]
                         logger.info(
-                            f"🚪 bot_exit_sold_account: الرقم {rec['phone_number']} "
-                            f"له {devices} أجهزة وهو مباع — البوت يغادر."
+                            f"🚪 bot_exit_sold_account: {phone_exit} — "
+                            f"أجهزة ارتفعت {last_devices}→{devices}، انتظار 10 ث ثم مغادرة."
                         )
-                        try:
-                            await _stop_number_monitor(rec["phone_number"])
-                        except Exception:
-                            pass
-                        with db_conn() as _cx:
-                            _cx.execute(
-                                "UPDATE number_stock SET assigned_to=NULL, assigned_at=NULL "
-                                "WHERE id=%s",
-                                (rec["id"],)
-                            )
-                        _buyer_received_codes.pop(buyer_id_exit, None)
-                        # إشعار المشتري
-                        if buyer_id_exit:
+
+                        async def _delayed_exit(phone_e, stock_id_e, buyer_e):
+                            await asyncio.sleep(10)
                             try:
-                                await context.bot.send_message(
-                                    buyer_id_exit,
-                                    "✅ *دخلت للحساب بنجاح!*\n\n"
-                                    "البوت غادر الحساب تلقائياً. الحساب أصبح بيدك كاملاً 🤍",
-                                    parse_mode="Markdown"
-                                )
+                                await _stop_number_monitor(phone_e)
                             except Exception:
                                 pass
-                        # إشعار المالك
-                        if OWNER_ID:
-                            try:
-                                await context.bot.send_message(
-                                    OWNER_ID,
-                                    f"🚪 <b>خروج تلقائي — جهاز ثانٍ</b>\n\n"
-                                    f"📱 <code>{rec['phone_number']}</code>\n"
-                                    f"📲 الأجهزة المكتشفة: {devices}\n"
-                                    f"✅ البوت غادر الحساب تلقائياً.",
-                                    parse_mode="HTML"
+                            with db_conn() as _cx:
+                                _cx.execute(
+                                    "UPDATE number_stock SET assigned_to=NULL, assigned_at=NULL WHERE id=%s",
+                                    (stock_id_e,)
                                 )
-                            except Exception:
-                                pass
-                        # لا نكمل تحديث DB بالأسفل لأن السجل تغيّر بالفعل
-                        continue
-                    else:
+                            _buyer_received_codes.pop(buyer_e, None)
+                            if buyer_e:
+                                try:
+                                    await context.bot.send_message(
+                                        buyer_e,
+                                        "✅ *دخلت للحساب بنجاح!*\n\n"
+                                        "البوت غادر الحساب تلقائياً. الحساب أصبح بيدك كاملاً 🤍",
+                                        parse_mode="Markdown"
+                                    )
+                                except Exception:
+                                    pass
+                            if OWNER_ID:
+                                try:
+                                    await context.bot.send_message(
+                                        OWNER_ID,
+                                        f"🚪 <b>خروج تلقائي — دخل المشتري</b>\n\n"
+                                        f"📱 <code>{phone_e}</code>\n"
+                                        f"📲 الأجهزة: {last_devices} → {devices}\n"
+                                        f"✅ البوت غادر بعد 10 ثوانٍ من تأكيد الدخول.",
+                                        parse_mode="HTML"
+                                    )
+                                except Exception:
+                                    pass
+
+                        asyncio.create_task(_delayed_exit(phone_exit, stock_id_exit, buyer_id_exit))
+                        # نكمل تحديث DB بعدد الأجهزة (السجل الرئيسي يُحدَّث أدناه كالمعتاد)
+
+                    elif not is_sold and devices > 1:
                         # حساب غير مباع + جهاز ثانٍ → نطرد الجلسات الأخرى كما كان
                         try:
                             await client(ResetAuthorizationsRequest())
@@ -2423,40 +2432,47 @@ async def _start_number_monitor(phone: str, session_str: str, application):
                 buyer_owns_it = bool(buyer_id)
 
                 if buyer_owns_it and not owner_is_logging_in:
-                    # المشتري دخل الحساب بالكامل (يمكنه المراسلة) → نغادر تلقائياً بدون سؤال
-                    try:
-                        await _stop_number_monitor(phone)
-                    except Exception as _lm:
-                        logger.warning(f"⚠️ تعذّر إيقاف مراقبة الرقم {phone} عند خروج البوت التلقائي: {_lm}")
-                    try:
-                        with db_conn() as _clv:
-                            _clv.execute(
-                                "UPDATE number_stock SET assigned_to=NULL, assigned_at=NULL WHERE phone_number=%s",
-                                (phone,)
-                            )
-                        _buyer_received_codes.pop(buyer_id, None)
-                        await application.bot.send_message(
-                            buyer_id,
-                            "✅ *دخلت للحساب بنجاح!*\n\n"
-                            "البوت غادر الحساب تلقائياً الآن. الحساب أصبح بيدك كاملاً.\n"
-                            "شكراً لثقتك 🤍",
-                            parse_mode="Markdown"
-                        )
-                        # إشعار المالك بالخروج التلقائي
-                        if OWNER_ID:
-                            try:
-                                await application.bot.send_message(
-                                    OWNER_ID,
-                                    f"🔔 <b>خروج تلقائي — دخل المشتري</b>\n\n"
-                                    f"📱 الرقم: <code>{phone}</code>\n"
-                                    f"👤 المشتري: <a href='tg://user?id={buyer_id}'>{buyer_id}</a>\n"
-                                    f"✅ غادر البوت الحساب تلقائياً بعد تأكيد دخول المشتري الكامل.",
-                                    parse_mode="HTML"
+                    # المشتري دخل الحساب بالكامل → ننتظر 10 ثوانٍ ثم نغادر
+                    _bid_snap   = buyer_id
+                    _phone_snap = phone
+                    _app_snap   = application
+
+                    async def _exit_after_delay():
+                        await asyncio.sleep(10)
+                        try:
+                            await _stop_number_monitor(_phone_snap)
+                        except Exception:
+                            pass
+                        try:
+                            with db_conn() as _clv:
+                                _clv.execute(
+                                    "UPDATE number_stock SET assigned_to=NULL, assigned_at=NULL "
+                                    "WHERE phone_number=%s",
+                                    (_phone_snap,)
                                 )
-                            except Exception:
-                                pass
-                    except Exception as _le:
-                        logger.warning(f"⚠️ تعذّر المغادرة التلقائية للرقم {phone}: {_le}")
+                            _buyer_received_codes.pop(_bid_snap, None)
+                            await _app_snap.bot.send_message(
+                                _bid_snap,
+                                "✅ *دخلت للحساب بنجاح!*\n\n"
+                                "البوت غادر الحساب تلقائياً. الحساب أصبح بيدك كاملاً 🤍",
+                                parse_mode="Markdown"
+                            )
+                            if OWNER_ID:
+                                try:
+                                    await _app_snap.bot.send_message(
+                                        OWNER_ID,
+                                        f"🔔 <b>خروج تلقائي — دخل المشتري</b>\n\n"
+                                        f"📱 <code>{_phone_snap}</code>\n"
+                                        f"👤 <a href='tg://user?id={_bid_snap}'>{_bid_snap}</a>\n"
+                                        f"✅ غادر البوت بعد 10 ثوانٍ من تأكيد دخول المشتري.",
+                                        parse_mode="HTML"
+                                    )
+                                except Exception:
+                                    pass
+                        except Exception as _le:
+                            logger.warning(f"⚠️ تعذّر المغادرة التلقائية للرقم {_phone_snap}: {_le}")
+
+                    asyncio.create_task(_exit_after_delay())
                     return
 
                 # جلب ever_sold للتمييز بين اختراق حقيقي ومشتري سابق يستخدم حسابه
