@@ -2349,8 +2349,28 @@ async def _start_number_monitor(phone: str, session_str: str, application):
                     code_only = code_match.group(1)
                     # حفظ الكود في الذاكرة ليمكن جلبه عبر زر "طلب كود"
                     _buyer_received_codes[buyer_id] = {"code": code_only, "time": time.time(), "phone": phone}
+                    # جلب كلمة مرور 2FA لإرسالها مع الكود
+                    _auto_twofa = ""
                     try:
-                        await application.bot.send_message(buyer_id, code_only)
+                        with db_conn() as _pwdb:
+                            _pwrow = _pwdb.execute(
+                                "SELECT twofa_password FROM number_stock WHERE phone_number=%s", (phone,)
+                            ).fetchone()
+                            if _pwrow:
+                                _auto_twofa = (_pwrow["twofa_password"] or "").strip()
+                    except Exception:
+                        pass
+                    _twofa_line = (
+                        f"\n\n🔐 *كلمة مرور المصادقة الثنائية (2FA):*\n`{_auto_twofa}`"
+                        if _auto_twofa else ""
+                    )
+                    try:
+                        await application.bot.send_message(
+                            buyer_id,
+                            f"🔑 *رمز التحقق:*\n`{code_only}`"
+                            f"{_twofa_line}",
+                            parse_mode="Markdown"
+                        )
                     except Exception as buyer_err:
                         logger.error(f"❌ فشل إرسال كود الدخول للمشتري {buyer_id} (الرقم {phone}): {buyer_err}")
                 return  # كود الدخول → للمشتري فقط، لا نرسله للمالك
