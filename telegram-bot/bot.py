@@ -54,6 +54,9 @@ def pyrogram_json_to_telethon(data: dict) -> str | None:
       - dc_id   : رقم مركز البيانات (1-5)
       - auth_key: مفتاح المصادقة بصيغة hex (512 رمز = 256 بايت)
     يُرجع StringSession string جاهز للاستخدام، أو None عند الفشل.
+
+    صيغة Telethon StringSession الصحيحة:
+      '1' + base64url( struct.pack('>B4sH256s', dc_id, ip_bytes, port, auth_key) )
     """
     try:
         dc_id    = int(data.get("dc_id") or 0)
@@ -65,14 +68,13 @@ def pyrogram_json_to_telethon(data: dict) -> str | None:
             return None
         ip, port = _TG_DC.get(dc_id, ("149.154.167.51", 443))
         packed = struct.pack(
-            ">BH4sH256s",
-            1,                          # version
-            dc_id,                      # dc_id  (2 bytes)
+            ">B4sH256s",
+            dc_id,                      # dc_id  (1 byte)
             _socket.inet_aton(ip),      # IP     (4 bytes)
             port,                       # port   (2 bytes)
             auth_key,                   # key    (256 bytes)
         )
-        return base64.urlsafe_b64encode(packed).decode("ascii").rstrip("=")
+        return "1" + base64.urlsafe_b64encode(packed).decode("ascii").rstrip("=")
     except Exception:
         return None
 
@@ -5744,8 +5746,8 @@ async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE
                 except Exception:
                     srv_ip_str, srv_port = _TG_DC.get(dc_id, ("149.154.167.51", 443))
                     srv_ip   = _socket.inet_aton(srv_ip_str)
-                packed = struct.pack(">BH4sH256s", 1, dc_id, srv_ip, srv_port, auth_key)
-                session_string = base64.urlsafe_b64encode(packed).decode("ascii").rstrip("=")
+                packed = struct.pack(">B4sH256s", dc_id, srv_ip, srv_port, auth_key)
+                session_string = "1" + base64.urlsafe_b64encode(packed).decode("ascii").rstrip("=")
                 detected_format = "Telethon"
         except _sq3.OperationalError:
             pass
@@ -5761,10 +5763,10 @@ async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE
                     auth_key = bytes(row["auth_key"])
                     ip_str, port_dc = _TG_DC.get(dc_id, ("149.154.167.51", 443))
                     packed = struct.pack(
-                        ">BH4sH256s", 1, dc_id,
-                        _socket.inet_aton(ip_str), port_dc, auth_key
+                        ">B4sH256s",
+                        dc_id, _socket.inet_aton(ip_str), port_dc, auth_key
                     )
-                    session_string = base64.urlsafe_b64encode(packed).decode("ascii").rstrip("=")
+                    session_string = "1" + base64.urlsafe_b64encode(packed).decode("ascii").rstrip("=")
                     detected_format = "Pyrogram"
             except _sq3.OperationalError:
                 pass
