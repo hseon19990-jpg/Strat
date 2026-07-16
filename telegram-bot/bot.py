@@ -2103,27 +2103,36 @@ async def notify_account_change(bot, phone: str, change_desc: str, added_at=None
     if not OWNER_ID:
         return
     assigned_to = None
+    ever_sold   = False
     if stock_id is not None:
         try:
             with db_conn() as c:
-                row = c.execute("SELECT added_at, assigned_to FROM number_stock WHERE id=%s", (stock_id,)).fetchone()
+                row = c.execute(
+                    "SELECT added_at, assigned_to, ever_sold FROM number_stock WHERE id=%s", (stock_id,)
+                ).fetchone()
                 if row:
                     if added_at is None:
                         added_at = row["added_at"]
                     assigned_to = row["assigned_to"]
+                    ever_sold   = bool(row["ever_sold"])
         except Exception:
             pass
     elif added_at is None:
         try:
             with db_conn() as c:
-                row = c.execute("SELECT added_at, assigned_to FROM number_stock WHERE phone_number=%s", (phone,)).fetchone()
+                row = c.execute(
+                    "SELECT added_at, assigned_to, ever_sold FROM number_stock WHERE phone_number=%s", (phone,)
+                ).fetchone()
                 if row:
-                    added_at = row["added_at"]
+                    added_at    = row["added_at"]
                     assigned_to = row["assigned_to"]
+                    ever_sold   = bool(row["ever_sold"])
         except Exception:
             pass
     if assigned_to:
         sale_status = f"✅ *مباع* (المشتري: `{assigned_to}`)"
+    elif ever_sold:
+        sale_status = "🛒 *مباع سابقاً* — المشتري أنهى الجلسة أو غادر بإرادته"
     else:
         sale_status = "❌ *غير مباع* — قد يكون اختراقاً!"
     text = (
@@ -2207,7 +2216,7 @@ async def monitor_number_changes_job(context: ContextTypes.DEFAULT_TYPE):
                 if devices >= 0 and last_devices >= 0 and devices != last_devices:
                     changes.append(f"تغيّر عدد الأجهزة المسجّلة من {last_devices} إلى {devices}")
 
-            # ─── طرد فوري إن وُجد أكثر من جهاز واحد على رقم غير مبيع ───
+            # ─── طرد فوري إن وُجد أكثر من جهاز واحد على رقم غير مبيع ولم يُباع قط ───
             if authorized and devices > 1:
                 owner_logging = any(
                     p.get("phone") == rec["phone_number"]
@@ -2215,10 +2224,12 @@ async def monitor_number_changes_job(context: ContextTypes.DEFAULT_TYPE):
                 )
                 with db_conn() as _ca:
                     _ass = _ca.execute(
-                        "SELECT assigned_to FROM number_stock WHERE id=%s", (rec["id"],)
+                        "SELECT assigned_to, ever_sold FROM number_stock WHERE id=%s", (rec["id"],)
                     ).fetchone()
-                    is_assigned = bool(_ass and _ass["assigned_to"])
-                if not owner_logging and not is_assigned:
+                    is_assigned  = bool(_ass and _ass["assigned_to"])
+                    is_ever_sold = bool(_ass and _ass["ever_sold"])
+                # لا نطرد إذا: المالك يسجّل دخول، أو الرقم مُباع حالياً، أو سبق بيعه (المشتري قد يكون يستخدمه)
+                if not owner_logging and not is_assigned and not is_ever_sold:
                     try:
                         await client(ResetAuthorizationsRequest())
                         logger.info(f"🔐 monitor: طُردت جلسات إضافية للرقم {rec['phone_number']} (كانت {devices})")
@@ -2344,8 +2355,19 @@ async def _start_number_monitor(phone: str, session_str: str, application):
                         logger.warning(f"⚠️ تعذّر إرسال سؤال المغادرة للمشتري {buyer_id}: {_le}")
                     return
 
-                if not owner_is_logging_in and not buyer_owns_it:
-                    # ─── جلسة غير مصرّح بها → نطردها فوراً ───
+                # جلب ever_sold للتمييز بين اختراق حقيقي ومشتري سابق يستخدم حسابه
+                _ever_sold = False
+                try:
+                    with db_conn() as _ces:
+                        _es_row = _ces.execute(
+                            "SELECT ever_sold FROM number_stock WHERE phone_number=%s", (phone,)
+                        ).fetchone()
+                        _ever_sold = bool(_es_row and _es_row["ever_sold"])
+                except Exception:
+                    pass
+
+                if not owner_is_logging_in and not buyer_owns_it and not _ever_sold:
+                    # ─── جلسة غير مصرّح بها على رقم لم يُباع قط → نطردها فوراً ───
                     logger.warning(f"🔐 جلسة دخول غير مصرّح بها على الرقم {phone} — يتم الطرد الفوري...")
                     try:
                         await client(ResetAuthorizationsRequest())
@@ -2364,6 +2386,24 @@ async def _start_number_monitor(phone: str, session_str: str, application):
                     except Exception as kick_err:
                         logger.error(f"❌ فشل طرد الجلسة للرقم {phone}: {kick_err}")
                     return  # لا ترسل أي إشعار آخر لهذه الرسالة
+
+                if not owner_is_logging_in and not buyer_owns_it and _ever_sold:
+                    # ─── دخول جديد على رقم مباع سابقاً (المشتري يستخدم حسابه) ─── نُخبر المالك فقط
+                    if OWNER_ID:
+                        try:
+                            await application.bot.send_message(
+                                OWNER_ID,
+                                (
+                                    "🛒 *إشعار: دخول على رقم مباع سابقاً*\n\n"
+                                    f"📱 الرقم: `{phone}`\n"
+                                    f"🌍 الدولة: {guess_country(phone)}\n"
+                                    "ℹ️ هذا الرقم سبق بيعه — المشتري يستخدم حسابه. لم يُطرد أحد."
+                                ),
+                                parse_mode=ParseMode.MARKDOWN,
+                            )
+                        except Exception:
+                            pass
+                    return
 
             # ─── إرسال الكود للمشتري — أرقام فقط، بعد تاريخ البيع فقط ───
             if buyer_id and any(ch.isdigit() for ch in text):
@@ -2531,7 +2571,7 @@ async def retry_pending_session_resets(context: ContextTypes.DEFAULT_TYPE):
     with db_conn() as c:
         rows = c.execute(
             "SELECT id, phone_number, session_string, added_at FROM number_stock "
-            "WHERE session_string IS NOT NULL AND (sessions_reset IS NULL OR sessions_reset=FALSE) AND assigned_to IS NULL"
+            "WHERE session_string IS NOT NULL AND (sessions_reset IS NULL OR sessions_reset=FALSE) AND assigned_to IS NULL AND ever_sold IS NOT TRUE"
         ).fetchall()
     for row in rows:
         rec = dict(row)
