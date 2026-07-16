@@ -452,6 +452,7 @@ def init_db():
               "ALTER TABLE channel_funding ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active'",
               "ALTER TABLE mandatory_channels ADD COLUMN IF NOT EXISTS queued INTEGER DEFAULT 0",
               "ALTER TABLE prize_exchanges ADD COLUMN IF NOT EXISTS order_code TEXT",
+              "ALTER TABLE prize_exchanges ADD COLUMN IF NOT EXISTS owner_seen BOOLEAN DEFAULT FALSE",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS session_string TEXT",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS sessions_reset BOOLEAN DEFAULT FALSE",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS force_listed BOOLEAN DEFAULT FALSE",
@@ -3233,6 +3234,32 @@ async def notify_group(app, text: str, reply_markup=None):
             logger.warning(f"notify_group error: {e}")
 
 
+def _unseen_purchase_count(exclude_pe_id: int | None = None) -> int:
+    """عدد عمليات الشراء التي لم يطّلع عليها المالك بعد."""
+    try:
+        with db_conn() as c:
+            if exclude_pe_id:
+                row = c.execute(
+                    "SELECT COUNT(*) as cnt FROM prize_exchanges WHERE owner_seen=FALSE AND id != %s",
+                    (exclude_pe_id,)
+                ).fetchone()
+            else:
+                row = c.execute(
+                    "SELECT COUNT(*) as cnt FROM prize_exchanges WHERE owner_seen=FALSE"
+                ).fetchone()
+            return int(row["cnt"]) if row else 0
+    except Exception:
+        return 0
+
+
+def _unseen_badge_html(exclude_pe_id: int | None = None) -> str:
+    """يُرجع سطر HTML يبيّن عدد العمليات غير المطّلع عليها (عدا الحالية)، أو فارغ إن لم توجد."""
+    cnt = _unseen_purchase_count(exclude_pe_id=exclude_pe_id)
+    if cnt > 0:
+        return f'🔔 <b>تنبيه: لديك {cnt} عملية شراء أخرى لم تطّلع عليها بعد.</b>\n\n'
+    return ''
+
+
 def prize_exchange_admin_kb(pe_id: int) -> InlineKeyboardMarkup:
     """أزرار المالك على إشعار طلب استبدال: تمييزه كمكتمل (تم التسليم)، أو إعلام
     الطالب بأن طلبه قيد المعالجة إن لم يكتمل بعد."""
@@ -3246,11 +3273,13 @@ async def notify_prize_exchange_owner(context, pe_id: int, text_html: str):
     """يرسل إشعار طلب الاستبدال إلى كروب الإدارة (إن كان مُعرّفاً) كنص فقط بدون
     أزرار/علامة الحالة، وإلى خاص المالك (البوت) مع أزرار مكتمل/غير مكتمل —
     التحكم بالحالة يبقى حصراً داخل البوت."""
+    badge = _unseen_badge_html(exclude_pe_id=pe_id)
+    full_text = badge + text_html
     kb = prize_exchange_admin_kb(pe_id)
-    await notify_group(context.application, text_html)
+    await notify_group(context.application, full_text)
     if OWNER_ID:
         try:
-            await context.bot.send_message(OWNER_ID, text_html, parse_mode=ParseMode.HTML, reply_markup=kb)
+            await context.bot.send_message(OWNER_ID, full_text, parse_mode=ParseMode.HTML, reply_markup=kb)
         except Exception as e:
             logger.warning(f"notify_prize_exchange_owner error: {e}")
 
@@ -4450,11 +4479,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             session_nc_str = auto_nc["session_string"]
             auto_nc_twofa  = (auto_nc.get("twofa_password") or "").strip()
             with db_conn() as c:
-                c.execute(
+                _nc_pe = c.execute(
                     "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,status,order_code) "
-                    "VALUES (%s,%s,%s,0,'completed',%s)",
+                    "VALUES (%s,%s,%s,0,'completed',%s) RETURNING id",
                     (user.id, "telegram_number_code", auto_nc_number, nc_order_code)
-                )
+                ).fetchone()
+            _nc_pe_id = _nc_pe["id"] if _nc_pe else None
             display_nc_number = auto_nc_number.lstrip("+")
             result_kb_nc = [
                 [
@@ -4498,14 +4528,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             if OWNER_ID:
                 try:
+                    _badge_nc = _unseen_badge_html(exclude_pe_id=_nc_pe_id)
+                    _seen_kb_nc = InlineKeyboardMarkup([[
+                        InlineKeyboardButton("👁 تم الاطلاع", callback_data=f"pe_seen:{_nc_pe_id}")
+                    ]]) if _nc_pe_id else None
                     await context.bot.send_message(
                         OWNER_ID,
+                        _badge_nc +
                         f"📱 <b>تسليم رقم عبر كود شراء</b>\n"
                         f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
                         f"📱 {auto_nc_number}\n"
                         f"🎟 الكود: {entered_code}\n"
                         f"📌 {nc_order_code}",
-                        parse_mode=ParseMode.HTML
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=_seen_kb_nc
                     )
                 except Exception:
                     pass
@@ -4518,14 +4554,28 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             if OWNER_ID:
                 try:
+                    with db_conn() as _c_manual:
+                        _manual_pe = _c_manual.execute(
+                            "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,status,order_code) "
+                            "VALUES (%s,%s,%s,0,'pending',%s) RETURNING id",
+                            (user.id, "telegram_number_code", "manual", nc_order_code)
+                        ).fetchone()
+                    _manual_pe_id = _manual_pe["id"] if _manual_pe else None
+                    _badge_manual = _unseen_badge_html(exclude_pe_id=_manual_pe_id)
+                    _seen_kb_manual = InlineKeyboardMarkup([[
+                        InlineKeyboardButton("✅ تم التسليم", callback_data=f"pe_complete:{_manual_pe_id}"),
+                        InlineKeyboardButton("👁 تم الاطلاع", callback_data=f"pe_seen:{_manual_pe_id}"),
+                    ]]) if _manual_pe_id else None
                     await context.bot.send_message(
                         OWNER_ID,
+                        _badge_manual +
                         f"📱 <b>طلب رقم عبر كود شراء (يدوي)</b>\n"
                         f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
                         f"🎟 الكود: {entered_code}\n"
                         f"📌 {nc_order_code}\n"
                         f"⚠️ لا يوجد رقم في المخزون — يرجى التسليم يدوياً.",
-                        parse_mode=ParseMode.HTML
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=_seen_kb_manual
                     )
                 except Exception:
                     pass
@@ -6966,15 +7016,22 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             if OWNER_ID:
                 try:
+                    _auto_pe_id = pe["id"] if pe else None
+                    _badge_auto = _unseen_badge_html(exclude_pe_id=_auto_pe_id)
+                    _seen_kb_auto = InlineKeyboardMarkup([[
+                        InlineKeyboardButton("👁 تم الاطلاع", callback_data=f"pe_seen:{_auto_pe_id}")
+                    ]]) if _auto_pe_id else None
                     await context.bot.send_message(
                         OWNER_ID,
+                        _badge_auto +
                         f"📱 <b>تم تسليم رقم تلقائياً</b>\n"
                         f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
                         f"📱 {auto_number}\n"
                         f"💰 {cost} نقطة\n"
                         f"📌 {code}"
                         + ("\n🔑 مع رمز جلسة" if session_str else "\n⚠️ بدون رمز جلسة (رقم أُضيف يدوياً بدون تسجيل دخول)"),
-                        parse_mode=ParseMode.HTML
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=_seen_kb_auto
                     )
                 except Exception:
                     pass
@@ -9810,7 +9867,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if pe["status"] == "completed":
                 await q.answer("✔️ هذا الطلب مكتمل مسبقاً.", show_alert=True)
                 return
-            c.execute("UPDATE prize_exchanges SET status='completed' WHERE id=%s", (pe_id,))
+            c.execute("UPDATE prize_exchanges SET status='completed', owner_seen=TRUE WHERE id=%s", (pe_id,))
         try:
             await context.bot.send_message(
                 pe["user_id"],
@@ -9848,7 +9905,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception as e:
             logger.warning(f"⚠️ فشل إشعار المستخدم {pe['user_id']} بانتظار طلب الاستبدال: {e}")
+        with db_conn() as _c_ack:
+            _c_ack.execute("UPDATE prize_exchanges SET owner_seen=TRUE WHERE id=%s", (pe_id,))
         await q.answer("✅ تم إعلام الطالب بالانتظار.", show_alert=True)
+        return
+
+    if data.startswith("pe_seen:") and is_own:
+        pe_id = int(data.split(":")[1])
+        with db_conn() as c:
+            c.execute("UPDATE prize_exchanges SET owner_seen=TRUE WHERE id=%s", (pe_id,))
+        await q.answer("✅ تم تسجيل الاطلاع.", show_alert=True)
+        try:
+            await q.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
         return
 
     # ── إدارة الجوائز المخصصة (المالك) ──
