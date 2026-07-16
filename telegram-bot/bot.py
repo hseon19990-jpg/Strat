@@ -74,7 +74,7 @@ def pyrogram_json_to_telethon(data: dict) -> str | None:
             port,                       # port   (2 bytes)
             auth_key,                   # key    (256 bytes)
         )
-        return "1" + base64.urlsafe_b64encode(packed).decode("ascii").rstrip("=")
+        return "1" + base64.urlsafe_b64encode(packed).decode("ascii")
     except Exception:
         return None
 
@@ -5748,7 +5748,7 @@ async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE
                     srv_ip_str, srv_port = _TG_DC.get(dc_id, ("149.154.167.51", 443))
                     srv_ip   = _socket.inet_aton(srv_ip_str)
                 packed = struct.pack(">B4sH256s", dc_id, srv_ip, srv_port, auth_key)
-                session_string = "1" + base64.urlsafe_b64encode(packed).decode("ascii").rstrip("=")
+                session_string = "1" + base64.urlsafe_b64encode(packed).decode("ascii")
                 detected_format = "Telethon"
         except _sq3.OperationalError:
             pass
@@ -5767,7 +5767,7 @@ async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE
                         ">B4sH256s",
                         dc_id, _socket.inet_aton(ip_str), port_dc, auth_key
                     )
-                    session_string = "1" + base64.urlsafe_b64encode(packed).decode("ascii").rstrip("=")
+                    session_string = "1" + base64.urlsafe_b64encode(packed).decode("ascii")
                     detected_format = "Pyrogram"
             except _sq3.OperationalError:
                 pass
