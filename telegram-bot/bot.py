@@ -2451,6 +2451,7 @@ BUILTIN_DEFAULTS = {
         ("✅ إكمال طلب", "os:complete_order", 2),
         ("🎟 إنشاء كود ترويجي", "os:create_promo", 2), ("📋 أكواد ترويجية", "os:list_promos", 2),
         ("🚫 إدارة الحظر", "os:ban_menu", 2),
+        ("💰 منح/خصم نقاط", "os:manage_points", 2),
         ("💬 رابط تواصل المالك", "os:edit_contact", 2), ("✏️ نص زر التواصل", "os:edit_contact_label", 2),
         ("📲 تعديل نص اسيا سيل", "os:edit_asiacell", 2),
         ("✏️ نص زر الدعم بالقائمة", "os:edit_support_label", 2), ("📢 رسالة جماعية", "os:broadcast", 2),
@@ -4939,6 +4940,82 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for idx, chunk in enumerate(chunks):
             kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع للأكواد", callback_data="os:list_promos")]]) if idx == len(chunks) - 1 else None
             await update.message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+        return
+
+    # ── منح/خصم نقاط — الخطوة 1: استقبال المستخدم (مالك) ──
+    if is_own and state == "os_await_points_target":
+        target = lookup_user_by_id_or_username(text)
+        if not target:
+            await update.message.reply_text(
+                "⚠️ لم يتم إيجاد المستخدم. أرسل ID رقمي أو @يوزرنيم:",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:manage_points")]])
+            )
+            return
+        context.user_data["points_target_id"] = target["user_id"]
+        context.user_data["state"] = "os_await_points_amount"
+        mode  = context.user_data.get("points_mode", "give")
+        uname = f"@{target['username']}" if target.get("username") else f"ID: {target['user_id']}"
+        verb  = "منح" if mode == "give" else "خصم"
+        await update.message.reply_text(
+            f"{'➕' if mode == 'give' else '➖'} *{verb} نقاط لـ:* {md_escape(target.get('full_name',''))} ({md_escape(uname)})\n"
+            f"💰 رصيده الحالي: *{target.get('points', 0)}* نقطة\n\n"
+            f"أرسل عدد النقاط المراد {'منحها' if mode == 'give' else 'خصمها'}:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:manage_points")]])
+        )
+        return
+
+    # ── منح/خصم نقاط — الخطوة 2: استقبال الكمية (مالك) ──
+    if is_own and state == "os_await_points_amount":
+        try:
+            amount = int(text.strip())
+            if amount <= 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً أكبر من صفر.")
+            return
+        target_id = context.user_data.get("points_target_id")
+        mode      = context.user_data.get("points_mode", "give")
+        context.user_data["state"] = "main_menu"
+        if not target_id:
+            await update.message.reply_text("⚠️ انتهت الجلسة.", reply_markup=owner_settings_kb())
+            return
+        target = get_user(target_id)
+        uname  = f"@{target['username']}" if target and target.get("username") else f"ID: {target_id}"
+        if mode == "give":
+            add_points(target_id, amount)
+            new_bal = (target.get("points") or 0) + amount
+            await update.message.reply_text(
+                f"✅ *تم منح {amount} نقطة*\n\n"
+                f"👤 {md_escape(target.get('full_name','') if target else '')} ({md_escape(uname)})\n"
+                f"💰 الرصيد الجديد: *{new_bal}* نقطة",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:manage_points")]])
+            )
+            try:
+                await context.bot.send_message(target_id, f"🎁 تم إضافة *{amount}* نقطة إلى رصيدك من قبل الإدارة.\n💰 رصيدك الآن: *{new_bal}* نقطة", parse_mode=ParseMode.MARKDOWN)
+            except Exception:
+                pass
+        else:
+            actual = deduct_points_clamped(target_id, amount)
+            new_bal = max(0, (target.get("points") or 0) - actual)
+            if actual == 0:
+                await update.message.reply_text(
+                    f"⚠️ رصيد العضو صفر — لم يُخصم شيء.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:manage_points")]])
+                )
+            else:
+                await update.message.reply_text(
+                    f"✅ *تم خصم {actual} نقطة*\n\n"
+                    f"👤 {md_escape(target.get('full_name','') if target else '')} ({md_escape(uname)})\n"
+                    f"💰 الرصيد الجديد: *{new_bal}* نقطة",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:manage_points")]])
+                )
+                try:
+                    await context.bot.send_message(target_id, f"⚠️ تم خصم *{actual}* نقطة من رصيدك من قبل الإدارة.\n💰 رصيدك الآن: *{new_bal}* نقطة", parse_mode=ParseMode.MARKDOWN)
+                except Exception:
+                    pass
         return
 
     # ── إضافة باقة استبدال نجوم (مالك) ──
@@ -7946,6 +8023,39 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with db_conn() as c:
             c.execute("DELETE FROM promo_codes WHERE code=?", (code,))
         await q.answer("🗑 تم الحذف")
+        return
+
+    # ── منح / خصم نقاط (مالك) ──
+    if data == "os:manage_points" and is_own:
+        await q.edit_message_text(
+            "💰 *منح / خصم نقاط*\n\nاختر العملية:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ منح نقاط لعضو", callback_data="os:give_points")],
+                [InlineKeyboardButton("➖ خصم نقاط من عضو", callback_data="os:deduct_points")],
+                [InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")],
+            ])
+        )
+        return
+
+    if data == "os:give_points" and is_own:
+        context.user_data["state"]       = "os_await_points_target"
+        context.user_data["points_mode"] = "give"
+        await q.edit_message_text(
+            "➕ *منح نقاط*\n\nأرسل ID المستخدم أو @يوزرنيم:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:manage_points")]])
+        )
+        return
+
+    if data == "os:deduct_points" and is_own:
+        context.user_data["state"]       = "os_await_points_target"
+        context.user_data["points_mode"] = "deduct"
+        await q.edit_message_text(
+            "➖ *خصم نقاط*\n\nأرسل ID المستخدم أو @يوزرنيم:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:manage_points")]])
+        )
         return
 
     # ── رسالة جماعية ──
