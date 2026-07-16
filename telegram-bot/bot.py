@@ -1111,13 +1111,25 @@ async def check_account_frozen(client: TelegramClient, stock_id: int | None = No
     return is_frozen, status_text, frozen_at_str
 
 
-async def fetch_last_login_code(client: TelegramClient):
-    """يجلب آخر رسالة كود تفعيل وصلت من حساب تيليجرام الرسمي (777000) لهذا الرقم."""
+async def fetch_last_login_code(client: TelegramClient, after_date=None):
+    """يجلب آخر رسالة كود تفعيل وصلت من حساب تيليجرام الرسمي (777000) لهذا الرقم.
+    إذا أُعطي after_date، يُرجع فقط الأكواد التي وصلت بعد هذا التاريخ."""
+    import datetime as _dt
     try:
-        msgs = await client.get_messages(777000, limit=5)
+        msgs = await client.get_messages(777000, limit=10)
         for m in msgs:
-            if m.message and any(ch.isdigit() for ch in m.message):
-                return m.message
+            if not m.message or not any(ch.isdigit() for ch in m.message):
+                continue
+            if after_date is not None:
+                msg_date = m.date
+                if msg_date.tzinfo is None:
+                    msg_date = msg_date.replace(tzinfo=_dt.timezone.utc)
+                after = after_date
+                if after.tzinfo is None:
+                    after = after.replace(tzinfo=_dt.timezone.utc)
+                if msg_date <= after:
+                    continue  # كود قديم قبل الشراء — تخطَّه
+            return m.message
         return None
     except Exception as e:
         logger.error(f"❌ خطأ في جلب كود الدخول: {e}")
@@ -9808,7 +9820,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             with db_conn() as _fc:
                 _frow = _fc.execute(
-                    "SELECT session_string, assigned_to FROM number_stock WHERE phone_number=%s",
+                    "SELECT session_string, assigned_to, assigned_at FROM number_stock WHERE phone_number=%s",
                     (number_for_code,)
                 ).fetchone()
             if (
@@ -9818,6 +9830,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 and TELEGRAM_API_ID
                 and TELEGRAM_API_HASH
             ):
+                _purchase_date = _frow.get("assigned_at")  # تاريخ الشراء — لا نقبل كودًا قبله
                 _fcli = TelegramClient(
                     StringSession(_frow["session_string"]),
                     int(TELEGRAM_API_ID), TELEGRAM_API_HASH
@@ -9825,7 +9838,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await _fcli.connect()
                 try:
                     if await _fcli.is_user_authorized():
-                        raw_msg = await fetch_last_login_code(_fcli)
+                        raw_msg = await fetch_last_login_code(_fcli, after_date=_purchase_date)
                         if raw_msg:
                             _m = re.search(r'(\d{4,7})', raw_msg)
                             if _m:
