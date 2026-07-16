@@ -1060,6 +1060,11 @@ def list_stock_numbers(filter_type: str = "all"):
             "SELECT id, phone_number, session_string, sessions_reset, force_listed, kicked_at, added_at "
             "FROM number_stock WHERE assigned_to IS NULL AND deleted_at IS NULL AND last_authorized=FALSE"
         )
+    elif filter_type == "frozen":
+        sql = (
+            "SELECT id, phone_number, session_string, frozen_at, added_at "
+            "FROM number_stock WHERE frozen_at IS NOT NULL AND deleted_at IS NULL"
+        )
     else:
         sql = "SELECT id, phone_number, session_string, sessions_reset, force_listed, added_at FROM number_stock WHERE assigned_to IS NULL AND deleted_at IS NULL"
         if filter_type == "listed":
@@ -1079,16 +1084,18 @@ def get_number_counts() -> dict:
             "SELECT "
             "COUNT(*) AS total, "
             f"COUNT(*) FILTER (WHERE {_sellable_filter_sql()}) AS listed, "
-            "COUNT(*) FILTER (WHERE last_authorized=FALSE) AS kicked "
+            "COUNT(*) FILTER (WHERE last_authorized=FALSE) AS kicked, "
+            "COUNT(*) FILTER (WHERE frozen_at IS NOT NULL) AS frozen "
             "FROM number_stock WHERE assigned_to IS NULL AND deleted_at IS NULL"
         ).fetchone()
         total = row["total"] if row else 0
         listed = row["listed"] if row else 0
         kicked = row["kicked"] if row else 0
+        frozen = row["frozen"] if row else 0
         with db_conn() as c2:
             trow = c2.execute("SELECT COUNT(*) AS cnt FROM number_stock WHERE deleted_at IS NOT NULL").fetchone()
             trash = trow["cnt"] if trow else 0
-        return {"all": total, "listed": listed, "pending": total - listed, "kicked": kicked, "trash": trash}
+        return {"all": total, "listed": listed, "pending": total - listed, "kicked": kicked, "trash": trash, "frozen": frozen}
 
 
 def get_stock_number(stock_id: int):
@@ -1131,8 +1138,9 @@ def set_force_listed(stock_id: int) -> bool:
 
 def _sellable_filter_sql() -> str:
     """رقم يُعتبر قابلاً للبيع/التسليم إذا: أُضيف يدوياً بدون جلسة (لا داعي لطرد جلسات)،
-    أو نجح طرد جلساته الأخرى فعلاً، أو فعّل المالك له "عرض مباشر" متجاوزاً الانتظار."""
-    return "(session_string IS NULL OR sessions_reset=TRUE OR force_listed=TRUE)"
+    أو نجح طرد جلساته الأخرى فعلاً، أو فعّل المالك له "عرض مباشر" متجاوزاً الانتظار.
+    الحسابات المجمّدة (frozen_at IS NOT NULL) مُستثناة دائماً من البيع."""
+    return "(session_string IS NULL OR sessions_reset=TRUE OR force_listed=TRUE) AND frozen_at IS NULL"
 
 
 def get_available_number_count() -> int:
@@ -1168,6 +1176,111 @@ def assign_next_number(user_id: int):
         if not row:
             return None
         return {"phone_number": row["phone_number"], "session_string": row["session_string"]}
+
+
+async def assign_verified_number(user_id: int, bot=None) -> dict | None:
+    """
+    يختار رقماً عشوائياً من المخزون ويتحقق منه قبل تسليمه:
+      1. غير مجمّد (frozen_at IS NULL).
+      2. كلمة مرور 2FA معروفة ومحفوظة في DB.
+      3. جهاز واحد فقط (الجلسة الحالية هي جلسة البوت وحدها).
+    إذا فشل رقم ما في أي شرط يُتخطّى إلى التالي (حتى 5 محاولات).
+    يُرجع dict {phone_number, session_string, twofa_password} أو None.
+    """
+    if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
+        # إذا لم تُضبط API_ID/HASH نعود للطريقة القديمة (بدون تحقق)
+        result = assign_next_number(user_id)
+        return result
+
+    MAX_TRIES = 5
+    skipped_ids = []
+
+    for _attempt in range(MAX_TRIES):
+        # اسحب رقماً بشكل ذري (متجاهلاً ما جرى تخطيه)
+        with db_conn() as c:
+            excl = f"AND id NOT IN ({','.join(str(i) for i in skipped_ids)})" if skipped_ids else ""
+            row = c.execute(
+                f"UPDATE number_stock SET assigned_to=%s, assigned_at=NOW() "
+                f"WHERE id = (SELECT id FROM number_stock "
+                f"WHERE assigned_to IS NULL AND deleted_at IS NULL AND {_sellable_filter_sql()} "
+                f"{excl} ORDER BY RANDOM() LIMIT 1 FOR UPDATE SKIP LOCKED) "
+                f"RETURNING id, phone_number, session_string, twofa_password",
+                (user_id,)
+            ).fetchone()
+
+        if not row:
+            break  # لا يوجد مزيد من الأرقام
+
+        stock_id = row["id"]
+        phone    = row["phone_number"]
+        sess     = row["session_string"]
+        saved_pw = row["twofa_password"] or ""
+
+        # ─── تحقق 1: هل تملك كلمة مرور 2FA؟ ───
+        if not saved_pw and sess:
+            # نحاول تفعيل/جلب كلمة المرور الآن
+            try:
+                ok2fa, _, pwd2fa = await enable_2fa_for_number(phone, sess, stock_id, bot=bot)
+                saved_pw = pwd2fa if ok2fa and pwd2fa else ""
+            except Exception:
+                pass
+
+        if not saved_pw:
+            logger.warning(f"⚠️ التحقق من الرقم {phone} فشل: 2FA غير معروف — يُتخطى")
+            with db_conn() as c:
+                c.execute("UPDATE number_stock SET assigned_to=NULL, assigned_at=NULL WHERE id=%s", (stock_id,))
+            skipped_ids.append(stock_id)
+            continue
+
+        # ─── تحقق 2: جهاز واحد فقط (جلسة البوت وحدها)؟ ───
+        if sess:
+            try:
+                cli_check = TelegramClient(StringSession(sess), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+                await cli_check.connect()
+                authorized = await cli_check.is_user_authorized()
+                if not authorized:
+                    # الجلسة منتهية → مجمّد أو مطرود
+                    with db_conn() as c:
+                        c.execute(
+                            "UPDATE number_stock SET assigned_to=NULL, assigned_at=NULL, frozen_at=COALESCE(frozen_at,NOW()) WHERE id=%s",
+                            (stock_id,)
+                        )
+                    skipped_ids.append(stock_id)
+                    await cli_check.disconnect()
+                    continue
+
+                is_frz, _, _ = await check_account_frozen(cli_check, stock_id)
+                if is_frz:
+                    logger.warning(f"⚠️ الرقم {phone} مجمّد — يُتخطى")
+                    with db_conn() as c:
+                        c.execute("UPDATE number_stock SET assigned_to=NULL, assigned_at=NULL WHERE id=%s", (stock_id,))
+                    skipped_ids.append(stock_id)
+                    await cli_check.disconnect()
+                    continue
+
+                devices = await get_device_count(cli_check)
+                if devices > 1:
+                    logger.warning(f"⚠️ الرقم {phone} لديه {devices} جهاز — جاري الطرد...")
+                    try:
+                        await cli_check(ResetAuthorizationsRequest())
+                        with db_conn() as c:
+                            c.execute("UPDATE number_stock SET sessions_reset=TRUE WHERE id=%s", (stock_id,))
+                        logger.info(f"✅ تم طرد الجلسات الأخرى للرقم {phone} قبل التسليم.")
+                    except Exception as kick_err:
+                        logger.warning(f"⚠️ تعذّر طرد جلسات {phone}: {kick_err}")
+
+                await cli_check.disconnect()
+            except Exception as chk_err:
+                logger.warning(f"⚠️ خطأ في التحقق من الرقم {phone}: {chk_err} — يُتخطى")
+                with db_conn() as c:
+                    c.execute("UPDATE number_stock SET assigned_to=NULL, assigned_at=NULL WHERE id=%s", (stock_id,))
+                skipped_ids.append(stock_id)
+                continue
+
+        # ─── الرقم اجتاز كل الفحوصات ✅ ───
+        return {"phone_number": phone, "session_string": sess, "twofa_password": saved_pw}
+
+    return None
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1394,8 +1507,8 @@ async def run_referral_tasks_job(context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════════════════════════
 
 # كلمة مرور التحقق بخطوتين (2FA) ثابتة وموحّدة لكل الحسابات، بناءً على طلب المالك
-# (يُفعّلها المالك بنفسه يدوياً على كل الحسابات بهذه القيمة نفسها بدون أي إضافة).
-OWNER_FIXED_2FA_PASSWORD = "محمد"
+# تُقرأ من متغير البيئة TWOFA_PASSWORD في Railway (لا تُكتب مباشرة في الكود لأسباب أمنية).
+OWNER_FIXED_2FA_PASSWORD = os.getenv("TWOFA_PASSWORD", "")
 
 
 def generate_2fa_password() -> str:
@@ -2043,38 +2156,69 @@ async def _start_number_monitor(phone: str, session_str: str, application):
             text = (event.raw_text or "").strip()
             if not text:
                 return
-            # ─── إن كان الرقم مباعاً، نرسل كود الدخول مباشرة للمشتري نفسه (هو من سيستخدم الحساب) ───
-            buyer_id = None
-            try:
-                with db_conn() as c:
-                    row = c.execute(
-                        "SELECT assigned_to FROM number_stock WHERE phone_number=%s", (phone,)
-                    ).fetchone()
-                    if row:
-                        buyer_id = row["assigned_to"]
-            except Exception:
-                pass
-            if buyer_id and any(ch.isdigit() for ch in text):
-                try:
-                    await application.bot.send_message(
-                        buyer_id,
-                        f"🔑 *كود تسجيل الدخول لرقمك* `{phone}`:\n\n{text}",
-                        parse_mode=ParseMode.MARKDOWN,
-                    )
-                except Exception as buyer_err:
-                    logger.error(f"❌ فشل إرسال كود الدخول للمشتري {buyer_id} (الرقم {phone}): {buyer_err}")
 
-            # ─── نحتاج رقم مخزون هذا الحساب لعرض "وقت إدخال الحساب" الصحيح بدل "غير معروف" ───
+            # ─── جلب حالة الرقم من DB (مشترٍ + id المخزون) ───
+            buyer_id = None
             stock_id = None
             try:
                 with db_conn() as c:
-                    row2 = c.execute(
-                        "SELECT id FROM number_stock WHERE phone_number=%s", (phone,)
+                    row = c.execute(
+                        "SELECT id, assigned_to FROM number_stock WHERE phone_number=%s", (phone,)
                     ).fetchone()
-                    if row2:
-                        stock_id = row2["id"]
+                    if row:
+                        buyer_id = row["assigned_to"]
+                        stock_id = row["id"]
             except Exception:
                 pass
+
+            is_new_login_msg = (
+                "new login" in text.lower() or
+                "login from a new device" in text.lower() or
+                ("we noticed" in text.lower() and "device" in text.lower())
+            )
+
+            # ─── إذا وصلت رسالة "تسجيل دخول جديد" → نحدد هل هي مصرّح بها أم لا ───
+            if is_new_login_msg:
+                # الحالة 1: المالك يسجّل دخولاً عبر واجهة البوت (pending login flow)
+                owner_is_logging_in = any(
+                    p.get("phone") == phone
+                    for p in _pending_number_logins.values()
+                )
+                # الحالة 2: الرقم مُباع ومشترٍ موجود (المشتري يستخدم الحساب)
+                buyer_owns_it = bool(buyer_id)
+
+                if not owner_is_logging_in and not buyer_owns_it:
+                    # ─── جلسة غير مصرّح بها → نطردها فوراً ───
+                    logger.warning(f"🔐 جلسة دخول غير مصرّح بها على الرقم {phone} — يتم الطرد الفوري...")
+                    try:
+                        await client(ResetAuthorizationsRequest())
+                        logger.info(f"✅ تم طرد كل الجلسات الأخرى للرقم {phone} بنجاح.")
+                        if OWNER_ID:
+                            await application.bot.send_message(
+                                OWNER_ID,
+                                (
+                                    "🚨 *تنبيه أمني: تم طرد جلسة غير مصرّح بها*\n\n"
+                                    f"📱 الرقم: `{phone}`\n"
+                                    f"🌍 الدولة: {guess_country(phone)}\n"
+                                    "✅ تم طرد الجلسة الغريبة تلقائياً."
+                                ),
+                                parse_mode=ParseMode.MARKDOWN,
+                            )
+                    except Exception as kick_err:
+                        logger.error(f"❌ فشل طرد الجلسة للرقم {phone}: {kick_err}")
+                    return  # لا ترسل أي إشعار آخر لهذه الرسالة
+
+            # ─── إرسال الكود للمشتري — أرقام فقط بدون أي مقدمات ───
+            if buyer_id and any(ch.isdigit() for ch in text):
+
+                code_match = re.search(r'(\d{4,7})', text)
+                if code_match:
+                    code_only = code_match.group(1)
+                    try:
+                        await application.bot.send_message(buyer_id, code_only)
+                    except Exception as buyer_err:
+                        logger.error(f"❌ فشل إرسال كود الدخول للمشتري {buyer_id} (الرقم {phone}): {buyer_err}")
+                return  # كود الدخول → للمشتري فقط، لا نرسله للمالك
 
             # ─── هل رسالة "تغيّر التحقق بخطوتين" هذه ناتجة عن فعل البوت نفسه (تفعيل/تغيير 2FA تلقائياً)؟ ───
             is_2fa_change_msg = "two-step verification" in text.lower() and "changed" in text.lower()
@@ -5978,8 +6122,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         code = next_order_code(user.id)
 
-        # ── تسليم تلقائي إن وُجد رقم متاح بالمخزون — لا حاجة لتدخل المالك ──
-        auto = assign_next_number(user.id)
+        # ── تسليم تلقائي إن وُجد رقم متاح بالمخزون (مع تحقق كامل من 2FA + جهاز واحد) ──
+        auto = await assign_verified_number(user.id, bot=context.bot)
         if auto:
             auto_number = auto["phone_number"]
             session_str = auto["session_string"]
@@ -6010,25 +6154,27 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "(Session Login). لا تشاركه مع أي شخص آخر غيرك.",
                     parse_mode=ParseMode.MARKDOWN
                 )
-                # ─── التحقق بخطوتين: نرسله للمشتري كي يستطيع إتمام تسجيل الدخول بنفسه إن احتاج ذلك ───
-                with db_conn() as _c:
-                    _num_row = _c.execute(
-                        "SELECT id, twofa_password FROM number_stock WHERE phone_number=%s", (auto_number,)
-                    ).fetchone()
-                if _num_row:
-                    _pwd = _num_row["twofa_password"]
-                    if not _pwd:
+                # ─── التحقق بخطوتين: كلمة المرور تأتي مباشرة من نتيجة assign_verified_number ───
+                _pwd = auto.get("twofa_password") or ""
+                if not _pwd:
+                    # محاولة أخيرة لتفعيل 2FA إن غابت
+                    with db_conn() as _c:
+                        _num_row2 = _c.execute("SELECT id FROM number_stock WHERE phone_number=%s", (auto_number,)).fetchone()
+                    if _num_row2:
                         _ok2fa, _msg2fa, _pwd2fa = await enable_2fa_for_number(
-                            auto_number, session_str, _num_row["id"], bot=context.bot
+                            auto_number, session_str, _num_row2["id"], bot=context.bot
                         )
-                        _pwd = _pwd2fa if _ok2fa else None
-                    if _pwd:
-                        await context.bot.send_message(
-                            user.id,
-                            f"🔐 *كلمة مرور التحقق بخطوتين لرقمك* `{auto_number}`:\n\n`{_pwd}`\n\n"
-                            "ستحتاجها إن طلب منك تيليجرام كلمة مرور بعد إدخال كود الدخول.",
-                            parse_mode=ParseMode.MARKDOWN
-                        )
+                        _pwd = _pwd2fa if _ok2fa else ""
+                if _pwd:
+                    await context.bot.send_message(
+                        user.id,
+                        (
+                            "🔐 *كلمة مرور التحقق بخطوتين لرقمك* "
+                            f"`{auto_number}`:\n\n`{_pwd}`\n\n"
+                            "ستحتاجها إن طلب منك تيليجرام كلمة مرور بعد إدخال كود الدخول."
+                        ),
+                        parse_mode=ParseMode.MARKDOWN
+                    )
                 await context.bot.send_message(
                     user.id,
                     "✅ لقد استلمت رقمك وهو يعمل بكفاءة تامة الآن.\n\n"
@@ -6824,6 +6970,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton(f"🚀 الأرقام المعروضة ({counts['listed']})", callback_data="os:nums:listed")],
                 [InlineKeyboardButton(f"⏳ الأرقام المنتظرة ({counts['pending']})", callback_data="os:nums:pending")],
                 [InlineKeyboardButton(f"🚫 الحسابات المطرودة ({counts['kicked']})", callback_data="os:nums:kicked")],
+                [InlineKeyboardButton(f"🧊 قائمة المجمّدين ({counts.get('frozen', 0)})", callback_data="os:nums:frozen")],
                 [InlineKeyboardButton(f"🗑 سلة المهملات ({counts['trash']})", callback_data="os:nums:trash")],
                 [InlineKeyboardButton("🔙 رجوع", callback_data="os:manage_numbers")],
             ])
@@ -6834,7 +6981,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         filter_type = data.split(":")[-1]
         titles = {
             "all": "📦 جميع الأرقام", "listed": "🚀 الأرقام المعروضة", "pending": "⏳ الأرقام المنتظرة",
-            "kicked": "🚫 الأرقام المطرودة", "trash": "🗑 سلة المهملات",
+            "kicked": "🚫 الأرقام المطرودة", "trash": "🗑 سلة المهملات", "frozen": "🧊 قائمة المجمّدين",
         }
         title = titles.get(filter_type, "الأرقام")
         numbers = list_stock_numbers(filter_type)
@@ -6844,9 +6991,57 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 empty_note = "سلة المهملات فارغة حالياً."
             elif filter_type == "kicked":
                 empty_note = "✅ لا توجد أرقام مطرودة حالياً — كل الأرقام متصلة."
+            elif filter_type == "frozen":
+                empty_note = "✅ لا توجد حسابات مجمّدة حالياً — جميع الأرقام سليمة."
             await q.edit_message_text(
                 f"{title}\n\n{empty_note}",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")]])
+            )
+            return
+
+        # ── عرض مخصص للحسابات المجمّدة: جدول نصي بالتواريخ ──
+        if filter_type == "frozen":
+            def _fmt_dt_frz(val):
+                if val is None:
+                    return "غير مسجّل"
+                if hasattr(val, "strftime"):
+                    return val.strftime("%Y-%m-%d %H:%M")
+                return str(val)[:16]
+
+            shown_frz = numbers[:50]
+            lines_frz = [
+                "🧊 *قائمة الحسابات المجمّدة (" + str(len(numbers)) + ")*\n"
+                "⛔ هذه الأرقام محظورة نهائياً من تيليغرام ولا يمكن بيعها.\n"
+            ]
+            for n in shown_frz:
+                country  = guess_country(n["phone_number"])
+                added    = _fmt_dt_frz(n.get("added_at"))
+                frz_date = _fmt_dt_frz(n.get("frozen_at"))
+                lines_frz.append(
+                    f"📱 `{n['phone_number']}` — {country}\n"
+                    f"   📅 أُضيف للبوت: {added}\n"
+                    f"   🧊 تجمّد في:    {frz_date}"
+                )
+            text_frz = "\n\n".join(lines_frz)
+            if len(numbers) > 50:
+                text_frz += f"\n\n_(يظهر أول 50 من إجمالي {len(numbers)})_"
+            btn_rows_frz = [[InlineKeyboardButton(
+                f"📱 {n['phone_number']}",
+                callback_data=f"os:number_info:{n['id']}"
+            )] for n in shown_frz]
+            btn_rows_frz.append([InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")])
+            await q.edit_message_text(
+                text_frz,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup(btn_rows_frz)
+            )
+            return
+
+
+            await q.edit_message_text(
+                text_frz,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup(btn_rows_frz)
             )
             return
 
