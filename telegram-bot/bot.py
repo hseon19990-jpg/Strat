@@ -7803,11 +7803,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines = ["🚫 *الأعضاء المحظورون:*\n"]
             kb_rows = []
             for b in banned:
-                uname = f"@{b['username']}" if b["username"] else f"ID: {b['user_id']}"
+                uname = f"@{md_escape(b['username'])}" if b["username"] else f"ID: {b['user_id']}"
                 ts_raw = b["banned_at"]
                 ts = ts_raw.strftime("%Y-%m-%d %H:%M") if ts_raw and hasattr(ts_raw, "strftime") else (str(ts_raw)[:16] if ts_raw else "—")
-                reason = b["ban_reason"] or "—"
-                lines.append(f"• {b['full_name'] or '—'} ({uname})\n  📝 {reason} | 🕐 {ts}")
+                reason = md_escape(b["ban_reason"] or "—")
+                fname  = md_escape(b["full_name"] or "—")
+                lines.append(f"• {fname} ({uname})\n  📝 {reason} | 🕐 {ts}")
                 kb_rows.append([InlineKeyboardButton(
                     f"🔓 رفع حظر {uname}",
                     callback_data=f"os:unban_confirm:{b['user_id']}"
@@ -7900,8 +7901,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 lines = []
                 for i, u in enumerate(uses, 1):
-                    name = (u["full_name"] or "").strip() or "—"
-                    uname = f"@{u['username']}" if u["username"] else f"ID: {u['user_id']}"
+                    name  = md_escape((u["full_name"] or "").strip() or "—")
+                    uname = f"@{md_escape(u['username'])}" if u["username"] else f"ID: {u['user_id']}"
                     pts   = u["points"] if u["points"] is not None else "؟"
                     ts_raw = u["used_at"]
                     if ts_raw:
