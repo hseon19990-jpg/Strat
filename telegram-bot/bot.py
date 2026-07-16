@@ -2510,7 +2510,7 @@ async def retry_pending_session_resets(context: ContextTypes.DEFAULT_TYPE):
     with db_conn() as c:
         rows = c.execute(
             "SELECT id, phone_number, session_string, added_at FROM number_stock "
-            "WHERE session_string IS NOT NULL AND (sessions_reset IS NULL OR sessions_reset=FALSE)"
+            "WHERE session_string IS NOT NULL AND (sessions_reset IS NULL OR sessions_reset=FALSE) AND assigned_to IS NULL"
         ).fetchall()
     for row in rows:
         rec = dict(row)
@@ -10072,23 +10072,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not row_lv or row_lv["assigned_to"] != user.id:
             await q.answer("⚠️ لا تملك صلاحية تنفيذ هذا الإجراء.", show_alert=True)
             return
-        # إجراء المغادرة: طرد كل الجلسات وتحرير الرقم من DB
+        # إجراء المغادرة: إيقاف المراقبة وقطع اتصال البوت فقط (لا نطرد جلسات المشتري)
         try:
-            if row_lv["session_string"] and TELEGRAM_API_ID and TELEGRAM_API_HASH:
-                _cli_leave = TelegramClient(
-                    StringSession(row_lv["session_string"]),
-                    int(TELEGRAM_API_ID), TELEGRAM_API_HASH
-                )
-                await _cli_leave.connect()
-                try:
-                    await _cli_leave(ResetAuthorizationsRequest())
-                except Exception:
-                    pass
-                finally:
-                    try: await _cli_leave.disconnect()
-                    except Exception: pass
+            await _stop_number_monitor(leave_phone)
         except Exception as _le2:
-            logger.warning(f"⚠️ تعذّر طرد جلسات الرقم {leave_phone} عند مغادرة البوت: {_le2}")
+            logger.warning(f"⚠️ تعذّر إيقاف مراقبة الرقم {leave_phone}: {_le2}")
         with db_conn() as c_lv2:
             c_lv2.execute(
                 "UPDATE number_stock SET assigned_to=NULL, assigned_at=NULL WHERE phone_number=%s", (leave_phone,)
