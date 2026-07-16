@@ -5689,6 +5689,144 @@ async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.edit_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
 
+async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    يستقبل ملف .session (SQLite) من المالك ويستورده مباشرةً.
+    يدعم صيغتَي Telethon و Pyrogram.
+    Telethon  → جدول sessions: dc_id, server_address, port, auth_key (blob)
+    Pyrogram  → جدول sessions: dc_id, auth_key (blob)
+    """
+    user = update.effective_user
+    if user.id != OWNER_ID:
+        return
+    doc = update.message.document
+    if not doc:
+        return
+    fname = doc.file_name or ""
+    if not fname.lower().endswith(".session"):
+        return
+
+    msg = await update.message.reply_text(f"⏳ جاري قراءة الملف `{fname}`...", parse_mode=ParseMode.MARKDOWN)
+    import tempfile, sqlite3 as _sq3
+
+    # ── تنزيل الملف إلى ملف مؤقت ──
+    try:
+        tg_file = await context.bot.get_file(doc.file_id)
+        raw_bytes = await tg_file.download_as_bytearray()
+    except Exception as e:
+        await msg.edit_text(f"❌ تعذّر تنزيل الملف:\n`{e}`", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    # ── فتح SQLite من الذاكرة ──
+    session_string = None
+    detected_format = "?"
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".session", delete=False) as tf:
+            tf.write(raw_bytes)
+            tf_path = tf.name
+
+        conn = _sq3.connect(tf_path)
+        conn.row_factory = _sq3.Row
+        cur = conn.cursor()
+
+        # جرّب صيغة Telethon أولاً (حقول: dc_id, server_address, port, auth_key)
+        try:
+            row = cur.execute(
+                "SELECT dc_id, server_address, port, auth_key FROM sessions LIMIT 1"
+            ).fetchone()
+            if row and row["auth_key"] and len(row["auth_key"]) == 256:
+                dc_id     = int(row["dc_id"])
+                auth_key  = bytes(row["auth_key"])
+                # نستخدم عنوان الخادم المخزون في الملف إن أمكن، وإلا نأخذ من الخريطة
+                try:
+                    srv_ip   = _socket.inet_aton(row["server_address"])
+                    srv_port = int(row["port"])
+                except Exception:
+                    srv_ip_str, srv_port = _TG_DC.get(dc_id, ("149.154.167.51", 443))
+                    srv_ip   = _socket.inet_aton(srv_ip_str)
+                packed = struct.pack(">BH4sH256s", 1, dc_id, srv_ip, srv_port, auth_key)
+                session_string = base64.urlsafe_b64encode(packed).decode("ascii").rstrip("=")
+                detected_format = "Telethon"
+        except _sq3.OperationalError:
+            pass
+
+        # إن فشل جرّب صيغة Pyrogram (حقول: dc_id, auth_key)
+        if not session_string:
+            try:
+                row = cur.execute(
+                    "SELECT dc_id, auth_key FROM sessions LIMIT 1"
+                ).fetchone()
+                if row and row["auth_key"] and len(bytes(row["auth_key"])) == 256:
+                    dc_id    = int(row["dc_id"])
+                    auth_key = bytes(row["auth_key"])
+                    ip_str, port_dc = _TG_DC.get(dc_id, ("149.154.167.51", 443))
+                    packed = struct.pack(
+                        ">BH4sH256s", 1, dc_id,
+                        _socket.inet_aton(ip_str), port_dc, auth_key
+                    )
+                    session_string = base64.urlsafe_b64encode(packed).decode("ascii").rstrip("=")
+                    detected_format = "Pyrogram"
+            except _sq3.OperationalError:
+                pass
+
+        conn.close()
+        import os as _os; _os.unlink(tf_path)
+    except Exception as e:
+        await msg.edit_text(f"❌ تعذّر قراءة قاعدة البيانات:\n`{e}`", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    if not session_string:
+        await msg.edit_text(
+            "❌ لم أتمكن من استخراج الجلسة.\n"
+            "تأكد أن الملف جلسة Telethon أو Pyrogram صالحة (بها `auth_key` بطول 256 بايت).",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    await msg.edit_text(f"⏳ تم كشف صيغة *{detected_format}* — جاري التحقق من الجلسة...", parse_mode=ParseMode.MARKDOWN)
+
+    # ── التحقق والاستيراد (نفس منطق handle_json_file) ──
+    try:
+        if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
+            await msg.edit_text("❌ TELEGRAM_API_ID / TELEGRAM_API_HASH غير محدّدَين.")
+            return
+        client = TelegramClient(StringSession(session_string), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+        await client.connect()
+        if not await client.is_user_authorized():
+            await client.disconnect()
+            await msg.edit_text("❌ الجلسة منتهية أو غير صالحة — لم يتم الاستيراد.")
+            return
+        me = await client.get_me()
+        phone = me.phone if me.phone.startswith("+") else f"+{me.phone}"
+        await client.disconnect()
+    except Exception as e:
+        await msg.edit_text(f"❌ خطأ أثناء التحقق:\n`{e}`", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    with db_conn() as _c:
+        exists = _c.execute(
+            "SELECT id FROM number_stock WHERE phone_number=%s", (phone,)
+        ).fetchone()
+        if exists:
+            _c.execute(
+                "UPDATE number_stock SET session_string=%s, assigned_to=NULL, assigned_at=NULL WHERE phone_number=%s",
+                (session_string, phone)
+            )
+        else:
+            _c.execute(
+                "INSERT INTO number_stock (phone_number, session_string) VALUES (%s,%s)",
+                (phone, session_string)
+            )
+    asyncio.create_task(_start_number_monitor(phone, session_string, context.application))
+    await msg.edit_text(
+        f"✅ *تم استيراد الجلسة بنجاح!*\n\n"
+        f"📱 الرقم: `{phone}`\n"
+        f"🔧 الصيغة: {detected_format}\n"
+        f"📄 الملف: `{fname}`",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+
 async def handle_unsupported_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """شبكة أمان: تُستدعى لأي رسالة لا تحمل نصاً أو وصفاً (صورة/فيديو/ملصق بلا caption،
     جهة اتصال، موقع، ملف...) ولا تطابق أي معالج آخر. بدون هذا المعالج كان البوت يبقى
@@ -9781,6 +9919,10 @@ def main():
     app.add_handler(MessageHandler(
         filters.ChatType.PRIVATE & filters.Document.MimeType("application/json"),
         handle_json_file
+    ))
+    app.add_handler(MessageHandler(
+        filters.ChatType.PRIVATE & filters.Document.FileExtension("session"),
+        handle_session_file
     ))
     # ── شبكة أمان: أي رسالة أخرى (صورة/ملصق/جهة اتصال بلا نص) لا تطابق ما سبق ──
     # حتى لا يبقى البوت صامتاً تماماً بلا أي رد إذا أرسل المستخدم قناته/رده بطريقة غير متوقعة
