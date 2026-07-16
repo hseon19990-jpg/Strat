@@ -8979,9 +8979,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # حذف الكود المخزون للمشتري
         _buyer_received_codes.pop(user.id, None)
         await q.edit_message_text(
-            "✅ *تم.* البوت غادر الحساب وحذف جلسته.
-
-شكراً لاستخدامك الخدمة 🤍",
+            "✅ *تم.* البوت غادر الحساب وحذف جلسته.\n\nشكراً لاستخدامك الخدمة 🤍",
             parse_mode=ParseMode.MARKDOWN
         )
         return
