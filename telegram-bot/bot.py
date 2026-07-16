@@ -1127,8 +1127,10 @@ async def fetch_last_login_code(client: TelegramClient, after_date=None):
                 after = after_date
                 if after.tzinfo is None:
                     after = after.replace(tzinfo=_dt.timezone.utc)
-                if msg_date <= after:
-                    continue  # كود قديم قبل الشراء — تخطَّه
+                # هامش 10 دقائق: نقبل أي كود وصل قبل 10 دقائق من لحظة الشراء أو بعدها
+                threshold = after - _dt.timedelta(minutes=10)
+                if msg_date < threshold:
+                    continue  # كود قديم جداً — تخطَّه
             return m.message
         return None
     except Exception as e:
@@ -9867,9 +9869,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         twofa_phone = data[len("buyer:show_twofa:"):]
         try:
             with db_conn() as _twdb:
+                # نتحقق من الملكية عبر prize_exchanges بدلاً من assigned_to الذي قد يتغير
                 _twrow = _twdb.execute(
-                    "SELECT twofa_password FROM number_stock WHERE phone_number=%s AND assigned_to=%s",
-                    (twofa_phone, user.id)
+                    """SELECT ns.twofa_password FROM number_stock ns
+                       WHERE ns.phone_number=%s
+                         AND EXISTS (
+                             SELECT 1 FROM prize_exchanges pe
+                             WHERE pe.prize_value=%s
+                               AND pe.user_id=%s
+                               AND pe.status='completed'
+                         )""",
+                    (twofa_phone, twofa_phone, user.id)
                 ).fetchone()
             _twofa_val = (_twrow["twofa_password"] or "").strip() if _twrow else ""
             if _twofa_val:
