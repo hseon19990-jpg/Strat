@@ -2095,23 +2095,40 @@ def translate_official_notice(text: str) -> str:
 
 async def notify_account_change(bot, phone: str, change_desc: str, added_at=None, stock_id: int | None = None):
     """يُرسل للمالك تنبيهاً موحّد الشكل عن أي تغيّر في حساب (طرد/تجميد/تغيّر أجهزة/تنبيه أمني...):
-    التغيّر / رقم الحساب / الدولة / وقت إدخال الحساب."""
+    التغيّر / رقم الحساب / الدولة / وقت إدخال الحساب / حالة البيع."""
     if not OWNER_ID:
         return
-    if added_at is None and stock_id is not None:
+    assigned_to = None
+    if stock_id is not None:
         try:
             with db_conn() as c:
-                row = c.execute("SELECT added_at FROM number_stock WHERE id=%s", (stock_id,)).fetchone()
+                row = c.execute("SELECT added_at, assigned_to FROM number_stock WHERE id=%s", (stock_id,)).fetchone()
                 if row:
-                    added_at = row["added_at"]
+                    if added_at is None:
+                        added_at = row["added_at"]
+                    assigned_to = row["assigned_to"]
         except Exception:
             pass
+    elif added_at is None:
+        try:
+            with db_conn() as c:
+                row = c.execute("SELECT added_at, assigned_to FROM number_stock WHERE phone_number=%s", (phone,)).fetchone()
+                if row:
+                    added_at = row["added_at"]
+                    assigned_to = row["assigned_to"]
+        except Exception:
+            pass
+    if assigned_to:
+        sale_status = f"✅ *مباع* (المشتري: `{assigned_to}`)"
+    else:
+        sale_status = "❌ *غير مباع* — قد يكون اختراقاً!"
     text = (
         f"🔔 *تنبيه تغيّر في حساب*\n\n"
         f"التغيّر: {change_desc}\n"
         f"رقم الحساب: `{phone}`\n"
         f"الدولة: {guess_country(phone)}\n"
-        f"وقت ادخال الحساب: {format_account_datetime(added_at)}"
+        f"وقت ادخال الحساب: {format_account_datetime(added_at)}\n"
+        f"حالة الحساب: {sale_status}"
     )
     try:
         await bot.send_message(OWNER_ID, text, parse_mode=ParseMode.MARKDOWN)
