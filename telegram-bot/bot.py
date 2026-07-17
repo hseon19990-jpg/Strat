@@ -8832,15 +8832,27 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data.startswith("os:nums:") and is_own:
-        filter_type = data.split(":")[-1]
+        # ── تحليل filter_type ورقم الصفحة من callback_data ──
+        # الصيغة: os:nums:{filter_type}  أو  os:nums:{filter_type}:{page}
+        _parts = data.split(":")
+        filter_type = _parts[2]
+        _page = int(_parts[3]) if len(_parts) > 3 else 0
+        _PAGE_SIZE = 30
+
         titles = {
-            "all": "📦 جميع الأرقام", "listed": "🚀 الأرقام المعروضة", "pending": "⏳ الأرقام المنتظرة",
-            "kicked": "🚫 الأرقام المطرودة", "trash": "🗑 سلة المهملات", "frozen": "🧊 قائمة المجمّدين",
+            "all":      "📦 جميع الأرقام",
+            "listed":   "🚀 الأرقام المعروضة",
+            "pending":  "⏳ الأرقام المنتظرة",
+            "kicked":   "🚫 الأرقام المطرودة",
+            "trash":    "🗑 سلة المهملات",
+            "frozen":   "🧊 قائمة المجمّدين",
             "auto_2fa": "🔐 حسابات التحقق التلقائي",
         }
-        title = titles.get(filter_type, "الأرقام")
+        title   = titles.get(filter_type, "الأرقام")
         numbers = list_stock_numbers(filter_type)
-        if not numbers:
+        total   = len(numbers)
+
+        if not total:
             empty_note = "لا توجد أرقام حالياً ضمن هذا التصنيف."
             if filter_type == "trash":
                 empty_note = "سلة المهملات فارغة حالياً."
@@ -8856,141 +8868,138 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # ── عرض مخصص للحسابات المجمّدة: جدول نصي بالتواريخ ──
-        if filter_type == "frozen":
-            def _fmt_dt_frz(val):
-                if val is None:
-                    return "غير مسجّل"
-                if hasattr(val, "strftime"):
-                    return val.strftime("%Y-%m-%d %H:%M")
-                return str(val)[:16]
+        # ── حساب نطاق الصفحة ──
+        total_pages = (total + _PAGE_SIZE - 1) // _PAGE_SIZE
+        _page       = max(0, min(_page, total_pages - 1))   # تثبيت في الحدود
+        _start      = _page * _PAGE_SIZE
+        _end        = _start + _PAGE_SIZE
+        page_nums   = numbers[_start:_end]
 
-            shown_frz = numbers[:50]
+        # ── دالة مساعدة لتنسيق التاريخ ──
+        def _fmt_dt_pg(val):
+            if val is None:
+                return "غير مسجّل"
+            if hasattr(val, "strftime"):
+                return val.strftime("%Y-%m-%d %H:%M")
+            return str(val)[:16]
+
+        # ── أزرار التنقل بين الصفحات ──
+        def _nav_row():
+            nav = []
+            if _page > 0:
+                nav.append(InlineKeyboardButton("⬅️ السابق", callback_data=f"os:nums:{filter_type}:{_page - 1}"))
+            if total_pages > 1:
+                nav.append(InlineKeyboardButton(f"📄 {_page + 1}/{total_pages}", callback_data="noop"))
+            if _page < total_pages - 1:
+                nav.append(InlineKeyboardButton("التالي ➡️", callback_data=f"os:nums:{filter_type}:{_page + 1}"))
+            return nav
+
+        # ══════════════════════════════════════════════════════
+        # ── عرض مخصص: الحسابات المجمّدة ──
+        # ══════════════════════════════════════════════════════
+        if filter_type == "frozen":
             lines_frz = [
-                "🧊 *قائمة الحسابات المجمّدة (" + str(len(numbers)) + ")*\n"
+                f"🧊 *{title} ({total})* — صفحة {_page + 1}/{total_pages}\n"
                 "⛔ هذه الأرقام محظورة نهائياً من تيليغرام ولا يمكن بيعها.\n"
             ]
-            for n in shown_frz:
-                country  = guess_country(n["phone_number"])
-                added    = _fmt_dt_frz(n.get("added_at"))
-                frz_date = _fmt_dt_frz(n.get("frozen_at"))
+            for n in page_nums:
                 lines_frz.append(
-                    f"📱 `{n['phone_number']}` — {country}\n"
-                    f"   📅 أُضيف للبوت: {added}\n"
-                    f"   🧊 تجمّد في:    {frz_date}"
+                    f"📱 `{n['phone_number']}` — {guess_country(n['phone_number'])}\n"
+                    f"   📅 أُضيف للبوت: {_fmt_dt_pg(n.get('added_at'))}\n"
+                    f"   🧊 تجمّد في:    {_fmt_dt_pg(n.get('frozen_at'))}"
                 )
             text_frz = "\n\n".join(lines_frz)
-            if len(numbers) > 50:
-                text_frz += f"\n\n_(يظهر أول 50 من إجمالي {len(numbers)})_"
+            if len(text_frz) > 4000:
+                text_frz = text_frz[:4000] + "\n\n_(النص مقتصر)_"
             btn_rows_frz = [[InlineKeyboardButton(
-                f"📱 {n['phone_number']}",
-                callback_data=f"os:number_info:{n['id']}"
-            )] for n in shown_frz]
+                f"📱 {n['phone_number']}", callback_data=f"os:number_info:{n['id']}"
+            )] for n in page_nums]
+            _nr = _nav_row()
+            if _nr:
+                btn_rows_frz.append(_nr)
             btn_rows_frz.append([InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")])
-            await q.edit_message_text(
-                text_frz,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup(btn_rows_frz)
-            )
+            await q.edit_message_text(text_frz, parse_mode=ParseMode.MARKDOWN,
+                                      reply_markup=InlineKeyboardMarkup(btn_rows_frz))
             return
 
-
-            await q.edit_message_text(
-                text_frz,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup(btn_rows_frz)
-            )
-            return
-
-        # ── عرض مخصص لحسابات التحقق التلقائي ──
+        # ══════════════════════════════════════════════════════
+        # ── عرض مخصص: حسابات التحقق التلقائي ──
+        # ══════════════════════════════════════════════════════
         if filter_type == "auto_2fa":
-            def _fmt_dt_2fa(val):
-                if val is None:
-                    return "غير مسجّل"
-                if hasattr(val, "strftime"):
-                    return val.strftime("%Y-%m-%d %H:%M")
-                return str(val)[:16]
-
-            shown_2fa = numbers[:50]
-            lines_2fa = ["🔐 *حسابات التحقق التلقائي (" + str(len(numbers)) + ")*\n"
-                         "هذه الحسابات قام البوت بتفعيل كلمة مرور التحقق بخطوتين عليها تلقائياً.\n"]
-            for n in shown_2fa:
-                country  = guess_country(n["phone_number"])
-                added    = _fmt_dt_2fa(n.get("added_at"))
-                has_pwd  = "✅ محفوظة" if n.get("twofa_password") else "❌ غير محفوظة"
+            lines_2fa = [
+                f"🔐 *{title} ({total})* — صفحة {_page + 1}/{total_pages}\n"
+                "هذه الحسابات قام البوت بتفعيل كلمة مرور التحقق بخطوتين عليها تلقائياً.\n"
+            ]
+            for n in page_nums:
+                has_pwd = "✅ محفوظة" if n.get("twofa_password") else "❌ غير محفوظة"
                 lines_2fa.append(
-                    f"📱 `{n['phone_number']}` — {country}\n"
-                    f"   📅 أُضيف للبوت: {added}\n"
+                    f"📱 `{n['phone_number']}` — {guess_country(n['phone_number'])}\n"
+                    f"   📅 أُضيف للبوت: {_fmt_dt_pg(n.get('added_at'))}\n"
                     f"   🔑 كلمة المرور: {has_pwd}"
                 )
             text_2fa = "\n\n".join(lines_2fa)
-            if len(numbers) > 50:
-                text_2fa += f"\n\n_(يظهر أول 50 من إجمالي {len(numbers)})_"
+            if len(text_2fa) > 4000:
+                text_2fa = text_2fa[:4000] + "\n\n_(النص مقتصر)_"
             btn_rows_2fa = [[InlineKeyboardButton(
-                f"📱 {n['phone_number']}",
-                callback_data=f"os:number_info:{n['id']}"
-            )] for n in shown_2fa]
+                f"📱 {n['phone_number']}", callback_data=f"os:number_info:{n['id']}"
+            )] for n in page_nums]
+            _nr = _nav_row()
+            if _nr:
+                btn_rows_2fa.append(_nr)
             btn_rows_2fa.append([InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")])
-            await q.edit_message_text(
-                text_2fa,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup(btn_rows_2fa)
-            )
+            await q.edit_message_text(text_2fa, parse_mode=ParseMode.MARKDOWN,
+                                      reply_markup=InlineKeyboardMarkup(btn_rows_2fa))
             return
 
-        # ── عرض مخصص للأرقام المطرودة: جدول نصي بالتواريخ مباشرة ──
+        # ══════════════════════════════════════════════════════
+        # ── عرض مخصص: الأرقام المطرودة ──
+        # ══════════════════════════════════════════════════════
         if filter_type == "kicked":
-            def _fmt_dt(val):
-                if val is None:
-                    return "غير مسجّل"
-                if hasattr(val, "strftime"):
-                    return val.strftime("%Y-%m-%d %H:%M")
-                return str(val)[:16]
-
-            shown = numbers[:50]
-            lines = [f"🚫 *الأرقام المطرودة ({len(numbers)})*\n"]
-            for n in shown:
-                country = guess_country(n["phone_number"])
-                added   = _fmt_dt(n.get("added_at"))
-                kicked  = _fmt_dt(n.get("kicked_at"))
-                lines.append(
-                    f"📱 `{n['phone_number']}` — {country}\n"
-                    f"   📅 تسجيل: {added}\n"
-                    f"   🚫 طُرد:   {kicked}"
+            lines_kk = [f"🚫 *{title} ({total})* — صفحة {_page + 1}/{total_pages}\n"]
+            for n in page_nums:
+                lines_kk.append(
+                    f"📱 `{n['phone_number']}` — {guess_country(n['phone_number'])}\n"
+                    f"   📅 تسجيل: {_fmt_dt_pg(n.get('added_at'))}\n"
+                    f"   🚫 طُرد:   {_fmt_dt_pg(n.get('kicked_at'))}"
                 )
-            text = "\n\n".join(lines)
-            if len(numbers) > 50:
-                text += f"\n\n_(يظهر أول 50 من إجمالي {len(numbers)})_"
-            btn_rows = [[InlineKeyboardButton(
-                f"📱 {n['phone_number']}",
-                callback_data=f"os:number_info:{n['id']}"
-            )] for n in shown]
-            btn_rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")])
-            await q.edit_message_text(
-                text,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup(btn_rows)
-            )
+            text_kk = "\n\n".join(lines_kk)
+            if len(text_kk) > 4000:
+                text_kk = text_kk[:4000] + "\n\n_(النص مقتصر)_"
+            btn_rows_kk = [[InlineKeyboardButton(
+                f"📱 {n['phone_number']}", callback_data=f"os:number_info:{n['id']}"
+            )] for n in page_nums]
+            _nr = _nav_row()
+            if _nr:
+                btn_rows_kk.append(_nr)
+            btn_rows_kk.append([InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")])
+            await q.edit_message_text(text_kk, parse_mode=ParseMode.MARKDOWN,
+                                      reply_markup=InlineKeyboardMarkup(btn_rows_kk))
             return
 
+        # ══════════════════════════════════════════════════════
+        # ── العرض العام: all / listed / pending / trash ──
+        # ══════════════════════════════════════════════════════
         rows = []
-        for n in numbers[:40]:
+        for n in page_nums:
             label = f"📱 {n['phone_number']} — {guess_country(n['phone_number'])}"
             if filter_type == "trash":
                 label += " 🗑 محذوف"
-            elif not n["session_string"]:
+            elif not n.get("session_string"):
                 label += " (بدون جلسة)"
-            elif n["force_listed"]:
+            elif n.get("force_listed"):
                 label += " 🚀 معروض مباشرة"
-            elif n["sessions_reset"]:
+            elif n.get("sessions_reset"):
                 label += " ✅ جاهز للبيع"
             else:
                 label += " ⏳ بانتظار طرد الجلسات"
             rows.append([InlineKeyboardButton(label, callback_data=f"os:number_info:{n['id']}")])
+        _nr = _nav_row()
+        if _nr:
+            rows.append(_nr)
         rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")])
-        note = "" if len(numbers) <= 40 else f"\n\n(يظهر أول 40 من إجمالي {len(numbers)})"
         await q.edit_message_text(
-            f"*{title} ({len(numbers)})*\n\nاضغط على رقم لعرض معلوماته التفصيلية، بما فيها حالة التحقق.{note}",
+            f"*{title} ({total})* — صفحة {_page + 1}/{total_pages}\n\n"
+            "اضغط على رقم لعرض معلوماته التفصيلية.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(rows)
         )
