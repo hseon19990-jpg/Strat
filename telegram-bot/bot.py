@@ -166,6 +166,7 @@ TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "")
 _pending_number_logins = {}
 _monitor_clients = {}   # phone_number -> TelegramClient متصل بشكل دائم لمراقبة تنبيهات الحساب
 _buyer_received_codes = {}  # buyer_user_id -> {"code": str, "time": float} آخر كود وصل بعد البيع
+_demo_purchases = {}        # buyer_user_id -> {"phone": str, "session_str": str, "twofa": str, "purchase_time": datetime} — شراء بكود تجريبي (لا يُسجَّل في prize_exchanges)
 _pending_bulk_import  = set()  # user_ids ينتظرون إرسال JSON للاستيراد الجماعي
 # phone_number -> timestamp: نضع علامة هنا كل مرة يغيّر البوت نفسه كلمة/تفعيل التحقق بخطوتين لرقم،
 # لكي لا يُبلَّغ المالك برسالة "تغيّر التحقق" الرسمية من تيليجرام كأنها اختراق، بينما هي فعل البوت نفسه.
@@ -4813,7 +4814,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     pass
 
             if _IS_TEST_CODE:
-                # الكود التجريبي: أعِد الرقم للبيع فوراً بدون إشعار المشتري بالمغادرة
+                # الكود التجريبي: احفظ بيانات الشراء في الذاكرة حتى تعمل أزرار "كود الدخول" و"2FA"
+                import datetime as _dt_demo
+                _demo_purchases[user.id] = {
+                    "phone":         auto_nc_number,
+                    "session_str":   session_nc_str,
+                    "twofa":         auto_nc_twofa,
+                    "purchase_time": _dt_demo.datetime.now(_dt_demo.timezone.utc),
+                }
+                # أعِد الرقم للبيع فوراً — البوت لا يسجّل خروجاً ولا يوقف المراقبة
                 async def _test_reset_number(_ph=auto_nc_number):
                     await asyncio.sleep(0)
                     try:
@@ -10742,8 +10751,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
         if not _session_str_rc:
-            await q.answer("❌ لا يوجد رقم مشترى باسمك بهذا الرقم.", show_alert=True)
-            return
+            # ── fallback: شراء بكود تجريبي (لا يُسجَّل في prize_exchanges) ──
+            _demo_entry = _demo_purchases.get(user.id)
+            if _demo_entry and _demo_entry.get("phone") == number_for_code:
+                _session_str_rc = _demo_entry["session_str"]
+                _purchase_time  = _demo_entry["purchase_time"]
+            else:
+                await q.answer("❌ لا يوجد رقم مشترى باسمك بهذا الرقم.", show_alert=True)
+                return
 
         async def _send_code_msg(code_val: str):
             """يرسل كود الدخول فقط — رمز 2FA يُطلب بزر منفصل."""
@@ -10825,6 +10840,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     (twofa_phone, twofa_phone, user.id)
                 ).fetchone()
             _twofa_val = (_twrow["twofa_password"] or "").strip() if _twrow else ""
+            # ── fallback: شراء بكود تجريبي ──
+            if not _twofa_val:
+                _demo_entry_twofa = _demo_purchases.get(user.id)
+                if _demo_entry_twofa and _demo_entry_twofa.get("phone") == twofa_phone:
+                    _twofa_val = _demo_entry_twofa.get("twofa", "")
             if _twofa_val:
                 await q.answer("✅ تم إرسال رمز التحقق أدناه", show_alert=False)
                 await context.bot.send_message(
