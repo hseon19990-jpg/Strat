@@ -1,6 +1,6 @@
-# [Project name]
+# بوت تيلغرام - SMMMAIN
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+بوت تيلغرام متكامل لإدارة خدمات السوشيال ميديا مع نظام نقاط واستبدال جوائز.
 
 ## Run & Operate
 
