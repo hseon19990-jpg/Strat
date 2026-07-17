@@ -4795,39 +4795,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             asyncio.create_task(_auto_leave_nc())
             # (إشعار المالك عن تسليم رقم عبر الكود أُلغي بناءً على طلب المالك)
         else:
+            # لا يوجد رقم — الكود لا يزال صالحاً (لم يُستهلك) لأن التسليم فشل
+            # نُعيد تعيين الكود كـ"غير مستخدم" حتى يتمكن المستخدم من إعادة المحاولة
+            with db_conn() as _rc:
+                _rc.execute(
+                    "UPDATE number_purchase_codes SET used_count = GREATEST(used_count - 1, 0) "
+                    "WHERE code=%s",
+                    (entered_code,)
+                )
             await update.message.reply_text(
-                "✅ *تم قبول الكود!*\n\n"
-                "📱 لا يوجد رقم متاح حالياً في المخزون. سيتواصل معك المالك قريباً لتسليم رقمك.",
+                "😔 *نأسف، لم تتم العملية*\n\n"
+                "لا يتوفر حالياً أي رقم متاح في المخزون.\n"
+                "كودك لا يزال صالحاً ويمكنك استخدامه مجدداً لاحقاً 🙏",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=main_menu_kb(is_own)
             )
-            if OWNER_ID:
-                try:
-                    with db_conn() as _c_manual:
-                        _manual_pe = _c_manual.execute(
-                            "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,status,order_code) "
-                            "VALUES (%s,%s,%s,0,'pending',%s) RETURNING id",
-                            (user.id, "telegram_number_code", "manual", nc_order_code)
-                        ).fetchone()
-                    _manual_pe_id = _manual_pe["id"] if _manual_pe else None
-                    _badge_manual = _unseen_badge_html(exclude_pe_id=_manual_pe_id)
-                    _seen_kb_manual = InlineKeyboardMarkup([[
-                        InlineKeyboardButton("✅ تم التسليم", callback_data=f"pe_complete:{_manual_pe_id}"),
-                        InlineKeyboardButton("👁 تم الاطلاع", callback_data=f"pe_seen:{_manual_pe_id}"),
-                    ]]) if _manual_pe_id else None
-                    await context.bot.send_message(
-                        OWNER_ID,
-                        _badge_manual +
-                        f"📱 <b>طلب رقم عبر كود شراء (يدوي)</b>\n"
-                        f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
-                        f"🎟 الكود: {entered_code}\n"
-                        f"📌 {nc_order_code}\n"
-                        f"⚠️ لا يوجد رقم في المخزون — يرجى التسليم يدوياً.",
-                        parse_mode=ParseMode.HTML,
-                        reply_markup=_seen_kb_manual
-                    )
-                except Exception:
-                    pass
         context.user_data["state"] = "main_menu"
         return
 
@@ -7313,51 +7295,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # (إشعار المالك عن التسليم أُلغي بناءً على طلب المالك)
             return
 
-        # ── لا يوجد رقم بالمخزون — نفس المسار اليدوي المعتاد ──
-        with db_conn() as c:
-            pe = c.execute(
-                "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,status,order_code) "
-                "VALUES (?,?,?,?,'pending',?) RETURNING id",
-                (user.id, "telegram_number", "number", cost, code)
-            ).fetchone()
-        custom_msg = get_setting("exchange_success_msg") or ""
-        result_kb = contact_owner_row() + [[InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")]]
+        # ── لا يوجد رقم متاح — إعادة النقاط فوراً ──
+        add_points(user.id, cost)
         await q.edit_message_text(
-            f"✅ *تمت العملية بنجاح!*\n\n"
-            f"📱 طلب رقم تيلغرام مسجل\n"
-            f"💰 التكلفة: {cost} نقطة\n\n"
-            + (f"{custom_msg}\n\n" if custom_msg else "")
-            + "سيتواصل معك المالك قريباً.",
+            "😔 *نأسف، لم تتم العملية*\n\n"
+            "لا يتوفر حالياً أي رقم متاح في المخزون.\n"
+            f"تم إعادة *{cost:,} نقطة* إلى رصيدك كاملةً.\n\n"
+            "يمكنك المحاولة مجدداً في وقت لاحق 🙏",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup(result_kb)
-        )
-        await context.bot.send_message(
-            user.id,
-            f"📌 *كود عمليتك:* `{code}`",
-            parse_mode=ParseMode.MARKDOWN
-        )
-        # ─── رسالة التبرئة — المسار اليدوي ───
-        await context.bot.send_message(
-            user.id,
-            "📋 *إشعار تبرئة ذمة — يُرجى القراءة بعناية*\n\n"
-            "بإتمامك عملية الشراء فإنك تُقرّ وتوافق على ما يلي:\n\n"
-            "① لا يتحمّل البائع أي مسؤولية عن أي محتوى موجود داخل الحساب سابقاً، "
-            "سواء كان مجموعات، قنوات، محادثات، جهات اتصال، صور، ملفات، أو أي بيانات أخرى.\n\n"
-            "② لا يتحمّل البائع أي مسؤولية عن أي حظر، تقييد، أو إجراء تتخذه منصة تيليغرام "
-            "على الحساب لاحقاً بسبب أي نشاط سابق أو لاحق.\n\n"
-            "③ لا يتحمّل البائع أي مسؤولية عن أي استخدام سابق للرقم أو الحساب قبل تاريخ بيعه.\n\n"
-            "④ من لحظة الاستلام يُصبح الحساب والرقم مسؤوليتك الكاملة والمطلقة؛ "
-            "أي حظر، تجميد، أو تغيير يطرأ عليه لاحقاً لا يخصّ البائع بأي شكل.\n\n"
-            "⑤ لا يحق المطالبة باسترداد أو تعويض بعد استلام بيانات الدخول.\n\n"
-            "شكراً لثقتك 🤍",
-            parse_mode=ParseMode.MARKDOWN
-        )
-        await notify_prize_exchange_owner(
-            context, pe["id"],
-            f"📱 <b>طلب رقم تيلغرام</b>\n"
-            f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
-            f"💰 {cost} نقطة\n"
-            f"📌 {code}"
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")
+            ]])
         )
         return
 
