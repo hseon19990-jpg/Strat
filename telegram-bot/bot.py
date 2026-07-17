@@ -6510,6 +6510,116 @@ async def handle_unsupported_message(update: Update, context: ContextTypes.DEFAU
     if not update.message:
         return
     state = context.user_data.get("state", "")
+
+    # ── وضع إزالة 2FA: أي ملف يصل هنا نحاول استخراج جلسة منه ──
+    if state == "os_remove_2fa_mode" and update.effective_user.id == OWNER_ID:
+        doc = update.message.document
+        if doc:
+            fname = doc.file_name or "file"
+            msg = await update.message.reply_text(
+                f"⏳ جاري معالجة `{fname}`...", parse_mode=ParseMode.MARKDOWN
+            )
+            try:
+                tg_file  = await context.bot.get_file(doc.file_id)
+                raw_bytes = await tg_file.download_as_bytearray()
+            except Exception as e:
+                await msg.edit_text(f"❌ تعذّر تنزيل الملف: `{e}`", parse_mode=ParseMode.MARKDOWN)
+                return
+
+            session_string = None
+            # المحاولة 1: JSON
+            try:
+                import json as _j2
+                data2 = _j2.loads(raw_bytes.decode("utf-8"))
+                if isinstance(data2, str):
+                    session_string = _maybe_convert_session(data2.strip())
+                elif isinstance(data2, dict):
+                    if "dc_id" in data2 and "auth_key" in data2:
+                        session_string = pyrogram_json_to_telethon(data2)
+                    else:
+                        raw_s = (data2.get("session_string") or data2.get("session") or "").strip()
+                        if raw_s:
+                            session_string = _maybe_convert_session(raw_s)
+                elif isinstance(data2, list) and data2:
+                    first = data2[0]
+                    if isinstance(first, str):
+                        session_string = _maybe_convert_session(first.strip())
+                    elif isinstance(first, dict):
+                        if "dc_id" in first and "auth_key" in first:
+                            session_string = pyrogram_json_to_telethon(first)
+                        else:
+                            raw_s = (first.get("session_string") or first.get("session") or "").strip()
+                            if raw_s:
+                                session_string = _maybe_convert_session(raw_s)
+            except Exception:
+                pass
+
+            # المحاولة 2: SQLite .session
+            if not session_string:
+                try:
+                    import tempfile, sqlite3 as _sq3b, struct as _st2, base64 as _b2, socket as _sk2
+                    with tempfile.NamedTemporaryFile(suffix=".session", delete=False) as tf2:
+                        tf2.write(raw_bytes)
+                        tf2_path = tf2.name
+                    conn2 = _sq3b.connect(tf2_path)
+                    conn2.row_factory = _sq3b.Row
+                    cur2 = conn2.cursor()
+                    for cols in (
+                        "dc_id, server_address, port, auth_key",
+                        "dc_id, auth_key",
+                    ):
+                        try:
+                            row2 = cur2.execute(f"SELECT {cols} FROM sessions LIMIT 1").fetchone()
+                            if row2 and row2["auth_key"] and len(bytes(row2["auth_key"])) == 256:
+                                dc2 = int(row2["dc_id"])
+                                ak2 = bytes(row2["auth_key"])
+                                try:
+                                    ip2   = _sk2.inet_aton(row2["server_address"])
+                                    prt2  = int(row2["port"])
+                                except Exception:
+                                    ip_s2, prt2 = _TG_DC.get(dc2, ("149.154.167.51", 443))
+                                    ip2 = _sk2.inet_aton(ip_s2)
+                                session_string = "1" + _b2.urlsafe_b64encode(
+                                    _st2.pack(">B4sH256s", dc2, ip2, prt2, ak2)
+                                ).decode("ascii")
+                                break
+                        except Exception:
+                            pass
+                    conn2.close()
+                    import os as _os2; _os2.unlink(tf2_path)
+                except Exception:
+                    pass
+
+            # المحاولة 3: نص خام
+            if not session_string:
+                try:
+                    raw_text = raw_bytes.decode("utf-8", errors="ignore").strip()
+                    if raw_text.startswith("1") and len(raw_text) > 100:
+                        session_string = raw_text.split()[0]
+                except Exception:
+                    pass
+
+            if not session_string:
+                await msg.edit_text(
+                    "❌ لم أتمكن من استخراج جلسة من هذا الملف.\n"
+                    "تأكد أنه ملف `.session` أو `.json` يحتوي على بيانات الجلسة.",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                return
+
+            ok, result_msg, phone = await _remove_2fa_from_session(session_string)
+            icon = "✅" if ok else "❌"
+            await msg.edit_text(
+                f"{icon} *{phone or fname}*\n{result_msg}",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
+        # ليس ملفاً — تذكير
+        await update.message.reply_text(
+            "🔓 أنت في وضع إزالة التحقق — أرسل ملف الجلسة أو أرسل /start للخروج."
+        )
+        return
+
     if state == "await_fund_channel":
         await update.message.reply_text(
             "⚠️ لم يصلني نص. يرجى إرسال *يوزرنيم قناتك كرسالة نصية* مباشرة، مثال: @mychannel\n"
