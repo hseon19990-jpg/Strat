@@ -6144,6 +6144,84 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🏠 القائمة الرئيسية:", reply_markup=main_menu_kb(is_own))
 
 
+async def _remove_2fa_from_session(session_string: str) -> tuple[bool, str, str | None]:
+    """
+    يزيل التحقق بخطوتين (2FA) من حساب باستخدام جلسة تيلثون.
+    الترتيب:
+      1. يجرب كلمة المرور المخزّنة في قاعدة البيانات (إن عُرف رقم الهاتف).
+      2. يجرب كلمة المرور الثابتة للمالك (OWNER_FIXED_2FA_PASSWORD).
+      3. إن فشل الاثنان يُعيد الفشل مع رقم الهاتف.
+    يُرجع (success, message, phone_or_None).
+    """
+    if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
+        return False, "TELEGRAM_API_ID/HASH غير مضبوط", None
+
+    client = TelegramClient(StringSession(session_string), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+    phone = None
+    try:
+        await asyncio.wait_for(client.connect(), timeout=20)
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+            await client.disconnect()
+            return False, "الجلسة منتهية أو غير صالحة", None
+
+        me = await client.get_me()
+        phone = f"+{me.phone}" if me and me.phone and not str(me.phone).startswith("+") else (me.phone if me else None)
+
+        # هل هناك 2FA أصلاً؟
+        pwd_state = await client(GetPasswordRequest())
+        if not pwd_state.has_password:
+            await client.disconnect()
+            return True, "✅ لا يوجد تحقق ثنائي على هذا الحساب أصلاً", phone
+
+        # جمع كلمات المرور المحتملة للمحاولة
+        candidates: list[str] = []
+        if phone:
+            with db_conn() as _dc:
+                _row = _dc.execute(
+                    "SELECT twofa_password FROM number_stock WHERE phone_number=%s AND twofa_password IS NOT NULL",
+                    (phone,)
+                ).fetchone()
+            if _row and _row["twofa_password"]:
+                candidates.append(_row["twofa_password"])
+        if OWNER_FIXED_2FA_PASSWORD and OWNER_FIXED_2FA_PASSWORD not in candidates:
+            candidates.append(OWNER_FIXED_2FA_PASSWORD)
+
+        removed = False
+        for pw in candidates:
+            try:
+                _expected_2fa_change[phone or ""] = time.time()
+                await client.edit_2fa(current_password=pw, new_password="")
+                removed = True
+                # تنظيف DB — لم تعد كلمة المرور صالحة
+                if phone:
+                    with db_conn() as _uc:
+                        _uc.execute(
+                            "UPDATE number_stock SET twofa_password=NULL, auto_2fa_enabled=FALSE WHERE phone_number=%s",
+                            (phone,)
+                        )
+                break
+            except Exception as _pe:
+                err = str(_pe).upper()
+                if "PASSWORD_HASH_INVALID" in err or "SRP_ID_INVALID" in err:
+                    continue  # كلمة المرور خاطئة، جرّب التالية
+                # خطأ آخر (شبكة، حد معدل...)
+                await client.disconnect()
+                return False, f"❌ خطأ أثناء الإزالة: {_pe}", phone
+
+        await client.disconnect()
+        if removed:
+            return True, "✅ تم إزالة التحقق الثنائي بنجاح", phone
+        else:
+            return False, "❌ كلمة المرور غير معروفة — أرسل كلمة المرور الصحيحة نصاً بعد الملف", phone
+
+    except Exception as e:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+        return False, f"❌ خطأ: {e}", phone
+
+
 async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """يستقبل ملف JSON من المالك ويستورد الجلسات المحتواة فيه مباشرة."""
     user = update.effective_user
@@ -6201,6 +6279,29 @@ async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not sessions:
         await msg.edit_text("❌ لم أجد أي جلسة صالحة في الملف. تأكد أن الملف يحتوي حقل `session_string` أو حقلي `dc_id` و`auth_key` (صيغة Pyrogram).")
+        return
+
+    # ── وضع إزالة التحقق الثنائي ──
+    if context.user_data.get("state") == "os_remove_2fa_mode":
+        await msg.edit_text(f"⏳ جاري إزالة التحقق من {len(sessions)} حساب...")
+        ok_list, fail_list = [], []
+        for idx, entry in enumerate(sessions):
+            ok, result_msg, phone = await _remove_2fa_from_session(entry["session"])
+            label = phone or entry["phone"] or f"#{idx+1}"
+            if ok:
+                ok_list.append(f"`{label}` — {result_msg}")
+            else:
+                fail_list.append(f"`{label}` — {result_msg}")
+        lines = [f"🔓 *نتيجة إزالة التحقق ({len(sessions)} حساب):*\n"]
+        if ok_list:
+            lines.append(f"✅ *نجح ({len(ok_list)}):*")
+            lines.extend(f"  • {x}" for x in ok_list)
+        if fail_list:
+            lines.append(f"\n❌ *فشل ({len(fail_list)}):*")
+            lines.extend(f"  • {x}" for x in fail_list[:20])
+            if len(fail_list) > 20:
+                lines.append(f"  ... و{len(fail_list)-20} أخرى")
+        await msg.edit_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
         return
 
     await msg.edit_text(f"⏳ تم العثور على {len(sessions)} جلسة، جاري التحقق والاستيراد...")
@@ -6347,9 +6448,20 @@ async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return
 
-    await msg.edit_text(f"⏳ تم كشف صيغة *{detected_format}* — جاري التحقق من الجلسة...", parse_mode=ParseMode.MARKDOWN)
+    await msg.edit_text(f"⏳ تم كشف صيغة *{detected_format}* — جاري التحقق...", parse_mode=ParseMode.MARKDOWN)
 
-    # ── التحقق والاستيراد (نفس منطق handle_json_file) ──
+    # ── وضع إزالة التحقق الثنائي ──
+    if context.user_data.get("state") == "os_remove_2fa_mode":
+        ok, result_msg, phone = await _remove_2fa_from_session(session_string)
+        label = phone or fname
+        icon = "✅" if ok else "❌"
+        await msg.edit_text(
+            f"{icon} *{label}*\n{result_msg}",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    # ── الاستيراد العادي ──
     try:
         if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
             await msg.edit_text("❌ TELEGRAM_API_ID / TELEGRAM_API_HASH غير محدّدَين.")
@@ -8050,6 +8162,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("🔄 إرجاع جميع الأرقام المباعة للبيع", callback_data="os:release_all_numbers")],
                 [InlineKeyboardButton("🔍 فحص جاهزية الأرقام (كود + 2FA)", callback_data="os:check_readiness")],
                 [InlineKeyboardButton("🗑️ حذف الأرقام اليدوية + تعويض المشترين", callback_data="os:delete_manual_numbers")],
+                [InlineKeyboardButton("🔑 تعيين كلمة مرور 'محمد' لجميع الحسابات", callback_data="os:set_all_2fa_muhammed")],
+                [InlineKeyboardButton("🔓 إزالة التحقق (2FA) من ملفات جلسة", callback_data="os:remove_2fa_mode")],
                 [InlineKeyboardButton("🤝 مهام الإحالة التلقائية", callback_data="os:ref_tasks")],
                 [InlineKeyboardButton("🛒 الحسابات المبيوعة", callback_data="os:sold_accounts")],
                 [InlineKeyboardButton("⚠️ تعويض المظلومين / العمليات الفاشلة", callback_data="os:failed_deliveries")],
@@ -8197,6 +8311,130 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("🔙 رجوع للمخزون", callback_data="os:manage_numbers")],
             ])
         )
+        return
+
+    # ── وضع إزالة التحقق (2FA) من ملفات الجلسة ──
+    if data == "os:remove_2fa_mode" and is_own:
+        context.user_data["state"] = "os_remove_2fa_mode"
+        await q.edit_message_text(
+            "🔓 *وضع إزالة التحقق الثنائي*\n\n"
+            "أرسل ملفات الجلسة (`.session` أو `.json`) واحداً تلو الآخر.\n"
+            "البوت سيزيل التحقق الثنائي (2FA) من كل حساب تُرسله.\n\n"
+            "💡 يعمل مع: Telethon SQLite، Pyrogram JSON، StringSession JSON\n\n"
+            "أرسل /start أو اضغط رجوع للخروج من هذا الوضع.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 رجوع للمخزون", callback_data="os:manage_numbers")
+            ]])
+        )
+        return
+
+    # ── تعيين كلمة مرور 'محمد' لجميع حسابات المخزون ──
+    if data == "os:set_all_2fa_muhammed" and is_own:
+        target_pw = OWNER_FIXED_2FA_PASSWORD or "محمد"
+        if not target_pw:
+            await q.answer("⚠️ متغير TWOFA_PASSWORD غير مضبوط في البيئة.", show_alert=True)
+            return
+        with db_conn() as c:
+            rows = c.execute(
+                "SELECT id, phone_number, session_string, twofa_password "
+                "FROM number_stock WHERE session_string IS NOT NULL AND deleted_at IS NULL"
+            ).fetchall()
+        if not rows:
+            await q.answer("✅ لا توجد حسابات بجلسة في المخزون.", show_alert=True)
+            return
+        await q.edit_message_text(
+            f"⏳ *جاري تعيين كلمة المرور '{target_pw}' على {len(rows)} حساب...*\n\n"
+            "سيصلك تقرير عند الانتهاء.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 رجوع للمخزون", callback_data="os:manage_numbers")
+            ]])
+        )
+
+        async def _set_all_2fa_bg():
+            done, skipped, failed = [], [], []
+            for rec in rows:
+                phone   = rec["phone_number"]
+                sess    = rec["session_string"]
+                old_pw  = rec["twofa_password"] or ""
+                stock_id = rec["id"]
+
+                # إذا كانت كلمة المرور هي بالفعل 'محمد' في DB — تخطّ
+                if old_pw == target_pw:
+                    skipped.append(phone)
+                    continue
+
+                cli = None
+                try:
+                    cli = TelegramClient(StringSession(sess), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+                    await asyncio.wait_for(cli.connect(), timeout=20)
+                    if not await asyncio.wait_for(cli.is_user_authorized(), timeout=10):
+                        failed.append(f"{phone}: جلسة منتهية")
+                        continue
+
+                    pwd_state = await cli(GetPasswordRequest())
+                    _expected_2fa_change[phone] = time.time()
+
+                    if not pwd_state.has_password:
+                        # لا يوجد 2FA — نُعيّن مباشرة
+                        await cli.edit_2fa(new_password=target_pw, hint="Auto")
+                    else:
+                        # يوجد 2FA — جرّب الكلمة المخزّنة أولاً ثم الكلمة الثابتة
+                        candidates = []
+                        if old_pw and old_pw != target_pw:
+                            candidates.append(old_pw)
+                        # لو الكلمة الثابتة غير موجودة في القائمة أصلاً
+                        if target_pw not in candidates:
+                            candidates.append(target_pw)
+                        changed = False
+                        for cand_pw in candidates:
+                            try:
+                                await cli.edit_2fa(current_password=cand_pw, new_password=target_pw, hint="Auto")
+                                changed = True
+                                break
+                            except Exception as _pe:
+                                if "PASSWORD_HASH_INVALID" in str(_pe).upper() or "SRP_ID_INVALID" in str(_pe).upper():
+                                    continue
+                                raise
+                        if not changed:
+                            failed.append(f"{phone}: كلمة المرور غير معروفة")
+                            continue
+
+                    # حفظ في DB
+                    with db_conn() as _uc:
+                        _uc.execute(
+                            "UPDATE number_stock SET twofa_password=%s, auto_2fa_enabled=TRUE WHERE id=%s",
+                            (target_pw, stock_id)
+                        )
+                    done.append(phone)
+                except Exception as _e:
+                    failed.append(f"{phone}: {_e}")
+                finally:
+                    try:
+                        if cli: await cli.disconnect()
+                    except Exception:
+                        pass
+                await asyncio.sleep(1)  # لتجنب flood
+
+            # تقرير النتيجة
+            lines = [f"🔑 *نتيجة تعيين كلمة المرور '{target_pw}':*\n"]
+            lines.append(f"✅ تم ({len(done)}) / ⏭ مخطّى ({len(skipped)}) / ❌ فشل ({len(failed)})")
+            if done:
+                lines.append("\n*✅ نجح:*")
+                lines.extend(f"  • `{p}`" for p in done[:30])
+                if len(done) > 30: lines.append(f"  ... و{len(done)-30} آخرين")
+            if failed:
+                lines.append("\n*❌ فشل:*")
+                lines.extend(f"  • {x}" for x in failed[:20])
+            try:
+                await context.bot.send_message(
+                    OWNER_ID, "\n".join(lines), parse_mode=ParseMode.MARKDOWN
+                )
+            except Exception:
+                pass
+
+        asyncio.create_task(_set_all_2fa_bg())
         return
 
     if data == "os:release_all_numbers" and is_own:
