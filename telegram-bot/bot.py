@@ -2312,7 +2312,7 @@ async def monitor_number_changes_job(context: ContextTypes.DEFAULT_TYPE):
                         )
 
                         async def _delayed_exit(phone_e, stock_id_e, buyer_e):
-                            await asyncio.sleep(10)
+                            await asyncio.sleep(0)
                             try:
                                 await _stop_number_monitor(phone_e)
                             except Exception:
@@ -2465,7 +2465,7 @@ async def _start_number_monitor(phone: str, session_str: str, application):
                     _app_snap   = application
 
                     async def _exit_after_delay():
-                        await asyncio.sleep(10)
+                        await asyncio.sleep(0)
                         try:
                             await _stop_number_monitor(_phone_snap)
                         except Exception:
@@ -4775,7 +4775,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             # ─── مغادرة فورية بعد التسليم عبر الكود ───
             async def _auto_leave_nc(_ph=auto_nc_number, _uid=user.id, _bot=context.bot):
-                await asyncio.sleep(15)
+                await asyncio.sleep(0)
                 try:
                     await _stop_number_monitor(_ph)
                 except Exception:
@@ -7292,7 +7292,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             # ─── مغادرة فورية بعد التسليم ───
             async def _auto_leave_after_exchange(_ph=auto_number, _uid=user.id, _bot=context.bot):
-                await asyncio.sleep(15)
+                await asyncio.sleep(0)
                 try:
                     await _stop_number_monitor(_ph)
                 except Exception:
