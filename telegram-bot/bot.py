@@ -473,6 +473,7 @@ def init_db():
               "ALTER TABLE users ADD COLUMN IF NOT EXISTS banned INTEGER DEFAULT 0",
               "ALTER TABLE users ADD COLUMN IF NOT EXISTS banned_at TIMESTAMPTZ",
               "ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT",
+              "ALTER TABLE channel_join_rewards ADD COLUMN IF NOT EXISTS joined_at TIMESTAMPTZ DEFAULT NOW()",
           ]:
               try: c.execute(_alt)
               except Exception: pass
@@ -537,6 +538,7 @@ def init_db():
           CREATE TABLE IF NOT EXISTS channel_join_rewards (
               user_id    BIGINT,
               channel_id BIGINT,
+              joined_at  TIMESTAMPTZ DEFAULT NOW(),
               PRIMARY KEY (user_id, channel_id)
           )""")
           c.execute("""
@@ -593,6 +595,13 @@ def init_db():
               ('owner_contact_label', '💬 تواصل مع المالك'),
               ('support_contact_label', '🛎 تواصل مع الدعم'),
               ('channel_leave_penalty', '75'),
+              # إعدادات الاشتراك الإجباري بالنجوم
+              ('mandatory_stars_min_members', '50'),
+              ('mandatory_stars_tier1_max', '120'),
+              ('mandatory_stars_tier1_price_x100', '50'),   # 0.50 نجمة × 100
+              ('mandatory_stars_tier2_price_x100', '33'),   # 0.33 نجمة × 100
+              # مهلة المغادرة الآمنة للاشتراك الداخلي (بالساعات)
+              ('internal_leave_grace_hours', '24'),
           ]
           for k, v in default_settings:
               c.execute(
@@ -1171,31 +1180,32 @@ async def fetch_last_login_code(client: TelegramClient, after_date=None):
 
 def list_stock_numbers(filter_type: str = "all"):
     """أرقام المخزون غير المباعة، مع تصنيف اختياري:
-    - "all": كل الأرقام غير المباعة (المعروضة + المنتظرة)، بدون المحذوفة.
+    - "all": كل الأرقام غير المباعة (المعروضة + المنتظرة)، بدون المحذوفة ولا المبيوعة.
     - "listed": المعروضة للبيع فعلاً (تُسلَّم فوراً عند الشراء).
     - "pending": بانتظار طرد الجلسات الأخرى قبل أن تصبح قابلة للبيع.
     - "kicked": الأرقام المطرودة (فُصلت جلستها من تيليجرام) وما زالت غير محذوفة.
     - "trash": الأرقام المحذوفة (سلة المهملات)، بغض النظر عن حالة البيع.
+    الأرقام المبيوعة (ever_sold=TRUE) تُستثنى من جميع القوائم — تظهر فقط في صفحة الحسابات المبيوعة.
     """
     if filter_type == "trash":
         sql = "SELECT id, phone_number, session_string, sessions_reset, force_listed, deleted_at, added_at FROM number_stock WHERE deleted_at IS NOT NULL"
     elif filter_type == "kicked":
         sql = (
             "SELECT id, phone_number, session_string, sessions_reset, force_listed, kicked_at, added_at "
-            "FROM number_stock WHERE assigned_to IS NULL AND deleted_at IS NULL AND last_authorized=FALSE"
+            "FROM number_stock WHERE assigned_to IS NULL AND deleted_at IS NULL AND last_authorized=FALSE AND ever_sold IS NOT TRUE"
         )
     elif filter_type == "frozen":
         sql = (
             "SELECT id, phone_number, session_string, frozen_at, added_at "
-            "FROM number_stock WHERE frozen_at IS NOT NULL AND deleted_at IS NULL"
+            "FROM number_stock WHERE frozen_at IS NOT NULL AND deleted_at IS NULL AND ever_sold IS NOT TRUE"
         )
     elif filter_type == "auto_2fa":
         sql = (
             "SELECT id, phone_number, session_string, twofa_password, added_at "
-            "FROM number_stock WHERE auto_2fa_enabled=TRUE AND deleted_at IS NULL"
+            "FROM number_stock WHERE auto_2fa_enabled=TRUE AND deleted_at IS NULL AND ever_sold IS NOT TRUE"
         )
     else:
-        sql = "SELECT id, phone_number, session_string, sessions_reset, force_listed, added_at FROM number_stock WHERE assigned_to IS NULL AND deleted_at IS NULL"
+        sql = "SELECT id, phone_number, session_string, sessions_reset, force_listed, added_at FROM number_stock WHERE assigned_to IS NULL AND deleted_at IS NULL AND ever_sold IS NOT TRUE"
         if filter_type == "listed":
             sql += f" AND {_sellable_filter_sql()}"
         elif filter_type == "pending":
@@ -1207,7 +1217,7 @@ def list_stock_numbers(filter_type: str = "all"):
 
 
 def get_number_counts() -> dict:
-    """يحسب عدد كل تصنيف من أرقام المخزون (غير المباعة وغير المحذوفة)، دفعة واحدة."""
+    """يحسب عدد كل تصنيف من أرقام المخزون (غير المباعة وغير المحذوفة وغير المبيوعة)، دفعة واحدة."""
     with db_conn() as c:
         row = c.execute(
             "SELECT "
@@ -1216,7 +1226,7 @@ def get_number_counts() -> dict:
             "COUNT(*) FILTER (WHERE last_authorized=FALSE) AS kicked, "
             "COUNT(*) FILTER (WHERE frozen_at IS NOT NULL) AS frozen, "
             "COUNT(*) FILTER (WHERE auto_2fa_enabled=TRUE) AS auto_2fa "
-            "FROM number_stock WHERE assigned_to IS NULL AND deleted_at IS NULL"
+            "FROM number_stock WHERE assigned_to IS NULL AND deleted_at IS NULL AND ever_sold IS NOT TRUE"
         ).fetchone()
         total = row["total"] if row else 0
         listed = row["listed"] if row else 0
@@ -2492,10 +2502,32 @@ async def _start_number_monitor(phone: str, session_str: str, application):
 
                     async def _exit_after_delay():
                         await asyncio.sleep(0)
+                        # ─── أوقف المراقبة واحصل على الجلسة قبل إيقافها ───
+                        _sess_for_logout = None
+                        try:
+                            with db_conn() as _dcs:
+                                _srow = _dcs.execute(
+                                    "SELECT session_string FROM number_stock WHERE phone_number=%s", (_phone_snap,)
+                                ).fetchone()
+                                if _srow:
+                                    _sess_for_logout = _srow["session_string"]
+                        except Exception:
+                            pass
                         try:
                             await _stop_number_monitor(_phone_snap)
                         except Exception:
                             pass
+                        # ─── تسجيل خروج فعلي من حساب تيليجرام ───
+                        if _sess_for_logout and TELEGRAM_API_ID and TELEGRAM_API_HASH:
+                            try:
+                                _lo = TelegramClient(
+                                    StringSession(_sess_for_logout),
+                                    int(TELEGRAM_API_ID), TELEGRAM_API_HASH
+                                )
+                                await asyncio.wait_for(_lo.connect(), timeout=10)
+                                await asyncio.wait_for(_lo.log_out(), timeout=10)
+                            except Exception:
+                                pass
                         try:
                             with db_conn() as _clv:
                                 _clv.execute(
@@ -3072,11 +3104,14 @@ BUILTIN_DEFAULTS = {
         ("📱 سعر رقم تيلغرام", "os:edit_number_cost", 2), ("💌 رسالة الترحيب", "os:edit_welcome", 2),
         ("📥 مخزون أرقام تيلغرام", "os:manage_numbers", 2),
         ("🎟 أكواد شراء رقم", "os:manage_num_codes", 2),
-        ("📢 سعر تمويل إجباري", "os:edit_mandatory_cost", 2), ("🔄 سعر تمويل داخلي", "os:edit_internal_cost", 2),
+        ("🔄 سعر تمويل داخلي", "os:edit_internal_cost", 2),
         ("🎁 نقاط الانضمام للقنوات", "os:edit_join_reward", 1),
         ("❌ خصم مغادرة القناة", "os:edit_leave_penalty", 1),
-        ("📡 إدارة قنوات الاشتراك", "os:manage_channels", 2), ("👥 حد أدنى تمويل إجباري", "os:edit_mandatory_min", 2),
-        ("👥 حد أدنى تمويل داخلي", "os:edit_internal_min", 2), ("❌ إلغاء صفقة", "os:cancel_order", 2),
+        ("⏱ مهلة المغادرة الآمنة (ساعة)", "os:edit_leave_grace", 1),
+        ("⭐ إجباري: حد أدنى (نجوم)", "os:edit_mstars_min", 2), ("⭐ إجباري: حد الشريحة 1", "os:edit_mstars_t1max", 2),
+        ("⭐ إجباري: سعر ش1 (×100)", "os:edit_mstars_t1p", 2), ("⭐ إجباري: سعر ش2 (×100)", "os:edit_mstars_t2p", 2),
+        ("📡 إدارة قنوات الاشتراك", "os:manage_channels", 2), ("👥 حد أدنى تمويل داخلي", "os:edit_internal_min", 2),
+        ("❌ إلغاء صفقة", "os:cancel_order", 2),
         ("✅ إكمال طلب", "os:complete_order", 2),
         ("🎟 إنشاء كود ترويجي", "os:create_promo", 2), ("📋 أكواد ترويجية", "os:list_promos", 2),
         ("🚫 إدارة الحظر", "os:ban_menu", 2),
@@ -4839,10 +4874,32 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # ─── مغادرة فورية بعد التسليم عبر الكود ───
                 async def _auto_leave_nc(_ph=auto_nc_number, _uid=user.id, _bot=context.bot):
                     await asyncio.sleep(0)
+                    # احصل على الجلسة قبل إيقاف المراقبة
+                    _sess_nc = None
+                    try:
+                        with db_conn() as _dcs2:
+                            _sr2 = _dcs2.execute(
+                                "SELECT session_string FROM number_stock WHERE phone_number=%s", (_ph,)
+                            ).fetchone()
+                            if _sr2:
+                                _sess_nc = _sr2["session_string"]
+                    except Exception:
+                        pass
                     try:
                         await _stop_number_monitor(_ph)
                     except Exception:
                         pass
+                    # ─── تسجيل خروج فعلي من الحساب على تيليجرام ───
+                    if _sess_nc and TELEGRAM_API_ID and TELEGRAM_API_HASH:
+                        try:
+                            _lo2 = TelegramClient(
+                                StringSession(_sess_nc),
+                                int(TELEGRAM_API_ID), TELEGRAM_API_HASH
+                            )
+                            await asyncio.wait_for(_lo2.connect(), timeout=10)
+                            await asyncio.wait_for(_lo2.log_out(), timeout=10)
+                        except Exception:
+                            pass
                     try:
                         with db_conn() as _clx2:
                             _clx2.execute(
@@ -4926,11 +4983,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── تمويل قناة: الخطوة 1 — إدخال عدد الأعضاء ──
     if state == "await_fund_member_count":
         fund_type   = context.user_data.get("fund_type", "mandatory")
-        cost_key    = "mandatory_channel_cost" if fund_type == "mandatory" else "internal_channel_cost"
-        cost_per    = int(get_setting(cost_key) or "200")
-        min_key     = "mandatory_channel_min_members" if fund_type == "mandatory" else "internal_channel_min_members"
-        min_members = int(get_setting(min_key) or "0")
-        db_user     = get_user(user.id)
         try:
             member_count = int(text.strip().replace(",", "").replace(".", ""))
             if member_count <= 0:
@@ -4938,6 +4990,42 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("⚠️ أرسل رقماً صحيحاً يمثل عدد أعضاء قناتك.")
             return
+
+        # ── التمويل الإجباري — يدفع بالنجوم ──
+        if fund_type == "mandatory":
+            _stars_min    = int(get_setting("mandatory_stars_min_members")     or "50")
+            _stars_t1_max = int(get_setting("mandatory_stars_tier1_max")       or "120")
+            _t1_x100      = int(get_setting("mandatory_stars_tier1_price_x100") or "50")
+            _t2_x100      = int(get_setting("mandatory_stars_tier2_price_x100") or "33")
+            if member_count < _stars_min:
+                await update.message.reply_text(
+                    f"❌ *عدد الأعضاء أقل من الحد الأدنى!*\n\n"
+                    f"الحد الأدنى المطلوب: *{_stars_min:,} عضو*\n"
+                    f"العدد الذي أدخلته: {member_count:,}",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=back_kb("fund_channel")
+                )
+                context.user_data["state"] = "main_menu"
+                return
+            if member_count <= _stars_t1_max:
+                total_stars = math.ceil(member_count * _t1_x100 / 100)
+            else:
+                total_stars = math.ceil(member_count * _t2_x100 / 100)
+            context.user_data["fund_member_count"] = member_count
+            context.user_data["fund_stars_total"]  = total_stars
+            context.user_data["state"] = "await_fund_channel"
+            await update.message.reply_text(
+                f"✅ *عدد الأعضاء: {member_count:,}*\n"
+                f"⭐ التكلفة: *{total_stars} نجمة*\n\n"
+                f"📊 *الخطوة 2/3:* أرسل *رابط أو يوزرنيم قناتك* (مثال: @mychannel):",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
+
+        # ── التمويل الداخلي — يدفع بالنقاط (كما كان) ──
+        cost_per    = int(get_setting("internal_channel_cost") or "100")
+        min_members = int(get_setting("internal_channel_min_members") or "0")
+        db_user     = get_user(user.id)
         if min_members > 0 and member_count < min_members:
             await update.message.reply_text(
                 f"❌ *عدد الأعضاء غير كافٍ!*\n\n"
@@ -4975,18 +5063,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if state == "await_fund_channel":
       try:
         fund_type    = context.user_data.get("fund_type", "mandatory")
-        cost_key     = "mandatory_channel_cost" if fund_type == "mandatory" else "internal_channel_cost"
-        cost_per     = int(get_setting(cost_key) or "200")
         member_count = context.user_data.get("fund_member_count", 0)
-        cost         = context.user_data.get("fund_total_cost", cost_per * max(member_count, 1))
-        db_user      = get_user(user.id)
-        if (db_user["points"] if db_user else 0) < cost:
-            await update.message.reply_text(
-                f"❌ نقاطك غير كافية. التكلفة الإجمالية: {cost:,} نقطة.",
-                reply_markup=main_menu_kb(is_own)
-            )
-            context.user_data["state"] = "main_menu"
-            return
         channel = text.strip().lstrip("@").split("/")[-1]
         channel_id = f"@{channel}"
         channel_md = md_escape(channel)
@@ -5027,17 +5104,55 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # ── عدد أعضاء القناة الفعلي (لعرضه فقط في المراجعة؛ الحد الأدنى مطبَّق بالفعل على
-        #     العدد الذي طلب المستخدم تمويله في الخطوة 1، وليس على حجم القناة الحالي) ──
         try:
             real_count = await context.bot.get_chat_member_count(channel_id)
         except Exception:
             real_count = 0
 
-        # ── عرض التأكيد ──
-        ft_label = "إجباري سريع" if fund_type == "mandatory" else "داخلي بطيء"
+        # ════════════════════════════════════════════════
+        # ── التمويل الإجباري — فاتورة نجوم ──
+        # ════════════════════════════════════════════════
+        if fund_type == "mandatory":
+            total_stars = context.user_data.get("fund_stars_total", 1)
+            context.user_data["fund_channel_username"] = channel
+            context.user_data["state"] = "main_menu"
+            payload_str = f"fund_mandatory:{user.id}:{member_count}:{channel}:{total_stars}"
+            await context.bot.send_invoice(
+                chat_id=user.id,
+                title=f"اشتراك إجباري — @{channel}",
+                description=f"تمويل {member_count:,} عضو كاشتراك إجباري في قناة @{channel}",
+                payload=payload_str,
+                provider_token="",
+                currency="XTR",
+                prices=[LabeledPrice(f"تمويل إجباري @{channel}", total_stars)],
+            )
+            await update.message.reply_text(
+                f"📋 *مراجعة طلب التمويل:*\n\n"
+                f"📢 القناة: @{channel_md}\n"
+                f"👥 عدد الأعضاء الفعلي: {real_count:,}\n"
+                f"⭐ التكلفة: *{total_stars} نجمة*\n\n"
+                f"✅ تم إرسال الفاتورة أعلاه — اضغطها للدفع بالنجوم.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=main_menu_kb(is_own)
+            )
+            return
+
+        # ════════════════════════════════════════════════
+        # ── التمويل الداخلي — نقاط (كما كان) ──
+        # ════════════════════════════════════════════════
+        cost_per = int(get_setting("internal_channel_cost") or "100")
+        cost     = context.user_data.get("fund_total_cost", cost_per * max(member_count, 1))
+        db_user  = get_user(user.id)
+        if (db_user["points"] if db_user else 0) < cost:
+            await update.message.reply_text(
+                f"❌ نقاطك غير كافية. التكلفة الإجمالية: {cost:,} نقطة.",
+                reply_markup=main_menu_kb(is_own)
+            )
+            context.user_data["state"] = "main_menu"
+            return
         context.user_data["fund_channel_username"] = channel
         context.user_data["state"] = "await_fund_confirm"
+        ft_label = "داخلي بطيء"
         await update.message.reply_text(
             f"📋 *مراجعة طلب التمويل — الخطوة 3/3:*\n\n"
             f"📢 القناة: @{channel_md}\n"
@@ -5285,6 +5400,113 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         set_setting("channel_leave_penalty", str(val))
         await update.message.reply_text(f"✅ خصم مغادرة القناة = {val} نقطة.", reply_markup=owner_settings_kb())
+        context.user_data["state"] = "main_menu"
+        return
+
+    # ─── إعدادات مهلة المغادرة الآمنة ───
+    if is_own and state == "os_await_leave_grace":
+        try:
+            val = int(text.strip())
+            if val < 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً (ساعات).")
+            return
+        set_setting("internal_leave_grace_hours", str(val))
+        await update.message.reply_text(f"✅ مهلة المغادرة الآمنة = {val} ساعة.", reply_markup=owner_settings_kb())
+        context.user_data["state"] = "main_menu"
+        return
+
+    # ─── إعدادات نجوم الاشتراك الإجباري ───
+    if is_own and state == "os_await_mstars_min":
+        try:
+            val = int(text.strip())
+            if val < 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً.")
+            return
+        set_setting("mandatory_stars_min_members", str(val))
+        await update.message.reply_text(f"✅ الحد الأدنى للاشتراك الإجباري بالنجوم = {val:,} عضو.", reply_markup=owner_settings_kb())
+        context.user_data["state"] = "main_menu"
+        return
+
+    if is_own and state == "os_await_mstars_t1max":
+        try:
+            val = int(text.strip())
+            if val <= 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً.")
+            return
+        set_setting("mandatory_stars_tier1_max", str(val))
+        await update.message.reply_text(f"✅ الحد الأعلى للشريحة 1 = {val:,} عضو.", reply_markup=owner_settings_kb())
+        context.user_data["state"] = "main_menu"
+        return
+
+    if is_own and state == "os_await_mstars_t1p":
+        try:
+            val = int(text.strip())
+            if val <= 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً (× 100). مثال: 50 = 0.50 نجمة.")
+            return
+        set_setting("mandatory_stars_tier1_price_x100", str(val))
+        await update.message.reply_text(f"✅ سعر الشريحة 1 = {val/100:.2f} نجمة/عضو.", reply_markup=owner_settings_kb())
+        context.user_data["state"] = "main_menu"
+        return
+
+    if is_own and state == "os_await_mstars_t2p":
+        try:
+            val = int(text.strip())
+            if val <= 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً (× 100). مثال: 33 = 0.33 نجمة.")
+            return
+        set_setting("mandatory_stars_tier2_price_x100", str(val))
+        await update.message.reply_text(f"✅ سعر الشريحة 2 = {val/100:.2f} نجمة/عضو.", reply_markup=owner_settings_kb())
+        context.user_data["state"] = "main_menu"
+        return
+
+    # ─── بحث في الحسابات المبيوعة ───
+    if is_own and state == "os_await_sold_search":
+        query_phone = text.strip().lstrip("+")
+        with db_conn() as c:
+            rows = c.execute(
+                "SELECT ns.phone_number, ns.ever_sold, "
+                "       pe.created_at AS sale_date, pe.order_code, u.full_name AS buyer_name, pe.user_id AS buyer_id "
+                "FROM number_stock ns "
+                "LEFT JOIN prize_exchanges pe ON pe.prize_value = ns.phone_number "
+                "     AND pe.status = 'completed' "
+                "     AND pe.prize_type IN ('telegram_number','telegram_number_code') "
+                "LEFT JOIN users u ON u.user_id = pe.user_id "
+                "WHERE ns.phone_number LIKE %s AND ns.ever_sold IS TRUE",
+                (f"%{query_phone}%",)
+            ).fetchall()
+        if not rows:
+            await update.message.reply_text("🔍 لا توجد نتائج مطابقة.", reply_markup=owner_settings_kb())
+            context.user_data["state"] = "main_menu"
+            return
+        def _fmt_dt(v):
+            if v is None: return "—"
+            if hasattr(v, "strftime"): return v.strftime("%Y-%m-%d %H:%M")
+            return str(v)[:16]
+        lines = [f"🔍 *نتائج البحث عن «{query_phone}»:*\n"]
+        for r in rows:
+            buyer_name = r["buyer_name"] or f"ID:{r.get('buyer_id','?')}"
+            lines.append(
+                f"📱 `{r['phone_number']}`\n"
+                f"   👤 المشتري: {buyer_name}\n"
+                f"   📅 تاريخ البيع: {_fmt_dt(r['sale_date'])}\n"
+                f"   📌 كود: {r['order_code'] or '—'}"
+            )
+        await update.message.reply_text(
+            "\n".join(lines),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع للمبيوعات", callback_data="os:sold_accounts")]])
+        )
         context.user_data["state"] = "main_menu"
         return
 
@@ -7294,9 +7516,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # إدراج ذري مع فحص التكرار عبر RETURNING
         with db_conn() as c:
             c.execute(
-                "INSERT INTO channel_join_rewards (user_id, channel_id) VALUES (%s, %s) "
+                "INSERT INTO channel_join_rewards (user_id, channel_id, joined_at) VALUES (%s, %s, NOW()) "
                 "ON CONFLICT (user_id, channel_id) DO NOTHING",
-                (user.id, ch_id)
+                (user.id, ch_id
             )
             inserted = c.rowcount
             if inserted > 0:
@@ -7660,16 +7882,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "fund:mandatory":
-        cost_per = get_setting("mandatory_channel_cost") or "200"
-        min_members = get_setting("mandatory_channel_min_members") or "0"
+        # ─── تمويل إجباري بالنجوم (Stars) ───
+        _stars_min    = int(get_setting("mandatory_stars_min_members")    or "50")
+        _stars_t1_max = int(get_setting("mandatory_stars_tier1_max")      or "120")
+        _t1_x100      = int(get_setting("mandatory_stars_tier1_price_x100") or "50")
+        _t2_x100      = int(get_setting("mandatory_stars_tier2_price_x100") or "33")
         context.user_data["fund_type"] = "mandatory"
         context.user_data["state"]     = "await_fund_member_count"
-        min_txt = f"👥 الحد الأدنى للأعضاء: *{int(min_members):,}*\n" if int(min_members) > 0 else ""
         await q.edit_message_text(
-            f"📢 *تمويل قناة إجباري سريع*\n\n"
-            f"✅ ستُضاف قناتك كقناة اشتراك إجبارية في البوت\n"
-            f"💰 السعر: *{cost_per} نقطة لكل عضو*\n"
-            f"{min_txt}\n"
+            f"📢 *تمويل قناة إجباري — الدفع بالنجوم ⭐*\n\n"
+            f"✅ ستُضاف قناتك كقناة اشتراك إجباري في البوت\n\n"
+            f"📊 *جدول الأسعار:*\n"
+            f"  • {_stars_min:,} – {_stars_t1_max:,} عضو:  *{_t1_x100/100:.2f} ⭐* لكل عضو\n"
+            f"  • {_stars_t1_max+1:,} – 99999999 عضو: *{_t2_x100/100:.2f} ⭐* لكل عضو\n"
+            f"  • الحد الأدنى: *{_stars_min:,} عضو*\n\n"
             f"📊 *الخطوة 1/3:* أرسل *عدد أعضاء قناتك* الحالي:",
             parse_mode=ParseMode.MARKDOWN
         )
@@ -9854,6 +10080,69 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(f"📱 سعر رقم تيلغرام الحالي: {cur} نقطة\n\nأرسل القيمة الجديدة:")
         return
 
+    # ─── إعدادات النجوم للاشتراك الإجباري ───
+    if data == "os:edit_mstars_min" and is_own:
+        cur = get_setting("mandatory_stars_min_members") or "50"
+        context.user_data["state"] = "os_await_mstars_min"
+        await q.edit_message_text(
+            f"⭐ *الحد الأدنى للأعضاء — التمويل الإجباري بالنجوم*\n\n"
+            f"القيمة الحالية: {cur} عضو\n\nأرسل القيمة الجديدة:",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    if data == "os:edit_mstars_t1max" and is_own:
+        cur = get_setting("mandatory_stars_tier1_max") or "120"
+        context.user_data["state"] = "os_await_mstars_t1max"
+        await q.edit_message_text(
+            f"⭐ *الحد الأعلى للشريحة 1 — التمويل الإجباري*\n\n"
+            f"القيمة الحالية: {cur} عضو\n"
+            f"(أعضاء ≤ هذا الحد يدفعون سعر الشريحة 1)\n\nأرسل القيمة الجديدة:",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    if data == "os:edit_mstars_t1p" and is_own:
+        cur = int(get_setting("mandatory_stars_tier1_price_x100") or "50")
+        context.user_data["state"] = "os_await_mstars_t1p"
+        await q.edit_message_text(
+            f"⭐ *سعر الشريحة 1 (مضروباً × 100)*\n\n"
+            f"القيمة الحالية: {cur} (= {cur/100:.2f} نجمة/عضو)\n"
+            f"مثال: 50 = 0.50 نجمة لكل عضو\n\nأرسل القيمة الجديدة:",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    if data == "os:edit_mstars_t2p" and is_own:
+        cur = int(get_setting("mandatory_stars_tier2_price_x100") or "33")
+        context.user_data["state"] = "os_await_mstars_t2p"
+        await q.edit_message_text(
+            f"⭐ *سعر الشريحة 2 (مضروباً × 100)*\n\n"
+            f"القيمة الحالية: {cur} (= {cur/100:.2f} نجمة/عضو)\n"
+            f"مثال: 33 = 0.33 نجمة لكل عضو\n\nأرسل القيمة الجديدة:",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    if data == "os:edit_leave_grace" and is_own:
+        cur = get_setting("internal_leave_grace_hours") or "24"
+        context.user_data["state"] = "os_await_leave_grace"
+        await q.edit_message_text(
+            f"⏱ *مهلة المغادرة الآمنة — القنوات الداخلية*\n\n"
+            f"القيمة الحالية: {cur} ساعة\n"
+            f"(المستخدم يُعاقب فقط إذا غادر خلال هذه المدة)\n\nأرسل القيمة الجديدة بالساعات:",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    if data == "os:sold_search" and is_own:
+        context.user_data["state"] = "os_await_sold_search"
+        await q.edit_message_text(
+            "🔍 *البحث في الحسابات المبيوعة*\n\nأرسل رقم الهاتف أو جزءاً منه:",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
     if data == "os:edit_contact" and is_own:
         context.user_data["state"] = "os_await_contact"
         cur = get_setting("owner_contact") or "غير مضبوط"
@@ -11143,6 +11432,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text,
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔍 بحث برقم", callback_data="os:sold_search")],
                 [InlineKeyboardButton("⚠️ العمليات الفاشلة", callback_data="os:failed_deliveries")],
                 [InlineKeyboardButton("🔙 رجوع للمخزون", callback_data="os:manage_numbers")],
             ])
@@ -11416,6 +11706,16 @@ async def pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if query.from_user.id == uid_in_payload and actual_stars == expected_stars:
                     valid = True
 
+        # ─── الاشتراك الإجباري بالنجوم ───
+        # payload: fund_mandatory:{user_id}:{member_count}:{channel}:{stars}
+        if payload.startswith("fund_mandatory:"):
+            parts = payload.split(":")
+            if len(parts) == 5 and parts[1].isdigit() and parts[4].isdigit():
+                uid_in_payload = int(parts[1])
+                expected_stars = int(parts[4])
+                if query.from_user.id == uid_in_payload and query.total_amount == expected_stars:
+                    valid = True
+
         if valid:
             await query.answer(ok=True)
         else:
@@ -11458,6 +11758,76 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         # لا يُرسَل إشعار بهذا لكروب الإشعارات — مخصص الآن للطلبات فقط.
 
+    # ─── تمويل الاشتراك الإجباري بالنجوم ───
+    # payload: fund_mandatory:{user_id}:{member_count}:{channel}:{stars}
+    elif payload.startswith("fund_mandatory:"):
+        parts        = payload.split(":")
+        _uid         = int(parts[1])
+        member_count = int(parts[2])
+        channel      = parts[3]
+        total_stars  = int(parts[4])
+        channel_md   = md_escape(channel)
+
+        # التحقق من الحد الأقصى للقنوات الإجبارية
+        is_queued = False
+        if count_active_mandatory_channels() >= MANDATORY_MAX_ACTIVE:
+            is_queued = True
+
+        code = next_order_code(user.id)
+        with db_conn() as c:
+            c.execute(
+                "INSERT INTO channel_funding (user_id,channel_username,funding_type,cost_points,target_members,current_members,status) "
+                "VALUES (%s,%s,'mandatory',0,%s,0,'active')",
+                (user.id, channel, member_count)
+            )
+            c.execute(
+                "INSERT INTO mandatory_channels (channel_username,owner_user_id,funding_type,active,queued) "
+                "VALUES (%s,%s,'mandatory',%s,%s) "
+                "ON CONFLICT (channel_username) DO UPDATE SET funding_type=EXCLUDED.funding_type, owner_user_id=EXCLUDED.owner_user_id, "
+                "active=EXCLUDED.active, queued=EXCLUDED.queued",
+                (channel, user.id, 0 if is_queued else 1, 1 if is_queued else 0)
+            )
+
+        if is_queued:
+            await update.message.reply_text(
+                f"⏳ *تم استلام تمويل قناتك بنجاح — في قائمة الانتظار!*\n\n"
+                f"📢 القناة: @{channel_md}\n"
+                f"👥 عدد الأعضاء: {member_count:,}\n"
+                f"⭐ دفعت: {total_stars} نجمة\n\n"
+                f"⚠️ عدد القنوات الإجبارية النشطة بلغ الحد الأقصى ({MANDATORY_MAX_ACTIVE}).\n"
+                f"✅ ستُفعَّل قناتك تلقائياً فور تحرّر أحد الأماكن.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=main_menu_kb(is_own)
+            )
+        else:
+            await update.message.reply_text(
+                f"✅ *تم تفعيل قناتك الإجبارية بنجاح!*\n\n"
+                f"📢 القناة: @{channel_md}\n"
+                f"👥 عدد الأعضاء: {member_count:,}\n"
+                f"⭐ دفعت: {total_stars} نجمة\n"
+                f"📌 كود العملية: `{code}`",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=main_menu_kb(is_own)
+            )
+
+        _queue_note = "\n⏳ <b>ملاحظة:</b> دخلت قائمة الانتظار وستُفعَّل عند توفر مكان." if is_queued else ""
+        _terms = mandatory_terms_text_html()
+        try:
+            await context.application.bot.send_message(
+                ADMIN_GROUP_ID,
+                f"📢 <b>تمويل قناة إجباري — نجوم</b>\n"
+                f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
+                f"📡 القناة: @{channel}\n"
+                f"👥 {member_count:,} عضو\n"
+                f"⭐ {total_stars} نجمة\n"
+                f"📌 {code}"
+                f"{_queue_note}\n"
+                f"{_terms}",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+
 # ── حذف رسائل "انضم/غادر" الخدمية تلقائياً من كروب إشعارات المالك ──
 # (حذف الرسالة فقط، بدون أي إجراء على الشخص نفسه — الكروب أصبح مخصصاً للطلبات فقط)
 async def delete_group_service_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -11499,29 +11869,49 @@ async def handle_member_leave(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     with db_conn() as c:
         claimed = c.execute(
-            "SELECT 1 FROM channel_join_rewards WHERE user_id=? AND channel_id=?",
+            "SELECT joined_at FROM channel_join_rewards WHERE user_id=? AND channel_id=?",
             (member_user.id, ch["id"])
         ).fetchone()
         if not claimed:
             return
+        # ─── فحص مهلة المغادرة الآمنة (24 ساعة افتراضياً) ───
+        grace_hours = int(get_setting("internal_leave_grace_hours") or "24")
+        joined_at = claimed["joined_at"]
+        if joined_at:
+            import datetime as _dt_grace
+            now_utc = _dt_grace.datetime.now(_dt_grace.timezone.utc)
+            if hasattr(joined_at, "tzinfo") and joined_at.tzinfo is None:
+                joined_at = joined_at.replace(tzinfo=_dt_grace.timezone.utc)
+            time_passed = now_utc - joined_at
+            if time_passed.total_seconds() >= grace_hours * 3600:
+                # مضت المهلة — المغادرة مجانية بدون خصم
+                c.execute(
+                    "DELETE FROM channel_join_rewards WHERE user_id=%s AND channel_id=%s",
+                    (member_user.id, ch["id"])
+                )
+                return
         c.execute(
             "DELETE FROM channel_join_rewards WHERE user_id=%s AND channel_id=%s",
             (member_user.id, ch["id"])
         )
+    # ─── خصم النقاط — يُسمح بالرصيد السالب ───
     penalty = int(get_setting("channel_leave_penalty") or "75")
-    deducted = deduct_points_clamped(member_user.id, penalty)
-    if deducted > 0:
-        try:
-            await context.bot.send_message(
-                member_user.id,
-                f"⚠️ *تنبيه خصم نقاط*\n\n"
-                f"لاحظنا أنك غادرت القناة @{username} بعد حصولك على نقاط الانضمام إليها.\n"
-                f"💸 تم خصم *{deducted} نقطة* من رصيدك.\n\n"
-                f"يمكنك الانضمام للقناة مجدداً من قسم 💰 تجميع النقاط لكسب النقاط من جديد.",
-                parse_mode=ParseMode.MARKDOWN
-            )
-        except Exception:
-            pass
+    with db_conn() as _pc:
+        _pc.execute("UPDATE users SET points=points-%s WHERE user_id=%s", (penalty, member_user.id))
+    db_u = get_user(member_user.id)
+    balance_after = db_u["points"] if db_u else 0
+    try:
+        await context.bot.send_message(
+            member_user.id,
+            f"⚠️ *تنبيه خصم نقاط*\n\n"
+            f"لاحظنا أنك غادرت القناة @{username} خلال مهلة {grace_hours} ساعة من انضمامك.\n"
+            f"💸 تم خصم *{penalty} نقطة* من رصيدك.\n"
+            f"💰 رصيدك الآن: *{balance_after} نقطة*\n\n"
+            f"يمكنك الانضمام للقناة مجدداً من قسم 💰 تجميع النقاط لكسب النقاط من جديد.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception:
+        pass
 
 
 # ────────────────────────────────────────────────────────────
