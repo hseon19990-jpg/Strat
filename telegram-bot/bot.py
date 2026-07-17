@@ -1205,7 +1205,7 @@ def list_stock_numbers(filter_type: str = "all"):
             "FROM number_stock WHERE auto_2fa_enabled=TRUE AND deleted_at IS NULL AND ever_sold IS NOT TRUE"
         )
     else:
-        sql = "SELECT id, phone_number, session_string, sessions_reset, force_listed, added_at FROM number_stock WHERE assigned_to IS NULL AND deleted_at IS NULL AND ever_sold IS NOT TRUE"
+        sql = "SELECT id, phone_number, session_string, sessions_reset, force_listed, twofa_password, last_authorized, frozen_at, added_at FROM number_stock WHERE assigned_to IS NULL AND deleted_at IS NULL AND ever_sold IS NOT TRUE"
         if filter_type == "listed":
             sql += f" AND {_sellable_filter_sql()}"
         elif filter_type == "pending":
@@ -9283,27 +9283,49 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # ══════════════════════════════════════════════════════
         # ── العرض العام: all / listed / pending / trash ──
         # ══════════════════════════════════════════════════════
+        def _is_sellable(n) -> bool:
+            """نفس شروط _sellable_filter_sql() لكن على كائن Python."""
+            return (
+                bool(n.get("session_string"))
+                and n.get("last_authorized") is not False
+                and bool((n.get("twofa_password") or "").strip())
+                and not n.get("frozen_at")
+            )
+
         rows = []
         for n in page_nums:
-            label = f"📱 {n['phone_number']} — {guess_country(n['phone_number'])}"
+            country = guess_country(n['phone_number'])
             if filter_type == "trash":
-                label += " 🗑 محذوف"
+                label = f"🗑 {n['phone_number']} — {country}"
             elif not n.get("session_string"):
-                label += " (بدون جلسة)"
-            elif n.get("force_listed"):
-                label += " 🚀 معروض مباشرة"
-            elif n.get("sessions_reset"):
-                label += " ✅ جاهز للبيع"
+                label = f"⚠️ {n['phone_number']} — {country} (بدون جلسة)"
+            elif n.get("frozen_at"):
+                label = f"🧊 {n['phone_number']} — {country} (مجمّد)"
+            elif n.get("last_authorized") is False:
+                label = f"🚫 {n['phone_number']} — {country} (مطرود)"
+            elif _is_sellable(n):
+                label = f"✅ {n['phone_number']} — {country}"
             else:
-                label += " ⏳ بانتظار طرد الجلسات"
+                label = f"⏳ {n['phone_number']} — {country} (غير جاهز)"
             rows.append([InlineKeyboardButton(label, callback_data=f"os:number_info:{n['id']}")])
         _nr = _nav_row()
         if _nr:
             rows.append(_nr)
         rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")])
+
+        # ─── تفسير الرموز ───
+        if filter_type == "all":
+            legend = "\n✅ جاهز للبيع  |  ⏳ غير جاهز  |  🚫 مطرود  |  🧊 مجمّد  |  ⚠️ بدون جلسة"
+        elif filter_type == "listed":
+            legend = "\n✅ هذه الأرقام جاهزة للبيع وتُسلَّم فوراً عند الشراء."
+        elif filter_type == "pending":
+            legend = "\n⏳ هذه الأرقام غير جاهزة — تحتاج جلسة أو 2FA أو طرد جلسات."
+        else:
+            legend = ""
+
         await q.edit_message_text(
-            f"*{title} ({total})* — صفحة {_page + 1}/{total_pages}\n\n"
-            "اضغط على رقم لعرض معلوماته التفصيلية.",
+            f"*{title} ({total})* — صفحة {_page + 1}/{total_pages}"
+            f"{legend}",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(rows)
         )
