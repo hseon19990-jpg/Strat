@@ -7518,7 +7518,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             c.execute(
                 "INSERT INTO channel_join_rewards (user_id, channel_id, joined_at) VALUES (%s, %s, NOW()) "
                 "ON CONFLICT (user_id, channel_id) DO NOTHING",
-                (user.id, ch_id
+                (user.id, ch_id)
             )
             inserted = c.rowcount
             if inserted > 0:
