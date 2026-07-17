@@ -2460,18 +2460,7 @@ async def _start_number_monitor(phone: str, session_str: str, application):
                                 "البوت غادر الحساب تلقائياً. الحساب أصبح بيدك كاملاً 🤍",
                                 parse_mode="Markdown"
                             )
-                            if OWNER_ID:
-                                try:
-                                    await _app_snap.bot.send_message(
-                                        OWNER_ID,
-                                        f"🔔 <b>خروج تلقائي — دخل المشتري</b>\n\n"
-                                        f"📱 <code>{_phone_snap}</code>\n"
-                                        f"👤 <a href='tg://user?id={_bid_snap}'>{_bid_snap}</a>\n"
-                                        f"✅ غادر البوت بعد 10 ثوانٍ من تأكيد دخول المشتري.",
-                                        parse_mode="HTML"
-                                    )
-                                except Exception:
-                                    pass
+                            # (إشعار المالك عن خروج المشتري أُلغي بناءً على طلب المالك)
                         except Exception as _le:
                             logger.warning(f"⚠️ تعذّر المغادرة التلقائية للرقم {_phone_snap}: {_le}")
 
@@ -2511,21 +2500,7 @@ async def _start_number_monitor(phone: str, session_str: str, application):
                     return  # لا ترسل أي إشعار آخر لهذه الرسالة
 
                 if not owner_is_logging_in and not buyer_owns_it and _ever_sold:
-                    # ─── دخول جديد على رقم مباع سابقاً (المشتري يستخدم حسابه) ─── نُخبر المالك فقط
-                    if OWNER_ID:
-                        try:
-                            await application.bot.send_message(
-                                OWNER_ID,
-                                (
-                                    "🛒 *إشعار: دخول على رقم مباع سابقاً*\n\n"
-                                    f"📱 الرقم: `{phone}`\n"
-                                    f"🌍 الدولة: {guess_country(phone)}\n"
-                                    "ℹ️ هذا الرقم سبق بيعه — المشتري يستخدم حسابه. لم يُطرد أحد."
-                                ),
-                                parse_mode=ParseMode.MARKDOWN,
-                            )
-                        except Exception:
-                            pass
+                    # رقم مباع سابقاً — المشتري يستخدم حسابه — لا إشعار للمالك
                     return
 
             # ─── إرسال الكود للمشتري — أرقام فقط، بعد تاريخ البيع فقط ───
@@ -2813,20 +2788,7 @@ async def compensate_duplicate_sales_job(context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.warning(f"⚠️ compensate_duplicate_sales: فشل إشعار المستخدم {uid}: {e}")
 
-            # إشعار المالك
-            if OWNER_ID:
-                try:
-                    await bot.send_message(
-                        OWNER_ID,
-                        f"⚠️ <b>بيع مكرر — تعويض تلقائي</b>\n\n"
-                        f"📱 الرقم: <code>{phone}</code>\n"
-                        f"👤 المتضرر: <a href='tg://user?id={uid}'>{uid}</a>\n"
-                        f"💰 النقاط المُعادة: {cost:,}\n"
-                        f"📌 كود الطلب: {code}",
-                        parse_mode=ParseMode.HTML
-                    )
-                except Exception:
-                    pass
+            # (إشعار المالك عن التعويض التلقائي أُلغي — يظهر في شاشة تعويض المظلومين)
 
             logger.info(
                 f"✅ compensate_duplicate_sales: عوّضنا المستخدم {uid} "
@@ -4807,25 +4769,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception:
                     pass
             asyncio.create_task(_auto_leave_nc())
-            if OWNER_ID:
-                try:
-                    _badge_nc = _unseen_badge_html(exclude_pe_id=_nc_pe_id)
-                    _seen_kb_nc = InlineKeyboardMarkup([[
-                        InlineKeyboardButton("👁 تم الاطلاع", callback_data=f"pe_seen:{_nc_pe_id}")
-                    ]]) if _nc_pe_id else None
-                    await context.bot.send_message(
-                        OWNER_ID,
-                        _badge_nc +
-                        f"📱 <b>تسليم رقم عبر كود شراء</b>\n"
-                        f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
-                        f"📱 {auto_nc_number}\n"
-                        f"🎟 الكود: {entered_code}\n"
-                        f"📌 {nc_order_code}",
-                        parse_mode=ParseMode.HTML,
-                        reply_markup=_seen_kb_nc
-                    )
-                except Exception:
-                    pass
+            # (إشعار المالك عن تسليم رقم عبر الكود أُلغي بناءً على طلب المالك)
         else:
             await update.message.reply_text(
                 "✅ *تم قبول الكود!*\n\n"
@@ -7342,27 +7286,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception:
                     pass
             asyncio.create_task(_auto_leave_after_exchange())
-            if OWNER_ID:
-                try:
-                    _auto_pe_id = pe["id"] if pe else None
-                    _badge_auto = _unseen_badge_html(exclude_pe_id=_auto_pe_id)
-                    _seen_kb_auto = InlineKeyboardMarkup([[
-                        InlineKeyboardButton("👁 تم الاطلاع", callback_data=f"pe_seen:{_auto_pe_id}")
-                    ]]) if _auto_pe_id else None
-                    await context.bot.send_message(
-                        OWNER_ID,
-                        _badge_auto +
-                        f"📱 <b>تم تسليم رقم تلقائياً</b>\n"
-                        f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
-                        f"📱 {auto_number}\n"
-                        f"💰 {cost} نقطة\n"
-                        f"📌 {code}"
-                        + ("\n🔑 مع رمز جلسة" if session_str else "\n⚠️ بدون رمز جلسة (رقم أُضيف يدوياً بدون تسجيل دخول)"),
-                        parse_mode=ParseMode.HTML,
-                        reply_markup=_seen_kb_auto
-                    )
-                except Exception:
-                    pass
+            # (إشعار المالك عن التسليم أُلغي بناءً على طلب المالك)
             return
 
         # ── لا يوجد رقم بالمخزون — نفس المسار اليدوي المعتاد ──
