@@ -9030,14 +9030,48 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(f"⏳ يتم جلب معلومات {rec['phone_number']}... قد يستغرق ذلك بضع ثوانٍ.")
         client = TelegramClient(StringSession(rec["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
         try:
-            await client.connect()
+            # ─── اتصال بـ timeout صريح حتى لا يعلّق البوت على جلسات ملغية ───
+            try:
+                await asyncio.wait_for(client.connect(), timeout=15)
+            except asyncio.TimeoutError:
+                await q.edit_message_text(
+                    f"⏳ *انتهت مهلة الاتصال بـ {rec['phone_number']}*\n\n"
+                    "السبب المحتمل: الجلسة ملغية أو الحساب محظور أو شبكة بطيئة.\n"
+                    "جرّب مجدداً أو انقل الرقم إلى سلة المهملات.",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🗑 نقل إلى سلة المهملات", callback_data=f"os:number_delete:{stock_id}")],
+                        [InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")],
+                    ])
+                )
+                return
+
+            # ─── تحقق من صلاحية الجلسة قبل أي طلب ───
+            try:
+                _authorized = await asyncio.wait_for(client.is_user_authorized(), timeout=8)
+            except asyncio.TimeoutError:
+                _authorized = False
+
+            if not _authorized:
+                await q.edit_message_text(
+                    f"🔒 *الجلسة منتهية أو ملغية — {rec['phone_number']}*\n\n"
+                    "البوت لم يعد مصرّحاً له بالوصول لهذا الحساب.\n"
+                    "الرقم لن يُعرَض للبيع تلقائياً حتى تُحدَّث جلسته.",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🗑 نقل إلى سلة المهملات", callback_data=f"os:number_delete:{stock_id}")],
+                        [InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")],
+                    ])
+                )
+                return
+
             # ─── فحص التجميد أولاً ───
             is_frozen, frozen_status, frozen_at_str = await check_account_frozen(client, stock_id)
             me = None
             age = "غير معروف"
             if not is_frozen:
                 try:
-                    me = await client.get_me()
+                    me = await asyncio.wait_for(client.get_me(), timeout=10)
                     age = estimate_registration_year(me.id) if me else "غير معروف"
                 except Exception:
                     pass
@@ -9065,14 +9099,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 if me.username:
                     display_name += f" (@{me.username})"
-            # ─── معلومات التجميد/الحظر الكامل (نفس الحالة تقنياً: حساب معطّل/محذوف بالكامل من تيليجرام) ───
+            # ─── معلومات التجميد/الحظر الكامل ───
             frozen_line = (
                 f"\n🧊 جامد: {'✅ نعم' if is_frozen else '❌ لا'}"
                 f"\n⛔ محظور بالكامل: {'✅ نعم' if is_frozen else '❌ لا'}"
             )
             if is_frozen and frozen_at_str:
                 frozen_line += f"\n📅 تاريخ التجميد: {frozen_at_str}"
-            # ─── حالة التقييد المؤقت من الإرسال (Spam Block عبر @SpamBot) ───
+            # ─── حالة التقييد المؤقت من الإرسال ───
             restricted = spam_detail.get("restricted")
             if restricted is True:
                 until_txt = spam_detail.get("until")
@@ -9081,7 +9115,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 spam_line = f"\n📵 مقيّد من الإرسال: ❌ لا"
             else:
                 spam_line = f"\n📵 مقيّد من الإرسال: ⚠️ تعذّر التأكد الآن"
-            # ─── حالة 2FA: يُعرض فقط ما هو محفوظ في قاعدة البيانات (بدون تفعيل تلقائي) ───
+            # ─── حالة 2FA ───
             saved_pwd = rec.get("twofa_password") or ""
             if saved_pwd:
                 twofa_line = "\n🔐 التحقق بخطوتين: ✅ مفعّل (انظر زر كلمة المرور)"
@@ -9105,6 +9139,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]
             if not rec["sessions_reset"] and not rec["force_listed"]:
                 kb_rows.append([InlineKeyboardButton("🚀 عرض مباشر للبيع الآن (تجاوز الانتظار)", callback_data=f"os:force_list:{stock_id}")])
+            kb_rows.append([InlineKeyboardButton("🚪 تسجيل خروج البوت من هذا الحساب", callback_data=f"os:number_logout:{stock_id}")])
             kb_rows.append([InlineKeyboardButton("🗑 نقل إلى سلة المهملات", callback_data=f"os:number_delete:{stock_id}")])
             kb_rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")])
             await q.edit_message_text(
@@ -9113,10 +9148,25 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup(kb_rows)
             )
         except Exception as e:
-            logger.error(f"❌ خطأ في جلب معلومات الرقم {rec['phone_number']}: {e}")
+            _err_str = str(e)
+            logger.error(f"❌ خطأ في جلب معلومات الرقم {rec['phone_number']}: {_err_str}")
+            # ─── رسائل خطأ واضحة حسب نوع الخطأ ───
+            if any(k in _err_str.lower() for k in ("auth_key_unregistered", "session_revoked", "user_deactivated", "deactivated_ban")):
+                _err_msg = "🔒 الجلسة ألغيت أو الحساب محظور نهائياً من تيليجرام."
+            elif "flood" in _err_str.lower():
+                _err_msg = "⏳ تيليجرام يطلب الانتظار (FloodWait). حاول بعد دقائق."
+            elif "network" in _err_str.lower() or "connect" in _err_str.lower():
+                _err_msg = "🌐 تعذّر الاتصال بتيليجرام. تحقق من الشبكة وحاول مجدداً."
+            else:
+                _err_msg = f"❌ خطأ غير متوقع:\n`{_err_str[:200]}`"
             await q.edit_message_text(
-                "❌ حدث خطأ أثناء جلب المعلومات. حاول مجدداً لاحقاً.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")]])
+                f"⚠️ *تعذّر جلب معلومات {rec['phone_number']}*\n\n{_err_msg}",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 إعادة المحاولة", callback_data=f"os:number_info:{stock_id}")],
+                    [InlineKeyboardButton("🗑 نقل إلى سلة المهملات", callback_data=f"os:number_delete:{stock_id}")],
+                    [InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")],
+                ])
             )
         finally:
             try:
@@ -9143,6 +9193,92 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "حتى تنجح إعادة المحاولة التلقائية بالخلفية.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")]])
+        )
+        return
+
+    # ─── تسجيل خروج البوت من حساب محدد ───
+    if data.startswith("os:number_logout:") and is_own:
+        stock_id = int(data.split(":")[-1])
+        rec = get_stock_number(stock_id)
+        if not rec or not rec.get("session_string"):
+            await q.edit_message_text(
+                "⚠️ لا تتوفر جلسة لهذا الرقم.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")]])
+            )
+            return
+        # ─── خطوة تأكيد قبل التنفيذ ───
+        await q.edit_message_text(
+            f"🚪 *تسجيل خروج البوت من:* `{rec['phone_number']}`\n\n"
+            "⚠️ هذا سيُلغي جلسة البوت الحالية على هذا الحساب نهائياً.\n"
+            "بعد الخروج: الرقم لن يكون قابلاً للبيع حتى تُضاف جلسة جديدة.\n\n"
+            "هل أنت متأكد؟",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ نعم، سجّل خروج", callback_data=f"os:number_logout_confirm:{stock_id}")],
+                [InlineKeyboardButton("🔙 إلغاء", callback_data=f"os:number_info:{stock_id}")],
+            ])
+        )
+        return
+
+    if data.startswith("os:number_logout_confirm:") and is_own:
+        stock_id = int(data.split(":")[-1])
+        rec = get_stock_number(stock_id)
+        if not rec or not rec.get("session_string"):
+            await q.edit_message_text(
+                "⚠️ لا تتوفر جلسة لهذا الرقم.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")]])
+            )
+            return
+        phone = rec["phone_number"]
+        await q.edit_message_text(f"⏳ يتم تسجيل الخروج من {phone}...")
+        # ─── أوقف المراقبة أولاً ───
+        try:
+            await _stop_number_monitor(phone)
+        except Exception:
+            pass
+        # ─── سجّل خروج عبر Telethon ───
+        _logout_ok   = False
+        _logout_note = ""
+        client_lo = TelegramClient(StringSession(rec["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+        try:
+            await asyncio.wait_for(client_lo.connect(), timeout=15)
+            authorized = await asyncio.wait_for(client_lo.is_user_authorized(), timeout=8)
+            if authorized:
+                await client_lo.log_out()
+                _logout_ok   = True
+                _logout_note = "تم تسجيل الخروج وإلغاء الجلسة بنجاح."
+            else:
+                _logout_ok   = True
+                _logout_note = "الجلسة كانت منتهية مسبقاً (لا داعي للخروج)."
+        except asyncio.TimeoutError:
+            _logout_note = "⚠️ انتهت مهلة الاتصال — تم مسح الجلسة محلياً فقط."
+        except Exception as _le:
+            _logout_note = f"⚠️ خطأ أثناء تسجيل الخروج: `{str(_le)[:120]}`\nتم مسح الجلسة من قاعدة البيانات."
+        finally:
+            try:
+                await client_lo.disconnect()
+            except Exception:
+                pass
+        # ─── امسح الجلسة من DB في جميع الحالات ───
+        try:
+            with db_conn() as _lc:
+                _lc.execute(
+                    "UPDATE number_stock SET session_string=NULL, sessions_reset=FALSE, "
+                    "force_listed=FALSE, auto_2fa_enabled=FALSE WHERE id=%s",
+                    (stock_id,)
+                )
+        except Exception as _dbe:
+            logger.error(f"❌ فشل مسح الجلسة من DB للرقم {phone}: {_dbe}")
+        await q.edit_message_text(
+            f"🚪 *تسجيل خروج — {phone}*\n\n"
+            f"{'✅' if _logout_ok else '⚠️'} {_logout_note}\n\n"
+            "📌 الجلسة مُحذوفة من قاعدة البيانات.\n"
+            "الرقم انتقل لحالة *يدوي* (بلا جلسة) ولن يُعرض للبيع.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🗑 نقل إلى سلة المهملات", callback_data=f"os:number_delete:{stock_id}")],
+                [InlineKeyboardButton("🔙 رجوع لقائمة الأرقام", callback_data="os:list_numbers")],
+            ])
         )
         return
 
