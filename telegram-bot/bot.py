@@ -5470,6 +5470,84 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
+    # ─── تحقق بكود الطلب من الحسابات المبيوعة ───
+    if is_own and state == "os_await_sold_code_search":
+        search_code = text.strip().upper()
+        with db_conn() as c:
+            pe = c.execute(
+                "SELECT pe.*, u.full_name AS buyer_name, u.user_id AS buyer_id "
+                "FROM prize_exchanges pe "
+                "LEFT JOIN users u ON u.user_id = pe.user_id "
+                "WHERE UPPER(pe.order_code) = %s "
+                "  AND pe.prize_type IN ('telegram_number','telegram_number_code')",
+                (search_code,)
+            ).fetchone()
+            ns = None
+            if pe:
+                ns = c.execute(
+                    "SELECT phone_number, ever_sold, assigned_to, deleted_at, session_string, "
+                    "       frozen_at, last_authorized, added_at "
+                    "FROM number_stock WHERE phone_number = %s",
+                    (pe["prize_value"],)
+                ).fetchone()
+        if not pe:
+            await update.message.reply_text(
+                f"❌ لا يوجد طلب بيع بالكود: `{search_code}`",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع للمبيوعات", callback_data="os:sold_accounts")]])
+            )
+            context.user_data["state"] = "main_menu"
+            return
+
+        def _fmt_dt(v):
+            if v is None: return "—"
+            if hasattr(v, "strftime"): return v.strftime("%Y-%m-%d %H:%M")
+            return str(v)[:16]
+
+        # حالة الحساب الحالية
+        if ns:
+            if ns["deleted_at"]:
+                acc_status = "🗑 محذوف"
+            elif ns["assigned_to"]:
+                acc_status = f"🟢 نشط — لدى المشتري حالياً (`{ns['assigned_to']}`)"
+            elif ns["ever_sold"]:
+                acc_status = "⬜ بيع سابق — البوت غادر الحساب"
+            elif ns["frozen_at"]:
+                acc_status = "🧊 مجمّد"
+            elif not ns["last_authorized"]:
+                acc_status = "🔴 مطرود (kicked)"
+            else:
+                acc_status = "✅ في المخزون"
+            has_session = "✅ نعم" if ns["session_string"] else "❌ لا"
+        else:
+            acc_status = "⚠️ الرقم غير موجود في المخزون"
+            has_session = "—"
+
+        status_ar = {
+            "completed": "✅ مكتمل",
+            "pending": "⏳ معلق",
+            "cancelled": "❌ ملغى",
+            "duplicate_compensated": "⚠️ مكرر (عُوِّض)",
+        }.get(pe["status"], pe["status"])
+
+        msg = (
+            f"🧾 *نتيجة التحقق — كود:* `{search_code}`\n\n"
+            f"📱 *الرقم:* `{pe['prize_value']}`\n"
+            f"👤 *المشتري:* {pe['buyer_name'] or '—'} (`{pe['buyer_id']}`)\n"
+            f"💰 *التكلفة:* {pe['points_cost']:,} نقطة\n"
+            f"📅 *تاريخ الشراء:* {_fmt_dt(pe['created_at'])}\n"
+            f"📌 *حالة الطلب:* {status_ar}\n\n"
+            f"🔑 *حالة الحساب الآن:* {acc_status}\n"
+            f"💾 *جلسة موجودة:* {has_session}"
+        )
+        await update.message.reply_text(
+            msg,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع للمبيوعات", callback_data="os:sold_accounts")]])
+        )
+        context.user_data["state"] = "main_menu"
+        return
+
     # ─── بحث في الحسابات المبيوعة ───
     if is_own and state == "os_await_sold_search":
         query_phone = text.strip().lstrip("+")
@@ -10143,6 +10221,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if data == "os:sold_code_search" and is_own:
+        context.user_data["state"] = "os_await_sold_code_search"
+        await q.edit_message_text(
+            "🧾 *التحقق بكود الطلب*\n\nأرسل كود الطلب للتحقق منه:",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
     if data == "os:edit_contact" and is_own:
         context.user_data["state"] = "os_await_contact"
         cur = get_setting("owner_contact") or "غير مضبوط"
@@ -11432,7 +11518,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text,
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔍 بحث برقم", callback_data="os:sold_search")],
+                [InlineKeyboardButton("🔍 بحث برقم", callback_data="os:sold_search"),
+                 InlineKeyboardButton("🧾 تحقق بكود", callback_data="os:sold_code_search")],
                 [InlineKeyboardButton("⚠️ العمليات الفاشلة", callback_data="os:failed_deliveries")],
                 [InlineKeyboardButton("🔙 رجوع للمخزون", callback_data="os:manage_numbers")],
             ])
