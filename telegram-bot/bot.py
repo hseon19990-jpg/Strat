@@ -4773,29 +4773,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ).fetchone()
             _nc_pe_id = _nc_pe["id"] if _nc_pe else None
             display_nc_number = auto_nc_number.lstrip("+")
-            # ─── جلب كود الدخول فوراً إن وُجد ───
-            nc_login_code = await _fetch_code_for_delivery(auto_nc.get("session_string") or "")
-            # ─── بناء رسالة التسليم الكاملة ───
-            nc_delivery_text = (
-                f"✅ *تم! رقمك جاهز*\n\n"
-                f"📱 *الرقم:*\n`{display_nc_number}`\n\n"
-                f"🔐 *كلمة المرور (2FA):*\n`{auto_nc_twofa}`\n\n"
-            ) if auto_nc_twofa else (
-                f"✅ *تم! رقمك جاهز*\n\n"
-                f"📱 *الرقم:*\n`{display_nc_number}`\n\n"
-            )
-            if nc_login_code:
-                nc_delivery_text += f"🔑 *كود الدخول:*\n`{nc_login_code}`\n\n"
-                nc_delivery_text += "⚠️ احتفظ بهذه البيانات ولا تشاركها مع أحد."
-                result_kb_nc = [[InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")]]
-            else:
-                nc_delivery_text += "⏳ *كود الدخول:* سيصلك تلقائياً عند محاولة تسجيل الدخول، أو اضغط الزر أدناه بعدها."
-                result_kb_nc = [
-                    [InlineKeyboardButton("🔑 طلب كود الدخول", callback_data=f"buyer:request_code:{auto_nc_number}")],
-                    [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
-                ]
+            result_kb_nc = [
+                [
+                    InlineKeyboardButton("🔐 رمز التحقق (2FA)", callback_data=f"buyer:show_twofa:{auto_nc_number}"),
+                    InlineKeyboardButton("🔑 كود الدخول", callback_data=f"buyer:request_code:{auto_nc_number}"),
+                ],
+                [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
+            ]
             await update.message.reply_text(
-                nc_delivery_text,
+                f"✅ *تم! رقمك جاهز*\n\n"
+                f"📱 *الرقم:*\n`{display_nc_number}`\n\n"
+                f"اضغط على الأزرار أدناه للحصول على رمز التحقق وكود الدخول عند الحاجة.",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup(result_kb_nc)
             )
@@ -7500,30 +7488,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     (user.id, "telegram_number", auto_number, cost, code)
                 ).fetchone()
             display_number = auto_number.lstrip("+")
-            auto_twofa    = (auto.get("twofa_password") or "").strip()
-            # ─── جلب كود الدخول فوراً إن وُجد ───
-            login_code = await _fetch_code_for_delivery(auto.get("session_string") or "")
-            # ─── بناء رسالة التسليم الكاملة ───
-            delivery_text = (
-                f"✅ *تم شراء رقمك بنجاح!*\n\n"
-                f"📱 *الرقم:*\n`{display_number}`\n\n"
-                f"🔐 *كلمة المرور (2FA):*\n`{auto_twofa}`\n\n"
-            ) if auto_twofa else (
-                f"✅ *تم شراء رقمك بنجاح!*\n\n"
-                f"📱 *الرقم:*\n`{display_number}`\n\n"
-            )
-            if login_code:
-                delivery_text += f"🔑 *كود الدخول:*\n`{login_code}`\n\n"
-                delivery_text += "⚠️ احتفظ بهذه البيانات ولا تشاركها مع أحد."
-                result_kb = [[InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")]]
-            else:
-                delivery_text += "⏳ *كود الدخول:* سيصلك تلقائياً عند محاولة تسجيل الدخول، أو اضغط الزر أدناه بعدها."
-                result_kb = [
-                    [InlineKeyboardButton("🔑 طلب كود الدخول", callback_data=f"buyer:request_code:{auto_number}")],
-                    [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
-                ]
+            result_kb = [
+                [
+                    InlineKeyboardButton("🔐 رمز التحقق (2FA)", callback_data=f"buyer:show_twofa:{auto_number}"),
+                    InlineKeyboardButton("🔑 كود الدخول", callback_data=f"buyer:request_code:{auto_number}"),
+                ],
+                [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
+            ]
             await q.edit_message_text(
-                delivery_text,
+                f"✅ *تم شراء رقمك بنجاح!*\n\n"
+                f"📱 *الرقم:*\n`{display_number}`\n\n"
+                f"اضغط على الأزرار أدناه للحصول على رمز التحقق وكود الدخول عند الحاجة.",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup(result_kb)
             )
@@ -10712,94 +10687,88 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(txt, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(rows))
         return
 
-    # ─── زر المشتري: عرض رمز التحقق (يرسله كرسالة في المحادثة) ───
+    # ─── زر المشتري: طلب كود الدخول ───
     if data.startswith("buyer:request_code:"):
         number_for_code = data[len("buyer:request_code:"):]
+        import datetime as _dt_rc
 
-        # جلب كلمة مرور المصادقة الثنائية (2FA) المحفوظة لهذا الرقم
-        _twofa_pw = ""
+        # ── جلب وقت الشراء + جلسة الرقم من DB ──
+        _purchase_time = None
+        _session_str_rc = None
         try:
-            with db_conn() as _tdb:
-                _trow = _tdb.execute(
-                    "SELECT twofa_password FROM number_stock WHERE phone_number=%s AND assigned_to=%s",
+            with db_conn() as _rdb:
+                _rrow = _rdb.execute(
+                    """SELECT pe.created_at, ns.session_string
+                       FROM prize_exchanges pe
+                       JOIN number_stock ns ON ns.phone_number = pe.prize_value
+                       WHERE pe.prize_value=%s AND pe.user_id=%s AND pe.status='completed'
+                       ORDER BY pe.created_at DESC LIMIT 1""",
                     (number_for_code, user.id)
                 ).fetchone()
-                if _trow:
-                    _twofa_pw = (_trow["twofa_password"] or "").strip()
+            if _rrow:
+                _session_str_rc = _rrow["session_string"]
+                try:
+                    _purchase_time = _dt_rc.datetime.fromisoformat(str(_rrow["created_at"]).replace("Z", "+00:00"))
+                    if _purchase_time.tzinfo is None:
+                        _purchase_time = _purchase_time.replace(tzinfo=_dt_rc.timezone.utc)
+                except Exception:
+                    _purchase_time = None
         except Exception:
             pass
 
+        if not _session_str_rc:
+            await q.answer("❌ لا يوجد رقم مشترى باسمك بهذا الرقم.", show_alert=True)
+            return
+
         async def _send_code_msg(code_val: str):
-            """يرسل الكود وكلمة 2FA كرسالة نصية واضحة في المحادثة."""
-            twofa_line = (
-                f"\n🔐 *كلمة مرور المصادقة الثنائية (2FA):*\n`{_twofa_pw}`"
-                if _twofa_pw else ""
-            )
+            """يرسل كود الدخول فقط — رمز 2FA يُطلب بزر منفصل."""
             await q.answer("✅ تم إرسال الكود أدناه", show_alert=False)
             await context.bot.send_message(
                 chat_id=user.id,
                 text=(
-                    f"🔑 *رمز التحقق الخاص بك*\n\n"
+                    f"🔑 *كود الدخول*\n\n"
                     f"`{code_val}`\n\n"
-                    f"📱 للرقم: `{number_for_code.lstrip('+')}`"
-                    f"{twofa_line}\n\n"
-                    f"⚠️ لا تشاركه مع أحد."
+                    f"📱 للرقم: `{number_for_code.lstrip('+')}`\n\n"
+                    f"⚠️ لا تشاركه مع أحد — صالح لدقائق فقط."
                 ),
                 parse_mode=ParseMode.MARKDOWN,
             )
 
-        # 1️⃣ تحقق أولاً من الذاكرة المؤقتة
+        # 1️⃣ الذاكرة المؤقتة — يُقبل الكود فقط إن وصل بعد وقت الشراء
         entry = _buyer_received_codes.get(user.id)
         if entry and entry.get("phone") == number_for_code:
-            await _send_code_msg(entry["code"])
-            return
+            code_time = entry.get("time", 0)
+            purchase_ts = _purchase_time.timestamp() if _purchase_time else 0
+            if code_time >= purchase_ts:
+                await _send_code_msg(entry["code"])
+                return
 
-        # 2️⃣ fallback: جلب الكود مباشرة من 777000 عبر جلسة الرقم
-        # نتحقق من الملكية عبر prize_exchanges (assigned_to قد يتغير بعد الشراء)
+        # 2️⃣ جلب الكود من 777000 مباشرةً — يُشترط أن يكون بعد وقت الشراء
         fetched_code = None
         try:
-            with db_conn() as _fc:
-                _frow = _fc.execute(
-                    """SELECT ns.session_string, ns.assigned_to, ns.assigned_at
-                       FROM number_stock ns
-                       WHERE ns.phone_number=%s
-                         AND (
-                             ns.assigned_to=%s
-                             OR EXISTS (
-                                 SELECT 1 FROM prize_exchanges pe
-                                 WHERE pe.prize_value=%s
-                                   AND pe.user_id=%s
-                                   AND pe.status='completed'
-                             )
-                         )""",
-                    (number_for_code, user.id, number_for_code, user.id)
-                ).fetchone()
-            if (
-                _frow
-                and _frow["session_string"]
-                and TELEGRAM_API_ID
-                and TELEGRAM_API_HASH
-            ):
+            if TELEGRAM_API_ID and TELEGRAM_API_HASH:
                 _fcli = TelegramClient(
-                    StringSession(_frow["session_string"]),
+                    StringSession(_session_str_rc),
                     int(TELEGRAM_API_ID), TELEGRAM_API_HASH
                 )
-                await _fcli.connect()
+                await asyncio.wait_for(_fcli.connect(), timeout=15)
                 try:
-                    if await _fcli.is_user_authorized():
-                        # نجلب آخر كود بدون قيد زمني صارم — المستخدم يضغط الزر بعد طلب الدخول مباشرة
-                        raw_msg = await fetch_last_login_code(_fcli, after_date=None)
+                    if await asyncio.wait_for(_fcli.is_user_authorized(), timeout=8):
+                        # after_date = وقت الشراء ← لا يُقبل أي كود قبله
+                        raw_msg = await fetch_last_login_code(_fcli, after_date=_purchase_time)
                         if raw_msg:
-                            _m = re.search(r'(\d{4,7})', raw_msg)
-                            if _m:
-                                fetched_code = _m.group(1)
+                            _m5 = re.search(r'\b(\d{5})\b', raw_msg)   # 5 أرقام بالضبط
+                            if not _m5:
+                                _m5 = re.search(r'(\d{4,7})', raw_msg)  # fallback
+                            if _m5:
+                                fetched_code = _m5.group(1)
                 finally:
                     try:
                         await _fcli.disconnect()
                     except Exception:
                         pass
         except Exception as _fe:
-            logger.warning(f"⚠️ تعذّر جلب كود الدخول مباشرةً للرقم {number_for_code}: {_fe}")
+            logger.warning(f"⚠️ تعذّر جلب كود الدخول للرقم {number_for_code}: {_fe}")
 
         if fetched_code:
             _buyer_received_codes[user.id] = {
@@ -10808,7 +10777,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _send_code_msg(fetched_code)
         else:
             await q.answer(
-                "⏳ لم يصل أي كود بعد.\n\nافتح تيليجرام على جهازك، أدخل الرقم، ثم اضغط هنا مجدداً.",
+                "⏳ لم يصل أي كود بعد.\n\n"
+                "افتح تيليجرام على جهازك، أدخل الرقم واطلب كود الدخول، ثم اضغط الزر مجدداً.",
                 show_alert=True
             )
         return
