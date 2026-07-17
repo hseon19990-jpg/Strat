@@ -1312,22 +1312,38 @@ def assign_next_number(user_id: int):
         return {"phone_number": row["phone_number"], "session_string": row["session_string"]}
 
 
+def _auto_delete_number(stock_id: int, phone: str, reason: str):
+    """يحذف رقماً من المخزون نهائياً مع تسجيل السبب في اللوج."""
+    try:
+        with db_conn() as c:
+            c.execute(
+                "UPDATE number_stock SET deleted_at=NOW(), assigned_to=NULL, assigned_at=NULL "
+                "WHERE id=%s",
+                (stock_id,)
+            )
+        logger.warning(f"🗑 حُذف الرقم {phone} تلقائياً — السبب: {reason}")
+    except Exception as _del_err:
+        logger.error(f"❌ فشل حذف الرقم {phone}: {_del_err}")
+
+
 async def assign_verified_number(user_id: int, bot=None) -> dict | None:
     """
-    يختار رقماً عشوائياً من المخزون ويتحقق منه قبل تسليمه:
-      1. غير مجمّد (frozen_at IS NULL).
-      2. كلمة مرور 2FA معروفة ومحفوظة في DB.
-      3. جهاز واحد فقط (الجلسة الحالية هي جلسة البوت وحدها).
-    إذا فشل رقم ما في أي شرط يُتخطّى إلى التالي (حتى 5 محاولات).
-    يُرجع dict {phone_number, session_string, twofa_password} أو None.
+    يختار رقماً من المخزون ويُجري ثلاثة فحوصات إلزامية قبل التسليم:
+      ① ever_sold IS NOT TRUE       — لم يُباع سابقاً (في SQL)
+      ② is_user_authorized() = True — البوت لا يزال يستطيع استقبال الأكواد
+      ③ twofa_password مضبوط       — البوت يعرف رمز التحقق الثنائي
+
+    أي فشل → يحذف الرقم نهائياً من المخزون ويجرب التالي.
+    أرقام بلا session (يدوية) → تُحذف فوراً ولا تُعرض للبيع.
+    يُرجع dict {phone_number, session_string, twofa_password} أو None إن فرغ المخزون.
     """
     if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
-        # إذا لم تُضبط API_ID/HASH نعود للطريقة القديمة (بدون تحقق)
-        result = assign_next_number(user_id)
-        return result
+        # بدون API_ID/HASH لا يمكن التحقق — نرفض التسليم مباشرة
+        logger.error("❌ TELEGRAM_API_ID/HASH غير مضبوط — تعذّر التحقق من الأرقام قبل البيع.")
+        return None
 
-    MAX_TRIES = 5
-    skipped_ids = []
+    MAX_TRIES = 10
+    skipped_ids: list[int] = []
 
     # الأرقام المبيوعة سابقاً لهذا المستخدم — لمنع إعطائه نفس الرقم مرتين
     with db_conn() as _dup_c:
@@ -1341,10 +1357,10 @@ async def assign_verified_number(user_id: int, bot=None) -> dict | None:
     _exclude_phones = [r["prize_value"] for r in (_already or [])]
 
     for _attempt in range(MAX_TRIES):
-        # اسحب رقماً بشكل ذري (متجاهلاً ما جرى تخطيه)
+        # ── سحب رقم مرشح بشكل ذري ──
         with db_conn() as c:
-            excl_parts = []
-            excl_vals  = []
+            excl_parts: list[str] = []
+            excl_vals:  list      = []
             if skipped_ids:
                 excl_parts.append(f"AND id NOT IN ({','.join(str(i) for i in skipped_ids)})")
             if _exclude_phones:
@@ -1362,62 +1378,70 @@ async def assign_verified_number(user_id: int, bot=None) -> dict | None:
             ).fetchone()
 
         if not row:
-            break  # لا يوجد مزيد من الأرقام
+            break  # المخزون فارغ تماماً
 
         stock_id = row["id"]
         phone    = row["phone_number"]
         sess     = row["session_string"]
         saved_pw = row["twofa_password"] or ""
 
-        # ─── تحقق: جهاز واحد فقط (جلسة البوت وحدها)؟ ───
-        if sess:
-            try:
-                cli_check = TelegramClient(StringSession(sess), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
-                await cli_check.connect()
-                authorized = await cli_check.is_user_authorized()
-                if not authorized:
-                    # المالك سجّل خروج يدوياً من هذا الرقم — لا نجمّده، بل نعرضه كرقم يدوي
-                    with db_conn() as c:
-                        c.execute(
-                            "UPDATE number_stock SET sessions_reset=TRUE, last_authorized=FALSE WHERE id=%s",
-                            (stock_id,)
-                        )
-                    logger.info(f"📴 الرقم {phone} جلسته غير نشطة (خرج المالك) — يُعرض كرقم يدوي")
-                    await cli_check.disconnect()
-                    # نُرجعه بدون session_string حتى لا يُسلَّم للمشتري جلسة منتهية
-                    return {"phone_number": phone, "session_string": None, "twofa_password": saved_pw}
+        # ─── فحص ①: هل للرقم جلسة أصلاً؟ (رقم يدوي = يُحذف) ───
+        if not sess:
+            _auto_delete_number(stock_id, phone, "رقم يدوي بلا جلسة — لا يُباع")
+            continue
 
-                is_frz, _, _ = await check_account_frozen(cli_check, stock_id)
-                if is_frz:
-                    logger.warning(f"⚠️ الرقم {phone} مجمّد — يُتخطى")
-                    with db_conn() as c:
-                        c.execute("UPDATE number_stock SET assigned_to=NULL, assigned_at=NULL WHERE id=%s", (stock_id,))
-                    skipped_ids.append(stock_id)
-                    await cli_check.disconnect()
-                    continue
+        # ─── فحص ③: هل كلمة مرور 2FA مخزّنة؟ ───
+        if not saved_pw.strip():
+            _auto_delete_number(stock_id, phone, "لا يوجد رمز 2FA — لا يمكن تسليمه للمشتري")
+            continue
 
-                devices = await get_device_count(cli_check)
-                if devices > 1:
-                    logger.warning(f"⚠️ الرقم {phone} لديه {devices} جهاز — جاري الطرد...")
-                    try:
-                        await cli_check(ResetAuthorizationsRequest())
-                        with db_conn() as c:
-                            c.execute("UPDATE number_stock SET sessions_reset=TRUE WHERE id=%s", (stock_id,))
-                        logger.info(f"✅ تم طرد الجلسات الأخرى للرقم {phone} قبل التسليم.")
-                    except Exception as kick_err:
-                        logger.warning(f"⚠️ تعذّر طرد جلسات {phone}: {kick_err}")
+        # ─── فحص ②: هل البوت لا يزال مصرّحاً (يستطيع استقبال الأكواد)؟ ───
+        cli_check = None
+        try:
+            cli_check = TelegramClient(StringSession(sess), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+            await asyncio.wait_for(cli_check.connect(), timeout=15)
+            authorized = await asyncio.wait_for(cli_check.is_user_authorized(), timeout=10)
 
+            if not authorized:
+                _auto_delete_number(stock_id, phone, "جلسة منتهية — البوت لا يستطيع استقبال الأكواد")
                 await cli_check.disconnect()
-            except Exception as chk_err:
-                logger.warning(f"⚠️ خطأ في التحقق من الرقم {phone}: {chk_err} — يُتخطى")
-                with db_conn() as c:
-                    c.execute("UPDATE number_stock SET assigned_to=NULL, assigned_at=NULL WHERE id=%s", (stock_id,))
-                skipped_ids.append(stock_id)
                 continue
 
-        # ─── الرقم اجتاز كل الفحوصات ✅ ───
+            # ─── فحص إضافي: هل الحساب مجمّد؟ ───
+            is_frz, _, _ = await check_account_frozen(cli_check, stock_id)
+            if is_frz:
+                _auto_delete_number(stock_id, phone, "حساب مجمّد من تيليغرام")
+                await cli_check.disconnect()
+                continue
+
+            # ─── تنظيف: طرد أي أجهزة إضافية قبل التسليم ───
+            devices = await get_device_count(cli_check)
+            if devices > 1:
+                try:
+                    await cli_check(ResetAuthorizationsRequest())
+                    with db_conn() as c:
+                        c.execute("UPDATE number_stock SET sessions_reset=TRUE WHERE id=%s", (stock_id,))
+                    logger.info(f"✅ طُردت {devices - 1} جلسة إضافية للرقم {phone} قبل التسليم.")
+                except Exception as kick_err:
+                    logger.warning(f"⚠️ تعذّر طرد جلسات {phone}: {kick_err}")
+
+            await cli_check.disconnect()
+
+        except Exception as chk_err:
+            logger.warning(f"⚠️ فشل الاتصال بجلسة {phone}: {chk_err} — يُحذف")
+            _auto_delete_number(stock_id, phone, f"خطأ في الاتصال: {type(chk_err).__name__}")
+            try:
+                if cli_check:
+                    await cli_check.disconnect()
+            except Exception:
+                pass
+            continue
+
+        # ─── الرقم اجتاز الفحوصات الثلاثة ✅ ───
+        logger.info(f"✅ الرقم {phone} اجتاز جميع الفحوصات — جاهز للتسليم.")
         return {"phone_number": phone, "session_string": sess, "twofa_password": saved_pw}
 
+    logger.info(f"📭 assign_verified_number: لا يوجد رقم صالح بعد {MAX_TRIES} محاولة.")
     return None
 
 
@@ -11337,6 +11361,18 @@ def main():
             )
         except Exception as e:
             logger.warning(f"⚠️ compensate_duplicate_sales (startup): {e}")
+        # حذف الأرقام اليدوية (بلا جلسة) من المخزون عند كل إقلاع
+        try:
+            with db_conn() as _mc:
+                _mc.execute(
+                    "UPDATE number_stock SET deleted_at=NOW() "
+                    "WHERE session_string IS NULL AND deleted_at IS NULL"
+                )
+                _deleted_manual = _mc.rowcount
+            if _deleted_manual:
+                logger.warning(f"🗑 حُذفت {_deleted_manual} أرقام يدوية (بلا جلسة) عند الإقلاع.")
+        except Exception as e:
+            logger.warning(f"⚠️ تنظيف الأرقام اليدوية (startup): {e}")
 
     # ── معالج الأخطاء العام ──
     async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
