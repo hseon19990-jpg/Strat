@@ -453,6 +453,9 @@ def init_db():
               "ALTER TABLE mandatory_channels ADD COLUMN IF NOT EXISTS queued INTEGER DEFAULT 0",
               "ALTER TABLE prize_exchanges ADD COLUMN IF NOT EXISTS order_code TEXT",
               "ALTER TABLE prize_exchanges ADD COLUMN IF NOT EXISTS owner_seen BOOLEAN DEFAULT FALSE",
+              "ALTER TABLE prize_exchanges ADD COLUMN IF NOT EXISTS compensated_at TIMESTAMPTZ",
+              "ALTER TABLE prize_exchanges ADD COLUMN IF NOT EXISTS compensated_pts INTEGER DEFAULT 0",
+              "ALTER TABLE prize_exchanges ADD COLUMN IF NOT EXISTS compensated_reason TEXT",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS ever_sold BOOLEAN DEFAULT FALSE",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS session_string TEXT",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS sessions_reset BOOLEAN DEFAULT FALSE",
@@ -2761,14 +2764,33 @@ async def compensate_duplicate_sales_job(context: ContextTypes.DEFAULT_TYPE):
             cost  = int(costs[i] or 0)
             code  = codes[i] or str(pe_id)
 
+            # ─── حماية من التعويض المزدوج — تحقق أنه لم يُعوَّض مسبقاً ───
             try:
-                with db_conn() as c:
-                    c.execute(
-                        "UPDATE prize_exchanges SET status='duplicate_compensated' WHERE id=%s",
-                        (pe_id,)
+                with db_conn() as _chk:
+                    _already = _chk.execute(
+                        "SELECT compensated_at FROM prize_exchanges WHERE id=%s", (pe_id,)
+                    ).fetchone()
+                if _already and _already["compensated_at"]:
+                    logger.info(f"⏭ compensate_duplicate_sales: pe_id={pe_id} عُوِّض مسبقاً، تخطّي.")
+                    continue
+            except Exception:
+                pass
+
+            # تسجيل التعويض ذرياً قبل منح النقاط
+            try:
+                with db_conn() as _rec:
+                    _rec.execute(
+                        "UPDATE prize_exchanges SET status='duplicate_compensated', "
+                        "compensated_at=NOW(), compensated_pts=%s, compensated_reason='auto_duplicate' "
+                        "WHERE id=%s AND compensated_at IS NULL",
+                        (cost, pe_id)
                     )
+                    _updated = _rec.rowcount
+                if _updated == 0:
+                    logger.info(f"⏭ compensate_duplicate_sales: pe_id={pe_id} سُبق بالتعويض، تخطّي.")
+                    continue
             except Exception as e:
-                logger.warning(f"⚠️ compensate_duplicate_sales: فشل تحديث سجل {pe_id}: {e}")
+                logger.warning(f"⚠️ compensate_duplicate_sales: فشل تسجيل التعويض pe_id={pe_id}: {e}")
                 continue
 
             # إعادة النقاط إن كانت تُخصم
@@ -8209,9 +8231,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             for row in manual_rows:
                 phone = row["phone_number"]
-                # ابحث عن آخر عملية شراء مكتملة لهذا الرقم
+                # ابحث عن آخر عملية شراء مكتملة لهذا الرقم غير معوَّضة مسبقاً
                 pe = c.execute(
-                    "SELECT user_id, points_cost FROM prize_exchanges "
+                    "SELECT id, user_id, points_cost, compensated_at FROM prize_exchanges "
                     "WHERE prize_value=%s AND prize_type IN ('telegram_number','telegram_number_code') "
                     "AND status='completed' ORDER BY id DESC LIMIT 1",
                     (phone,)
@@ -8225,8 +8247,22 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 deleted_count += 1
 
                 if pe and pe["points_cost"]:
+                    # تحقق أنه لم يُعوَّض مسبقاً
+                    if pe["compensated_at"]:
+                        logger.info(f"⏭ delete_manual_numbers: {phone} عُوِّض مسبقاً، تخطّي.")
+                        continue
                     pts = pe["points_cost"]
                     uid = pe["user_id"]
+                    pe_id_m = pe["id"]
+                    # تسجيل ذري — إذا سُبقنا لا نُضيف نقاطاً
+                    rows_m = c.execute(
+                        "UPDATE prize_exchanges SET "
+                        "compensated_at=NOW(), compensated_pts=%s, compensated_reason='manual_number_deleted' "
+                        "WHERE id=%s AND compensated_at IS NULL",
+                        (pts, pe_id_m)
+                    ).rowcount
+                    if rows_m == 0:
+                        continue
                     add_points(uid, pts)
                     compensated += 1
                     buyers_notified.append((uid, phone, pts))
@@ -10661,109 +10697,117 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     #  العمليات الفاشلة — من ظُلم ولم يتسلم حقه
     # ══════════════════════════════════════════════════════════
     if data == "os:failed_deliveries" and is_own:
-        with db_conn() as c:
-            # طلبات لم تكتمل بعد 2 ساعة (pending قديمة)
-            old_pending = c.execute(
-                "SELECT pe.id, pe.user_id, pe.prize_type, pe.prize_value, pe.points_cost, "
-                "       pe.order_code, pe.created_at, u.full_name "
-                "FROM prize_exchanges pe "
-                "LEFT JOIN users u ON u.user_id = pe.user_id "
-                "WHERE pe.status = 'pending' "
-                "  AND pe.prize_type IN ('telegram_number','telegram_number_code') "
-                "  AND pe.created_at < NOW() - INTERVAL '2 hours' "
-                "ORDER BY pe.created_at DESC LIMIT 30"
-            ).fetchall()
-
-            # حسابات بيعت مكررة وعُوّض أصحابها
-            dup_comp = c.execute(
-                "SELECT pe.id, pe.user_id, pe.prize_value, pe.points_cost, "
-                "       pe.order_code, pe.created_at, u.full_name "
-                "FROM prize_exchanges pe "
-                "LEFT JOIN users u ON u.user_id = pe.user_id "
-                "WHERE pe.status = 'duplicate_compensated' "
-                "ORDER BY pe.created_at DESC LIMIT 20"
-            ).fetchall()
-
-            # حسابات مضت على تعيينها أكثر من 24 ساعة ولم يُسجّل خروج المشتري
-            stale_assigned = c.execute(
-                "SELECT ns.id, ns.phone_number, ns.assigned_to, ns.assigned_at, "
-                "       u.full_name AS buyer_name "
-                "FROM number_stock ns "
-                "LEFT JOIN users u ON u.user_id = ns.assigned_to "
-                "WHERE ns.assigned_to IS NOT NULL AND ns.deleted_at IS NULL "
-                "  AND ns.assigned_at < NOW() - INTERVAL '24 hours' "
-                "ORDER BY ns.assigned_at ASC LIMIT 20"
-            ).fetchall()
-
         def _fmt_dt(v):
             if v is None: return "—"
             if hasattr(v, "strftime"): return v.strftime("%Y-%m-%d %H:%M")
             return str(v)[:16]
 
-        lines = ["⚠️ *العمليات الفاشلة / المشبوهة*\n"]
+        with db_conn() as c:
+            # طلبات معلقة على أرقام تيلغرام تجاوزت ساعتين — المظلومون الحقيقيون
+            old_pending = c.execute(
+                "SELECT pe.id, pe.user_id, pe.prize_type, pe.prize_value, pe.points_cost, "
+                "       pe.order_code, pe.created_at, pe.compensated_at, pe.compensated_pts, "
+                "       pe.compensated_reason, u.full_name "
+                "FROM prize_exchanges pe "
+                "LEFT JOIN users u ON u.user_id = pe.user_id "
+                "WHERE pe.status = 'pending' "
+                "  AND pe.prize_type IN ('telegram_number','telegram_number_code') "
+                "  AND pe.points_cost > 0 "
+                "  AND pe.created_at < NOW() - INTERVAL '2 hours' "
+                "ORDER BY pe.created_at ASC LIMIT 30"
+            ).fetchall()
 
-        if old_pending:
-            lines.append(f"🔴 *طلبات لم تكتمل بعد +2 ساعة ({len(old_pending)}):*")
-            for r in old_pending:
-                uid = r["user_id"]
+            # عمليات عُوِّضت مسبقاً (للمعلومية فقط)
+            already_compensated = c.execute(
+                "SELECT pe.id, pe.user_id, pe.prize_value, pe.points_cost, "
+                "       pe.compensated_at, pe.compensated_pts, pe.compensated_reason, u.full_name "
+                "FROM prize_exchanges pe "
+                "LEFT JOIN users u ON u.user_id = pe.user_id "
+                "WHERE pe.compensated_at IS NOT NULL "
+                "  AND pe.prize_type IN ('telegram_number','telegram_number_code') "
+                "ORDER BY pe.compensated_at DESC LIMIT 10"
+            ).fetchall()
+
+        # فصل المظلومين الحقيقيين (لم يُعوَّضوا) عمّن عُوِّضوا مسبقاً
+        needs_comp  = [r for r in old_pending if not r["compensated_at"]]
+        done_comp   = [r for r in old_pending if r["compensated_at"]]
+
+        lines = ["⚠️ <b>تعويض المظلومين</b>\n"]
+
+        # ── المظلومون الذين لم يُعوَّضوا بعد ──
+        if needs_comp:
+            lines.append(f"🔴 <b>ينتظرون التعويض ({len(needs_comp)}):</b>")
+            for r in needs_comp:
+                uid  = r["user_id"]
                 name = r["full_name"] or f"ID:{uid}"
+                pts  = r["points_cost"] or 0
                 lines.append(
-                    f"📌 `{r['order_code'] or r['id']}`\n"
+                    f"📌 <code>{r['order_code'] or r['id']}</code>\n"
                     f"   👤 <a href='tg://user?id={uid}'>{name}</a>\n"
-                    f"   📱 الحساب: `{r['prize_value']}`\n"
-                    f"   💰 النقاط: {r['points_cost'] or 0:,}\n"
+                    f"   💰 يستحق: {pts:,} نقطة\n"
                     f"   📅 {_fmt_dt(r['created_at'])}"
                 )
         else:
-            lines.append("🔴 *طلبات معلقة قديمة:* لا يوجد ✅")
+            lines.append("🔴 <b>ينتظرون التعويض:</b> لا يوجد ✅")
 
         lines.append("")
 
-        if dup_comp:
-            lines.append(f"🟡 *حسابات بيعت مكررة — تم تعويض أصحابها ({len(dup_comp)}):*")
-            for r in dup_comp:
-                uid = r["user_id"]
+        # ── عُوِّضوا مسبقاً من القائمة الحالية ──
+        if done_comp:
+            lines.append(f"✅ <b>عُوِّضوا مسبقاً من هذه القائمة ({len(done_comp)}):</b>")
+            for r in done_comp:
+                uid  = r["user_id"]
                 name = r["full_name"] or f"ID:{uid}"
+                comp_ts = _fmt_dt(r["compensated_at"])
                 lines.append(
-                    f"📱 `{r['prize_value']}`\n"
-                    f"   👤 <a href='tg://user?id={uid}'>{name}</a>\n"
-                    f"   💰 عُوِّض بـ {r['points_cost'] or 0:,} نقطة\n"
-                    f"   📅 {_fmt_dt(r['created_at'])}"
+                    f"   👤 <a href='tg://user?id={uid}'>{name}</a> — "
+                    f"{r['compensated_pts'] or 0:,} نقطة — {comp_ts}"
                 )
-        else:
-            lines.append("🟡 *بيع مكرر مع تعويض:* لا يوجد ✅")
 
         lines.append("")
 
-        if stale_assigned:
-            lines.append(f"🔵 *حسابات مُعيَّنة +24 ساعة بدون خروج البوت ({len(stale_assigned)}):*")
-            for r in stale_assigned:
-                buyer_name = r["buyer_name"] or f"ID:{r['assigned_to']}"
+        # ── سجل آخر 10 تعويضات ──
+        if already_compensated:
+            lines.append(f"📋 <b>آخر التعويضات المنفّذة ({len(already_compensated)}):</b>")
+            for r in already_compensated:
+                uid  = r["user_id"]
+                name = r["full_name"] or f"ID:{uid}"
+                comp_ts = _fmt_dt(r["compensated_at"])
+                reason_map = {
+                    "owner_manual":           "يدوي بالمالك",
+                    "auto_duplicate":         "تلقائي (بيع مكرر)",
+                    "manual_number_deleted":  "حذف رقم يدوي",
+                    "auto_bulk":              "تلقائي جماعي",
+                }
+                reason_label = reason_map.get(r["compensated_reason"] or "", r["compensated_reason"] or "—")
                 lines.append(
-                    f"📱 `{r['phone_number']}`\n"
-                    f"   👤 {buyer_name} (`{r['assigned_to']}`)\n"
-                    f"   📅 منذ: {_fmt_dt(r['assigned_at'])}"
+                    f"   ✅ <a href='tg://user?id={uid}'>{name}</a> — "
+                    f"{r['compensated_pts'] or 0:,} نقطة — {reason_label} — {comp_ts}"
                 )
-        else:
-            lines.append("🔵 *حسابات طويلة بدون خروج:* لا يوجد ✅")
 
         text = "\n".join(lines)
         if len(text) > 4000:
-            text = text[:3950] + "\n\n_(قُطع لطول القائمة)_"
+            text = text[:3950] + "\n\n<i>(قُطع لطول القائمة)</i>"
 
-        # أزرار الإجراءات لكل طلب pending قديم
         action_rows = []
-        for r in (old_pending or [])[:5]:
-            uid = r["user_id"]
+        # زر التعويض التلقائي الجماعي — يظهر فقط إذا كان هناك من يحتاج تعويضاً
+        if needs_comp:
+            total_pts = sum(r["points_cost"] or 0 for r in needs_comp)
+            action_rows.append([InlineKeyboardButton(
+                f"🤖 تعويض {len(needs_comp)} مظلوم تلقائياً ({total_pts:,} نقطة)",
+                callback_data="admin:auto_compensate_all"
+            )])
+        # أزرار فردية لأول 5 حالات فقط
+        for r in needs_comp[:5]:
+            uid  = r["user_id"]
             pe_id = r["id"]
-            pts = r["points_cost"] or 0
-            action_rows.append([
-                InlineKeyboardButton(
-                    f"↩️ إعادة {pts:,} نقطة لـ{uid}",
-                    callback_data=f"admin:refund_pe:{pe_id}"
-                )
-            ])
-        action_rows.append([InlineKeyboardButton("🛒 الحسابات المبيوعة", callback_data="os:sold_accounts")])
+            pts  = r["points_cost"] or 0
+            name = (r["full_name"] or f"ID:{uid}")[:20]
+            action_rows.append([InlineKeyboardButton(
+                f"↩️ {pts:,} نقطة → {name}",
+                callback_data=f"admin:refund_pe:{pe_id}"
+            )])
+        action_rows.append([InlineKeyboardButton("🔄 تحديث", callback_data="os:failed_deliveries")])
         action_rows.append([InlineKeyboardButton("🔙 رجوع للمخزون", callback_data="os:manage_numbers")])
 
         await q.edit_message_text(
@@ -10773,23 +10817,117 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # ── تعويض جماعي تلقائي لجميع المظلومين ──
+    if data == "admin:auto_compensate_all" and is_own:
+        with db_conn() as c:
+            pending_cases = c.execute(
+                "SELECT id, user_id, points_cost, order_code "
+                "FROM prize_exchanges "
+                "WHERE status = 'pending' "
+                "  AND prize_type IN ('telegram_number','telegram_number_code') "
+                "  AND points_cost > 0 "
+                "  AND compensated_at IS NULL "
+                "  AND created_at < NOW() - INTERVAL '2 hours'"
+            ).fetchall()
+
+        if not pending_cases:
+            await q.answer("✅ لا يوجد أحد يحتاج تعويضاً الآن.", show_alert=True)
+            return
+
+        compensated = 0
+        skipped     = 0
+        total_pts   = 0
+
+        for pe in pending_cases:
+            pe_id = pe["id"]
+            uid   = pe["user_id"]
+            pts   = int(pe["points_cost"] or 0)
+            if pts <= 0:
+                skipped += 1
+                continue
+            # تسجيل ذري — إذا سُبقنا نتخطى
+            with db_conn() as c:
+                c.execute(
+                    "UPDATE prize_exchanges SET status='refunded_by_owner', "
+                    "compensated_at=NOW(), compensated_pts=%s, compensated_reason='auto_bulk' "
+                    "WHERE id=%s AND compensated_at IS NULL AND status='pending'",
+                    (pts, pe_id)
+                )
+                updated = c.rowcount
+            if updated == 0:
+                skipped += 1
+                continue
+            add_points(uid, pts)
+            compensated += 1
+            total_pts   += pts
+            # إشعار المستخدم
+            try:
+                await context.bot.send_message(
+                    uid,
+                    f"✅ *تعويض تلقائي*\n\n"
+                    f"اكتشف النظام أن عمليتك `{pe['order_code'] or pe_id}` لم تكتمل.\n"
+                    f"💰 تم إعادة *{pts:,} نقطة* لرصيدك تلقائياً.\n\n"
+                    f"نعتذر عن الإزعاج 🙏",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            except Exception:
+                pass
+
+        await q.edit_message_text(
+            f"✅ <b>تم تعويض المظلومين</b>\n\n"
+            f"👤 عدد المعوَّضين: <b>{compensated}</b>\n"
+            f"💰 إجمالي النقاط الموزَّعة: <b>{total_pts:,}</b>\n"
+            f"⏭ متخطَّى (عُوِّضوا مسبقاً): {skipped}",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 مراجعة القائمة", callback_data="os:failed_deliveries")],
+                [InlineKeyboardButton("🔙 رجوع للمخزون", callback_data="os:manage_numbers")],
+            ])
+        )
+        return
+
     # ── معالجة إعادة النقاط لطلب فاشل ──
     if data.startswith("admin:refund_pe:") and is_own:
         pe_id = int(data.split(":")[-1])
         with db_conn() as c:
             pe = c.execute(
-                "SELECT id, user_id, points_cost, status, order_code FROM prize_exchanges WHERE id=%s", (pe_id,)
+                "SELECT id, user_id, points_cost, status, order_code, "
+                "       compensated_at, compensated_pts, compensated_reason "
+                "FROM prize_exchanges WHERE id=%s", (pe_id,)
             ).fetchone()
         if not pe:
             await q.answer("⚠️ العملية غير موجودة.", show_alert=True)
+            return
+        # ─── حماية من التعويض المزدوج ───
+        if pe["compensated_at"]:
+            _comp_ts = pe["compensated_at"]
+            _comp_ts_str = _comp_ts.strftime("%Y-%m-%d %H:%M") if hasattr(_comp_ts, "strftime") else str(_comp_ts)[:16]
+            await q.answer(
+                f"✅ هذا العضو عُوِّض مسبقاً بـ {pe['compensated_pts'] or 0:,} نقطة\n"
+                f"بتاريخ {_comp_ts_str}\n"
+                f"السبب: {pe['compensated_reason'] or '—'}\n\n"
+                f"لا يحتاج تعويضاً إضافياً.",
+                show_alert=True
+            )
             return
         if pe["status"] not in ("pending", "failed"):
             await q.answer(f"⚠️ حالة العملية: {pe['status']} — لا يمكن استرداد نقاطها.", show_alert=True)
             return
         pts = int(pe["points_cost"] or 0)
         uid = pe["user_id"]
+        # تسجيل التعويض وتحديث الحالة في نفس الوقت
         with db_conn() as c:
-            c.execute("UPDATE prize_exchanges SET status='refunded_by_owner' WHERE id=%s", (pe_id,))
+            c.execute(
+                "UPDATE prize_exchanges SET status='refunded_by_owner', "
+                "compensated_at=NOW(), compensated_pts=%s, compensated_reason='owner_manual' "
+                "WHERE id=%s AND compensated_at IS NULL",
+                (pts, pe_id)
+            )
+            rows_updated = c.rowcount
+        if rows_updated == 0:
+            # سباق: تعويض آخر سبقنا
+            await q.answer("⚠️ تم تعويض هذه العملية للتو من مكان آخر. لا داعي للتكرار.", show_alert=True)
+            return
         if pts > 0:
             add_points(uid, pts)
         try:
