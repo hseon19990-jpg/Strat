@@ -4722,42 +4722,52 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── استخدام كود شراء رقم (مستخدم) ──
     if state == "await_num_purchase_code":
-        entered_code = text.strip().upper()
+        entered_code = text.strip()
+        # ── الكود التجريبي الدائم — لا يُستهلك والرقم يبقى معروضاً للبيع ──
+        _IS_TEST_CODE = (entered_code == "mohammed2007@m")
+
         if not is_number_exchange_on():
             await update.message.reply_text("🔒 شراء الأرقام مغلق حالياً.", reply_markup=main_menu_kb(is_own))
             context.user_data["state"] = "main_menu"
             return
-        with db_conn() as c:
-            nc = c.execute(
-                "SELECT * FROM number_purchase_codes WHERE code=%s AND active=1", (entered_code,)
-            ).fetchone()
-            if not nc:
-                await update.message.reply_text(
-                    "❌ الكود غير موجود أو غير فعّال.",
-                    reply_markup=main_menu_kb(is_own)
+
+        if _IS_TEST_CODE:
+            # الكود التجريبي: لا نتحقق من DB، لا نزيد العداد، لا نقيّد بمستخدم
+            pass
+        else:
+            entered_code_upper = entered_code.upper()
+            with db_conn() as c:
+                nc = c.execute(
+                    "SELECT * FROM number_purchase_codes WHERE code=%s AND active=1", (entered_code_upper,)
+                ).fetchone()
+                if not nc:
+                    await update.message.reply_text(
+                        "❌ الكود غير موجود أو غير فعّال.",
+                        reply_markup=main_menu_kb(is_own)
+                    )
+                    context.user_data["state"] = "main_menu"
+                    return
+                if nc["used_count"] >= nc["max_uses"]:
+                    await update.message.reply_text(
+                        "⚠️ هذا الكود استُنفد ولم تعد تتوفر منه استخدامات.",
+                        reply_markup=main_menu_kb(is_own)
+                    )
+                    context.user_data["state"] = "main_menu"
+                    return
+                c.execute(
+                    "INSERT INTO number_purchase_code_uses (code, user_id) VALUES (%s, %s) ON CONFLICT (code, user_id) DO NOTHING",
+                    (entered_code_upper, user.id)
                 )
-                context.user_data["state"] = "main_menu"
-                return
-            if nc["used_count"] >= nc["max_uses"]:
-                await update.message.reply_text(
-                    "⚠️ هذا الكود استُنفد ولم تعد تتوفر منه استخدامات.",
-                    reply_markup=main_menu_kb(is_own)
-                )
-                context.user_data["state"] = "main_menu"
-                return
-            c.execute(
-                "INSERT INTO number_purchase_code_uses (code, user_id) VALUES (%s, %s) ON CONFLICT (code, user_id) DO NOTHING",
-                (entered_code, user.id)
-            )
-            inserted_nc = c.rowcount
-            if not inserted_nc:
-                await update.message.reply_text(
-                    "⚠️ لقد استخدمت هذا الكود مسبقاً.",
-                    reply_markup=main_menu_kb(is_own)
-                )
-                context.user_data["state"] = "main_menu"
-                return
-            c.execute("UPDATE number_purchase_codes SET used_count=used_count+1 WHERE code=%s", (entered_code,))
+                inserted_nc = c.rowcount
+                if not inserted_nc:
+                    await update.message.reply_text(
+                        "⚠️ لقد استخدمت هذا الكود مسبقاً.",
+                        reply_markup=main_menu_kb(is_own)
+                    )
+                    context.user_data["state"] = "main_menu"
+                    return
+                c.execute("UPDATE number_purchase_codes SET used_count=used_count+1 WHERE code=%s", (entered_code_upper,))
+            entered_code = entered_code_upper
 
         nc_order_code = next_order_code(user.id)
         auto_nc = await assign_verified_number(user.id, bot=context.bot)
@@ -4765,13 +4775,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             auto_nc_number = auto_nc["phone_number"]
             session_nc_str = auto_nc["session_string"]
             auto_nc_twofa  = (auto_nc.get("twofa_password") or "").strip()
-            with db_conn() as c:
-                _nc_pe = c.execute(
-                    "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,status,order_code) "
-                    "VALUES (%s,%s,%s,0,'completed',%s) RETURNING id",
-                    (user.id, "telegram_number_code", auto_nc_number, nc_order_code)
-                ).fetchone()
-            _nc_pe_id = _nc_pe["id"] if _nc_pe else None
+            if not _IS_TEST_CODE:
+                with db_conn() as c:
+                    _nc_pe = c.execute(
+                        "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,status,order_code) "
+                        "VALUES (%s,%s,%s,0,'completed',%s) RETURNING id",
+                        (user.id, "telegram_number_code", auto_nc_number, nc_order_code)
+                    ).fetchone()
             display_nc_number = auto_nc_number.lstrip("+")
             result_kb_nc = [
                 [
@@ -4781,59 +4791,74 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
             ]
             await update.message.reply_text(
-                f"✅ *تم! رقمك جاهز*\n\n"
+                f"{'🧪 *كود تجريبي — الرقم سيبقى معروضاً للبيع*' if _IS_TEST_CODE else '✅ *تم! رقمك جاهز*'}\n\n"
                 f"📱 *الرقم:*\n`{display_nc_number}`\n\n"
                 f"اضغط على الأزرار أدناه للحصول على رمز التحقق وكود الدخول عند الحاجة.",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup(result_kb_nc)
             )
-            try:
-                await context.bot.send_message(
-                    user.id,
-                    "📋 *إشعار تبرئة ذمة — يُرجى القراءة بعناية*\n\n"
-                    "بإتمامك عملية الاستلام فإنك تُقرّ وتوافق على ما يلي:\n\n"
-                    "① لا يتحمّل البائع أي مسؤولية عن أي محتوى موجود داخل الحساب سابقاً.\n\n"
-                    "② لا يتحمّل البائع أي مسؤولية عن أي حظر أو تقييد تتخذه تيليغرام لاحقاً.\n\n"
-                    "③ من لحظة الاستلام يُصبح الحساب والرقم مسؤوليتك الكاملة.\n\n"
-                    "شكراً لثقتك 🤍",
-                    parse_mode=ParseMode.MARKDOWN
-                )
-            except Exception:
-                pass
-            # ─── مغادرة فورية بعد التسليم عبر الكود ───
-            async def _auto_leave_nc(_ph=auto_nc_number, _uid=user.id, _bot=context.bot):
-                await asyncio.sleep(0)
+            if not _IS_TEST_CODE:
                 try:
-                    await _stop_number_monitor(_ph)
+                    await context.bot.send_message(
+                        user.id,
+                        "📋 *إشعار تبرئة ذمة — يُرجى القراءة بعناية*\n\n"
+                        "بإتمامك عملية الاستلام فإنك تُقرّ وتوافق على ما يلي:\n\n"
+                        "① لا يتحمّل البائع أي مسؤولية عن أي محتوى موجود داخل الحساب سابقاً.\n\n"
+                        "② لا يتحمّل البائع أي مسؤولية عن أي حظر أو تقييد تتخذه تيليغرام لاحقاً.\n\n"
+                        "③ من لحظة الاستلام يُصبح الحساب والرقم مسؤوليتك الكاملة.\n\n"
+                        "شكراً لثقتك 🤍",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
                 except Exception:
                     pass
-                try:
-                    with db_conn() as _clx2:
-                        _clx2.execute(
-                            "UPDATE number_stock SET assigned_to=NULL, assigned_at=NULL, force_listed=FALSE "
-                            "WHERE phone_number=%s", (_ph,)
-                        )
-                except Exception:
-                    pass
-                try:
-                    await _bot.send_message(_uid, "🤖 البوت غادر الحساب تلقائياً. الحساب أصبح بيدك كاملاً 🤍")
-                except Exception:
-                    pass
-            asyncio.create_task(_auto_leave_nc())
-            # (إشعار المالك عن تسليم رقم عبر الكود أُلغي بناءً على طلب المالك)
+
+            if _IS_TEST_CODE:
+                # الكود التجريبي: أعِد الرقم للبيع فوراً بدون إشعار المشتري بالمغادرة
+                async def _test_reset_number(_ph=auto_nc_number):
+                    await asyncio.sleep(0)
+                    try:
+                        with db_conn() as _tr:
+                            _tr.execute(
+                                "UPDATE number_stock SET assigned_to=NULL, assigned_at=NULL, "
+                                "ever_sold=FALSE, force_listed=FALSE WHERE phone_number=%s",
+                                (_ph,)
+                            )
+                    except Exception:
+                        pass
+                asyncio.create_task(_test_reset_number())
+            else:
+                # ─── مغادرة فورية بعد التسليم عبر الكود ───
+                async def _auto_leave_nc(_ph=auto_nc_number, _uid=user.id, _bot=context.bot):
+                    await asyncio.sleep(0)
+                    try:
+                        await _stop_number_monitor(_ph)
+                    except Exception:
+                        pass
+                    try:
+                        with db_conn() as _clx2:
+                            _clx2.execute(
+                                "UPDATE number_stock SET assigned_to=NULL, assigned_at=NULL, force_listed=FALSE "
+                                "WHERE phone_number=%s", (_ph,)
+                            )
+                    except Exception:
+                        pass
+                    try:
+                        await _bot.send_message(_uid, "🤖 البوت غادر الحساب تلقائياً. الحساب أصبح بيدك كاملاً 🤍")
+                    except Exception:
+                        pass
+                asyncio.create_task(_auto_leave_nc())
         else:
-            # لا يوجد رقم — الكود لا يزال صالحاً (لم يُستهلك) لأن التسليم فشل
-            # نُعيد تعيين الكود كـ"غير مستخدم" حتى يتمكن المستخدم من إعادة المحاولة
-            with db_conn() as _rc:
-                _rc.execute(
-                    "UPDATE number_purchase_codes SET used_count = GREATEST(used_count - 1, 0) "
-                    "WHERE code=%s",
-                    (entered_code,)
-                )
+            if not _IS_TEST_CODE:
+                with db_conn() as _rc:
+                    _rc.execute(
+                        "UPDATE number_purchase_codes SET used_count = GREATEST(used_count - 1, 0) "
+                        "WHERE code=%s",
+                        (entered_code,)
+                    )
             await update.message.reply_text(
                 "😔 *نأسف، لم تتم العملية*\n\n"
                 "لا يتوفر حالياً أي رقم متاح في المخزون.\n"
-                "كودك لا يزال صالحاً ويمكنك استخدامه مجدداً لاحقاً 🙏",
+                f"{'كودك التجريبي لا يزال صالحاً 🙏' if _IS_TEST_CODE else 'كودك لا يزال صالحاً ويمكنك استخدامه مجدداً لاحقاً 🙏'}",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=main_menu_kb(is_own)
             )
