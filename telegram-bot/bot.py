@@ -1670,7 +1670,7 @@ async def run_referral_tasks_job(context: ContextTypes.DEFAULT_TYPE):
 
 # كلمة مرور التحقق بخطوتين (2FA) ثابتة وموحّدة لكل الحسابات، بناءً على طلب المالك
 # تُقرأ من متغير البيئة TWOFA_PASSWORD في Railway (لا تُكتب مباشرة في الكود لأسباب أمنية).
-OWNER_FIXED_2FA_PASSWORD = os.getenv("TWOFA_PASSWORD", "")
+OWNER_FIXED_2FA_PASSWORD = os.getenv("TWOFA_PASSWORD", "محمد")
 
 
 def generate_2fa_password() -> str:
