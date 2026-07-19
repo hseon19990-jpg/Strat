@@ -826,7 +826,7 @@ def credit_referral_if_pending(user_id: int, context=None):
     يُعيد (inviter_id, points) عند المنح، أو None إن لم يكن هناك شيء لمنحه."""
     with db_conn() as c:
         row = c.execute(
-            "SELECT invited_by, referral_credited FROM users WHERE user_id=?", (user_id,)
+            "SELECT invited_by, referral_credited FROM users WHERE user_id=%s", (user_id,)
         ).fetchone()
         if not row:
             return None
@@ -6174,8 +6174,19 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 _r = dict(_r)
                 _rn = _r.get("full_name") or f"ID:{_r['user_id']}"
                 _run = f" (@{_r['username']})" if _r.get("username") else ""
-                _dat = str(_r.get("credited_at") or "")[:16]
-                _lines.append(f"• {_rn}{_run} — {_dat}")
+                _raw_dt = _r.get("credited_at")
+                if _raw_dt:
+                    import datetime as _dt
+                    if hasattr(_raw_dt, "strftime"):
+                        # كائن datetime — نعرض حتى أجزاء الثانية (microseconds)
+                        _us = _raw_dt.microsecond
+                        _dat = _raw_dt.strftime("%Y-%m-%d %H:%M:%S") + (f".{_us:06d}"[:8] if _us else "")
+                    else:
+                        _s = str(_raw_dt)
+                        _dat = _s[:26]  # نحتفظ بأجزاء الثانية إن وُجدت
+                else:
+                    _dat = "—"
+                _lines.append(f"• {_rn}{_run} — `{_dat}`")
         await update.message.reply_text(
             "\n".join(_lines), parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:top_referrers")]]))
