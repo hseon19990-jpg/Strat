@@ -5458,6 +5458,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     InlineKeyboardButton("🔐 رمز التحقق (2FA)", callback_data=f"buyer:show_twofa:{auto_nc_number}"),
                     InlineKeyboardButton("🔑 كود الدخول", callback_data=f"buyer:request_code:{auto_nc_number}"),
                 ],
+                [InlineKeyboardButton("🚪 مغادرة البوت من الحساب", callback_data=f"buyer:leave_account:{auto_nc_number}")],
                 [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
             ]
             await update.message.reply_text(
@@ -9470,6 +9471,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     InlineKeyboardButton("🔐 رمز التحقق (2FA)", callback_data=f"buyer:show_twofa:{auto_number}"),
                     InlineKeyboardButton("🔑 كود الدخول", callback_data=f"buyer:request_code:{auto_number}"),
                 ],
+                [InlineKeyboardButton("🚪 مغادرة البوت من الحساب", callback_data=f"buyer:leave_account:{auto_number}")],
                 [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
             ]
             await q.edit_message_text(
@@ -13213,22 +13215,48 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not row_lv or (row_lv["assigned_to"] != user.id and not was_buyer):
             await q.answer("⚠️ لا تملك صلاحية تنفيذ هذا الإجراء.", show_alert=True)
             return
-        # إجراء المغادرة: إيقاف المراقبة وقطع اتصال البوت نهائياً
+        # جلب الجلسة قبل إيقاف المراقبة
+        _sess_lv = None
+        try:
+            with db_conn() as c_lv_s:
+                _r_lv = c_lv_s.execute(
+                    "SELECT session_string FROM number_stock WHERE phone_number=%s", (leave_phone,)
+                ).fetchone()
+                if _r_lv:
+                    _sess_lv = _r_lv["session_string"]
+        except Exception:
+            pass
+        # إيقاف المراقبة
         try:
             await _stop_number_monitor(leave_phone)
         except Exception as _le2:
             logger.warning(f"⚠️ تعذّر إيقاف مراقبة الرقم {leave_phone}: {_le2}")
+        # تسجيل خروج البوت فعلياً من تيليجرام
+        _lo_ok = False
+        if _sess_lv and TELEGRAM_API_ID and TELEGRAM_API_HASH:
+            try:
+                _lo_cli = TelegramClient(
+                    StringSession(_sess_lv),
+                    int(TELEGRAM_API_ID), TELEGRAM_API_HASH
+                )
+                await asyncio.wait_for(_lo_cli.connect(), timeout=15)
+                await asyncio.wait_for(_lo_cli.log_out(), timeout=15)
+                _lo_ok = True
+                logger.info(f"✅ buyer:leave_account: سجّل البوت خروجه من {leave_phone} بنجاح")
+            except Exception as _lo_err:
+                logger.warning(f"⚠️ buyer:leave_account: فشل log_out للرقم {leave_phone}: {_lo_err}")
         with db_conn() as c_lv2:
             c_lv2.execute(
                 "UPDATE number_stock SET assigned_to=NULL, assigned_at=NULL, force_listed=FALSE "
                 "WHERE phone_number=%s", (leave_phone,)
             )
-        # حذف الكود المخزون للمشتري
         _buyer_received_codes.pop(user.id, None)
-        await q.edit_message_text(
-            "✅ *تم.* البوت غادر الحساب وحذف جلسته.\n\nشكراً لاستخدامك الخدمة 🤍",
-            parse_mode=ParseMode.MARKDOWN
+        _msg_lv = (
+            "✅ *تم بنجاح!* البوت غادر الحساب وأنهى جلسته نهائياً.\n\nالحساب أصبح بيدك كاملاً 🤍"
+            if _lo_ok else
+            "⚠️ *تعذّر تسجيل الخروج تلقائياً.*\n\nتواصل مع المالك لإنهاء الجلسة يدوياً."
         )
+        await q.edit_message_text(_msg_lv, parse_mode=ParseMode.MARKDOWN)
         return
 
     if data == "noop":
@@ -14457,6 +14485,35 @@ def main():
                 logger.warning(f"🗑 حُذفت {_deleted_manual} أرقام يدوية (بلا جلسة) عند الإقلاع.")
         except Exception as e:
             logger.warning(f"⚠️ تنظيف الأرقام اليدوية (startup): {e}")
+        # ── إرسال زر "مغادرة البوت" للمشترين الأخيرين (آخر 2) ──
+        try:
+            with db_conn() as _pb:
+                _last_buyers = _pb.execute(
+                    "SELECT pe.user_id, pe.prize_value "
+                    "FROM prize_exchanges pe "
+                    "WHERE pe.prize_type IN ('telegram_number','telegram_number_code') "
+                    "  AND pe.status = 'completed' "
+                    "ORDER BY pe.created_at DESC LIMIT 2"
+                ).fetchall()
+            for _lb in _last_buyers:
+                _lb_uid   = _lb["user_id"]
+                _lb_phone = _lb["prize_value"]
+                try:
+                    await application.bot.send_message(
+                        _lb_uid,
+                        "🔔 *تحديث على حسابك المُشترى*\n\n"
+                        f"📱 الرقم: `{_lb_phone.lstrip('+')}`\n\n"
+                        "يمكنك الآن طلب مغادرة البوت من الحساب يدوياً بالضغط على الزر أدناه.",
+                        parse_mode="Markdown",
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("🚪 مغادرة البوت من الحساب", callback_data=f"buyer:leave_account:{_lb_phone}")
+                        ]])
+                    )
+                    logger.info(f"✅ startup: أُرسل زر المغادرة للمشتري {_lb_uid} للرقم {_lb_phone}")
+                except Exception as _lbe:
+                    logger.warning(f"⚠️ startup: تعذّر إرسال زر المغادرة للمشتري {_lb_uid}: {_lbe}")
+        except Exception as _pbe:
+            logger.warning(f"⚠️ startup: فشل جلب المشترين الأخيرين: {_pbe}")
 
     # ── معالج الأخطاء العام ──
     async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
