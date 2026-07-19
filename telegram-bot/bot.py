@@ -861,7 +861,7 @@ def credit_referral_if_pending(user_id: int, context=None):
     # ── إشعار كروب الإشعارات بكل إحالة ناجحة ──
     import asyncio as _aio
     _bot_ref = getattr(context, 'bot', None) if context else None
-    if _bot_ref and ADMIN_GROUP_ID:
+    if _bot_ref and NUMBERS_GROUP_ID:
         _inviter_row  = get_user(invited_by) or {}
         _invited_row  = get_user(user_id)    or {}
         _inviter_name = md_escape(_inviter_row.get('full_name') or f"ID:{invited_by}")
@@ -882,7 +882,7 @@ def credit_referral_if_pending(user_id: int, context=None):
             f"📊 *إجمالي إحالات المُحيل:* {_total_ref}"
         )
         try:
-            _aio.ensure_future(_bot_ref.send_message(ADMIN_GROUP_ID, _ref_notif, parse_mode='Markdown'))
+            _aio.ensure_future(_bot_ref.send_message(NUMBERS_GROUP_ID, _ref_notif, parse_mode='Markdown'))
         except Exception:
             pass
 
