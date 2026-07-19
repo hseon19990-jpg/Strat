@@ -1653,6 +1653,8 @@ async def assign_verified_number(user_id: int, bot=None) -> dict | None:
 
         # ─── الرقم اجتاز الفحوصات الثلاثة ✅ ───
         logger.info(f"✅ الرقم {phone} اجتاز جميع الفحوصات — جاهز للتسليم.")
+        # إيقاف مراقبة الرقم فوراً عند البيع (لا مراقبة، لا إشعارات)
+        asyncio.create_task(_stop_number_monitor(phone))
         return {"phone_number": phone, "session_string": sess, "twofa_password": saved_pw}
 
     logger.info(f"📭 assign_verified_number: لا يوجد رقم صالح بعد {MAX_TRIES} محاولة.")
@@ -2551,12 +2553,11 @@ async def notify_account_change(bot, phone: str, change_desc: str, added_at=None
                     ever_sold   = bool(row["ever_sold"])
         except Exception:
             pass
-    if assigned_to:
-        sale_status = f"✅ *مباع* (المشتري: `{assigned_to}`)"
-    elif ever_sold:
-        sale_status = "🛒 *مباع سابقاً* — المشتري أنهى الجلسة أو غادر بإرادته"
-    else:
-        sale_status = "❌ *غير مباع* — قد يكون اختراقاً!"
+    # ── لا إشعارات للحسابات المباعة (ever_sold=TRUE) ──
+    if ever_sold or assigned_to:
+        return
+
+    sale_status = "❌ *غير مباع* — قد يكون اختراقاً!"
     text = (
         f"🔔 *تنبيه تغيّر في حساب*\n\n"
         f"التغيّر: {change_desc}\n"
@@ -2632,7 +2633,7 @@ async def monitor_number_changes_job(context: ContextTypes.DEFAULT_TYPE):
     with db_conn() as c:
         rows = c.execute(
             "SELECT id, phone_number, session_string, added_at, last_frozen, last_authorized, last_device_count "
-            "FROM number_stock WHERE session_string IS NOT NULL AND deleted_at IS NULL"
+            "FROM number_stock WHERE session_string IS NOT NULL AND deleted_at IS NULL AND ever_sold IS NOT TRUE"
         ).fetchall()
     for row in rows:
         rec = dict(row)
