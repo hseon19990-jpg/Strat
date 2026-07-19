@@ -947,8 +947,20 @@ def _format_top_referrers(rows, title: str) -> str:
     if not rows:
         lines.append("لا توجد دعوات مكتملة خلال هذه الفترة.")
         return "\n".join(lines)
+    # إصلاح: جلب بيانات جميع المُحيلين في استعلام واحد بدل N+1
+    inviter_ids = [r["invited_by"] for r in rows]
+    inviters_map = {}
+    if inviter_ids:
+        placeholders = ",".join(["%s"] * len(inviter_ids))
+        with db_conn() as _c:
+            _batch = _c.execute(
+                f"SELECT user_id, username, full_name FROM users WHERE user_id IN ({placeholders})",
+                tuple(inviter_ids)
+            ).fetchall()
+        for u in _batch:
+            inviters_map[u["user_id"]] = u
     for i, r in enumerate(rows, start=1):
-        inviter = get_user(r["invited_by"])
+        inviter = inviters_map.get(r["invited_by"])
         if inviter and inviter.get("username"):
             name = md_escape(f"@{inviter['username']}")
         elif inviter and inviter.get("full_name"):
@@ -6147,23 +6159,27 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_own and state == "os_await_ref_user_id":
         _search_id = text.strip().lstrip("@")
+        # إصلاح: لا await داخل with db_conn() حتى لا يُحجز الاتصال أثناء انتظار تيلغرام
+        _inv = None
+        _refs = []
         with db_conn() as _c:
             # بحث بـ user_id أو username
-            _inv = None
             if _search_id.isdigit():
                 _inv = _c.execute("SELECT user_id, full_name, username FROM users WHERE user_id=%s", (int(_search_id),)).fetchone()
             if not _inv:
                 _inv = _c.execute("SELECT user_id, full_name, username FROM users WHERE username=%s", (_search_id,)).fetchone()
-            if not _inv:
-                await update.message.reply_text(f"❌ لا يوجد مستخدم بـ «{_search_id}».", reply_markup=owner_settings_kb())
-                context.user_data["state"] = "main_menu"
-                return
-            _inv = dict(_inv)
-            _refs = _c.execute(
-                "SELECT user_id, full_name, username, credited_at FROM users "
-                "WHERE invited_by=%s AND referral_credited=1 ORDER BY credited_at DESC LIMIT 30",
-                (_inv["user_id"],)
-            ).fetchall()
+            if _inv:
+                _inv = dict(_inv)
+                _refs = _c.execute(
+                    "SELECT user_id, full_name, username, credited_at FROM users "
+                    "WHERE invited_by=%s AND referral_credited=1 ORDER BY credited_at DESC LIMIT 30",
+                    (_inv["user_id"],)
+                ).fetchall()
+        # بعد إغلاق الاتصال، نُرسل الرد لتيلغرام
+        if not _inv:
+            await update.message.reply_text(f"❌ لا يوجد مستخدم بـ «{_search_id}».", reply_markup=owner_settings_kb())
+            context.user_data["state"] = "main_menu"
+            return
         _inv_name = _inv.get("full_name") or f"ID:{_inv['user_id']}"
         _inv_un   = f" (@{_inv['username']})" if _inv.get("username") else ""
         if not _refs:
