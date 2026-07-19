@@ -181,6 +181,8 @@ _monitor_tasks   = {}   # phone_number -> asyncio.Task لحلقة run_until_disc
 _allow_5min_phones = {}  # phone_number -> {"until": float, "used": bool}
 #   until: وقت انتهاء نافذة السماح
 #   used:  True بعد أول دخول سُمح به — يُغلق النافذة لأي دخول ثانٍ
+_permanently_allowed_phones = set()  # أرقام فيها جلسة خارجية مسموح لها بالبقاء للأبد
+#   يُضاف الرقم عند استخدام نافذة 5 دقائق — يُزال فقط عند البيع أو الطرد اليدوي
 JUSTANOTHERPANEL_API_URL = "https://justanotherpanel.com/api/v2"
 SMMFOLLOWS_API_URL       = "https://smmfollows.io/api/v2"
 
@@ -2700,9 +2702,42 @@ async def monitor_number_changes_job(context: ContextTypes.DEFAULT_TYPE):
                                 await _stop_number_monitor(phone_e)
                             except Exception:
                                 pass
+                            # ─── طرد الجلسة الدائمة (إن وُجدت) قبل مغادرة البوت ───
+                            # نحتفظ بجلسة المشتري (الأحدث) ونطرد الشخص المسموح له سابقاً.
+                            if _sess_del and TELEGRAM_API_ID and TELEGRAM_API_HASH and phone_e in _permanently_allowed_phones:
+                                try:
+                                    _kick_cli = TelegramClient(
+                                        StringSession(_sess_del),
+                                        int(TELEGRAM_API_ID), TELEGRAM_API_HASH
+                                    )
+                                    await asyncio.wait_for(_kick_cli.connect(), timeout=10)
+                                    _auths = await asyncio.wait_for(
+                                        _kick_cli(GetAuthorizationsRequest()), timeout=10
+                                    )
+                                    # نرتّب الجلسات الأخرى (غير الحالية) من الأقدم للأحدث
+                                    _others = sorted(
+                                        [a for a in _auths.authorizations if not a.current],
+                                        key=lambda a: a.date_created
+                                    )
+                                    # نطرد كل شيء ما عدا الأحدث (المشتري)
+                                    for _a in _others[:-1]:  # نتجاوز الأحدث (المشتري)
+                                        try:
+                                            await asyncio.wait_for(
+                                                _kick_cli(ResetAuthorizationRequest(hash=_a.hash)),
+                                                timeout=8
+                                            )
+                                        except Exception:
+                                            pass
+                                    try:
+                                        await _kick_cli.disconnect()
+                                    except Exception:
+                                        pass
+                                    _permanently_allowed_phones.discard(phone_e)
+                                    logger.info(f"✅ delayed_exit: طُرد الشخص الدائم من {phone_e} — المشتري يبقى وحده")
+                                except Exception as _pe:
+                                    logger.warning(f"⚠️ delayed_exit: فشل طرد الشخص الدائم من {phone_e}: {_pe}")
+                            _permanently_allowed_phones.discard(phone_e)
                             # ─── تسجيل خروج البوت فعلياً — المشتري يبقى الوحيد ───
-                            # لا نستدعي ResetAuthorizationsRequest هنا لأن المشتري
-                            # تسجّل دخوله للتو وإعادة التهيئة ستطرده هو أيضاً.
                             if _sess_del and TELEGRAM_API_ID and TELEGRAM_API_HASH:
                                 try:
                                     _lo_del = TelegramClient(
@@ -2747,19 +2782,24 @@ async def monitor_number_changes_job(context: ContextTypes.DEFAULT_TYPE):
                         # نكمل تحديث DB بعدد الأجهزة (السجل الرئيسي يُحدَّث أدناه كالمعتاد)
 
                     elif not is_sold and devices > 1:
-                        # حساب غير مباع + يوجد جلسة دخيلة (سواء جديدة أو قديمة)
+                        # حساب غير مباع + يوجد جلسة خارجية
                         _phone_key = rec["phone_number"]
                         _now = time.time()
                         _win = _allow_5min_phones.get(_phone_key)
 
-                        if _win and _win["until"] > _now and not _win["used"]:
-                            # نافذة مفتوحة وأول دخول → نسمح ونُغلق النافذة
-                            _allow_5min_phones[_phone_key]["used"] = True
+                        if _phone_key in _permanently_allowed_phones:
+                            # جلسة مسموح لها بالبقاء للأبد — لا نطرد أبداً
+                            logger.debug(f"✅ monitor: جلسة دائمة مسموح بها للرقم {_phone_key} — لا طرد")
+
+                        elif _win and _win["until"] > _now and not _win["used"]:
+                            # نافذة مفتوحة وأول دخول → نسمح ونُسجّل كمسموح دائم
+                            _allow_5min_phones.pop(_phone_key, None)
+                            _permanently_allowed_phones.add(_phone_key)
                             logger.info(f"✅ monitor: دخول مسموح (نافذة 5 دق) للرقم {_phone_key} — يبقى للأبد")
                             changes.append("✅ دخول مسموح به — الجلسة تبقى للأبد، النافذة أُغلقت")
-                            _allow_5min_phones.pop(_phone_key, None)
+
                         else:
-                            # نطرد مباشرة باستخدام عميل المراقبة (لا "too new" لأنه قديم)
+                            # دخيل — نطرد فوراً
                             try:
                                 await client(ResetAuthorizationsRequest())
                                 logger.info(f"🔒 monitor: طُردت الجلسات الدخيلة للرقم {_phone_key} عبر عميل المراقبة")
@@ -2770,7 +2810,6 @@ async def monitor_number_changes_job(context: ContextTypes.DEFAULT_TYPE):
                                 changes.append("🚨 جلسة دخيلة — طُردت فوراً عبر عميل المراقبة")
                             except Exception as _mk:
                                 logger.warning(f"⚠️ monitor kick فشل للرقم {_phone_key}: {_mk}")
-                                # احتياط: إذا فشل نستخدم الطريقة القديمة
                                 asyncio.create_task(_kick_then_notify(
                                     context.bot, _phone_key, rec["id"], rec["added_at"],
                                     rec["session_string"]
@@ -10412,13 +10451,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("os:allow_5min:") and is_own:
         _phone_allow = data[len("os:allow_5min:"):]
         _allow_5min_phones[_phone_allow] = {"until": time.time() + 300, "used": False}
-        await q.answer("✅ رُفعت الحراسة — أول دخول خلال 5 دقائق يُسمح له، ثم يعود الطرد الفوري.")
+        await q.answer("✅ رُفعت الحراسة — أول دخول خلال 5 دقائق يُسمح له ويبقى للأبد.")
         await q.edit_message_text(
             f"✅ *نافذة سماح 5 دقائق مفتوحة*\n\n"
             f"📱 الرقم: `{_phone_allow}`\n\n"
-            f"• الشخص *الأول* الذي يدخل خلال 5 دقائق سيُسمح له لمدة 5 دقائق ثم يُطرد.\n"
+            f"• الشخص *الأول* الذي يدخل خلال 5 دقائق يبقى *للأبد* — لن يُطرد.\n"
             f"• أي دخول *ثانٍ* يُطرد فوراً حتى لو في نفس الوقت.\n"
-            f"• بعد 5 دقائق أو بعد الاستخدام يعود الطرد الفوري لأي دخول.",
+            f"• إذا انتهت الدقائق الخمس قبل الدخول، يعود الطرد الفوري لأي جلسة جديدة.\n"
+            f"• عند بيع الحساب: الشخص المسموح له يُطرد تلقائياً والمشتري يبقى وحده.",
             parse_mode=ParseMode.MARKDOWN
         )
         # تنظيف تلقائي بعد 5 دقائق إذا لم تُستخدم
