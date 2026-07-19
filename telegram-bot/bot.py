@@ -666,6 +666,21 @@ def init_db():
               )
       except Exception as e:
           logger.warning(f"⚠️ فشل تعبئة credited_at للدعوات القديمة: {e}")
+      # ── تصحيح القنوات الإجبارية القديمة التي دُفعت بالنقاط ──
+      # السجلات المخزّنة بـ funding_type='mandatory_points' لا تظهر للمستخدمين لأن
+      # جميع الاستعلامات تبحث عن funding_type='mandatory' فقط.
+      # نحوّلها مرة واحدة عند أول تشغيل بعد هذا التعديل.
+      try:
+          with db_conn() as c:
+              fixed = c.execute(
+                  "UPDATE mandatory_channels SET funding_type='mandatory' "
+                  "WHERE funding_type='mandatory_points'"
+              ).rowcount
+          if fixed:
+              logger.info(f"✅ تم تصحيح {fixed} قناة إجبارية كانت مخزّنة بـ mandatory_points → mandatory")
+      except Exception as e:
+          logger.warning(f"⚠️ فشل تصحيح القنوات الإجبارية القديمة: {e}")
+
       # إعادة تسمية زر "بدء بوت" إلى "رشق بدء (ستارت) بوت" مع إبقاء نفس الخدمات (نفس action_value)
       try:
           with db_conn() as c:
