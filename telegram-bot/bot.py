@@ -843,6 +843,34 @@ def credit_referral_if_pending(user_id: int, context=None):
         if c.rowcount == 0:
             return None
         c.execute("UPDATE users SET points=points+%s WHERE user_id=%s", (rp, invited_by))
+    # ── إشعار كروب الإشعارات بكل إحالة ناجحة ──
+    import asyncio as _aio
+    _bot_ref = getattr(context, 'bot', None) if context else None
+    if _bot_ref and ADMIN_GROUP_ID:
+        _inviter_row  = get_user(invited_by) or {}
+        _invited_row  = get_user(user_id)    or {}
+        _inviter_name = md_escape(_inviter_row.get('full_name') or f"ID:{invited_by}")
+        _inviter_un   = f" (@{md_escape(_inviter_row['username'])})" if _inviter_row.get('username') else ''
+        _invited_name = md_escape(_invited_row.get('full_name')  or f"ID:{user_id}")
+        _invited_un   = f" (@{md_escape(_invited_row['username'])})"  if _invited_row.get('username')  else ''
+        # إجمالي إحالات المُحيل حتى الآن
+        with db_conn() as _rc:
+            _total_ref = (_rc.execute(
+                "SELECT COUNT(*) AS cnt FROM users WHERE invited_by=%s AND referral_credited=1",
+                (invited_by,)
+            ).fetchone() or {}).get("cnt", 1)
+        _ref_notif = (
+            f"🤝 *إحالة جديدة ناجحة!*\n\n"
+            f"👤 *المُحيل:* {_inviter_name}{_inviter_un} (`{invited_by}`)\n"
+            f"🆕 *المدعو:* {_invited_name}{_invited_un} (`{user_id}`)\n"
+            f"💰 *النقاط الممنوحة:* {rp} نقطة\n"
+            f"📊 *إجمالي إحالات المُحيل:* {_total_ref}"
+        )
+        try:
+            _aio.ensure_future(_bot_ref.send_message(ADMIN_GROUP_ID, _ref_notif, parse_mode='Markdown'))
+        except Exception:
+            pass
+
     # ── كشف رشق الإحالات: 5 في 5 ثوانٍ → تقييد ──
     import time as _time_mod
     _now_ts = _time_mod.time()
@@ -859,20 +887,19 @@ def credit_referral_if_pending(user_id: int, context=None):
             _rq_name = _rq.get('full_name') or f"ID:{invited_by}"
             _rq_un = (f" (@{_rq['username']})" if _rq.get('username') else '')
             _fraud_text = (
-                f"\u26a0\ufe0f *\u062a\u0646\u0628\u064a\u0647: \u0631\u0634\u0642 \u0625\u062d\u0627\u0644\u0627\u062a \u0645\u062d\u062a\u0645\u0644!*\n\n"
-                f"\U0001f464 \u0627\u0644\u0645\u064f\u062d\u064a\u0644: {_rq_name}{_rq_un} (`{invited_by}`)\n"
-                f"\U0001f4ca \u062a\u0644\u0642\u0651\u0649 5+ \u0625\u062d\u0627\u0644\u0627\u062a \u0641\u064a \u0623\u0642\u0644 \u0645\u0646 5 \u062b\u0648\u0627\u0646\u0650\n"
-                f"\U0001f4b0 \u0646\u0642\u0627\u0637 \u0622\u062e\u0631 \u0625\u062d\u0627\u0644\u0629: {rp} \u0646\u0642\u0637\u0629\n"
-                f"\U0001f512 \u062a\u0645 \u062a\u0642\u064a\u064a\u062f\u0647 \u062a\u0644\u0642\u0627\u0626\u064a\u0627\u064b\n\n"
-                f"\u0627\u062e\u062a\u0631 \u0627\u0644\u0625\u062c\u0631\u0627\u0621:"
+                f"⚠️ *تنبيه: رشق إحالات محتمل!*\n\n"
+                f"👤 المُحيل: {_rq_name}{_rq_un} (`{invited_by}`)\n"
+                f"📊 تلقّى 5+ إحالات في أقل من 5 ثوانٍ\n"
+                f"💰 نقاط آخر إحالة: {rp} نقطة\n"
+                f"🔒 تم تقييده تلقائياً\n\n"
+                f"اختر الإجراء:"
             )
             _fraud_kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("\u2705 \u0625\u0628\u0642\u0627\u0621 + \u0631\u0641\u0639 \u0627\u0644\u062a\u0642\u064a\u064a\u062f",   callback_data=f"os:ref_keep:{invited_by}:{rp}")],
-                [InlineKeyboardButton("\u274c \u062e\u0635\u0645 \u0627\u0644\u0625\u062d\u0627\u0644\u0629 + \u0631\u0641\u0639 \u0627\u0644\u062a\u0642\u064a\u064a\u062f", callback_data=f"os:ref_deduct:{invited_by}:{rp}")],
-                [InlineKeyboardButton("\u2795 \u062e\u0635\u0645 \u0646\u0642\u0627\u0637 \u0625\u0636\u0627\u0641\u064a\u0629",               callback_data=f"os:ref_extra:{invited_by}:{rp}")],
-                [InlineKeyboardButton("\U0001f513 \u0631\u0641\u0639 \u0627\u0644\u062a\u0642\u064a\u064a\u062f \u0641\u0642\u0637",            callback_data=f"os:ref_unblock:{invited_by}")],
+                [InlineKeyboardButton("✅ إبقاء + رفع التقييد",   callback_data=f"os:ref_keep:{invited_by}:{rp}")],
+                [InlineKeyboardButton("❌ خصم الإحالة + رفع التقييد", callback_data=f"os:ref_deduct:{invited_by}:{rp}")],
+                [InlineKeyboardButton("➕ خصم نقاط إضافية",               callback_data=f"os:ref_extra:{invited_by}:{rp}")],
+                [InlineKeyboardButton("🔓 رفع التقييد فقط",            callback_data=f"os:ref_unblock:{invited_by}")],
             ])
-            import asyncio as _aio
             try:
                 _aio.ensure_future(_bot2.send_message(OWNER_ID, _fraud_text, parse_mode='Markdown', reply_markup=_fraud_kb))
             except Exception:
@@ -9690,7 +9717,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         fund_type    = context.user_data.get("fund_type", "mandatory")
         channel      = context.user_data.get("fund_channel_username", "")
         member_count = context.user_data.get("fund_member_count", 1)
-        cost_key     = "mandatory_channel_cost" if fund_type == "mandatory" else "internal_channel_cost"
+        cost_key     = "mandatory_channel_cost" if fund_type in ("mandatory", "mandatory_points") else "internal_channel_cost"
         cost_per     = int(get_setting(cost_key) or "200")
         cost         = context.user_data.get("fund_total_cost", cost_per * member_count)
         ft_label     = "إجباري سريع" if fund_type in ("mandatory", "mandatory_points") else "داخلي بطيء"
@@ -9716,12 +9743,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "VALUES (%s,%s,%s,%s,%s,0,'active')",
                 (user.id, channel, fund_type, cost, member_count)
             )
+            # نحوّل mandatory_points → mandatory لأن جميع استعلامات القنوات الإجبارية
+            # تبحث عن funding_type='mandatory' فقط. نوع الدفع (نجوم/نقاط) محفوظ في channel_funding.
+            mc_fund_type = "mandatory" if fund_type in ("mandatory", "mandatory_points") else fund_type
             c.execute(
                 "INSERT INTO mandatory_channels (channel_username,owner_user_id,funding_type,active,queued) "
                 "VALUES (%s,%s,%s,%s,%s) "
                 "ON CONFLICT (channel_username) DO UPDATE SET funding_type=EXCLUDED.funding_type, owner_user_id=EXCLUDED.owner_user_id, "
                 "active=EXCLUDED.active, queued=EXCLUDED.queued",
-                (channel, user.id, fund_type, 0 if is_queued else 1, 1 if is_queued else 0)
+                (channel, user.id, mc_fund_type, 0 if is_queued else 1, 1 if is_queued else 0)
             )
         context.user_data["state"] = "main_menu"
         context.user_data.pop("fund_channel_username", None)
