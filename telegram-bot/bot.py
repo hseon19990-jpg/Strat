@@ -8918,8 +8918,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── إحالات شخص معين (للمالك) ──
     if data == "os:ref_search_user" and is_own:
         context.user_data["state"] = "os_await_ref_user_id"
-        await q.edit_message_text(
-            "🔍 *إحالات شخص معين*\n\nأرسل user_id أو رقم المستخدم:",
+        await q.answer()
+        await q.message.reply_text(
+            "🔍 *إحالات شخص معين*\n\nأرسل user_id أو @يوزرنيم:",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:top_referrers")]]))
         return
