@@ -6819,6 +6819,114 @@ async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.edit_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
 
+async def handle_txt_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    يستقبل ملف .txt من المالك يحتوي على جلسات بصيغة hex_auth_key:dc_id (سطر لكل حساب).
+    لا يحتاج أمراً مسبقاً — مجرد إرسال الملف يكفي.
+    """
+    user = update.effective_user
+    if user.id != OWNER_ID:
+        return
+    doc = update.message.document
+    if not doc:
+        return
+    fname = (doc.file_name or "").lower()
+    if not (fname.endswith(".txt") or doc.mime_type in ("text/plain",)):
+        return
+
+    msg = await update.message.reply_text(f"⏳ جاري قراءة الملف `{fname}`...", parse_mode=ParseMode.MARKDOWN)
+    try:
+        tg_file = await context.bot.get_file(doc.file_id)
+        raw_bytes = await tg_file.download_as_bytearray()
+        text = raw_bytes.decode("utf-8", errors="ignore")
+    except Exception as e:
+        await msg.edit_text(f"❌ تعذّر قراءة الملف:\n`{e}`", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    raw_lines = [l.strip() for l in text.splitlines() if l.strip()]
+    if not raw_lines:
+        await msg.edit_text("❌ الملف فارغ.")
+        return
+
+    # ── تحديد الصيغة: hex:dc_id أم شيء آخر ──
+    sessions = []
+    bad_lines = []
+    for ln in raw_lines:
+        if ":" not in ln:
+            bad_lines.append(ln[:40])
+            continue
+        hex_part, dc_part = ln.rsplit(":", 1)
+        try:
+            dc_id = int(dc_part)
+            if dc_id not in (1, 2, 3, 4, 5):
+                raise ValueError(f"dc_id={dc_id} خارج النطاق 1-5")
+            converted = pyrogram_json_to_telethon({"dc_id": dc_id, "auth_key": hex_part})
+            if not converted:
+                raise ValueError("auth_key غير صالح (يجب 256 بايت = 512 حرف hex)")
+            sessions.append(converted)
+        except Exception as _e:
+            bad_lines.append(f"{ln[:40]}… ({_e})")
+
+    if not sessions:
+        err = "\n".join(f"• {b}" for b in bad_lines[:10])
+        await msg.edit_text(
+            f"❌ لم أجد أي جلسة صالحة.\nتأكد أن كل سطر بالصيغة:\n`auth_key_hex:dc_id`\n\n{err}",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    warn = f"\n⚠️ {len(bad_lines)} سطر غير صالح تم تجاهله." if bad_lines else ""
+    await msg.edit_text(f"⏳ تم العثور على {len(sessions)} جلسة، جاري الاستيراد...{warn}")
+
+    ok_list, fail_list = [], []
+    for idx, sess in enumerate(sessions):
+        try:
+            client = TelegramClient(StringSession(sess), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+            try:
+                await asyncio.wait_for(client.connect(), timeout=15)
+            except asyncio.TimeoutError:
+                fail_list.append(f"#{idx+1}: انتهت مهلة الاتصال")
+                continue
+            if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
+                await client.disconnect()
+                fail_list.append(f"#{idx+1}: جلسة منتهية")
+                continue
+            me = await client.get_me()
+            phone = me.phone if me.phone.startswith("+") else f"+{me.phone}"
+            await client.disconnect()
+            with db_conn() as _c:
+                exists = _c.execute(
+                    "SELECT id FROM number_stock WHERE phone_number=%s", (phone,)
+                ).fetchone()
+                if exists:
+                    _c.execute(
+                        "UPDATE number_stock SET session_string=%s, assigned_to=NULL, assigned_at=NULL "
+                        "WHERE phone_number=%s", (sess, phone)
+                    )
+                else:
+                    _c.execute(
+                        "INSERT INTO number_stock (phone_number, session_string) VALUES (%s,%s)",
+                        (phone, sess)
+                    )
+            asyncio.create_task(_start_number_monitor(phone, sess, context.application))
+            ok_list.append(phone)
+            if len(ok_list) % 10 == 0:
+                await msg.edit_text(f"⏳ تم {len(ok_list)}/{len(sessions)}...")
+        except Exception as _be:
+            fail_list.append(f"#{idx+1}: {_be}")
+
+    result_lines = [f"✅ *تم استيراد {len(ok_list)} حساب بنجاح:*"]
+    for p in ok_list:
+        result_lines.append(f"  • `{p}`")
+    if fail_list:
+        result_lines.append(f"\n❌ *فشل {len(fail_list)}:*")
+        for f_ in fail_list[:20]:
+            result_lines.append(f"  • {f_}")
+        if len(fail_list) > 20:
+            result_lines.append(f"  _(+{len(fail_list)-20} أخرى)_")
+    await msg.edit_text("\n".join(result_lines), parse_mode=ParseMode.MARKDOWN)
+
+
 async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     يستقبل ملف .session (SQLite) من المالك ويستورده مباشرةً.
@@ -12420,6 +12528,13 @@ def main():
     app.add_handler(MessageHandler(
         filters.ChatType.PRIVATE & filters.Document.FileExtension("session"),
         handle_session_file
+    ))
+    app.add_handler(MessageHandler(
+        filters.ChatType.PRIVATE & (
+            filters.Document.FileExtension("txt") |
+            filters.Document.MimeType("text/plain")
+        ),
+        handle_txt_file
     ))
     # ── شبكة أمان: أي رسالة أخرى (صورة/ملصق/جهة اتصال بلا نص) لا تطابق ما سبق ──
     # حتى لا يبقى البوت صامتاً تماماً بلا أي رد إذا أرسل المستخدم قناته/رده بطريقة غير متوقعة
