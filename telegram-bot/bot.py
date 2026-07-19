@@ -1248,7 +1248,7 @@ async def _fetch_code_for_delivery(session_str: str) -> str | None:
         await asyncio.wait_for(cli.connect(), timeout=15)
         if not await asyncio.wait_for(cli.is_user_authorized(), timeout=8):
             return None
-        raw = await fetch_last_login_code(cli, after_date=None)
+        raw, _raw_date = await fetch_last_login_code(cli, after_date=None)
         if raw:
             m = re.search(r'(\d{4,7})', raw)
             if m:
@@ -1265,7 +1265,8 @@ async def _fetch_code_for_delivery(session_str: str) -> str | None:
 
 async def fetch_last_login_code(client: TelegramClient, after_date=None):
     """يجلب آخر رسالة كود تفعيل وصلت من حساب تيليجرام الرسمي (777000) لهذا الرقم.
-    إذا أُعطي after_date، يُرجع فقط الأكواد التي وصلت بعد هذا التاريخ."""
+    إذا أُعطي after_date، يُرجع فقط الأكواد التي وصلت بعد هذا التاريخ.
+    يُرجع tuple (نص_الرسالة, تاريخ_الرسالة) أو (None, None) إن لم يوجد."""
     import datetime as _dt
     try:
         msgs = await client.get_messages(777000, limit=10)
@@ -1283,11 +1284,11 @@ async def fetch_last_login_code(client: TelegramClient, after_date=None):
                 threshold = after - _dt.timedelta(minutes=10)
                 if msg_date < threshold:
                     continue  # كود قديم جداً — تخطَّه
-            return m.message
-        return None
+            return m.message, m.date
+        return None, None
     except Exception as e:
         logger.error(f"❌ خطأ في جلب كود الدخول: {e}")
-        return None
+        return None, None
 
 
 def list_stock_numbers(filter_type: str = "all"):
@@ -11495,9 +11496,25 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         client = TelegramClient(StringSession(rec["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
         try:
             await client.connect()
-            code_msg = await fetch_last_login_code(client)
+            code_msg, code_date = await fetch_last_login_code(client)
             if code_msg:
-                text = f"🔑 *آخر رسالة من تيليجرام لرقم {rec['phone_number']}:*\n\n{code_msg}"
+                import datetime as _dt
+                _now = _dt.datetime.now(_dt.timezone.utc)
+                _msg_date = code_date
+                if _msg_date and _msg_date.tzinfo is None:
+                    _msg_date = _msg_date.replace(tzinfo=_dt.timezone.utc)
+                _age_minutes = int((_now - _msg_date).total_seconds() // 60) if _msg_date else None
+                _age_str = (
+                    f"منذ {_age_minutes} دقيقة" if _age_minutes is not None and _age_minutes < 60
+                    else f"منذ {_age_minutes // 60} ساعة" if _age_minutes is not None
+                    else ""
+                )
+                _freshness = "🟢 طازج" if _age_minutes is not None and _age_minutes <= 10 else "🔴 قديم"
+                text = (
+                    f"🔑 *آخر رسالة من تيليجرام لرقم {rec['phone_number']}:*\n\n"
+                    f"{code_msg}\n\n"
+                    f"🕐 وصل {_age_str} — {_freshness}"
+                )
             else:
                 text = f"ℹ️ لا توجد أي رسالة كود حالياً لرقم {rec['phone_number']}."
             await q.edit_message_text(
@@ -13047,7 +13064,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 try:
                     if await asyncio.wait_for(_fcli.is_user_authorized(), timeout=8):
                         # after_date = وقت الشراء ← لا يُقبل أي كود قبله
-                        raw_msg = await fetch_last_login_code(_fcli, after_date=_purchase_time)
+                        raw_msg, _raw_msg_date = await fetch_last_login_code(_fcli, after_date=_purchase_time)
                         if raw_msg:
                             _m5 = re.search(r'\b(\d{5})\b', raw_msg)   # 5 أرقام بالضبط
                             if not _m5:
@@ -13335,12 +13352,27 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await q.edit_message_text("❌ الجلسة منتهية — الحساب مطرود.",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data=f"os:sold_detail:{stock_id}")]]))
                 return
-            code_msg = await fetch_last_login_code(_cli)
-            txt = (
-                f"🔑 *آخر كود وصل لرقم {rec['phone_number']}:*\n\n{code_msg}"
-                if code_msg else
-                f"ℹ️ لا يوجد كود حديث لرقم {rec['phone_number']}."
-            )
+            code_msg, code_date = await fetch_last_login_code(_cli)
+            if code_msg:
+                import datetime as _dt
+                _now = _dt.datetime.now(_dt.timezone.utc)
+                _msg_date = code_date
+                if _msg_date and _msg_date.tzinfo is None:
+                    _msg_date = _msg_date.replace(tzinfo=_dt.timezone.utc)
+                _age_minutes = int((_now - _msg_date).total_seconds() // 60) if _msg_date else None
+                _age_str = (
+                    f"منذ {_age_minutes} دقيقة" if _age_minutes is not None and _age_minutes < 60
+                    else f"منذ {_age_minutes // 60} ساعة" if _age_minutes is not None
+                    else ""
+                )
+                _freshness = "🟢 طازج" if _age_minutes is not None and _age_minutes <= 10 else "🔴 قديم"
+                txt = (
+                    f"🔑 *آخر كود وصل لرقم {rec['phone_number']}:*\n\n"
+                    f"{code_msg}\n\n"
+                    f"🕐 وصل {_age_str} — {_freshness}"
+                )
+            else:
+                txt = f"ℹ️ لا يوجد كود حديث لرقم {rec['phone_number']}."
             await q.edit_message_text(txt, parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔄 تحديث", callback_data=f"os:sold_code:{stock_id}")],
