@@ -5497,54 +5497,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         pass
                 asyncio.create_task(_test_reset_number())
             else:
-                # ─── مغادرة فورية بعد التسليم عبر الكود ───
-                async def _auto_leave_nc(_ph=auto_nc_number, _uid=user.id, _bot=context.bot):
-                    await asyncio.sleep(0)
-                    # احصل على الجلسة قبل إيقاف المراقبة
-                    _sess_nc = None
-                    try:
-                        with db_conn() as _dcs2:
-                            _sr2 = _dcs2.execute(
-                                "SELECT session_string FROM number_stock WHERE phone_number=%s", (_ph,)
-                            ).fetchone()
-                            if _sr2:
-                                _sess_nc = _sr2["session_string"]
-                    except Exception:
-                        pass
-                    try:
-                        await _stop_number_monitor(_ph)
-                    except Exception:
-                        pass
-                    # ─── طرد كل الجلسات ثم تسجيل خروج فعلي من الحساب على تيليجرام ───
-                    if _sess_nc and TELEGRAM_API_ID and TELEGRAM_API_HASH:
-                        try:
-                            _lo2 = TelegramClient(
-                                StringSession(_sess_nc),
-                                int(TELEGRAM_API_ID), TELEGRAM_API_HASH
-                            )
-                            await asyncio.wait_for(_lo2.connect(), timeout=10)
-                            # طرد جميع الجلسات الأخرى (أي جهاز دخل بعد البيع)
-                            try:
-                                await asyncio.wait_for(_lo2(ResetAuthorizationsRequest()), timeout=10)
-                            except Exception:
-                                pass
-                            # تسجيل خروج البوت نفسه
-                            await asyncio.wait_for(_lo2.log_out(), timeout=10)
-                        except Exception:
-                            pass
-                    try:
-                        with db_conn() as _clx2:
-                            _clx2.execute(
-                                "UPDATE number_stock SET assigned_to=NULL, assigned_at=NULL, force_listed=FALSE "
-                                "WHERE phone_number=%s", (_ph,)
-                            )
-                    except Exception:
-                        pass
-                    try:
-                        await _bot.send_message(_uid, "🤖 البوت غادر الحساب تلقائياً. الحساب أصبح بيدك كاملاً 🤍")
-                    except Exception:
-                        pass
-                asyncio.create_task(_auto_leave_nc())
+                # ─── البوت يبقى متصلاً — المراقب سيغادر تلقائياً عند دخول المشتري ───
+                # (المغادرة تتم في monitor_number_changes_job عند اكتشاف جلسة جديدة)
+                pass
         else:
             if not _IS_TEST_CODE:
                 with db_conn() as _rc:
@@ -9535,27 +9490,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             except Exception:
                 pass
-            # ─── مغادرة فورية بعد التسليم ───
-            async def _auto_leave_after_exchange(_ph=auto_number, _uid=user.id, _bot=context.bot):
-                await asyncio.sleep(0)
-                try:
-                    await _stop_number_monitor(_ph)
-                except Exception:
-                    pass
-                try:
-                    with db_conn() as _clx:
-                        _clx.execute(
-                            "UPDATE number_stock SET assigned_to=NULL, assigned_at=NULL, force_listed=FALSE "
-                            "WHERE phone_number=%s", (_ph,)
-                        )
-                except Exception:
-                    pass
-                try:
-                    await _bot.send_message(_uid, "🤖 البوت غادر الحساب تلقائياً. الحساب أصبح بيدك كاملاً 🤍")
-                except Exception:
-                    pass
-            asyncio.create_task(_auto_leave_after_exchange())
-            # (إشعار المالك عن التسليم أُلغي بناءً على طلب المالك)
+            # ─── البوت يبقى متصلاً — المراقب سيغادر تلقائياً عند دخول المشتري ───
+            # (المغادرة تتم في monitor_number_changes_job عند اكتشاف جلسة جديدة)
             return
 
         # ── لا يوجد رقم متاح — إعادة النقاط فوراً ──
