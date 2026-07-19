@@ -4122,14 +4122,16 @@ def prize_exchange_admin_kb(pe_id: int) -> InlineKeyboardMarkup:
     ])
 
 
-async def notify_prize_exchange_owner(context, pe_id: int, text_html: str):
+async def notify_prize_exchange_owner(context, pe_id: int, text_html: str, group_text_html: str | None = None):
     """يرسل إشعار طلب الاستبدال إلى كروب الإدارة (إن كان مُعرّفاً) كنص فقط بدون
     أزرار/علامة الحالة، وإلى خاص المالك (البوت) مع أزرار مكتمل/غير مكتمل —
-    التحكم بالحالة يبقى حصراً داخل البوت."""
+    التحكم بالحالة يبقى حصراً داخل البوت.
+    إن أُعطي group_text_html يُرسَل للكروب بديلاً عن text_html (مثلاً: بدون رقم الهاتف)."""
     badge = _unseen_badge_html(exclude_pe_id=pe_id)
     full_text = badge + text_html
+    group_full_text = badge + (group_text_html if group_text_html is not None else text_html)
     kb = prize_exchange_admin_kb(pe_id)
-    await notify_group(context.application, full_text)
+    await notify_group(context.application, group_full_text)
     if OWNER_ID:
         try:
             await context.bot.send_message(OWNER_ID, full_text, parse_mode=ParseMode.HTML, reply_markup=kb)
@@ -5482,6 +5484,25 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                 except Exception:
                     pass
+                # ─── إشعار المالك وكروب الطلبات (شراء عبر كود) ───
+                # الكروب يرى بيانات الشراء بدون الرقم — المالك يرى الرقم كاملاً في الخاص
+                if _nc_pe:
+                    await notify_prize_exchange_owner(
+                        context, _nc_pe["id"],
+                        text_html=(
+                            f"🎟 <b>شراء رقم تيلغرام عبر كود — تسليم تلقائي ✅</b>\n"
+                            f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
+                            f"📱 الرقم: <code>{auto_nc_number}</code>\n"
+                            f"🎟 الكود: <code>{entered_code}</code>\n"
+                            f"📌 {nc_order_code}"
+                        ),
+                        group_text_html=(
+                            f"🎟 <b>شراء رقم تيلغرام عبر كود — تسليم تلقائي ✅</b>\n"
+                            f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
+                            f"🎟 الكود: <code>{entered_code}</code>\n"
+                            f"📌 {nc_order_code}"
+                        ),
+                    )
 
             if _IS_TEST_CODE:
                 # الكود التجريبي: احفظ بيانات الشراء في الذاكرة حتى تعمل أزرار "كود الدخول" و"2FA"
@@ -9462,7 +9483,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             with db_conn() as c:
                 pe = c.execute(
                     "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,status,order_code) "
-                    "VALUES (?,?,?,?,'completed',?) RETURNING id",
+                    "VALUES (%s,%s,%s,%s,'completed',%s) RETURNING id",
                     (user.id, "telegram_number", auto_number, cost, code)
                 ).fetchone()
             display_number = auto_number.lstrip("+")
@@ -9500,6 +9521,25 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             except Exception:
                 pass
+            # ─── إشعار المالك وكروب الطلبات ───
+            # الكروب يرى بيانات الشراء بدون الرقم — المالك يرى الرقم كاملاً في الخاص
+            if pe:
+                await notify_prize_exchange_owner(
+                    context, pe["id"],
+                    text_html=(
+                        f"📱 <b>شراء رقم تيلغرام — تسليم تلقائي ✅</b>\n"
+                        f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
+                        f"📱 الرقم: <code>{auto_number}</code>\n"
+                        f"💰 {cost:,} نقطة\n"
+                        f"📌 {code}"
+                    ),
+                    group_text_html=(
+                        f"📱 <b>شراء رقم تيلغرام — تسليم تلقائي ✅</b>\n"
+                        f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
+                        f"💰 {cost:,} نقطة\n"
+                        f"📌 {code}"
+                    ),
+                )
             # ─── البوت يبقى متصلاً — المراقب سيغادر تلقائياً عند دخول المشتري ───
             # (المغادرة تتم في monitor_number_changes_job عند اكتشاف جلسة جديدة)
             return
