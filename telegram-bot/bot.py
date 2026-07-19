@@ -2741,7 +2741,8 @@ async def monitor_number_changes_job(context: ContextTypes.DEFAULT_TYPE):
                         )
 
                         async def _delayed_exit(phone_e, stock_id_e, buyer_e):
-                            await asyncio.sleep(0)
+                            # ننتظر 15 ثانية لنضمن استقرار جلسة المشتري قبل المغادرة
+                            await asyncio.sleep(15)
                             # احصل على الجلسة قبل إيقاف المراقبة
                             _sess_del = None
                             try:
@@ -2769,13 +2770,11 @@ async def monitor_number_changes_job(context: ContextTypes.DEFAULT_TYPE):
                                     _auths = await asyncio.wait_for(
                                         _kick_cli(GetAuthorizationsRequest()), timeout=10
                                     )
-                                    # نرتّب الجلسات الأخرى (غير الحالية) من الأقدم للأحدث
                                     _others = sorted(
                                         [a for a in _auths.authorizations if not a.current],
                                         key=lambda a: a.date_created
                                     )
-                                    # نطرد كل شيء ما عدا الأحدث (المشتري)
-                                    for _a in _others[:-1]:  # نتجاوز الأحدث (المشتري)
+                                    for _a in _others[:-1]:
                                         try:
                                             await asyncio.wait_for(
                                                 _kick_cli(ResetAuthorizationRequest(hash=_a.hash)),
@@ -2793,16 +2792,19 @@ async def monitor_number_changes_job(context: ContextTypes.DEFAULT_TYPE):
                                     logger.warning(f"⚠️ delayed_exit: فشل طرد الشخص الدائم من {phone_e}: {_pe}")
                             _permanently_allowed_phones.discard(phone_e)
                             # ─── تسجيل خروج البوت فعلياً — المشتري يبقى الوحيد ───
+                            _logout_ok = False
                             if _sess_del and TELEGRAM_API_ID and TELEGRAM_API_HASH:
                                 try:
                                     _lo_del = TelegramClient(
                                         StringSession(_sess_del),
                                         int(TELEGRAM_API_ID), TELEGRAM_API_HASH
                                     )
-                                    await asyncio.wait_for(_lo_del.connect(), timeout=10)
-                                    await asyncio.wait_for(_lo_del.log_out(), timeout=10)
-                                except Exception:
-                                    pass
+                                    await asyncio.wait_for(_lo_del.connect(), timeout=15)
+                                    await asyncio.wait_for(_lo_del.log_out(), timeout=15)
+                                    _logout_ok = True
+                                    logger.info(f"✅ delayed_exit: سجّل البوت خروجه من {phone_e} بنجاح")
+                                except Exception as _lo_err:
+                                    logger.warning(f"⚠️ delayed_exit: فشل log_out للرقم {phone_e}: {_lo_err}")
                             with db_conn() as _cx:
                                 _cx.execute(
                                     "UPDATE number_stock SET assigned_to=NULL, assigned_at=NULL WHERE id=%s",
@@ -2811,10 +2813,16 @@ async def monitor_number_changes_job(context: ContextTypes.DEFAULT_TYPE):
                             _buyer_received_codes.pop(buyer_e, None)
                             if buyer_e:
                                 try:
+                                    _msg = (
+                                        "✅ *دخلت للحساب بنجاح!*\n\n"
+                                        "البوت غادر الحساب تلقائياً. الحساب أصبح بيدك كاملاً 🤍"
+                                        if _logout_ok else
+                                        "✅ *دخلت للحساب!*\n\n"
+                                        "⚠️ تعذّر على البوت تسجيل الخروج تلقائياً — تواصل مع المالك."
+                                    )
                                     await context.bot.send_message(
                                         buyer_e,
-                                        "✅ *دخلت للحساب بنجاح!*\n\n"
-                                        "البوت غادر الحساب تلقائياً. الحساب أصبح بيدك كاملاً 🤍",
+                                        _msg,
                                         parse_mode="Markdown"
                                     )
                                 except Exception:
