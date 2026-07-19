@@ -8934,8 +8934,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── إحالات شخص معين (للمالك) ──
     if data == "os:ref_search_user" and is_own:
         context.user_data["state"] = "os_await_ref_user_id"
-        await q.answer()
-        await q.message.reply_text(
+        # إصلاح: نستخدم edit_message_text بدل reply_text لأن reply_text تفشل
+        # بصمت عندما تكون الرسالة قديمة أو محذوفة (تُجيب q.answer() لكن لا رسالة تظهر).
+        # edit_message_text أكثر استقراراً وتتوافق مع باقي معالجات إعدادات المالك.
+        await q.edit_message_text(
             "🔍 *إحالات شخص معين*\n\nأرسل user_id أو @يوزرنيم:",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:top_referrers")]]))
