@@ -4673,6 +4673,143 @@ async def cmd_import_hex(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def cmd_mass_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر المالك: /mass_reset
+    يقرأ ملفات الجلسة لكل الحسابات غير المباعة ويطرد جميع الجلسات الأخرى.
+    الحسابات المباعة (ever_sold=TRUE) تُتخطى تماماً — خارج نطاق البوت.
+    """
+    user = update.effective_user
+    if user.id != OWNER_ID:
+        await update.message.reply_text("⛔ هذا الأمر للمالك فقط.")
+        return
+    if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
+        await update.message.reply_text("❌ متغيرات API_ID / API_HASH غير مضبوطة.")
+        return
+
+    # ─── جلب الحسابات غير المباعة التي لديها ملف جلسة ──────────────────
+    with db_conn() as _c:
+        rows = _c.execute(
+            "SELECT id, phone_number, session_string FROM number_stock "
+            "WHERE ever_sold IS NOT TRUE "
+            "  AND deleted_at IS NULL "
+            "  AND session_string IS NOT NULL"
+        ).fetchall()
+
+    total = len(rows)
+    if total == 0:
+        await update.message.reply_text("ℹ️ لا يوجد حسابات غير مباعة لديها ملف جلسة.")
+        return
+
+    status_msg = await update.message.reply_text(
+        f"⏳ بدأ إعادة قراءة الملفات وطرد الجلسات...\n"
+        f"📦 إجمالي الحسابات: *{total}*\n"
+        f"⏱️ الرجاء الانتظار...",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+    done, kicked_ok, already_solo, failed, kicked_out = 0, 0, 0, 0, 0
+
+    for rec in rows:
+        rec = dict(rec)
+        phone = rec["phone_number"]
+        _client = None
+        try:
+            _client = TelegramClient(
+                StringSession(rec["session_string"]),
+                int(TELEGRAM_API_ID), TELEGRAM_API_HASH
+            )
+            await _client.connect()
+
+            if not await _client.is_user_authorized():
+                # الجلسة منتهية — نسجّل ذلك ونكمل
+                kicked_out += 1
+                with db_conn() as _cx:
+                    _cx.execute(
+                        "UPDATE number_stock SET last_authorized=FALSE WHERE id=%s",
+                        (rec["id"],)
+                    )
+                continue
+
+            # ── طرد كل الجلسات الأخرى ─────────────────────────────────
+            try:
+                await _client(ResetAuthorizationsRequest())
+                kicked_ok += 1
+            except Exception as _re:
+                logger.debug(f"mass_reset: ResetAuth فشل للرقم {phone}: {_re}")
+                failed += 1
+
+            # ── فحص ما إذا كان البوت الجلسة الوحيدة ─────────────────────
+            _dev = -1
+            try:
+                _dev = await get_device_count(_client)
+            except Exception:
+                pass
+            _is_solo_r = (_dev == 1)
+            if _is_solo_r:
+                already_solo += 1
+
+            # ── تسجيل IP الجلسة الجديدة بعد الطرد ────────────────────────
+            _new_ip = None
+            try:
+                _new_ip = await get_session_ip(_client)
+            except Exception:
+                pass
+
+            with db_conn() as _cx:
+                _cx.execute(
+                    "UPDATE number_stock SET sessions_reset=TRUE, is_solo=%s, "
+                    "last_authorized=TRUE, bot_session_ip=%s WHERE id=%s",
+                    (_is_solo_r, _new_ip, rec["id"])
+                )
+
+            # ── تفعيل can_send_code إذا أصبح منفرداً ─────────────────────
+            if _is_solo_r:
+                asyncio.create_task(
+                    _test_and_set_can_send_code(phone, rec["session_string"], rec["id"])
+                )
+
+        except Exception as _e:
+            logger.warning(f"mass_reset: خطأ على الرقم {phone}: {_e}")
+            failed += 1
+        finally:
+            if _client:
+                try:
+                    await _client.disconnect()
+                except Exception:
+                    pass
+            done += 1
+
+            # ── تحديث رسالة التقدم كل 5 حسابات ──────────────────────────
+            if done % 5 == 0 or done == total:
+                try:
+                    await status_msg.edit_text(
+                        f"⏳ جاري المعالجة... {done}/{total}\n\n"
+                        f"✅ طُردت جلساته: *{kicked_ok}*\n"
+                        f"🔒 كان منفرداً أصلاً: *{already_solo}*\n"
+                        f"⛔ جلسة منتهية: *{kicked_out}*\n"
+                        f"❌ فشل: *{failed}*",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                except Exception:
+                    pass
+
+    # ─── رسالة النتيجة النهائية ──────────────────────────────────────────
+    await status_msg.edit_text(
+        f"✅ *اكتملت عملية إعادة القراءة والطرد الجماعي*\n\n"
+        f"📦 إجمالي الحسابات المعالجة: *{total}*\n"
+        f"🔐 نجح الطرد (ResetAuthorizations): *{kicked_ok}*\n"
+        f"🔒 كان منفرداً مسبقاً (solo): *{already_solo}*\n"
+        f"⛔ جلسة منتهية الصلاحية: *{kicked_out}*\n"
+        f"❌ فشل الاتصال أو الطرد: *{failed}*\n\n"
+        f"🚫 الحسابات المباعة: *لم تُمسّ* (خارج النطاق)",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    logger.info(
+        f"mass_reset مكتمل | total={total} kicked={kicked_ok} "
+        f"solo={already_solo} expired={kicked_out} failed={failed}"
+    )
+
+
 async def cmd_addpoints(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """أمر المالك: /addpoints <user_id> <points> — يضيف (أو يخصم برقم سالب) نقاطاً لمستخدم معيّن."""
     user = update.effective_user
@@ -14544,6 +14681,7 @@ def main():
     app.add_handler(CommandHandler("import_session",      cmd_import_session))
     app.add_handler(CommandHandler("import_sessions",     cmd_import_sessions))
     app.add_handler(CommandHandler("import_hex",          cmd_import_hex))
+    app.add_handler(CommandHandler("mass_reset",          cmd_mass_reset))
     app.add_handler(MessageHandler(
         (filters.TEXT | filters.CAPTION) & ~filters.COMMAND & filters.ChatType.PRIVATE,
         handle_text
