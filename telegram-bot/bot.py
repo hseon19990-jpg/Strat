@@ -482,6 +482,7 @@ def init_db():
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS twofa_reset_date TIMESTAMPTZ",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS is_solo BOOLEAN DEFAULT FALSE",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS can_send_code BOOLEAN DEFAULT FALSE",
+              "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS bot_session_ip TEXT",
               "ALTER TABLE services ADD COLUMN IF NOT EXISTS platform TEXT DEFAULT 'tg'",
               "ALTER TABLE users ADD COLUMN IF NOT EXISTS banned INTEGER DEFAULT 0",
               "ALTER TABLE users ADD COLUMN IF NOT EXISTS banned_at TIMESTAMPTZ",
@@ -1245,6 +1246,19 @@ async def get_authorizations_detail(client: TelegramClient) -> list:
     except Exception as e:
         logger.error(f"❌ خطأ في جلب تفاصيل الأجهزة: {e}")
         return []
+
+
+async def get_session_ip(client: TelegramClient) -> str | None:
+    """يُرجع عنوان IP لجلسة البوت الحالية (current=True) من قائمة التفويضات.
+    يُستخدم لاكتشاف خطف الجلسة الصامت عبر نفس auth_key من IP مختلف."""
+    try:
+        result = await client(GetAuthorizationsRequest())
+        for auth in result.authorizations:
+            if auth.current:
+                return auth.ip
+    except Exception:
+        pass
+    return None
 
 
 async def check_account_frozen(client: TelegramClient, stock_id: int | None = None) -> tuple:
@@ -2202,6 +2216,18 @@ async def _finish_number_login(update: Update, context: ContextTypes.DEFAULT_TYP
                         "UPDATE number_stock SET sessions_reset=TRUE, is_solo=%s WHERE phone_number=%s",
                         (_is_solo_now, phone)
                     )
+                # ─── تسجيل IP الجلسة لكشف الخطف الصامت لاحقاً ──────────────
+                try:
+                    _bot_ip = await get_session_ip(client)
+                    if _bot_ip:
+                        with db_conn() as _ipdb:
+                            _ipdb.execute(
+                                "UPDATE number_stock SET bot_session_ip=%s WHERE phone_number=%s",
+                                (_bot_ip, phone)
+                            )
+                        logger.info(f"🔐 session_ip: سُجِّل IP={_bot_ip} للرقم {phone}")
+                except Exception as _ip_e:
+                    logger.debug(f"⚠️ تعذّر تسجيل IP الجلسة للرقم {phone}: {_ip_e}")
                 if _is_solo_now:
                     # البوت الجلسة الوحيدة — نتحقق من can_send_code
                     with db_conn() as _sid:
@@ -2674,7 +2700,7 @@ async def monitor_number_changes_job(context: ContextTypes.DEFAULT_TYPE):
         return
     with db_conn() as c:
         rows = c.execute(
-            "SELECT id, phone_number, session_string, added_at, last_frozen, last_authorized, last_device_count "
+            "SELECT id, phone_number, session_string, added_at, last_frozen, last_authorized, last_device_count, bot_session_ip "
             "FROM number_stock WHERE session_string IS NOT NULL AND deleted_at IS NULL AND ever_sold IS NOT TRUE"
         ).fetchall()
     for row in rows:
@@ -2688,6 +2714,58 @@ async def monitor_number_changes_job(context: ContextTypes.DEFAULT_TYPE):
             if authorized:
                 is_frozen, _, _ = await check_account_frozen(client, rec["id"])
                 devices = await get_device_count(client)
+
+            # ═══════════════════════════════════════════════════════════════
+            # 🚨 كشف خطف الجلسة الصامت (نفس auth_key من IP مختلف)
+            # إذا استخدم البائع نفس ملف الجلسة من جهاز آخر، تيلغرام لن يرسل
+            # تنبيه "جلسة جديدة" لأنها نفس auth_key — لكن IP الجلسة سيتغيّر.
+            # ═══════════════════════════════════════════════════════════════
+            if authorized and rec.get("bot_session_ip"):
+                try:
+                    _cur_ip = await get_session_ip(client)
+                    if _cur_ip and _cur_ip != rec["bot_session_ip"]:
+                        logger.warning(
+                            f"🚨 SILENT HIJACK: {rec['phone_number']} "
+                            f"IP تغيّر من {rec['bot_session_ip']} إلى {_cur_ip}"
+                        )
+                        # ① إلغاء الجلسة نهائياً — يُبطل auth_key للجميع بمن فيهم الخاطف
+                        try:
+                            await asyncio.wait_for(client.log_out(), timeout=10)
+                        except Exception:
+                            pass
+                        # ② تنظيف قاعدة البيانات
+                        with db_conn() as _hj:
+                            _hj.execute(
+                                "UPDATE number_stock SET session_string=NULL, bot_session_ip=NULL, "
+                                "last_authorized=FALSE, is_solo=FALSE, sessions_reset=FALSE "
+                                "WHERE id=%s",
+                                (rec["id"],)
+                            )
+                        # ③ إيقاف المراقبة
+                        try:
+                            await _stop_number_monitor(rec["phone_number"])
+                        except Exception:
+                            pass
+                        # ④ تنبيه فوري للمالك
+                        _hj_target = NUMBERS_GROUP_ID or OWNER_ID
+                        if _hj_target:
+                            try:
+                                await context.bot.send_message(
+                                    _hj_target,
+                                    f"🚨 *خطف جلسة مكتشَف!*\n\n"
+                                    f"📱 الرقم: `{rec['phone_number']}`\n"
+                                    f"🖥 IP البوت السابق: `{rec['bot_session_ip']}`\n"
+                                    f"🔴 IP الخاطف: `{_cur_ip}`\n\n"
+                                    f"✅ *تم إلغاء الجلسة نهائياً.*\n"
+                                    f"ملف الجلسة القديم أصبح عديم الفائدة تماماً.\n\n"
+                                    f"⚠️ يجب إعادة إضافة الرقم بجلسة جديدة.",
+                                    parse_mode="Markdown"
+                                )
+                            except Exception:
+                                pass
+                        continue  # ننتقل للرقم التالي بعد التعامل مع الاختراق
+                except Exception as _hj_e:
+                    logger.debug(f"⚠️ فحص IP الجلسة فشل للرقم {rec['phone_number']}: {_hj_e}")
 
             changes = []
             last_authorized = rec["last_authorized"] if rec["last_authorized"] is not None else True
@@ -7729,6 +7807,18 @@ async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE
                                 "UPDATE number_stock SET sessions_reset=TRUE, is_solo=%s WHERE id=%s",
                                 (_solo_imm, _si_row["id"])
                             )
+                        # ─── تسجيل IP الجلسة لكشف الخطف الصامت ──────────────
+                        try:
+                            _bot_ip2 = await get_session_ip(_kick_cl)
+                            if _bot_ip2:
+                                with db_conn() as _ipdb2:
+                                    _ipdb2.execute(
+                                        "UPDATE number_stock SET bot_session_ip=%s WHERE id=%s",
+                                        (_bot_ip2, _si_row["id"])
+                                    )
+                                logger.info(f"🔐 session_ip: سُجِّل IP={_bot_ip2} للرقم {phone}")
+                        except Exception as _ip_e2:
+                            logger.debug(f"⚠️ تعذّر تسجيل IP الجلسة للرقم {phone}: {_ip_e2}")
                         if _solo_imm:
                             asyncio.create_task(
                                 _test_and_set_can_send_code(phone, session_string, _si_row["id"])
@@ -8088,6 +8178,18 @@ async def _import_one_session_bytes(
                             "UPDATE number_stock SET sessions_reset=TRUE, is_solo=%s WHERE id=%s",
                             (_solo, stock_id)
                         )
+                    # ─── تسجيل IP الجلسة لكشف الخطف الصامت ──────────────
+                    try:
+                        _bot_ip3 = await get_session_ip(_kc)
+                        if _bot_ip3:
+                            with db_conn() as _ipdb3:
+                                _ipdb3.execute(
+                                    "UPDATE number_stock SET bot_session_ip=%s WHERE id=%s",
+                                    (_bot_ip3, stock_id)
+                                )
+                            logger.info(f"🔐 session_ip: سُجِّل IP={_bot_ip3} للرقم {phone}")
+                    except Exception as _ip_e3:
+                        logger.debug(f"⚠️ تعذّر تسجيل IP الجلسة للرقم {phone}: {_ip_e3}")
                     if _solo:
                         asyncio.create_task(_test_and_set_can_send_code(phone, session_string, stock_id))
                     kick_note = " ✅ طُردت" + (" | البوت وحده" if _solo else "")
