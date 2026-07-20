@@ -4686,12 +4686,13 @@ async def cmd_mass_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ متغيرات API_ID / API_HASH غير مضبوطة.")
         return
 
-    # ─── جلب الحسابات غير المباعة التي لديها ملف جلسة ──────────────────
+    # ─── جلب كل الحسابات غير المباعة التي لديها ملف جلسة ──────────────────
+    # نشمل المحذوفة (deleted_at IS NOT NULL) والمطرودة وغيرها
+    # الشرط الوحيد: لم تُباع قط (ever_sold IS NOT TRUE)
     with db_conn() as _c:
         rows = _c.execute(
             "SELECT id, phone_number, session_string FROM number_stock "
             "WHERE ever_sold IS NOT TRUE "
-            "  AND deleted_at IS NULL "
             "  AND session_string IS NOT NULL"
         ).fetchall()
 
