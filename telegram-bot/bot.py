@@ -6210,6 +6210,46 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
+    if is_own and state == "os_await_contest_start":
+        import re as _re_cs
+        _m = _re_cs.match(r"^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})$", text.strip())
+        if not _m:
+            await update.message.reply_text(
+                "⚠️ صيغة غير صحيحة. أرسل: `YYYY-MM-DD HH:MM` (توقيت العراق)\n"
+                "مثال: `2026-07-17 19:38`",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
+        try:
+            _naive = datetime(int(_m.group(1)), int(_m.group(2)), int(_m.group(3)),
+                              int(_m.group(4)), int(_m.group(5)))
+            _utc_dt = _naive.replace(tzinfo=timezone.utc) - timedelta(hours=3)
+        except ValueError:
+            await update.message.reply_text("⚠️ التاريخ غير صالح.")
+            return
+        _ctype_cur = get_setting("referral_contest_type") or "none"
+        if _ctype_cur == "none":
+            set_setting("referral_contest_type", "open")
+        set_setting("referral_contest_start", _utc_dt.isoformat())
+        context.user_data["state"] = "main_menu"
+        with db_conn() as _sc:
+            _cnt_row = _sc.execute(
+                "SELECT COUNT(*) as cnt FROM users "
+                "WHERE invited_by IS NOT NULL AND invited_by != 0 AND referral_credited=1 "
+                "AND credited_at IS NOT NULL AND credited_at >= %s",
+                (_utc_dt,)
+            ).fetchone()
+        _total_since = (_cnt_row or {}).get("cnt", 0)
+        await update.message.reply_text(
+            f"✅ *تم تحديث تاريخ بداية المسابقة*\n\n"
+            f"📅 البداية: `{_naive.strftime('%Y-%m-%d %H:%M')}` (توقيت العراق)\n"
+            f"🌐 UTC: `{_utc_dt.strftime('%Y-%m-%d %H:%M')}`\n\n"
+            f"📊 الإحالات المحتسبة منذ هذا التاريخ: *{_total_since:,}* إحالة",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=owner_settings_kb()
+        )
+        return
+
     if is_own and state == "os_await_contest_duration":
         td = _parse_contest_duration(text)
         if td is None:
@@ -9244,9 +9284,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 active_note = "\n\n🔴 *المسابقة انتهت*"
         else:
             active_note = "\n\n⚫ *لا توجد مسابقة نشطة حالياً*"
+        _cs = contest.get("start")
+        _start_str = _cs.strftime("%Y-%m-%d %H:%M UTC") if _cs else "غير محدد"
         kb_rows = [
             [InlineKeyboardButton("🔓 مفتوح (بدون وقت)", callback_data="os:contest:open")],
             [InlineKeyboardButton("⏳ محدد (بوقت)", callback_data="os:contest:limited")],
+            [InlineKeyboardButton(f"📅 تعديل تاريخ البداية ({_start_str})", callback_data="os:contest:set_start")],
             [InlineKeyboardButton("🏁 إنهاء المسابقة", callback_data="os:contest:stop")],
             [InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")],
         ]
@@ -9291,6 +9334,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🛑 *تم إيقاف المسابقة بنجاح.*",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:referral_contest")]])
+        )
+        return
+
+    if data == "os:contest:set_start" and is_own:
+        context.user_data["state"] = "os_await_contest_start"
+        await q.edit_message_text(
+            "📅 *تعديل تاريخ بداية المسابقة*\n\n"
+            "أرسل التاريخ والوقت بهذا الشكل (توقيت العراق UTC+3):\n"
+            "`YYYY-MM-DD HH:MM`\n\n"
+            "مثال: `2026-07-17 19:38`\n\n"
+            "⚠️ كل الإحالات من هذا التاريخ فصاعداً ستُحتسب في المسابقة.",
+            parse_mode=ParseMode.MARKDOWN
         )
         return
 
