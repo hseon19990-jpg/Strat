@@ -9107,8 +9107,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rows = [
             [InlineKeyboardButton("🕐 آخر 24 ساعة", callback_data="top_ref_pick:24h")],
             [InlineKeyboardButton("📅 اليوم الحالي (منذ 00:00 بالتوقيت العالمي)", callback_data="top_ref_pick:day")],
-            [InlineKeyboardButton("🔙 رجوع", callback_data="referral")],
         ]
+        if is_own:
+            rows.append([InlineKeyboardButton("🗓 آخر أسبوع 🔒", callback_data="top_ref_pick:week")])
+        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="referral")])
         await q.edit_message_text(
             "🏆 *الأكثر دعوةً*\n\nاختر الفترة التي تريد عرض المتصدرين خلالها:",
             parse_mode=ParseMode.MARKDOWN,
@@ -9121,8 +9123,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rows = [
             [InlineKeyboardButton("🕐 آخر 24 ساعة", callback_data="top_ref_pick:24h")],
             [InlineKeyboardButton("📅 اليوم الحالي (منذ 00:00 بالتوقيت العالمي)", callback_data="top_ref_pick:day")],
-            [InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")],
         ]
+        if is_own:
+            rows.append([InlineKeyboardButton("🗓 آخر أسبوع 🔒", callback_data="top_ref_pick:week")])
+        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")])
         await q.edit_message_text(
             "🏆 *الأكثر دعوةً*\n\nاختر الفترة التي تريد عرض المتصدرين خلالها:",
             parse_mode=ParseMode.MARKDOWN,
@@ -9132,6 +9136,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("top_ref_pick:"):
         period = data.split(":", 1)[1]
+        if period == "week" and not is_own:
+            await q.answer("🔒 هذا الخيار متاح للمالك فقط.", show_alert=True)
+            return
         since, title = _referral_period_bounds(period)
         rows = get_top_referrers_since(since, limit=10)
         text = _format_top_referrers(rows, title)
