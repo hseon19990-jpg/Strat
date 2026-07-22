@@ -5838,9 +5838,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["pending_gmail_email"] = text.strip()
         context.user_data["state"] = "await_gmail_password"
         await update.message.reply_text(
-            "🔐 *أرسل الباسورد*
-
-أرسل كلمة مرور الحساب فقط بدون أي شيء آخر:",
+            "🔐 *أرسل الباسورد*\n\nأرسل كلمة مرور الحساب فقط بدون أي شيء آخر:",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="collect_points")]])
         )
@@ -5863,27 +5861,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sub_id = sub["id"]
         context.user_data["state"] = "main_menu"
         await update.message.reply_text(
-            "✅ *تم إيصال طلبك بنجاح!*
-
-"
-            "سيقوم المالك بمراجعة الحساب وإضافة النقاط قريباً.",
+            "✅ *تم إيصال طلبك بنجاح!*\n\nسيقوم المالك بمراجعة الحساب وإضافة النقاط قريباً.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=main_menu_kb(is_own)
         )
         # إشعار المالك
         gmail_reward = int(get_setting("gmail_points_reward") or "10000")
         notif_text = (
-            f"📧 <b>طلب جيميل جديد</b>
-
-"
-            f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>
-"
-            f"🆔 {user.id}
-
-"
-            f"📬 الإيميل: <code>{gmail_email}</code>
-"
-            f"🔐 الباسورد: <code>{gmail_pass}</code>"
+            f"📧 <b>طلب جيميل جديد</b>\n\n👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n🆔 {user.id}\n\n📬 الإيميل: <code>{gmail_email}</code>\n🔐 الباسورد: <code>{gmail_pass}</code>"
         )
         gmail_kb = InlineKeyboardMarkup([
             [InlineKeyboardButton(f"✅ إتمام العملية وإعطاء {gmail_reward:,} نقطة", callback_data=f"gmail_approve:{sub_id}")],
@@ -5933,9 +5918,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 await context.bot.send_message(
                     target_uid,
-                    f"❌ *تم رفض طلبك*
-
-{reject_msg}",
+                    f"❌ *تم رفض طلبك*\n\n{reject_msg}",
                     parse_mode=ParseMode.MARKDOWN
                 )
             except Exception as e:
@@ -5944,10 +5927,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_link = f"tg://user?id={target_uid}" if target_uid else "—"
         sent_note = "وتم إبلاغه برسالتك." if reject_msg != "-" else "بدون إرسال رسالة."
         await update.message.reply_text(
-            f"✅ تم رفض الطلب {sent_note}
-
-"
-            f"🔗 <a href='{user_link}'>فتح محادثة المستخدم</a>",
+            f"✅ تم رفض الطلب {sent_note}\n\n🔗 <a href='{user_link}'>فتح محادثة المستخدم</a>",
             parse_mode=ParseMode.HTML,
             reply_markup=owner_settings_kb()
         )
@@ -9552,10 +9532,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         intro_msg = get_setting("gmail_intro_message") or "للحصول على النقاط قدّم حساب جيميل لا تستخدمه."
         gmail_reward = int(get_setting("gmail_points_reward") or "10000")
         await q.edit_message_text(
-            f"📧 *احصل على {gmail_reward:,} نقطة*
-
-"
-            f"{intro_msg}",
+            f"📧 *احصل على {gmail_reward:,} نقطة*\n\n{intro_msg}",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("✅ التالي", callback_data="gmail_next")],
@@ -9567,9 +9544,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "gmail_next":
         context.user_data["state"] = "await_gmail_email"
         await q.edit_message_text(
-            "📧 *أرسل الإيميل*
-
-أرسل عنوان البريد الإلكتروني فقط بدون أي شيء آخر:",
+            "📧 *أرسل الإيميل*\n\nأرسل عنوان البريد الإلكتروني فقط بدون أي شيء آخر:",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("❌ إلغاء", callback_data="collect_points")]
@@ -13512,18 +13487,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         status_text = {"pending": "⏳ قيد الانتظار", "approved": "✅ مقبول", "rejected": "❌ مرفوض"}.get(sub["status"], sub["status"])
         text_html = (
-            f"📧 <b>تفاصيل طلب #{sub['id']}</b>
-
-"
-            f"👤 <a href='tg://user?id={sub['user_id']}'>المستخدم</a> | 🆔 {sub['user_id']}
-"
-            f"📬 الإيميل: <code>{sub['gmail_email']}</code>
-"
-            f"🔐 الباسورد: <code>{sub['gmail_pass']}</code>
-"
-            f"📊 الحالة: {status_text}
-"
-            f"🕐 {sub['created_at']}"
+            f"📧 <b>تفاصيل طلب #{sub['id']}</b>\n\n👤 <a href='tg://user?id={sub['user_id']}'>المستخدم</a> | 🆔 {sub['user_id']}\n📬 الإيميل: <code>{sub['gmail_email']}</code>\n🔐 الباسورد: <code>{sub['gmail_pass']}</code>\n📊 الحالة: {status_text}\n🕐 {sub['created_at']}"
         )
         detail_rows = []
         if sub["status"] == "pending":
@@ -13538,9 +13502,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cur = get_setting("gmail_points_reward") or "10000"
         context.user_data["state"] = "os_await_gmail_reward"
         await q.edit_message_text(
-            f"⚙️ نقاط طلب الجيميل الحالية: {cur}
-
-أرسل القيمة الجديدة:"
+            f"⚙️ نقاط طلب الجيميل الحالية: {cur}\n\nأرسل القيمة الجديدة:"
         )
         return
 
@@ -13548,10 +13510,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cur = get_setting("gmail_intro_message") or ""
         context.user_data["state"] = "os_await_gmail_msg"
         await q.edit_message_text(
-            f"✏️ نص رسالة الجيميل الحالية:
-{cur}
-
-أرسل النص الجديد:"
+            f"✏️ نص رسالة الجيميل الحالية:\n{cur}\n\nأرسل النص الجديد:"
         )
         return
 
@@ -13573,18 +13532,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await context.bot.send_message(
                 sub["user_id"],
-                f"🎉 *تمت الموافقة على طلبك!*
-
-"
+                f"🎉 *تمت الموافقة على طلبك!*\n\n"
                 f"✅ تم إضافة *{gmail_reward:,} نقطة* إلى رصيدك.",
                 parse_mode=ParseMode.MARKDOWN
             )
         except Exception as e:
             logger.warning(f"gmail approve notify user error: {e}")
         await q.edit_message_text(
-            q.message.text_html + "
-
-✅ <b>تمت الموافقة وأُضيفت النقاط.</b>",
+            q.message.text_html + "\n\n✅ <b>تمت الموافقة وأُضيفت النقاط.</b>",
             parse_mode=ParseMode.HTML
         )
         return
@@ -13605,15 +13560,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "os_await_gmail_reject_msg"
         user_link = f"tg://user?id={sub['user_id']}"
         await q.edit_message_text(
-            f"❌ <b>رفض طلب الجيميل</b>
-
-"
-            f"👤 <a href='{user_link}'>المستخدم</a> | 🆔 {sub['user_id']}
-
-"
-            f"أرسل رسالة الرفض التي ستصل للمستخدم:
-"
-            f"(أو أرسل <code>-</code> لرفض بدون رسالة)",
+            f"❌ <b>رفض طلب الجيميل</b>\n\n👤 <a href='{user_link}'>المستخدم</a> | 🆔 {sub['user_id']}\n\nأرسل رسالة الرفض التي ستصل للمستخدم:\n(أو أرسل <code>-</code> لرفض بدون رسالة)",
             parse_mode=ParseMode.HTML
         )
         return
