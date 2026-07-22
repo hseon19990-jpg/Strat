@@ -3661,6 +3661,7 @@ BUILTIN_DEFAULTS = {
         ("🎁 الأكثر دعوةً اليوم", "top_ref_today", 2),
         ("✅ تواصل مع الدعم", "contact_support", 2),
         ("🏆 مسابقة الدعوة", "referral_contest_view", 2),
+        ("📧 احصل على نقاط مقابل إيميل جيميل", "gmail_points", 1),
     ],
     "services_menu": [(label, value, 2) for label, value in SERVICE_PLATFORMS],
     "services_menu_tg": [
