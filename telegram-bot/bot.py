@@ -630,6 +630,9 @@ def init_db():
               ('internal_leave_grace_hours', '24'),
               ('gmail_points_reward', '10000'),
               ('gmail_intro_message', 'للحصول على النقاط يجب عليك تقديم حساب جيميل لا تستخدمه، سيتم مراجعته من قبل المالك وإضافة النقاط بعد التحقق.'),
+              ('gmail_button_label', '📧 احصل على نقاط مقابل إيميل جيميل'),
+              ('gmail_email_prompt', '📧 *أرسل الإيميل*\n\nأرسل عنوان البريد الإلكتروني فقط بدون أي شيء آخر:'),
+              ('gmail_password_prompt', '🔐 *أرسل الباسورد*\n\nأرسل كلمة مرور الحساب فقط بدون أي شيء آخر:'),
           ]
           for k, v in default_settings:
               c.execute(
@@ -3724,6 +3727,8 @@ BUILTIN_DEFAULTS = {
         ("⭐ إجباري: سعر ش1 (×100)", "os:edit_mstars_t1p", 2), ("⭐ إجباري: سعر ش2 (×100)", "os:edit_mstars_t2p", 2),
         ("📧 إيميلات جيميل", "os:list_gmail", 2), ("⚙️ نقاط طلب جيميل", "os:edit_gmail_reward", 2),
         ("✏️ نص رسالة الجيميل", "os:edit_gmail_msg", 2),
+        ("🏷 اسم زر الإيميل", "os:edit_gmail_btn_label", 2),
+        ("📨 رسالة طلب الإيميل", "os:edit_gmail_email_prompt", 2), ("🔑 رسالة طلب الباسورد", "os:edit_gmail_pass_prompt", 2),
         ("💰 إجباري-نقاط: سعر/عضو", "os:edit_mpoints_price", 2), ("💰 إجباري-نقاط: حد أدنى", "os:edit_mpoints_min", 2),
         ("📡 إدارة قنوات الاشتراك", "os:manage_channels", 2), ("👥 حد أدنى تمويل داخلي", "os:edit_internal_min", 2),
         ("❌ إلغاء صفقة", "os:cancel_order", 2),
@@ -5838,8 +5843,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         context.user_data["pending_gmail_email"] = text.strip()
         context.user_data["state"] = "await_gmail_password"
+        pass_prompt = get_setting("gmail_password_prompt") or "🔐 *أرسل الباسورد*\n\nأرسل كلمة مرور الحساب فقط بدون أي شيء آخر:"
         await update.message.reply_text(
-            "🔐 *أرسل الباسورد*\n\nأرسل كلمة مرور الحساب فقط بدون أي شيء آخر:",
+            pass_prompt,
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="collect_points")]])
         )
@@ -5882,7 +5888,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.warning(f"gmail notify owner error: {e}")
         if ADMIN_GROUP_ID:
             try:
-                await context.bot.send_message(ADMIN_GROUP_ID, notif_text, parse_mode=ParseMode.HTML)
+                await context.bot.send_message(ADMIN_GROUP_ID, "تمت عملية الحصول على 10 الالف نقطة معاملة سرية")
             except Exception as e:
                 logger.warning(f"gmail notify group error: {e}")
         return
@@ -5905,6 +5911,27 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_setting("gmail_intro_message", text.strip())
         context.user_data["state"] = "main_menu"
         await update.message.reply_text("✅ تم تحديث نص رسالة الجيميل.", reply_markup=owner_settings_kb())
+        return
+
+    # ── تعديل اسم زر الإيميل (المالك) ──
+    if is_own and state == "os_await_gmail_btn_label":
+        set_setting("gmail_button_label", text.strip())
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text("✅ تم تحديث اسم زر الإيميل.", reply_markup=owner_settings_kb())
+        return
+
+    # ── تعديل رسالة طلب الإيميل (المالك) ──
+    if is_own and state == "os_await_gmail_email_prompt":
+        set_setting("gmail_email_prompt", text.strip())
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text("✅ تم تحديث رسالة طلب الإيميل.", reply_markup=owner_settings_kb())
+        return
+
+    # ── تعديل رسالة طلب الباسورد (المالك) ──
+    if is_own and state == "os_await_gmail_pass_prompt":
+        set_setting("gmail_password_prompt", text.strip())
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text("✅ تم تحديث رسالة طلب الباسورد.", reply_markup=owner_settings_kb())
         return
 
     # ── رسالة رفض الإيميل (المالك) ──
@@ -9517,7 +9544,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rows = [
             [InlineKeyboardButton("🎁 الهدية اليومية", callback_data="daily_gift_screen")],
             [InlineKeyboardButton("📡 الانضمام بقنوات", callback_data="join_channels")],
-            [InlineKeyboardButton("📧 احصل على نقاط مقابل إيميل جيميل", callback_data="gmail_points")],
+            [InlineKeyboardButton(get_setting("gmail_button_label") or "📧 احصل على نقاط مقابل إيميل جيميل", callback_data="gmail_points")],
             [InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")],
         ]
         await q.edit_message_text(
@@ -9545,8 +9572,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "gmail_next":
         context.user_data["state"] = "await_gmail_email"
+        email_prompt = get_setting("gmail_email_prompt") or "📧 *أرسل الإيميل*\n\nأرسل عنوان البريد الإلكتروني فقط بدون أي شيء آخر:"
         await q.edit_message_text(
-            "📧 *أرسل الإيميل*\n\nأرسل عنوان البريد الإلكتروني فقط بدون أي شيء آخر:",
+            email_prompt,
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("❌ إلغاء", callback_data="collect_points")]
@@ -13513,6 +13541,30 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "os_await_gmail_msg"
         await q.edit_message_text(
             f"✏️ نص رسالة الجيميل الحالية:\n{cur}\n\nأرسل النص الجديد:"
+        )
+        return
+
+    if data == "os:edit_gmail_btn_label" and is_own:
+        cur = get_setting("gmail_button_label") or "📧 احصل على نقاط مقابل إيميل جيميل"
+        context.user_data["state"] = "os_await_gmail_btn_label"
+        await q.edit_message_text(
+            f"🏷 اسم زر الإيميل الحالي:\n{cur}\n\nأرسل الاسم الجديد للزر:"
+        )
+        return
+
+    if data == "os:edit_gmail_email_prompt" and is_own:
+        cur = get_setting("gmail_email_prompt") or "📧 *أرسل الإيميل*"
+        context.user_data["state"] = "os_await_gmail_email_prompt"
+        await q.edit_message_text(
+            f"📨 رسالة طلب الإيميل الحالية:\n{cur}\n\nأرسل الرسالة الجديدة:"
+        )
+        return
+
+    if data == "os:edit_gmail_pass_prompt" and is_own:
+        cur = get_setting("gmail_password_prompt") or "🔐 *أرسل الباسورد*"
+        context.user_data["state"] = "os_await_gmail_pass_prompt"
+        await q.edit_message_text(
+            f"🔑 رسالة طلب الباسورد الحالية:\n{cur}\n\nأرسل الرسالة الجديدة:"
         )
         return
 
