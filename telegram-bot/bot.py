@@ -9516,6 +9516,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rows = [
             [InlineKeyboardButton("🎁 الهدية اليومية", callback_data="daily_gift_screen")],
             [InlineKeyboardButton("📡 الانضمام بقنوات", callback_data="join_channels")],
+            [InlineKeyboardButton("📧 احصل على نقاط مقابل إيميل جيميل", callback_data="gmail_points")],
             [InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")],
         ]
         await q.edit_message_text(
