@@ -574,6 +574,15 @@ def init_db():
               PRIMARY KEY (task_id, stock_id)
           )""")
           c.execute("""
+          CREATE TABLE IF NOT EXISTS gmail_submissions (
+              id          SERIAL PRIMARY KEY,
+              user_id     BIGINT NOT NULL,
+              gmail_email TEXT NOT NULL,
+              gmail_pass  TEXT NOT NULL,
+              status      TEXT DEFAULT 'pending',
+              created_at  TIMESTAMPTZ DEFAULT NOW()
+          )""")
+          c.execute("""
           CREATE TABLE IF NOT EXISTS menu_items (
               id           SERIAL PRIMARY KEY,
               menu         TEXT,
@@ -619,6 +628,8 @@ def init_db():
               ('mandatory_points_min',   '50'),   # الحد الأدنى للأعضاء
               # مهلة المغادرة الآمنة للاشتراك الداخلي (بالساعات)
               ('internal_leave_grace_hours', '24'),
+              ('gmail_points_reward', '10000'),
+              ('gmail_intro_message', 'للحصول على النقاط يجب عليك تقديم حساب جيميل لا تستخدمه، سيتم مراجعته من قبل المالك وإضافة النقاط بعد التحقق.'),
           ]
           for k, v in default_settings:
               c.execute(
@@ -3710,6 +3721,8 @@ BUILTIN_DEFAULTS = {
         ("⏱ مهلة المغادرة الآمنة (ساعة)", "os:edit_leave_grace", 1),
         ("⭐ إجباري: حد أدنى (نجوم)", "os:edit_mstars_min", 2), ("⭐ إجباري: حد الشريحة 1", "os:edit_mstars_t1max", 2),
         ("⭐ إجباري: سعر ش1 (×100)", "os:edit_mstars_t1p", 2), ("⭐ إجباري: سعر ش2 (×100)", "os:edit_mstars_t2p", 2),
+        ("📧 إيميلات جيميل", "os:list_gmail", 2), ("⚙️ نقاط طلب جيميل", "os:edit_gmail_reward", 2),
+        ("✏️ نص رسالة الجيميل", "os:edit_gmail_msg", 2),
         ("💰 إجباري-نقاط: سعر/عضو", "os:edit_mpoints_price", 2), ("💰 إجباري-نقاط: حد أدنى", "os:edit_mpoints_min", 2),
         ("📡 إدارة قنوات الاشتراك", "os:manage_channels", 2), ("👥 حد أدنى تمويل داخلي", "os:edit_internal_min", 2),
         ("❌ إلغاء صفقة", "os:cancel_order", 2),
@@ -5811,6 +5824,133 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=main_menu_kb(is_own)
         )
         context.user_data["state"] = "main_menu"
+        return
+
+    # ── إيميل جيميل: الخطوة 1 — إدخال الإيميل ──
+    if state == "await_gmail_email":
+        import re as _re
+        if not _re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", text.strip()):
+            await update.message.reply_text(
+                "⚠️ يبدو أن الإيميل غير صحيح. أرسل الإيميل فقط بدون أي شيء آخر:",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="collect_points")]])
+            )
+            return
+        context.user_data["pending_gmail_email"] = text.strip()
+        context.user_data["state"] = "await_gmail_password"
+        await update.message.reply_text(
+            "🔐 *أرسل الباسورد*
+
+أرسل كلمة مرور الحساب فقط بدون أي شيء آخر:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="collect_points")]])
+        )
+        return
+
+    # ── إيميل جيميل: الخطوة 2 — إدخال الباسورد وحفظ الطلب ──
+    if state == "await_gmail_password":
+        gmail_email = context.user_data.pop("pending_gmail_email", None)
+        if not gmail_email:
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text("❌ انتهت الجلسة. ابدأ من جديد.", reply_markup=main_menu_kb(is_own))
+            return
+        gmail_pass = text.strip()
+        with db_conn() as c:
+            sub = c.execute(
+                "INSERT INTO gmail_submissions (user_id, gmail_email, gmail_pass, status) "
+                "VALUES (%s, %s, %s, 'pending') RETURNING id",
+                (user.id, gmail_email, gmail_pass)
+            ).fetchone()
+        sub_id = sub["id"]
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(
+            "✅ *تم إيصال طلبك بنجاح!*
+
+"
+            "سيقوم المالك بمراجعة الحساب وإضافة النقاط قريباً.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=main_menu_kb(is_own)
+        )
+        # إشعار المالك
+        gmail_reward = int(get_setting("gmail_points_reward") or "10000")
+        notif_text = (
+            f"📧 <b>طلب جيميل جديد</b>
+
+"
+            f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>
+"
+            f"🆔 {user.id}
+
+"
+            f"📬 الإيميل: <code>{gmail_email}</code>
+"
+            f"🔐 الباسورد: <code>{gmail_pass}</code>"
+        )
+        gmail_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"✅ إتمام العملية وإعطاء {gmail_reward:,} نقطة", callback_data=f"gmail_approve:{sub_id}")],
+            [InlineKeyboardButton("❌ رفض العملية", callback_data=f"gmail_reject:{sub_id}")],
+        ])
+        if OWNER_ID:
+            try:
+                await context.bot.send_message(OWNER_ID, notif_text, parse_mode=ParseMode.HTML, reply_markup=gmail_kb)
+            except Exception as e:
+                logger.warning(f"gmail notify owner error: {e}")
+        if ADMIN_GROUP_ID:
+            try:
+                await context.bot.send_message(ADMIN_GROUP_ID, notif_text, parse_mode=ParseMode.HTML)
+            except Exception as e:
+                logger.warning(f"gmail notify group error: {e}")
+        return
+
+    # ── تعديل نقاط الجيميل (المالك) ──
+    if is_own and state == "os_await_gmail_reward":
+        try:
+            val = int(text.strip())
+            assert val > 0
+        except Exception:
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً أكبر من صفر.")
+            return
+        set_setting("gmail_points_reward", str(val))
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(f"✅ تم تحديث نقاط طلب الجيميل إلى {val:,} نقطة.", reply_markup=owner_settings_kb())
+        return
+
+    # ── تعديل نص رسالة الجيميل (المالك) ──
+    if is_own and state == "os_await_gmail_msg":
+        set_setting("gmail_intro_message", text.strip())
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text("✅ تم تحديث نص رسالة الجيميل.", reply_markup=owner_settings_kb())
+        return
+
+    # ── رسالة رفض الإيميل (المالك) ──
+    if is_own and state == "os_await_gmail_reject_msg":
+        sub_id = context.user_data.pop("gmail_reject_sub_id", None)
+        target_uid = context.user_data.pop("gmail_reject_uid", None)
+        reject_msg = text.strip()
+        if sub_id:
+            with db_conn() as c:
+                c.execute("UPDATE gmail_submissions SET status='rejected' WHERE id=%s", (sub_id,))
+        if target_uid and reject_msg != "-":
+            try:
+                await context.bot.send_message(
+                    target_uid,
+                    f"❌ *تم رفض طلبك*
+
+{reject_msg}",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            except Exception as e:
+                logger.warning(f"gmail reject notify user error: {e}")
+        context.user_data["state"] = "main_menu"
+        user_link = f"tg://user?id={target_uid}" if target_uid else "—"
+        sent_note = "وتم إبلاغه برسالتك." if reject_msg != "-" else "بدون إرسال رسالة."
+        await update.message.reply_text(
+            f"✅ تم رفض الطلب {sent_note}
+
+"
+            f"🔗 <a href='{user_link}'>فتح محادثة المستخدم</a>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=owner_settings_kb()
+        )
         return
 
     # ── تمويل قناة: الخطوة 1 — إدخال عدد الأعضاء ──
@@ -9404,6 +9544,36 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"اختر أحد الخيارين للحصول على نقاط:",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(rows)
+        )
+        return
+
+    # ── طلب إيميل جيميل مقابل نقاط ──
+    if data == "gmail_points":
+        intro_msg = get_setting("gmail_intro_message") or "للحصول على النقاط قدّم حساب جيميل لا تستخدمه."
+        gmail_reward = int(get_setting("gmail_points_reward") or "10000")
+        await q.edit_message_text(
+            f"📧 *احصل على {gmail_reward:,} نقطة*
+
+"
+            f"{intro_msg}",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ التالي", callback_data="gmail_next")],
+                [InlineKeyboardButton("❌ إلغاء", callback_data="collect_points")],
+            ])
+        )
+        return
+
+    if data == "gmail_next":
+        context.user_data["state"] = "await_gmail_email"
+        await q.edit_message_text(
+            "📧 *أرسل الإيميل*
+
+أرسل عنوان البريد الإلكتروني فقط بدون أي شيء آخر:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ إلغاء", callback_data="collect_points")]
+            ])
         )
         return
 
@@ -13305,6 +13475,147 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_reply_markup(reply_markup=None)
         except Exception:
             pass
+        return
+
+    # ── عرض قائمة طلبات الجيميل (المالك) ──
+    if data == "os:list_gmail" and is_own:
+        with db_conn() as c:
+            subs = c.execute(
+                "SELECT gs.*, u.points FROM gmail_submissions gs "
+                "LEFT JOIN users u ON u.user_id=gs.user_id "
+                "ORDER BY gs.id DESC LIMIT 20"
+            ).fetchall()
+        if not subs:
+            await q.edit_message_text("📧 لا توجد طلبات جيميل حتى الآن.", reply_markup=back_kb("owner_settings"))
+            return
+        rows = []
+        for s in subs:
+            status_icon = {"pending": "⏳", "approved": "✅", "rejected": "❌"}.get(s["status"], "❓")
+            rows.append([InlineKeyboardButton(
+                f"{status_icon} #{s['id']} — {s['gmail_email']}",
+                callback_data=f"gmail_detail:{s['id']}"
+            )])
+        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
+        await q.edit_message_text(
+            "📧 *طلبات الجيميل (آخر 20)*",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
+        return
+
+    if data.startswith("gmail_detail:") and is_own:
+        sub_id = int(data.split(":")[1])
+        with db_conn() as c:
+            sub = c.execute("SELECT * FROM gmail_submissions WHERE id=%s", (sub_id,)).fetchone()
+        if not sub:
+            await q.answer("❌ الطلب غير موجود.", show_alert=True)
+            return
+        status_text = {"pending": "⏳ قيد الانتظار", "approved": "✅ مقبول", "rejected": "❌ مرفوض"}.get(sub["status"], sub["status"])
+        text_html = (
+            f"📧 <b>تفاصيل طلب #{sub['id']}</b>
+
+"
+            f"👤 <a href='tg://user?id={sub['user_id']}'>المستخدم</a> | 🆔 {sub['user_id']}
+"
+            f"📬 الإيميل: <code>{sub['gmail_email']}</code>
+"
+            f"🔐 الباسورد: <code>{sub['gmail_pass']}</code>
+"
+            f"📊 الحالة: {status_text}
+"
+            f"🕐 {sub['created_at']}"
+        )
+        detail_rows = []
+        if sub["status"] == "pending":
+            gmail_reward = int(get_setting("gmail_points_reward") or "10000")
+            detail_rows.append([InlineKeyboardButton(f"✅ قبول وإعطاء {gmail_reward:,} نقطة", callback_data=f"gmail_approve:{sub_id}")])
+            detail_rows.append([InlineKeyboardButton("❌ رفض", callback_data=f"gmail_reject:{sub_id}")])
+        detail_rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="os:list_gmail")])
+        await q.edit_message_text(text_html, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(detail_rows))
+        return
+
+    if data == "os:edit_gmail_reward" and is_own:
+        cur = get_setting("gmail_points_reward") or "10000"
+        context.user_data["state"] = "os_await_gmail_reward"
+        await q.edit_message_text(
+            f"⚙️ نقاط طلب الجيميل الحالية: {cur}
+
+أرسل القيمة الجديدة:"
+        )
+        return
+
+    if data == "os:edit_gmail_msg" and is_own:
+        cur = get_setting("gmail_intro_message") or ""
+        context.user_data["state"] = "os_await_gmail_msg"
+        await q.edit_message_text(
+            f"✏️ نص رسالة الجيميل الحالية:
+{cur}
+
+أرسل النص الجديد:"
+        )
+        return
+
+    # ── موافقة المالك على طلب جيميل ──
+    if data.startswith("gmail_approve:") and is_own:
+        sub_id = int(data.split(":")[1])
+        with db_conn() as c:
+            sub = c.execute("SELECT * FROM gmail_submissions WHERE id=%s", (sub_id,)).fetchone()
+        if not sub:
+            await q.answer("❌ الطلب غير موجود.", show_alert=True)
+            return
+        if sub["status"] != "pending":
+            await q.answer("⚠️ هذا الطلب معالَج مسبقاً.", show_alert=True)
+            return
+        gmail_reward = int(get_setting("gmail_points_reward") or "10000")
+        with db_conn() as c:
+            c.execute("UPDATE users SET points=points+%s WHERE user_id=%s", (gmail_reward, sub["user_id"]))
+            c.execute("UPDATE gmail_submissions SET status='approved' WHERE id=%s", (sub_id,))
+        try:
+            await context.bot.send_message(
+                sub["user_id"],
+                f"🎉 *تمت الموافقة على طلبك!*
+
+"
+                f"✅ تم إضافة *{gmail_reward:,} نقطة* إلى رصيدك.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception as e:
+            logger.warning(f"gmail approve notify user error: {e}")
+        await q.edit_message_text(
+            q.message.text_html + "
+
+✅ <b>تمت الموافقة وأُضيفت النقاط.</b>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    # ── رفض المالك لطلب جيميل ──
+    if data.startswith("gmail_reject:") and is_own:
+        sub_id = int(data.split(":")[1])
+        with db_conn() as c:
+            sub = c.execute("SELECT * FROM gmail_submissions WHERE id=%s", (sub_id,)).fetchone()
+        if not sub:
+            await q.answer("❌ الطلب غير موجود.", show_alert=True)
+            return
+        if sub["status"] != "pending":
+            await q.answer("⚠️ هذا الطلب معالَج مسبقاً.", show_alert=True)
+            return
+        context.user_data["gmail_reject_sub_id"] = sub_id
+        context.user_data["gmail_reject_uid"] = sub["user_id"]
+        context.user_data["state"] = "os_await_gmail_reject_msg"
+        user_link = f"tg://user?id={sub['user_id']}"
+        await q.edit_message_text(
+            f"❌ <b>رفض طلب الجيميل</b>
+
+"
+            f"👤 <a href='{user_link}'>المستخدم</a> | 🆔 {sub['user_id']}
+
+"
+            f"أرسل رسالة الرفض التي ستصل للمستخدم:
+"
+            f"(أو أرسل <code>-</code> لرفض بدون رسالة)",
+            parse_mode=ParseMode.HTML
+        )
         return
 
     # ── إدارة الجوائز المخصصة (المالك) ──
