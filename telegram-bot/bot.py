@@ -557,12 +557,14 @@ def init_db():
           )""")
           c.execute("""
           CREATE TABLE IF NOT EXISTS referral_tasks (
-              id           SERIAL PRIMARY KEY,
-              label        TEXT NOT NULL,
-              bot_username TEXT NOT NULL,
-              start_param  TEXT NOT NULL,
-              active       INTEGER DEFAULT 1,
-              created_at   TIMESTAMPTZ DEFAULT NOW()
+              id                  SERIAL PRIMARY KEY,
+              label               TEXT NOT NULL,
+              bot_username        TEXT NOT NULL,
+              start_param         TEXT NOT NULL,
+              mandatory_channels  TEXT DEFAULT '',
+              folder_link         TEXT DEFAULT '',
+              active              INTEGER DEFAULT 1,
+              created_at          TIMESTAMPTZ DEFAULT NOW()
           )""")
           c.execute("""
           CREATE TABLE IF NOT EXISTS referral_completions (
@@ -695,6 +697,14 @@ def init_db():
               logger.info(f"✅ تم تصحيح {fixed} قناة إجبارية كانت مخزّنة بـ mandatory_points → mandatory")
       except Exception as e:
           logger.warning(f"⚠️ فشل تصحيح القنوات الإجبارية القديمة: {e}")
+
+      # إضافة أعمدة الإحالة التلقائية الجديدة (مجلد + قنوات إجبارية)
+      try:
+          with db_conn() as c:
+              c.execute("ALTER TABLE referral_tasks ADD COLUMN IF NOT EXISTS mandatory_channels TEXT DEFAULT ''")
+              c.execute("ALTER TABLE referral_tasks ADD COLUMN IF NOT EXISTS folder_link TEXT DEFAULT ''")
+      except Exception:
+          pass
 
       # إعادة تسمية زر "بدء بوت" إلى "رشق بدء (ستارت) بوت" مع إبقاء نفس الخدمات (نفس action_value)
       try:
@@ -1750,11 +1760,14 @@ def get_referral_task(task_id: int) -> dict | None:
         return dict(row) if row else None
 
 
-def add_referral_task(label: str, bot_username: str, start_param: str) -> int:
+def add_referral_task(label: str, bot_username: str, start_param: str,
+                       mandatory_channels: str = "", folder_link: str = "") -> int:
     with db_conn() as c:
         row = c.execute(
-            "INSERT INTO referral_tasks (label, bot_username, start_param) VALUES (%s,%s,%s) RETURNING id",
-            (label, bot_username, start_param)
+            "INSERT INTO referral_tasks "
+            "(label, bot_username, start_param, mandatory_channels, folder_link) "
+            "VALUES (%s,%s,%s,%s,%s) RETURNING id",
+            (label, bot_username, start_param, mandatory_channels or "", folder_link or "")
         ).fetchone()
         return row["id"]
 
@@ -1826,14 +1839,109 @@ def mark_referral_completion(task_id: int, stock_id: int, status: str, error_msg
 #  تنفيذ الإحالة الفعلية لرقم واحد
 # ═══════════════════════════════════════════════════════════
 
-async def do_referral_for_number(phone: str, session_str: str, bot_username: str, start_param: str) -> tuple:
-    """
-    يُرسل /start مع بارامتر الإحالة إلى البوت المطلوب باستخدام جلسة الرقم المخزونة.
-    يُرجع (success: bool, detail: str).
+# ─── دوال مساعدة للإحالة التلقائية ───
 
-    الفرق عن /start العادي:
-    - يُستخدم StartBotRequest وهو ما يُسجّل الإحالة رسمياً في Telegram API
-      (مكافئ للنقر على رابط t.me/BotName?start=refCODE من داخل تطبيق تيليجرام).
+def _parse_channel_tokens(raw: str) -> list:
+    """يحوّل نص القنوات (مسافة / سطر جديد فاصل) إلى قائمة من dict {type, value}.
+    يقبل: @username  أو  t.me/username  أو  t.me/+HASH  أو  t.me/joinchat/HASH
+    """
+    import re as _re
+    results = []
+    for tok in _re.split(r'[\s,]+', raw.strip()):
+        tok = tok.strip()
+        if not tok:
+            continue
+        if 't.me/' in tok or 'telegram.me/' in tok:
+            from urllib.parse import urlparse as _up, parse_qs as _pq
+            parsed = _up(tok if tok.startswith('http') else 'https://' + tok)
+            path = parsed.path.strip('/')
+            if path.startswith('+'):
+                results.append({'type': 'invite', 'value': path[1:]})
+            elif 'joinchat/' in path:
+                results.append({'type': 'invite', 'value': path.split('joinchat/')[-1]})
+            else:
+                part = path.split('/')[0]
+                if part:
+                    results.append({'type': 'username', 'value': part})
+        elif tok.startswith('@'):
+            results.append({'type': 'username', 'value': tok[1:]})
+        else:
+            results.append({'type': 'username', 'value': tok})
+    return results
+
+
+async def _join_mandatory_channels(client, raw_channels: str) -> int:
+    """ينضم لجميع القنوات الإجبارية. يُرجع عدد ما نجح."""
+    from telethon.tl.functions.channels import JoinChannelRequest
+    from telethon.tl.functions.messages import ImportChatInviteRequest
+    tokens = _parse_channel_tokens(raw_channels)
+    joined = 0
+    for tok in tokens:
+        try:
+            if tok['type'] == 'invite':
+                await client(ImportChatInviteRequest(tok['value']))
+            else:
+                ch = await client.get_entity(tok['value'])
+                await client(JoinChannelRequest(ch))
+            joined += 1
+            await asyncio.sleep(1.5)
+        except Exception as e:
+            logger.warning(f"⚠️ تعذّر الانضمام لـ {tok}: {e}")
+    return joined
+
+
+async def _join_folder_link(client, folder_url: str) -> str:
+    """ينضم لمجلد تيليجرام (addlist link). إذا وصل الحد (2) يحذف الأقدم."""
+    try:
+        from telethon.tl.functions.chatlists import (
+            CheckChatlistInviteRequest,
+            JoinChatlistInviteRequest,
+            GetChatlistsRequest,
+            LeaveChatlistRequest,
+        )
+        # استخراج الـ hash من الرابط
+        import re as _re
+        m = _re.search(r'addlist/([A-Za-z0-9_-]+)', folder_url)
+        if not m:
+            return "رابط مجلد غير صحيح"
+        folder_hash = m.group(1)
+
+        # جلب قائمة المجلدات الحالية
+        try:
+            current = await client(GetChatlistsRequest())
+            folders = getattr(current, 'filters', []) or []
+        except Exception:
+            folders = []
+
+        # إذا وصلنا للحد (2) نحذف الأول (الأقدم)
+        if len(folders) >= 2:
+            try:
+                oldest = folders[0]
+                await client(LeaveChatlistRequest(
+                    chatlist=oldest,
+                    peers=[]
+                ))
+                await asyncio.sleep(1)
+            except Exception as e:
+                logger.warning(f"⚠️ تعذّر حذف مجلد قديم: {e}")
+
+        # التحقق من صحة الرابط والانضمام
+        invite_info = await client(CheckChatlistInviteRequest(slug=folder_hash))
+        await client(JoinChatlistInviteRequest(
+            slug=folder_hash,
+            peers=getattr(invite_info, 'peers', []) or [],
+        ))
+        return "انضم للمجلد ✅"
+    except Exception as e:
+        logger.warning(f"⚠️ تعذّر الانضمام للمجلد: {e}")
+        return f"فشل المجلد: {str(e)[:60]}"
+
+
+async def do_referral_for_number(phone: str, session_str: str, bot_username: str, start_param: str,
+                                  mandatory_channels: str = "", folder_link: str = "") -> tuple:
+    """
+    ينضم للقنوات الإجبارية، يُنظّم المجلد (folder link)، ثم يُرسل /start مع بارامتر الإحالة.
+    يُرجع (success: bool, detail: str).
     """
     client = TelegramClient(
         StringSession(session_str),
@@ -1845,55 +1953,62 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
         if not await client.is_user_authorized():
             return False, "جلسة منتهية أو مُلغاة"
 
-        # جلب كيان البوت
-        bot_entity = await client.get_entity(bot_username)
+        steps = []
 
-        # StartBotRequest يُرسل deep-link start — يُسجّل كإحالة حقيقية
+        # ─ خطوة 1: الانضمام للقنوات الإجبارية ─
+        if mandatory_channels and mandatory_channels.strip():
+            cnt = await _join_mandatory_channels(client, mandatory_channels)
+            if cnt:
+                steps.append(f"انضم لـ {cnt} قناة إجبارية")
+
+        # ─ خطوة 2: تنظيم المجلد (folder link) ─
+        if folder_link and folder_link.strip():
+            folder_result = await _join_folder_link(client, folder_link)
+            steps.append(folder_result)
+            await asyncio.sleep(1)
+
+        # ─ خطوة 3: الإحالة (StartBotRequest) ─
+        bot_entity = await client.get_entity(bot_username)
         await client(StartBotRequest(
             bot=bot_entity,
             peer=bot_entity,
             start_param=start_param,
         ))
 
-        # ننتظر ليصل رد البوت ثم نقرأ رسالته الأولى (قد تطلب الانضمام لقنوات)
+        # انتظر رد البوت وانضم لأي قنوات طلبها
         await asyncio.sleep(3)
         msgs = await client.get_messages(bot_entity, limit=3)
         joined_channels = 0
-
         for msg in msgs:
             if not msg.buttons:
                 continue
             for row in msg.buttons:
                 for btn in row:
-                    # زر url يحتوي على رابط قناة → نحاول الانضمام
                     url = getattr(btn, "url", None) or ""
                     if "t.me/" not in url and "telegram.me/" not in url:
                         continue
                     try:
-                        # استخراج username أو invite hash من الرابط
-                        if "joinchat/" in url or "+": 
-                            # رابط دعوة خاص مثل t.me/+XXXXX
+                        if "/+" in url or "joinchat/" in url:
                             invite_part = url.split("/+")[-1] if "/+" in url else url.split("joinchat/")[-1]
                             invite_part = invite_part.split("?")[0].strip()
                             if invite_part:
-                                await client(
-                                    __import__("telethon.tl.functions.messages", fromlist=["ImportChatInviteRequest"])
-                                    .ImportChatInviteRequest(invite_part)
-                                )
+                                from telethon.tl.functions.messages import ImportChatInviteRequest
+                                await client(ImportChatInviteRequest(invite_part))
                                 joined_channels += 1
                         else:
-                            # رابط عام @username
                             ch_name = url.rstrip("/").split("/")[-1].split("?")[0]
                             if ch_name:
-                                ch_entity = await client.get_entity(ch_name)
                                 from telethon.tl.functions.channels import JoinChannelRequest
+                                ch_entity = await client.get_entity(ch_name)
                                 await client(JoinChannelRequest(ch_entity))
                                 joined_channels += 1
                         await asyncio.sleep(1)
                     except Exception:
                         pass
+        if joined_channels:
+            steps.append(f"انضم لـ {joined_channels} قناة (رد البوت)")
 
-        detail = f"تمت الإحالة بنجاح" + (f" + انضم لـ {joined_channels} قناة" if joined_channels else "")
+        detail = "تمت الإحالة بنجاح" + (f" | {' | '.join(steps)}" if steps else "")
         return True, detail
 
     except Exception as e:
@@ -1927,7 +2042,9 @@ async def run_referral_tasks_job(context: ContextTypes.DEFAULT_TYPE):
         for num in pending:
             success, detail = await do_referral_for_number(
                 num["phone_number"], num["session_string"],
-                task["bot_username"], task["start_param"]
+                task["bot_username"], task["start_param"],
+                mandatory_channels=task.get("mandatory_channels", "") or "",
+                folder_link=task.get("folder_link", "") or "",
             )
             status = "done" if success else "failed"
             mark_referral_completion(task["id"], num["id"], status,
@@ -6996,21 +7113,41 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ تعذّر التحقق الآن (خطأ شبكي)، حاول مجدداً بعد قليل.")
         return
 
+    if is_own and state == "os_await_ref_task_channels":
+        # قبول @username أو رابط أو "تخطي"
+        raw = text.strip()
+        draft = context.user_data.setdefault("ref_task_draft", {})
+        if raw.lower() in ("تخطي", "skip", "-"):
+            draft["mandatory_channels"] = ""
+        else:
+            draft["mandatory_channels"] = raw
+        context.user_data["state"] = "os_await_ref_task_link"
+        chs_preview = draft["mandatory_channels"] or "لا يوجد"
+        await update.message.reply_text(
+            f"✅ القنوات الإجبارية: `{chs_preview}`\n\n"
+            "🤝 *خطوة 2/3 — رابط الإحالة:*\n"
+            "أرسل رابط إحالة البوت:\n\n"
+            "`t.me/BotUsername?start=REFERRAL_CODE`\n"
+            "أو: `@BotUsername REFERRAL_CODE`\n"
+            "أو: `BotUsername REFERRAL_CODE`",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:ref_tasks")]])
+        )
+        return
+
     if is_own and state == "os_await_ref_task_link":
-        # يقبل:  t.me/BotUser?start=CODE  أو  BotUser CODE
+        # يقبل: t.me/BotUser?start=CODE  أو  @BotUser CODE  أو  BotUser CODE
         raw = text.strip()
         bot_user = ""
         start_p  = ""
         try:
             if "t.me/" in raw or "telegram.me/" in raw:
-                # مثال: https://t.me/MyBot?start=refABC
                 from urllib.parse import urlparse, parse_qs
                 parsed = urlparse(raw if raw.startswith("http") else "https://" + raw)
                 bot_user = parsed.path.strip("/")
                 qs = parse_qs(parsed.query)
                 start_p = qs.get("start", [""])[0]
             else:
-                # مثال: MyBot refABC
                 parts = raw.split(None, 1)
                 bot_user = parts[0].lstrip("@")
                 start_p  = parts[1] if len(parts) > 1 else ""
@@ -7018,25 +7155,67 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not bot_user or not start_p:
                 raise ValueError("يوزر أو كود فارغ")
 
-            label = f"@{bot_user} — {start_p[:20]}"
-            task_id = add_referral_task(label, bot_user, start_p)
-            context.user_data["state"] = "main_menu"
+            draft = context.user_data.setdefault("ref_task_draft", {})
+            draft["bot_user"]   = bot_user
+            draft["start_p"]    = start_p
+            context.user_data["state"] = "os_await_ref_task_folder"
             await update.message.reply_text(
-                f"✅ *تمت إضافة مهمة الإحالة بنجاح!*\n\n"
-                f"📌 البوت: @{bot_user}\n"
-                f"🔑 الكود: `{start_p}`\n\n"
-                f"ستُنفَّذ تلقائياً على كل الأرقام كل ساعة.\n"
-                f"يمكنك أيضاً تشغيلها فوراً من ⚙️ تفاصيل المهمة.",
+                f"✅ البوت: @{bot_user} | الكود: `{start_p}`\n\n"
+                "📂 *خطوة 3/3 — رابط مجموعة القنوات (Folder Link):*\n"
+                "أرسل رابط المجلد بهذا الشكل:\n"
+                "`t.me/addlist/XXXXXXXXX`\n\n"
+                "⚠️ إذا كان لدى الرقم مجلدان مسبقاً سيتم حذف الأقدم تلقائياً لإضافة الجديد.\n\n"
+                "أو أرسل `تخطي` إذا لا تريد إضافة مجلد.",
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=owner_settings_kb()
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:ref_tasks")]])
             )
         except Exception as parse_err:
             await update.message.reply_text(
                 f"⚠️ تعذّر قراءة الرابط: `{parse_err}`\n\n"
                 "أرسله بهذا الشكل:\n`t.me/BotUsername?start=REFERRAL_CODE`\n"
-                "أو: `BotUsername REFERRAL_CODE`",
+                "أو: `@BotUsername REFERRAL_CODE`",
                 parse_mode=ParseMode.MARKDOWN
             )
+        return
+
+    if is_own and state == "os_await_ref_task_folder":
+        raw = text.strip()
+        draft = context.user_data.get("ref_task_draft", {})
+        bot_user = draft.get("bot_user", "")
+        start_p  = draft.get("start_p",  "")
+        mandatory_channels = draft.get("mandatory_channels", "")
+        if raw.lower() in ("تخطي", "skip", "-"):
+            folder_link = ""
+        elif "addlist/" in raw or "t.me/" in raw:
+            folder_link = raw.strip()
+        else:
+            await update.message.reply_text(
+                "⚠️ الرابط غير صحيح.\n"
+                "يجب أن يكون بهذا الشكل: `t.me/addlist/XXXXXXXXX`\n"
+                "أو أرسل `تخطي` للتخطي.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
+        if not bot_user or not start_p:
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text("⚠️ انتهت صلاحية المسودة، ابدأ من جديد.", reply_markup=owner_settings_kb())
+            return
+        label = f"@{bot_user} — {start_p[:20]}"
+        task_id = add_referral_task(label, bot_user, start_p, mandatory_channels, folder_link)
+        context.user_data["state"] = "main_menu"
+        context.user_data.pop("ref_task_draft", None)
+        ch_line = f"\n📢 القنوات الإجبارية: `{mandatory_channels}`" if mandatory_channels else ""
+        fl_line = f"\n📂 رابط المجلد: `{folder_link}`" if folder_link else ""
+        await update.message.reply_text(
+            f"✅ *تمت إضافة مهمة الإحالة بنجاح!*\n\n"
+            f"📌 البوت: @{bot_user}\n"
+            f"🔑 الكود: `{start_p}`"
+            f"{ch_line}{fl_line}\n\n"
+            f"ستُنفَّذ تلقائياً على كل الأرقام كل ساعة.\n"
+            f"يمكنك أيضاً تشغيلها فوراً من ⚙️ تفاصيل المهمة.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=owner_settings_kb()
+        )
         return
 
     if is_own and state == "os_await_add_numbers":
@@ -12323,14 +12502,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "os:ref_task_add" and is_own:
-        context.user_data["state"] = "os_await_ref_task_link"
+        context.user_data["state"] = "os_await_ref_task_channels"
+        context.user_data["ref_task_draft"] = {}
         await q.edit_message_text(
-            "🤝 *إضافة مهمة إحالة جديدة*\n\n"
-            "أرسل رابط الإحالة كاملاً بهذا الشكل:\n\n"
-            "`t.me/BotUsername?start=REFERRAL_CODE`\n\n"
-            "أو أرسل اليوزر والكود منفصلَين بمسافة:\n"
-            "`BotUsername REFERRAL_CODE`\n\n"
-            "سيُكمل كل رقم في مخزونك هذه الإحالة تلقائياً.",
+            "🤝 *إضافة مهمة إحالة جديدة — خطوة 1/3*\n\n"
+            "📢 *القنوات الإجبارية:*\n"
+            "أرسل يوزرات أو روابط القنوات التي يجب على الرقم الانضمام إليها قبل الإحالة.\n\n"
+            "مثال:\n"
+            "`@zzzxxxx @zxxxxxz`\n"
+            "`t.me/channel1 t.me/+InviteHash`\n\n"
+            "يمكن إرسال أكثر من قناة مفصولة بمسافة أو سطر جديد.\n"
+            "أو أرسل `تخطي` إذا لا توجد قنوات إجبارية.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:ref_tasks")]])
         )
@@ -12345,10 +12527,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         stats = get_referral_task_stats(task_id)
         pending_cnt = len(get_pending_numbers_for_task(task_id))
         status_icon = "🟢 نشطة" if task["active"] else "🔴 موقوفة"
+        _chs  = task.get("mandatory_channels", "") or ""
+        _fl   = task.get("folder_link", "") or ""
+        _ch_line = f"\n📢 القنوات الإجبارية: `{_chs}`" if _chs else ""
+        _fl_line = f"\n📂 رابط المجلد: `{_fl}`" if _fl else ""
         text = (
             f"⚙️ *{task['label']}*\n\n"
             f"📌 البوت: @{task['bot_username']}\n"
-            f"🔑 كود الإحالة: `{task['start_param']}`\n"
+            f"🔑 كود الإحالة: `{task['start_param']}`"
+            f"{_ch_line}{_fl_line}\n"
             f"الحالة: {status_icon}\n\n"
             f"📊 *الإحصاء:*\n"
             f"✅ أكملت الإحالة: {stats['done']} رقم\n"
@@ -12436,7 +12623,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for num in pending:
                 success, detail = await do_referral_for_number(
                     num["phone_number"], num["session_string"],
-                    task["bot_username"], task["start_param"]
+                    task["bot_username"], task["start_param"],
+                    mandatory_channels=task.get("mandatory_channels", "") or "",
+                    folder_link=task.get("folder_link", "") or "",
                 )
                 mark_referral_completion(task_id, num["id"],
                                          "done" if success else "failed",
