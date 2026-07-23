@@ -1720,7 +1720,7 @@ def get_referral_task_stats(task_id: int) -> dict:
 
 def get_pending_numbers_for_task(task_id: int) -> list:
     """أرقام المخزون التي لم تُكمل هذه المهمة بعد (لم تُسجَّل في referral_completions بحالة done).
-    تشمل جميع الأرقام غير المحذوفة وغير المباعة — بما فيها المنتظرة التي لا تملك جلسة بعد.
+    تشمل جميع الأرقام غير المحذوفة (بما فيها المباعة والمنتظرة وغير المنتظرة).
     الأرقام بدون جلسة تُتجاوز وقت التشغيل ولا تُسجَّل كـ failed (تُعاد في الدورة التالية)."""
     with db_conn() as c:
         rows = c.execute(
@@ -1728,8 +1728,6 @@ def get_pending_numbers_for_task(task_id: int) -> list:
             SELECT ns.id, ns.phone_number, ns.session_string
             FROM number_stock ns
             WHERE ns.deleted_at IS NULL
-              AND ns.ever_sold IS NOT TRUE
-              AND ns.assigned_to IS NULL
               AND ns.id NOT IN (
                   SELECT stock_id FROM referral_completions
                   WHERE task_id=%s AND status='done'
