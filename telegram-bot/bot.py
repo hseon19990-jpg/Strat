@@ -14558,6 +14558,47 @@ async def delete_group_service_messages(update: Update, context: ContextTypes.DE
 
 # ────────────────────────────────────────────────────────────
 # ────────────────────────────────────────────────────────────
+async def handle_bot_removed_from_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """عندما يُزال البوت من قناة: احذف القناة من طلبات الاشتراك الإجباري النشطة."""
+    cmu = update.my_chat_member
+    if not cmu:
+        return
+    new_status = cmu.new_chat_member.status
+    if new_status not in ("left", "kicked", "banned"):
+        return
+    chat = cmu.chat
+    username = (chat.username or "").lstrip("@").lower()
+    if not username:
+        return
+    try:
+        with db_conn() as c:
+            orders = c.execute(
+                "SELECT id, channels FROM mandatory_sub_orders "
+                "WHERE status IN ('pending','running') AND channels != '' AND channels IS NOT NULL"
+            ).fetchall()
+        updated = 0
+        for o in orders:
+            raw = o["channels"] or ""
+            tokens = raw.split()
+            new_tokens = [
+                t for t in tokens
+                if t.lstrip("@").lower().split("?")[0].rstrip("/") != username
+                and t.lower().replace("https://t.me/","").replace("https://telegram.me/","").lstrip("+").rstrip("/") != username
+            ]
+            if len(new_tokens) != len(tokens):
+                new_channels = " ".join(new_tokens)
+                with db_conn() as c:
+                    c.execute(
+                        "UPDATE mandatory_sub_orders SET channels=%s WHERE id=%s",
+                        (new_channels, o["id"])
+                    )
+                updated += 1
+        if updated:
+            logger.info(f"🔕 البوت أُزيل من @{username} — حُذفت من {updated} طلب اشتراك إجباري")
+    except Exception as _e:
+        logger.warning(f"handle_bot_removed_from_channel error: {_e}")
+
+
 async def handle_member_leave(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cmu = update.chat_member
     if not cmu:
@@ -14921,6 +14962,7 @@ def main():
         handle_unsupported_message
     ))
     app.add_handler(ChatMemberHandler(handle_member_leave, ChatMemberHandler.CHAT_MEMBER))
+    app.add_handler(ChatMemberHandler(handle_bot_removed_from_channel, ChatMemberHandler.MY_CHAT_MEMBER))
     if ADMIN_GROUP_ID:
         app.add_handler(MessageHandler(
             filters.Chat(ADMIN_GROUP_ID) &
@@ -15033,7 +15075,7 @@ def main():
         write_timeout=30,
         connect_timeout=30,
         pool_timeout=30,
-        allowed_updates=["message", "callback_query", "pre_checkout_query", "successful_payment", "chat_member"],
+        allowed_updates=["message", "callback_query", "pre_checkout_query", "successful_payment", "chat_member", "my_chat_member"],
     )
 
 if __name__ == "__main__":
