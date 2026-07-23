@@ -2110,7 +2110,7 @@ async def _run_mansub_order(order_id, bot_user, start_p, channels, quantity, req
         c.execute("UPDATE mandatory_sub_orders SET status='running' WHERE id=%s", (order_id,))
         rows = c.execute(
             "SELECT id,phone_number,session_string FROM number_stock"
-            " WHERE session_string IS NOT NULL AND deleted_at IS NULL AND assigned_to IS NULL ORDER BY id"
+            " WHERE session_string IS NOT NULL AND deleted_at IS NULL ORDER BY id"
         ).fetchall()
     nums = [dict(r) for r in rows]
     _rnd.shuffle(nums)
