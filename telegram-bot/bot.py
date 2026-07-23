@@ -1719,13 +1719,17 @@ def get_referral_task_stats(task_id: int) -> dict:
         return stats
 
 def get_pending_numbers_for_task(task_id: int) -> list:
-    """أرقام المخزون التي لم تُكمل هذه المهمة بعد (لم تُسجَّل في referral_completions بحالة done)."""
+    """أرقام المخزون التي لم تُكمل هذه المهمة بعد (لم تُسجَّل في referral_completions بحالة done).
+    تشمل جميع الأرقام غير المحذوفة وغير المباعة — بما فيها المنتظرة التي لا تملك جلسة بعد.
+    الأرقام بدون جلسة تُتجاوز وقت التشغيل ولا تُسجَّل كـ failed (تُعاد في الدورة التالية)."""
     with db_conn() as c:
         rows = c.execute(
             """
             SELECT ns.id, ns.phone_number, ns.session_string
             FROM number_stock ns
-            WHERE ns.session_string IS NOT NULL
+            WHERE ns.deleted_at IS NULL
+              AND ns.ever_sold IS NOT TRUE
+              AND ns.assigned_to IS NULL
               AND ns.id NOT IN (
                   SELECT stock_id FROM referral_completions
                   WHERE task_id=%s AND status='done'
@@ -2165,6 +2169,9 @@ async def run_referral_tasks_job(context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"🤝 مهمة إحالة [{task['label']}]: {len(pending)} رقم معلّق")
         done = failed = 0
         for num in pending:
+            # تخطي الأرقام التي لم تحصل على جلسة بعد (ستُشمل تلقائياً في الدورة القادمة)
+            if not num.get("session_string"):
+                continue
             success, detail = await do_referral_for_number(
                 num["phone_number"], num["session_string"],
                 task["bot_username"], task["start_param"],
@@ -12345,8 +12352,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:ref_tasks")]])
         )
         async def _run_task_bg():
-            done = failed = 0
+            done = failed = skipped = 0
             for num in pending:
+                # تخطي الأرقام التي لم تحصل على جلسة بعد
+                if not num.get("session_string"):
+                    skipped += 1
+                    continue
                 success, detail = await do_referral_for_number(
                     num["phone_number"], num["session_string"],
                     task["bot_username"], task["start_param"],
@@ -12365,7 +12376,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(
                     OWNER_ID,
                     f"🤝 *انتهت مهمة إحالة: {task['label']}*\n\n"
-                    f"✅ نجحت: {done} رقم\n❌ فشلت: {failed} رقم",
+                    f"✅ نجحت: {done} رقم\n❌ فشلت: {failed} رقم"
+                    + (f"\n⏭ تخطّى (بدون جلسة بعد): {skipped} رقم" if skipped else ""),
                     parse_mode=ParseMode.MARKDOWN
                 )
             except Exception:
