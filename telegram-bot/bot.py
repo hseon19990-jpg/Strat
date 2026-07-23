@@ -389,7 +389,23 @@ def init_db():
               min_qty         INTEGER,
               max_qty         INTEGER,
               price_per_point REAL,
-              active          INTEGER DEFAULT 1
+              active          INTEGER DEFAULT 1,
+              service_type    TEXT DEFAULT 'smm'
+          )""")
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS mandatory_sub_orders (
+              id            SERIAL PRIMARY KEY,
+              user_id       BIGINT NOT NULL,
+              bot_username  TEXT NOT NULL,
+              start_param   TEXT NOT NULL,
+              channels      TEXT DEFAULT '',
+              quantity      INTEGER NOT NULL,
+              cost_points   INTEGER NOT NULL,
+              done_count    INTEGER DEFAULT 0,
+              failed_count  INTEGER DEFAULT 0,
+              status        TEXT DEFAULT 'pending',
+              order_code    TEXT,
+              created_at    TIMESTAMPTZ DEFAULT NOW()
           )""")
           c.execute("""
           CREATE TABLE IF NOT EXISTS settings (
@@ -628,6 +644,9 @@ def init_db():
               # إعدادات الاشتراك الإجباري بالنقاط
               ('mandatory_points_price', '5'),    # سعر العضو الواحد بالنقاط
               ('mandatory_points_min',   '50'),   # الحد الأدنى للأعضاء
+              ('mansub_base_price',    '250'),
+              ('mansub_channel_price', '50'),
+              ('mansub_visible',       '0'),
               # مهلة المغادرة الآمنة للاشتراك الداخلي (بالساعات)
               ('internal_leave_grace_hours', '24'),
               ('gmail_points_reward', '10000'),
@@ -698,6 +717,18 @@ def init_db():
       except Exception as e:
           logger.warning(f"⚠️ فشل تصحيح القنوات الإجبارية القديمة: {e}")
 
+      try:
+          with db_conn() as c:
+              c.execute("ALTER TABLE services ADD COLUMN IF NOT EXISTS service_type TEXT DEFAULT 'smm'")
+      except Exception: pass
+      try:
+          with db_conn() as c:
+              if not c.execute("SELECT id FROM services WHERE service_type='mandatory_sub' LIMIT 1").fetchone():
+                  c.execute(
+                      "INSERT INTO services (category,api_service_id,panel,platform,name_ar,description,min_qty,max_qty,price_per_point,active,service_type) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                      ('start_bot',0,0,'tg','🔑 الاشتراك الإجباري','حسابات المخزون تنضم لقنواتك ثم تضغط ستارت',1,9999,0,1,'mandatory_sub')
+                  )
+      except Exception as _e: logger.warning(f'mansub seed: {_e}')
       # إضافة أعمدة الإحالة التلقائية الجديدة (مجلد + قنوات إجبارية)
       try:
           with db_conn() as c:
@@ -2025,6 +2056,239 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
 # ═══════════════════════════════════════════════════════════
 #  المهمة الدورية — تشغيل الإحالات التلقائية
 # ═══════════════════════════════════════════════════════════
+
+
+# ══════════════════════════════════════════════════════════
+#  خدمة الاشتراك الإجباري — helper functions
+# ══════════════════════════════════════════════════════════
+
+async def _mansub_start(update, context, user, q, is_own):
+    avail = get_available_number_count()
+    bp = int(get_setting('mansub_base_price') or '250')
+    cp = int(get_setting('mansub_channel_price') or '50')
+    vis = get_setting('mansub_visible') == '1'
+    tgl = '🔒 إخفاء من الأعضاء' if vis else '🔓 إظهار للأعضاء'
+    visnote = '👁 مرئية للأعضاء' if vis else '🔒 مخفية (مالك فقط)'
+    context.user_data['state'] = 'await_mansub_link'
+    context.user_data['mansub_draft'] = {}
+    own_row = [[InlineKeyboardButton(tgl, callback_data='os:toggle_mansub_visible')]] if user.id == OWNER_ID else []
+    await q.edit_message_text(
+        f'🔑 *الاشتراك الإجباري*\n\n'
+        f'📊 الحسابات المتاحة: *{avail}*\n'
+        f'💰 {bp} نقطة/حساب + {cp} نقطة/قناة\n'
+        f'📌 {visnote}\n\n'
+        f'📎 *خطوة 1/3* — أرسل رابط إحالة بوتك:\n'
+        f'`t.me/BotUsername?start=CODE`\n'
+        f'أو: `@BotUsername CODE`',
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup(own_row + [
+            [InlineKeyboardButton('🔙 رجوع', callback_data='cat:start_bot')]
+        ])
+    )
+
+
+async def _mansub_handle_link(update, context):
+    raw = update.message.text.strip()
+    bot_user = start_p = ''
+    try:
+        if 't.me/' in raw or 'telegram.me/' in raw:
+            from urllib.parse import urlparse, parse_qs
+            parsed = urlparse(raw if raw.startswith('http') else 'https://' + raw)
+            bot_user = parsed.path.strip('/')
+            start_p = parse_qs(parsed.query).get('start', [''])[0]
+        else:
+            parts = raw.split(None, 1)
+            bot_user = parts[0].lstrip('@')
+            start_p = parts[1] if len(parts) > 1 else ''
+        if not bot_user or not start_p:
+            raise ValueError('يوزر أو كود فارغ')
+        draft = context.user_data.setdefault('mansub_draft', {})
+        draft['bot_user'] = bot_user
+        draft['start_p'] = start_p
+        context.user_data['state'] = 'await_mansub_channels'
+        await update.message.reply_text(
+            f'✅ البوت: @{bot_user} | الكود: `{start_p}`\n\n'
+            f'📢 *خطوة 2/3 — القنوات الإجبارية:*\n'
+            f'أرسل يوزرات القنوات مفصولة بمسافة.\n'
+            f'مثال: `@chan1 @chan2`\n\n'
+            f'أو اضغط تخطي إذا لا توجد قنوات.',
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton('⏭️ تخطي (بدون قنوات)', callback_data='mansub_skip_channels')],
+                [InlineKeyboardButton('🔙 إلغاء', callback_data='cat:start_bot')]
+            ])
+        )
+    except Exception as _pe:
+        await update.message.reply_text(
+            f'⚠️ تعذّر قراءة الرابط.\nأرسله هكذا:\n`t.me/BotUsername?start=CODE`',
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+
+async def _mansub_handle_channels(update, context):
+    raw = update.message.text.strip()
+    draft = context.user_data.setdefault('mansub_draft', {})
+    draft['channels'] = '' if raw.lower() in ('تخطي', 'skip', '-') else raw
+    context.user_data['state'] = 'await_mansub_qty'
+    avail = get_available_number_count()
+    ch_count = len([t for t in raw.split() if t.strip()]) if draft['channels'] else 0
+    bp = int(get_setting('mansub_base_price') or '250')
+    cp = int(get_setting('mansub_channel_price') or '50')
+    cost_each = bp + ch_count * cp
+    await update.message.reply_text(
+        f'✅ القنوات: `{draft["channels"] or "لا يوجد"}`\n\n'
+        f'📊 المتاح: *{avail}* حساب\n'
+        f'💰 سعر/حساب: *{cost_each}* نقطة\n\n'
+        f'🔢 *خطوة 3/3* — أرسل عدد الحسابات (1 – {avail}):',
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔙 إلغاء', callback_data='cat:start_bot')]])
+    )
+
+
+async def _mansub_handle_qty(update, context, user):
+    try:
+        qty = int(update.message.text.strip())
+    except ValueError:
+        await update.message.reply_text('⚠️ أرسل رقماً صحيحاً.')
+        return
+    avail = get_available_number_count()
+    if qty < 1 or qty > avail:
+        await update.message.reply_text(f'⚠️ الكمية خارج النطاق (1 – {avail}).')
+        return
+    draft = context.user_data.setdefault('mansub_draft', {})
+    channels = draft.get('channels', '')
+    ch_count = len([t for t in channels.split() if t.strip()]) if channels else 0
+    bp = int(get_setting('mansub_base_price') or '250')
+    cp = int(get_setting('mansub_channel_price') or '50')
+    cost_each = bp + ch_count * cp
+    total = cost_each * qty
+    draft['qty'] = qty
+    draft['cost'] = total
+    db_user = get_user(user.id)
+    pts = db_user['points'] if db_user else 0
+    context.user_data['state'] = 'confirm_mansub'
+    ch_line = f'\n📢 القنوات: `{channels}`' if channels else ''
+    await update.message.reply_text(
+        f'📋 *تأكيد الاشتراك الإجباري:*\n\n'
+        f'📌 @{draft.get("bot_user")} | كود: `{draft.get("start_p")}`{ch_line}\n'
+        f'🔢 {qty} حساب × {cost_each} نقطة = *{total}* نقطة\n'
+        f'💎 رصيدك: {pts} نقطة\n\n'
+        f'⚡ الحسابات تعمل بترتيب عشوائي\n'
+        f'✅ الحساب الذي فعّل البوت سابقاً يُحتسب أيضاً',
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton('✅ تأكيد', callback_data='confirm_mansub:yes'),
+             InlineKeyboardButton('❌ إلغاء', callback_data='confirm_mansub:no')]
+        ])
+    )
+
+
+async def _handle_confirm_mansub(update, context, user, q, is_own, data):
+    action = data.split(':')[1]
+    if context.user_data.get('state') != 'confirm_mansub':
+        await q.edit_message_text('⚠️ انتهت صلاحية الطلب.', reply_markup=main_menu_kb(is_own))
+        return
+    draft = context.user_data.get('mansub_draft', {})
+    if action == 'no':
+        context.user_data['state'] = 'main_menu'
+        await q.edit_message_text('❌ تم إلغاء الطلب.', reply_markup=main_menu_kb(is_own))
+        return
+    bot_user = draft.get('bot_user', '')
+    start_p  = draft.get('start_p', '')
+    channels = draft.get('channels', '')
+    qty      = draft.get('qty', 0)
+    total    = draft.get('cost', 0)
+    if not bot_user or not start_p or qty < 1:
+        context.user_data['state'] = 'main_menu'
+        await q.edit_message_text('⚠️ بيانات غير مكتملة.', reply_markup=main_menu_kb(is_own))
+        return
+    _dbu = get_user(user.id)
+    if _dbu and _dbu.get('referral_points_blocked'):
+        await q.edit_message_text('🔒 حسابك موقوف. تواصل مع المالك.', reply_markup=main_menu_kb(is_own))
+        return
+    if not deduct_points(user.id, total):
+        await q.edit_message_text('❌ نقاطك غير كافية.', reply_markup=main_menu_kb(is_own))
+        context.user_data['state'] = 'main_menu'
+        return
+    code = next_order_code(user.id)
+    with db_conn() as c:
+        row = c.execute(
+            'INSERT INTO mandatory_sub_orders '
+            '(user_id,bot_username,start_param,channels,quantity,cost_points,status,order_code) '
+            'VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id',
+            (user.id, bot_user, start_p, channels, qty, total, 'pending', code)
+        ).fetchone()
+        order_id = row['id']
+    context.user_data['state'] = 'main_menu'
+    context.user_data.pop('mansub_draft', None)
+    ch_line = f'\n📢 القنوات: `{channels}`' if channels else ''
+    await q.edit_message_text(
+        f'✅ *تم استلام طلبك!*\n\n'
+        f'📌 @{bot_user} | كود: `{start_p}`{ch_line}\n'
+        f'🔢 {qty} حساب | 💰 {total} نقطة\n'
+        f'🎫 كود: `{code}`\n\n'
+        f'⏳ سيبدأ التنفيذ قريباً وستصلك إشعار عند الانتهاء.',
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=main_menu_kb(is_own)
+    )
+    if ADMIN_GROUP_ID:
+        try:
+            await context.bot.send_message(
+                ADMIN_GROUP_ID,
+                f'🔑 *طلب اشتراك إجباري*\n👤 {user.id}\n📌 @{bot_user} | `{start_p}`\n🔢 {qty} | 💰 {total}\n🎫 `{code}`',
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception: pass
+    import asyncio as _aio
+    _aio.create_task(_run_mansub_order(order_id, bot_user, start_p, channels, qty, user.id, context))
+
+
+async def _run_mansub_order(order_id, bot_user, start_p, channels, quantity, requester_id, context):
+    import random as _rnd
+    with db_conn() as c:
+        c.execute("UPDATE mandatory_sub_orders SET status='running' WHERE id=%s", (order_id,))
+        rows = c.execute(
+            "SELECT id,phone_number,session_string FROM number_stock"
+            " WHERE session_string IS NOT NULL AND deleted_at IS NULL AND assigned_to IS NULL ORDER BY id"
+        ).fetchall()
+    nums = [dict(r) for r in rows]
+    _rnd.shuffle(nums)
+    selected = nums[:quantity]
+    done = failed = 0
+    for num in selected:
+        try:
+            ok, _ = await do_referral_for_number(
+                num['phone_number'], num['session_string'],
+                bot_user, start_p,
+                mandatory_channels=channels or '',
+                folder_link='',
+            )
+        except Exception as _e:
+            ok = False
+        with db_conn() as c:
+            col = 'done_count' if ok else 'failed_count'
+            c.execute(f"UPDATE mandatory_sub_orders SET {col}={col}+1 WHERE id=%s", (order_id,))
+        if ok: done += 1
+        else:  failed += 1
+        import asyncio as _aio2
+        await _aio2.sleep(2)
+    with db_conn() as c:
+        c.execute("UPDATE mandatory_sub_orders SET status='done' WHERE id=%s", (order_id,))
+    try:
+        await context.bot.send_message(
+            requester_id,
+            f'✅ *اكتمل طلب الاشتراك الإجباري!*\n📌 @{bot_user}\n✅ نجح: {done}\n❌ فشل: {failed}',
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception: pass
+    if ADMIN_GROUP_ID:
+        try:
+            await context.bot.send_message(
+                ADMIN_GROUP_ID,
+                f'🔑 اشتراك إجباري اكتمل | 👤 {requester_id} | @{bot_user} | ✅{done} ❌{failed}',
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception: pass
 
 async def run_referral_tasks_job(context: ContextTypes.DEFAULT_TYPE):
     """تُشغَّل كل ساعة: تُكمل الإحالات لكل الأرقام التي لم تُنفّذها بعد."""
@@ -4362,17 +4626,26 @@ async def show_category_services(update: Update, context: ContextTypes.DEFAULT_T
                 "wa": "services_menu_wa", "fb": "services_menu_fb", "yt": "services_menu_yt",
                 "sc": "services_menu_sc", "tw": "services_menu_tw"}
     back_target = back_map.get(platform, "services_menu_tg") if category in SERVICES_MENU_CATEGORIES else "main_menu"
+    _vu = update.effective_user
+    _is_own_v = _vu and _vu.id == OWNER_ID
+    _ms_vis = get_setting('mansub_visible') == '1'
     with db_conn() as c:
         svcs = c.execute(
             "SELECT * FROM services WHERE category=%s AND platform=%s AND active=1", (category, platform)
         ).fetchall()
-    # احتياط: إذا لم تجد خدمات للمنصة المحددة، ابحث في 'tg' كاحتياط للخدمات القديمة غير المنقولة
-    if not svcs and platform != "tg":
+    if not svcs and platform != 'tg':
         with db_conn() as c:
             svcs = c.execute(
                 "SELECT * FROM services WHERE category=%s AND (platform=%s OR platform IS NULL) AND active=1",
                 (category, platform)
             ).fetchall()
+    if _is_own_v and category == 'start_bot' and platform == 'tg':
+        with db_conn() as c:
+            _ms = c.execute("SELECT * FROM services WHERE service_type='mandatory_sub' LIMIT 1").fetchone()
+        if _ms and not any(x['id'] == _ms['id'] for x in (svcs or [])):
+            svcs = list(svcs or []) + [_ms]
+    if not _is_own_v and svcs:
+        svcs = [x for x in svcs if x.get('service_type') != 'mandatory_sub' or _ms_vis]
     if not svcs:
         kb = back_kb(back_target)
         text = f"⚠️ لا توجد خدمات متاحة في ({CATEGORY_MAP.get(category, category)}) حالياً.\nتواصل مع المالك لإضافة خدمات."
@@ -4383,14 +4656,11 @@ async def show_category_services(update: Update, context: ContextTypes.DEFAULT_T
         return
     rows = []
     for s in svcs:
-        rows.append([InlineKeyboardButton(
-            f"{'⭐' if s['category']=='post_stars' else '🔹'} {s['name_ar']}",
-            callback_data=f"svc:{s['id']}"
-        )])
+        ico = '🔑' if s.get('service_type') == 'mandatory_sub' else ('⭐' if s['category'] == 'post_stars' else '🔹')
+        rows.append([InlineKeyboardButton(f"{ico} {s['name_ar']}", callback_data=f"svc:{s['id']}" )])
     extra_items = get_menu_items(f"cat:{category}")
     rows.extend(build_kb_rows(extra_items))
-    _cat_user = update.effective_user
-    if _cat_user and _cat_user.id == OWNER_ID:
+    if _is_own_v:
         rows.append([InlineKeyboardButton("🧩 إضافة/إزالة خيار", callback_data=f"mb_menu:cat:{category}")])
     rows.append([InlineKeyboardButton("🔙 رجوع", callback_data=back_target)])
     text = f"📦 *{CATEGORY_MAP.get(category, category)}*\nاختر الخدمة المطلوبة:"
@@ -7113,6 +7383,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ تعذّر التحقق الآن (خطأ شبكي)، حاول مجدداً بعد قليل.")
         return
 
+    if state == 'await_mansub_link':
+        await _mansub_handle_link(update, context)
+        return
+    if state == 'await_mansub_channels':
+        await _mansub_handle_channels(update, context)
+        return
+    if state == 'await_mansub_qty':
+        await _mansub_handle_qty(update, context, user)
+        return
+
     if is_own and state == "os_await_ref_task_channels":
         # قبول @username أو رابط أو "تخطي"
         raw = text.strip()
@@ -9242,6 +9522,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not svc:
             await q.edit_message_text("⚠️ الخدمة غير موجودة.", reply_markup=back_kb())
             return
+        if svc.get('service_type') == 'mandatory_sub':
+            await _mansub_start(update, context, user, q, is_own)
+            return
         cat = svc["category"]
         context.user_data["smm_svc_db_id"] = svc_id
         context.user_data["smm_svc"] = dict(svc)
@@ -9257,6 +9540,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔙 رجوع", callback_data=f"cat:{cat}")]
             ])
+        )
+        return
+
+    if data == 'mansub_skip_channels':
+        draft = context.user_data.setdefault('mansub_draft', {})
+        draft['channels'] = ''
+        context.user_data['state'] = 'await_mansub_qty'
+        avail = get_available_number_count()
+        bp = int(get_setting('mansub_base_price') or '250')
+        await q.edit_message_text(
+            f'✅ بدون قنوات إجبارية.\n\n📊 المتاح: *{avail}* حساب\n💰 سعر/حساب: *{bp}* نقطة\n\n🔢 خطوة 3/3 — أرسل عدد الحسابات (1 – {avail}):',
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔙 إلغاء', callback_data='cat:start_bot')]])
         )
         return
 
@@ -9299,6 +9595,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("🔙 رجوع (تغيير الكمية)", callback_data="smm_back:qty")]
             ])
         )
+        return
+
+    if data.startswith('confirm_mansub:'):
+        await _handle_confirm_mansub(update, context, user, q, is_own, data)
         return
 
     # ── تأكيد الطلب (أزرار) ──
@@ -12468,6 +12768,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ═══════════════════════════════════════════════════════════
     #  مهام الإحالة التلقائية — واجهة المالك
     # ═══════════════════════════════════════════════════════════
+
+    if data == 'os:toggle_mansub_visible' and is_own:
+        nv = '0' if get_setting('mansub_visible') == '1' else '1'
+        set_setting('mansub_visible', nv)
+        lbl = 'مرئية للأعضاء ✅' if nv == '1' else 'مخفية (مالك فقط) 🔒'
+        await q.answer(f'خدمة الاشتراك الإجباري أصبحت {lbl}', show_alert=True)
+        return
 
     if data == "os:ref_tasks" and is_own:
         tasks = get_referral_tasks()
