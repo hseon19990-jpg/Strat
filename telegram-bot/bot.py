@@ -12291,12 +12291,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_active = toggle_referral_task(task_id)
         status = "مفعّلة 🟢" if new_active else "موقوفة 🔴"
         await q.answer(f"المهمة الآن {status}", show_alert=False)
-        context.user_data["_ref_task_redirect"] = task_id
-        class _FakeData:
-            def __init__(self, d): self.data = d
-            async def edit_message_text(self, *a, **kw): return await q.edit_message_text(*a, **kw)
-            async def answer(self, *a, **kw): return await q.answer(*a, **kw)
-        update.callback_query.data = f"os:ref_task:{task_id}"
         task = get_referral_task(task_id)
         if not task:
             await q.edit_message_text("⚠️ مهمة غير موجودة.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:ref_tasks")]]))
@@ -12304,10 +12298,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         stats = get_referral_task_stats(task_id)
         pending_cnt = len(get_pending_numbers_for_task(task_id))
         status_icon = "🟢 نشطة" if task["active"] else "🔴 موقوفة"
+        _chs = task.get("mandatory_channels", "") or ""
+        _fl  = task.get("folder_link", "") or ""
+        _ch_line = f"\n📢 القنوات الإجبارية: `{_chs}`" if _chs else ""
+        _fl_line = f"\n📂 رابط المجلد: `{_fl}`" if _fl else ""
         await q.edit_message_text(
             f"⚙️ *{task['label']}*\n\n"
             f"📌 البوت: @{task['bot_username']}\n"
-            f"🔑 كود الإحالة: `{task['start_param']}`\n"
+            f"🔑 كود الإحالة: `{task['start_param']}`"
+            f"{_ch_line}{_fl_line}\n"
             f"الحالة: {status_icon}\n\n"
             f"📊 *الإحصاء:*\n"
             f"✅ أكملت الإحالة: {stats['done']} رقم\n"
