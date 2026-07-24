@@ -2003,9 +2003,10 @@ async def _mansub_handle_link(update, context):
         draft['bot_user'] = bot_user
         draft['start_p'] = start_p
         context.user_data['state'] = 'await_mansub_channels'
-        code_info = f'الكود: `{start_p}`' if start_p else 'بدون كود'
+        code_info = f'`{start_p}`' if start_p else 'بدون كود'
+        bot_display = '`@' + bot_user + '`'
         await update.message.reply_text(
-            f'✅ البوت: @{bot_user} | {code_info}\n\n'
+            f'✅ البوت: {bot_display} | {code_info}\n\n'
             f'📢 *خطوة 2/3 — القنوات الإجبارية:*\n'
             f'أرسل يوزرات القنوات مفصولة بمسافة.\n'
             f'مثال: `@chan1 @chan2`\n\n'
@@ -2017,6 +2018,8 @@ async def _mansub_handle_link(update, context):
             ])
         )
     except Exception as _pe:
+        import logging as _lg
+        _lg.getLogger(__name__).warning(f'mansub_handle_link error: {_pe}')
         await update.message.reply_text(
             f'⚠️ تعذّر قراءة الرابط.\nأرسل اسم البوت هكذا:\n`@BotUsername` أو `t.me/BotUsername`',
             parse_mode=ParseMode.MARKDOWN
@@ -2259,16 +2262,19 @@ async def _forced_ref_handle_link(update, context):
         bp = int(get_setting('forced_ref_base_price') or '250')
         cp = int(get_setting('forced_ref_channel_price') or '25')
         cost_each = bp + ch_count * cp
-        code_info = f'الكود: `{start_p}`' if start_p else 'بدون كود'
+        code_info = f'`{start_p}`' if start_p else 'بدون كود'
+        bot_display = '`@' + bot_user + '`'
         await update.message.reply_text(
-            f'✅ البوت: @{bot_user} | {code_info}\n\n'
+            f'✅ البوت: {bot_display} | {code_info}\n\n'
             f'📊 المتاح: *{avail}* حساب\n'
             f'💰 سعر/حساب: *{cost_each}* نقطة ({bp} + {ch_count} قناة × {cp})\n\n'
             f'🔢 *خطوة 3/3 — عدد الحسابات (1 – {avail}):*',
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔙 إلغاء', callback_data='main_menu')]])
         )
-    except Exception:
+    except Exception as _e:
+        import logging as _lg
+        _lg.getLogger(__name__).warning(f'forced_ref_handle_link error: {_e}')
         await update.message.reply_text(
             '⚠️ تعذّر قراءة الرابط. أرسل اسم البوت هكذا:\n`@BotUsername` أو `t.me/BotUsername`',
             parse_mode=ParseMode.MARKDOWN
