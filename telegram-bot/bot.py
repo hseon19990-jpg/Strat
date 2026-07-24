@@ -9340,6 +9340,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == 'forced_ref':
+        # تحقق إن كان الزر مفعلاً من إعدادات المالك
+        with db_conn() as _c:
+            _fr_row = _c.execute(
+                "SELECT enabled FROM menu_items WHERE menu='main' AND action_value='forced_ref' AND action_type='builtin' LIMIT 1"
+            ).fetchone()
+        if _fr_row and not _fr_row['enabled'] and not is_own:
+            await q.answer('⚠️ هذه الخدمة متوقفة حالياً.', show_alert=True)
+            return
         await _forced_ref_start(update, context, user, q, is_own)
         return
 
