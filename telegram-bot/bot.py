@@ -1905,7 +1905,7 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
         await client(StartBotRequest(
             bot=bot_entity,
             peer=bot_entity,
-            start_param=start_param,
+            start_param=start_param or '',
         ))
 
         await asyncio.sleep(3)
@@ -1996,14 +1996,16 @@ async def _mansub_handle_link(update, context):
             parts = raw.split(None, 1)
             bot_user = parts[0].lstrip('@')
             start_p = parts[1] if len(parts) > 1 else ''
-        if not bot_user or not start_p:
-            raise ValueError('يوزر أو كود فارغ')
+        # الكود اختياري — المهم أن يكون اسم البوت موجوداً
+        if not bot_user:
+            raise ValueError('اسم البوت فارغ')
         draft = context.user_data.setdefault('mansub_draft', {})
         draft['bot_user'] = bot_user
         draft['start_p'] = start_p
         context.user_data['state'] = 'await_mansub_channels'
+        code_info = f'الكود: `{start_p}`' if start_p else 'بدون كود'
         await update.message.reply_text(
-            f'✅ البوت: @{bot_user} | الكود: `{start_p}`\n\n'
+            f'✅ البوت: @{bot_user} | {code_info}\n\n'
             f'📢 *خطوة 2/3 — القنوات الإجبارية:*\n'
             f'أرسل يوزرات القنوات مفصولة بمسافة.\n'
             f'مثال: `@chan1 @chan2`\n\n'
@@ -2016,7 +2018,7 @@ async def _mansub_handle_link(update, context):
         )
     except Exception as _pe:
         await update.message.reply_text(
-            f'⚠️ تعذّر قراءة الرابط.\nأرسله هكذا:\n`t.me/BotUsername?start=CODE`',
+            f'⚠️ تعذّر قراءة الرابط.\nأرسل اسم البوت هكذا:\n`@BotUsername` أو `t.me/BotUsername`',
             parse_mode=ParseMode.MARKDOWN
         )
 
@@ -2244,8 +2246,9 @@ async def _forced_ref_handle_link(update, context):
             parts = raw.split(None, 1)
             bot_user = parts[0].lstrip('@')
             start_p = parts[1] if len(parts) > 1 else ''
-        if not bot_user or not start_p:
-            raise ValueError('يوزر أو كود فارغ')
+        # الكود اختياري — المهم أن يكون اسم البوت موجوداً
+        if not bot_user:
+            raise ValueError('اسم البوت فارغ')
         draft = context.user_data.setdefault('forced_ref_draft', {})
         draft['bot_user'] = bot_user
         draft['start_p'] = start_p
@@ -2256,8 +2259,9 @@ async def _forced_ref_handle_link(update, context):
         bp = int(get_setting('forced_ref_base_price') or '250')
         cp = int(get_setting('forced_ref_channel_price') or '25')
         cost_each = bp + ch_count * cp
+        code_info = f'الكود: `{start_p}`' if start_p else 'بدون كود'
         await update.message.reply_text(
-            f'✅ البوت: @{bot_user} | الكود: `{start_p}`\n\n'
+            f'✅ البوت: @{bot_user} | {code_info}\n\n'
             f'📊 المتاح: *{avail}* حساب\n'
             f'💰 سعر/حساب: *{cost_each}* نقطة ({bp} + {ch_count} قناة × {cp})\n\n'
             f'🔢 *خطوة 3/3 — عدد الحسابات (1 – {avail}):*',
@@ -2266,7 +2270,7 @@ async def _forced_ref_handle_link(update, context):
         )
     except Exception:
         await update.message.reply_text(
-            '⚠️ تعذّر قراءة الرابط. أرسله هكذا:\n`t.me/BotUsername?start=CODE`',
+            '⚠️ تعذّر قراءة الرابط. أرسل اسم البوت هكذا:\n`@BotUsername` أو `t.me/BotUsername`',
             parse_mode=ParseMode.MARKDOWN
         )
 
