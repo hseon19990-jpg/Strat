@@ -639,6 +639,7 @@ def init_db():
               ('mansub_visible',       '0'),
               ('forced_ref_base_price',    '250'),
               ('forced_ref_channel_price', '25'),
+              ('forced_ref_visible',       '0'),
               ('internal_leave_grace_hours', '24'),
               ('gmail_points_reward', '10000'),
               ('gmail_intro_message', 'للحصول على النقاط يجب عليك تقديم حساب جيميل لا تستخدمه، سيتم مراجعته من قبل المالك وإضافة النقاط بعد التحقق.'),
@@ -2193,18 +2194,23 @@ async def _forced_ref_start(update, context, user, q, is_own):
     avail = get_forced_ref_account_count()
     bp = int(get_setting('forced_ref_base_price') or '250')
     cp = int(get_setting('forced_ref_channel_price') or '25')
+    vis = get_setting('forced_ref_visible') == '1'
+    tgl = '🔒 إخفاء من الأعضاء' if vis else '🔓 إظهار للأعضاء'
+    visnote = '👁 مرئية للأعضاء' if vis else '🔒 مخفية (مالك فقط)'
     context.user_data['state'] = 'await_forced_ref_channels'
     context.user_data['forced_ref_draft'] = {}
+    own_row = [[InlineKeyboardButton(tgl, callback_data='os:toggle_forced_ref_visible')]] if user.id == OWNER_ID else []
     await q.edit_message_text(
         f'🔑 *إحالة بوت اجباري*\n\n'
         f'📊 الحسابات المتاحة: *{avail}*\n'
-        f'💰 {bp} نقطة/حساب + {cp} نقطة/قناة إجبارية\n\n'
+        f'💰 {bp} نقطة/حساب + {cp} نقطة/قناة إجبارية\n'
+        f'📌 {visnote}\n\n'
         f'📢 *خطوة 1/3 — القنوات الإجبارية:*\n'
         f'أرسل يوزرات القنوات مفصولة بمسافة.\n'
         f'مثال: `@chan1 @chan2`\n\n'
         f'أو اضغط تخطي إذا لا توجد قنوات.',
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=InlineKeyboardMarkup([
+        reply_markup=InlineKeyboardMarkup(own_row + [
             [InlineKeyboardButton('⏭️ تخطي (بدون قنوات)', callback_data='forced_ref_skip_channels')],
             [InlineKeyboardButton('🔙 رجوع', callback_data='main_menu')],
         ])
@@ -2371,6 +2377,15 @@ async def _run_forced_ref_order(order_id, bot_user, start_p, channels, quantity,
             f" AND NOT ({_sellable_filter_sql()})"
             " ORDER BY id"
         ).fetchall()
+        # جلب القنوات الإجبارية العامة للبوت — الحسابات تنضم إليها أولاً قبل الضغط على الرابط
+        _global_ch_rows = c.execute(
+            "SELECT channel_username FROM mandatory_channels WHERE active=1 AND funding_type='mandatory'"
+        ).fetchall()
+    _global_ch_str = ' '.join(
+        ('@' + r['channel_username'].lstrip('@')) for r in _global_ch_rows if r.get('channel_username')
+    )
+    # دمج القنوات الإجبارية العامة + قنوات المستخدم المحددة في الطلب
+    _all_channels = ' '.join(filter(None, [_global_ch_str, channels or ''])).strip()
     nums = [dict(r) for r in rows]
     _rnd.shuffle(nums)
     selected = nums[:quantity]
@@ -2380,7 +2395,7 @@ async def _run_forced_ref_order(order_id, bot_user, start_p, channels, quantity,
             ok, _ = await do_referral_for_number(
                 num['phone_number'], num['session_string'],
                 bot_user, start_p,
-                mandatory_channels=channels or '',
+                mandatory_channels=_all_channels,
                 folder_link='',
             )
         except Exception:
@@ -9348,6 +9363,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if _fr_row and not _fr_row['enabled'] and not is_own:
             await q.answer('⚠️ هذه الخدمة متوقفة حالياً.', show_alert=True)
             return
+        # تحقق من إعداد الرؤية: إذا كانت مخفية يراها المالك فقط
+        if not is_own and get_setting('forced_ref_visible') != '1':
+            await q.answer('⚠️ هذه الخدمة غير متاحة حالياً.', show_alert=True)
+            return
         await _forced_ref_start(update, context, user, q, is_own)
         return
 
@@ -12504,6 +12523,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_setting('mansub_visible', nv)
         lbl = 'مرئية للأعضاء ✅' if nv == '1' else 'مخفية (مالك فقط) 🔒'
         await q.answer(f'خدمة الاشتراك الإجباري أصبحت {lbl}', show_alert=True)
+        return
+
+    if data == 'os:toggle_forced_ref_visible' and is_own:
+        nv = '0' if get_setting('forced_ref_visible') == '1' else '1'
+        set_setting('forced_ref_visible', nv)
+        lbl = 'مرئية للأعضاء ✅' if nv == '1' else 'مخفية (مالك فقط) 🔒'
+        await q.answer(f'خدمة إحالة بوت اجباري أصبحت {lbl}', show_alert=True)
         return
 
     if data == "os:ref_tasks" and is_own:
