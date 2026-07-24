@@ -2067,9 +2067,12 @@ async def _mansub_handle_qty(update, context, user):
     pts = db_user['points'] if db_user else 0
     context.user_data['state'] = 'confirm_mansub'
     ch_line = f'\n📢 القنوات: `{channels}`' if channels else ''
+    _bu_m = draft.get('bot_user', '')
+    _sp_m = draft.get('start_p', '')
+    _code_m = f'`{_sp_m}`' if _sp_m else 'بدون كود'
     await update.message.reply_text(
         f'📋 *تأكيد الاشتراك الإجباري:*\n\n'
-        f'📌 @{draft.get("bot_user")} | كود: `{draft.get("start_p")}`{ch_line}\n'
+        f'📌 `@{_bu_m}` | كود: {_code_m}{ch_line}\n'
         f'🔢 {qty} حساب × {cost_each} نقطة = *{total}* نقطة\n'
         f'💎 رصيدك: {pts} نقطة\n\n'
         f'⚡ الحسابات تعمل بترتيب عشوائي\n'
@@ -2096,7 +2099,7 @@ async def _handle_confirm_mansub(update, context, user, q, is_own, data):
     channels = draft.get('channels', '')
     qty      = draft.get('qty', 0)
     total    = draft.get('cost', 0)
-    if not bot_user or not start_p or qty < 1:
+    if not bot_user or qty < 1:
         context.user_data['state'] = 'main_menu'
         await q.edit_message_text('⚠️ بيانات غير مكتملة.', reply_markup=main_menu_kb(is_own))
         return
@@ -2119,10 +2122,11 @@ async def _handle_confirm_mansub(update, context, user, q, is_own, data):
         order_id = row['id']
     context.user_data['state'] = 'main_menu'
     context.user_data.pop('mansub_draft', None)
+    _code_ms = f'`{start_p}`' if start_p else 'بدون كود'
     ch_line = f'\n📢 القنوات: `{channels}`' if channels else ''
     await q.edit_message_text(
         f'✅ *تم استلام طلبك!*\n\n'
-        f'📌 @{bot_user} | كود: `{start_p}`{ch_line}\n'
+        f'📌 `@{bot_user}` | كود: {_code_ms}{ch_line}\n'
         f'🔢 {qty} حساب | 💰 {total} نقطة\n'
         f'🎫 كود: `{code}`\n\n'
         f'⏳ سيبدأ التنفيذ قريباً وستصلك إشعار عند الانتهاء.',
@@ -2133,7 +2137,7 @@ async def _handle_confirm_mansub(update, context, user, q, is_own, data):
         try:
             await context.bot.send_message(
                 ADMIN_GROUP_ID,
-                f'🔑 *طلب اشتراك إجباري*\n👤 {user.id}\n📌 @{bot_user} | `{start_p}`\n🔢 {qty} | 💰 {total}\n🎫 `{code}`',
+                f'🔑 *طلب اشتراك إجباري*\n👤 {user.id}\n📌 `@{bot_user}` | `{start_p if start_p else "بدون كود"}`\n🔢 {qty} | 💰 {total}\n🎫 `{code}`',
                 parse_mode=ParseMode.MARKDOWN
             )
         except Exception: pass
@@ -2303,9 +2307,12 @@ async def _forced_ref_handle_qty(update, context, user):
     pts = db_user['points'] if db_user else 0
     context.user_data['state'] = 'confirm_forced_ref'
     ch_line = f'\n📢 القنوات: `{channels}`' if channels else ''
+    _bu_f = draft.get('bot_user', '')
+    _sp_f = draft.get('start_p', '')
+    _code_f = f'`{_sp_f}`' if _sp_f else 'بدون كود'
     await update.message.reply_text(
         f'📋 *تأكيد إحالة بوت اجباري:*\n\n'
-        f'📌 @{draft.get("bot_user")} | كود: `{draft.get("start_p")}`{ch_line}\n'
+        f'📌 `@{_bu_f}` | كود: {_code_f}{ch_line}\n'
         f'🔢 {qty} حساب × {cost_each} نقطة = *{total}* نقطة\n'
         f'💎 رصيدك: {pts} نقطة\n\n'
         f'⚡ الحسابات المستخدمة: غير معروضة وغير مباعة فقط',
@@ -2331,7 +2338,7 @@ async def _handle_confirm_forced_ref(update, context, user, q, is_own, data):
     channels = draft.get('channels', '')
     qty      = draft.get('qty', 0)
     total    = draft.get('cost', 0)
-    if not bot_user or not start_p or qty < 1:
+    if not bot_user or qty < 1:
         context.user_data['state'] = 'main_menu'
         await q.edit_message_text('⚠️ بيانات غير مكتملة.', reply_markup=main_menu_kb(is_own))
         return
@@ -2354,10 +2361,11 @@ async def _handle_confirm_forced_ref(update, context, user, q, is_own, data):
         order_id = row['id']
     context.user_data['state'] = 'main_menu'
     context.user_data.pop('forced_ref_draft', None)
+    _code_fr = f'`{start_p}`' if start_p else 'بدون كود'
     ch_line = f'\n📢 القنوات: `{channels}`' if channels else ''
     await q.edit_message_text(
         f'✅ *تم استلام طلبك!*\n\n'
-        f'📌 @{bot_user} | كود: `{start_p}`{ch_line}\n'
+        f'📌 `@{bot_user}` | كود: {_code_fr}{ch_line}\n'
         f'🔢 {qty} حساب | 💰 {total} نقطة\n'
         f'🎫 كود: `{code}`\n\n'
         f'⏳ سيبدأ التنفيذ قريباً وستصلك إشعار عند الانتهاء.',
@@ -2368,7 +2376,7 @@ async def _handle_confirm_forced_ref(update, context, user, q, is_own, data):
         try:
             await context.bot.send_message(
                 ADMIN_GROUP_ID,
-                f'🔑 *طلب إحالة بوت اجباري*\n👤 {user.id}\n📌 @{bot_user} | `{start_p}`\n🔢 {qty} | 💰 {total}\n🎫 `{code}`',
+                f'🔑 *طلب إحالة بوت اجباري*\n👤 {user.id}\n📌 `@{bot_user}` | `{start_p if start_p else "بدون كود"}`\n🔢 {qty} | 💰 {total}\n🎫 `{code}`',
                 parse_mode=ParseMode.MARKDOWN
             )
         except Exception: pass
@@ -7359,7 +7367,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             draft["start_p"]    = start_p
             context.user_data["state"] = "os_await_ref_task_folder"
             await update.message.reply_text(
-                f"✅ البوت: @{bot_user} | الكود: `{start_p}`\n\n"
+                f"✅ البوت: `@{bot_user}` | الكود: `{start_p}`\n\n"
                 "📂 *خطوة 3/3 — رابط مجموعة القنوات (Folder Link):*\n"
                 "أرسل رابط المجلد بهذا الشكل:\n"
                 "`t.me/addlist/XXXXXXXXX`\n\n"
@@ -7407,7 +7415,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         fl_line = f"\n📂 رابط المجلد: `{folder_link}`" if folder_link else ""
         await update.message.reply_text(
             f"✅ *تمت إضافة مهمة الإحالة بنجاح!*\n\n"
-            f"📌 البوت: @{bot_user}\n"
+            f"📌 البوت: `@{bot_user}`\n"
             f"🔑 الكود: `{start_p}`"
             f"{ch_line}{fl_line}\n\n"
             f"ستُنفَّذ تلقائياً على كل الأرقام كل ساعة.\n"
