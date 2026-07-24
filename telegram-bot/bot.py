@@ -386,6 +386,21 @@ def init_db():
               created_at    TIMESTAMPTZ DEFAULT NOW()
           )""")
           c.execute("""
+          CREATE TABLE IF NOT EXISTS forced_ref_orders (
+              id            SERIAL PRIMARY KEY,
+              user_id       BIGINT NOT NULL,
+              bot_username  TEXT NOT NULL,
+              start_param   TEXT NOT NULL,
+              channels      TEXT DEFAULT '',
+              quantity      INTEGER NOT NULL,
+              cost_points   INTEGER NOT NULL,
+              done_count    INTEGER DEFAULT 0,
+              failed_count  INTEGER DEFAULT 0,
+              status        TEXT DEFAULT 'pending',
+              order_code    TEXT,
+              created_at    TIMESTAMPTZ DEFAULT NOW()
+          )""")
+          c.execute("""
           CREATE TABLE IF NOT EXISTS settings (
               key   TEXT PRIMARY KEY,
               value TEXT
@@ -622,6 +637,8 @@ def init_db():
               ('mansub_base_price',    '250'),
               ('mansub_channel_price', '50'),
               ('mansub_visible',       '0'),
+              ('forced_ref_base_price',    '250'),
+              ('forced_ref_channel_price', '25'),
               ('internal_leave_grace_hours', '24'),
               ('gmail_points_reward', '10000'),
               ('gmail_intro_message', 'للحصول على النقاط يجب عليك تقديم حساب جيميل لا تستخدمه، سيتم مراجعته من قبل المالك وإضافة النقاط بعد التحقق.'),
@@ -1449,6 +1466,17 @@ def get_available_number_count() -> int:
         ).fetchone()
         return row["cnt"] if row else 0
 
+def get_forced_ref_account_count() -> int:
+    """عدد الحسابات المؤهلة للإحالة الإجبارية: غير مباعة وغير معروضة للبيع."""
+    with db_conn() as c:
+        row = c.execute(
+            f"SELECT COUNT(*) as cnt FROM number_stock"
+            f" WHERE session_string IS NOT NULL AND deleted_at IS NULL AND assigned_to IS NULL"
+            f" AND ever_sold IS NOT TRUE AND force_listed IS NOT TRUE"
+            f" AND NOT ({_sellable_filter_sql()})"
+        ).fetchone()
+        return row["cnt"] if row else 0
+
 async def _test_and_set_can_send_code(phone: str, session_str: str, stock_id: int):
     """يتحقق من قدرة البوت على الوصول للحساب وجلب الكودات:
     يتصل بالجلسة المحفوظة، يستدعي get_me()، وإذا أرجعت بيانات مستخدم صحيحة
@@ -2153,6 +2181,231 @@ async def _run_mansub_order(order_id, bot_user, start_p, channels, quantity, req
             await context.bot.send_message(
                 ADMIN_GROUP_ID,
                 f'🔑 اشتراك إجباري اكتمل | 👤 {requester_id} | @{bot_user} | ✅{done} ❌{failed}',
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception: pass
+
+# ══════════════════════════════════════════════════════════
+# إحالة بوت اجباري — الدوال الكاملة
+# ══════════════════════════════════════════════════════════
+
+async def _forced_ref_start(update, context, user, q, is_own):
+    avail = get_forced_ref_account_count()
+    bp = int(get_setting('forced_ref_base_price') or '250')
+    cp = int(get_setting('forced_ref_channel_price') or '25')
+    context.user_data['state'] = 'await_forced_ref_channels'
+    context.user_data['forced_ref_draft'] = {}
+    await q.edit_message_text(
+        f'🔑 *إحالة بوت اجباري*\n\n'
+        f'📊 الحسابات المتاحة: *{avail}*\n'
+        f'💰 {bp} نقطة/حساب + {cp} نقطة/قناة إجبارية\n\n'
+        f'📢 *خطوة 1/3 — القنوات الإجبارية:*\n'
+        f'أرسل يوزرات القنوات مفصولة بمسافة.\n'
+        f'مثال: `@chan1 @chan2`\n\n'
+        f'أو اضغط تخطي إذا لا توجد قنوات.',
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton('⏭️ تخطي (بدون قنوات)', callback_data='forced_ref_skip_channels')],
+            [InlineKeyboardButton('🔙 رجوع', callback_data='main_menu')],
+        ])
+    )
+
+async def _forced_ref_handle_channels(update, context):
+    raw = update.message.text.strip()
+    draft = context.user_data.setdefault('forced_ref_draft', {})
+    draft['channels'] = '' if raw.lower() in ('تخطي', 'skip', '-') else raw
+    context.user_data['state'] = 'await_forced_ref_link'
+    chs_preview = draft['channels'] or 'لا يوجد'
+    await update.message.reply_text(
+        f'✅ القنوات: `{chs_preview}`\n\n'
+        f'📎 *خطوة 2/3 — رابط الإحالة:*\n'
+        f'أرسل رابط إحالة البوت:\n'
+        f'`t.me/BotUsername?start=CODE`\n'
+        f'أو: `@BotUsername CODE`',
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔙 إلغاء', callback_data='main_menu')]])
+    )
+
+async def _forced_ref_handle_link(update, context):
+    raw = update.message.text.strip()
+    try:
+        if 't.me/' in raw or 'telegram.me/' in raw:
+            from urllib.parse import urlparse, parse_qs
+            parsed = urlparse(raw if raw.startswith('http') else 'https://' + raw)
+            bot_user = parsed.path.strip('/')
+            start_p = parse_qs(parsed.query).get('start', [''])[0]
+        else:
+            parts = raw.split(None, 1)
+            bot_user = parts[0].lstrip('@')
+            start_p = parts[1] if len(parts) > 1 else ''
+        if not bot_user or not start_p:
+            raise ValueError('يوزر أو كود فارغ')
+        draft = context.user_data.setdefault('forced_ref_draft', {})
+        draft['bot_user'] = bot_user
+        draft['start_p'] = start_p
+        context.user_data['state'] = 'await_forced_ref_qty'
+        avail = get_forced_ref_account_count()
+        channels = draft.get('channels', '')
+        ch_count = len([t for t in channels.split() if t.strip()]) if channels else 0
+        bp = int(get_setting('forced_ref_base_price') or '250')
+        cp = int(get_setting('forced_ref_channel_price') or '25')
+        cost_each = bp + ch_count * cp
+        await update.message.reply_text(
+            f'✅ البوت: @{bot_user} | الكود: `{start_p}`\n\n'
+            f'📊 المتاح: *{avail}* حساب\n'
+            f'💰 سعر/حساب: *{cost_each}* نقطة ({bp} + {ch_count} قناة × {cp})\n\n'
+            f'🔢 *خطوة 3/3 — عدد الحسابات (1 – {avail}):*',
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔙 إلغاء', callback_data='main_menu')]])
+        )
+    except Exception:
+        await update.message.reply_text(
+            '⚠️ تعذّر قراءة الرابط. أرسله هكذا:\n`t.me/BotUsername?start=CODE`',
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+async def _forced_ref_handle_qty(update, context, user):
+    try:
+        qty = int(update.message.text.strip())
+    except ValueError:
+        await update.message.reply_text('⚠️ أرسل رقماً صحيحاً.')
+        return
+    avail = get_forced_ref_account_count()
+    if qty < 1 or qty > avail:
+        await update.message.reply_text(f'⚠️ الكمية خارج النطاق (1 – {avail}).')
+        return
+    draft = context.user_data.setdefault('forced_ref_draft', {})
+    channels = draft.get('channels', '')
+    ch_count = len([t for t in channels.split() if t.strip()]) if channels else 0
+    bp = int(get_setting('forced_ref_base_price') or '250')
+    cp = int(get_setting('forced_ref_channel_price') or '25')
+    cost_each = bp + ch_count * cp
+    total = cost_each * qty
+    draft['qty'] = qty
+    draft['cost'] = total
+    db_user = get_user(user.id)
+    pts = db_user['points'] if db_user else 0
+    context.user_data['state'] = 'confirm_forced_ref'
+    ch_line = f'\n📢 القنوات: `{channels}`' if channels else ''
+    await update.message.reply_text(
+        f'📋 *تأكيد إحالة بوت اجباري:*\n\n'
+        f'📌 @{draft.get("bot_user")} | كود: `{draft.get("start_p")}`{ch_line}\n'
+        f'🔢 {qty} حساب × {cost_each} نقطة = *{total}* نقطة\n'
+        f'💎 رصيدك: {pts} نقطة\n\n'
+        f'⚡ الحسابات المستخدمة: غير معروضة وغير مباعة فقط',
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton('✅ تأكيد', callback_data='confirm_forced_ref:yes'),
+             InlineKeyboardButton('❌ إلغاء', callback_data='confirm_forced_ref:no')]
+        ])
+    )
+
+async def _handle_confirm_forced_ref(update, context, user, q, is_own, data):
+    action = data.split(':')[1]
+    if context.user_data.get('state') != 'confirm_forced_ref':
+        await q.edit_message_text('⚠️ انتهت صلاحية الطلب.', reply_markup=main_menu_kb(is_own))
+        return
+    draft = context.user_data.get('forced_ref_draft', {})
+    if action == 'no':
+        context.user_data['state'] = 'main_menu'
+        await q.edit_message_text('❌ تم إلغاء الطلب.', reply_markup=main_menu_kb(is_own))
+        return
+    bot_user = draft.get('bot_user', '')
+    start_p  = draft.get('start_p', '')
+    channels = draft.get('channels', '')
+    qty      = draft.get('qty', 0)
+    total    = draft.get('cost', 0)
+    if not bot_user or not start_p or qty < 1:
+        context.user_data['state'] = 'main_menu'
+        await q.edit_message_text('⚠️ بيانات غير مكتملة.', reply_markup=main_menu_kb(is_own))
+        return
+    _dbu = get_user(user.id)
+    if _dbu and _dbu.get('referral_points_blocked'):
+        await q.edit_message_text('🔒 حسابك موقوف. تواصل مع المالك.', reply_markup=main_menu_kb(is_own))
+        return
+    if not deduct_points(user.id, total):
+        await q.edit_message_text('❌ نقاطك غير كافية.', reply_markup=main_menu_kb(is_own))
+        context.user_data['state'] = 'main_menu'
+        return
+    code = next_order_code(user.id)
+    with db_conn() as c:
+        row = c.execute(
+            'INSERT INTO forced_ref_orders '
+            '(user_id,bot_username,start_param,channels,quantity,cost_points,status,order_code) '
+            'VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id',
+            (user.id, bot_user, start_p, channels, qty, total, 'pending', code)
+        ).fetchone()
+        order_id = row['id']
+    context.user_data['state'] = 'main_menu'
+    context.user_data.pop('forced_ref_draft', None)
+    ch_line = f'\n📢 القنوات: `{channels}`' if channels else ''
+    await q.edit_message_text(
+        f'✅ *تم استلام طلبك!*\n\n'
+        f'📌 @{bot_user} | كود: `{start_p}`{ch_line}\n'
+        f'🔢 {qty} حساب | 💰 {total} نقطة\n'
+        f'🎫 كود: `{code}`\n\n'
+        f'⏳ سيبدأ التنفيذ قريباً وستصلك إشعار عند الانتهاء.',
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=main_menu_kb(is_own)
+    )
+    if ADMIN_GROUP_ID:
+        try:
+            await context.bot.send_message(
+                ADMIN_GROUP_ID,
+                f'🔑 *طلب إحالة بوت اجباري*\n👤 {user.id}\n📌 @{bot_user} | `{start_p}`\n🔢 {qty} | 💰 {total}\n🎫 `{code}`',
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception: pass
+    import asyncio as _aio
+    _aio.create_task(_run_forced_ref_order(order_id, bot_user, start_p, channels, qty, user.id, context))
+
+async def _run_forced_ref_order(order_id, bot_user, start_p, channels, quantity, requester_id, context):
+    import random as _rnd
+    with db_conn() as c:
+        c.execute("UPDATE forced_ref_orders SET status='running' WHERE id=%s", (order_id,))
+        rows = c.execute(
+            "SELECT id,phone_number,session_string FROM number_stock"
+            " WHERE session_string IS NOT NULL AND deleted_at IS NULL AND assigned_to IS NULL"
+            " AND ever_sold IS NOT TRUE"
+            " AND force_listed IS NOT TRUE"
+            f" AND NOT ({_sellable_filter_sql()})"
+            " ORDER BY id"
+        ).fetchall()
+    nums = [dict(r) for r in rows]
+    _rnd.shuffle(nums)
+    selected = nums[:quantity]
+    done = failed = 0
+    for num in selected:
+        try:
+            ok, _ = await do_referral_for_number(
+                num['phone_number'], num['session_string'],
+                bot_user, start_p,
+                mandatory_channels=channels or '',
+                folder_link='',
+            )
+        except Exception:
+            ok = False
+        with db_conn() as c:
+            col = 'done_count' if ok else 'failed_count'
+            c.execute(f"UPDATE forced_ref_orders SET {col}={col}+1 WHERE id=%s", (order_id,))
+        if ok: done += 1
+        else:  failed += 1
+        import asyncio as _aio2
+        await _aio2.sleep(2)
+    with db_conn() as c:
+        c.execute("UPDATE forced_ref_orders SET status='done' WHERE id=%s", (order_id,))
+    try:
+        await context.bot.send_message(
+            requester_id,
+            f'✅ *اكتملت إحالة البوت الاجبارية!*\n📌 @{bot_user}\n✅ نجح: {done}\n❌ فشل: {failed}',
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception: pass
+    if ADMIN_GROUP_ID:
+        try:
+            await context.bot.send_message(
+                ADMIN_GROUP_ID,
+                f'🔑 إحالة بوت اجباري اكتملت | 👤 {requester_id} | @{bot_user} | ✅{done} ❌{failed}',
                 parse_mode=ParseMode.MARKDOWN
             )
         except Exception: pass
@@ -3817,6 +4070,7 @@ BUILTIN_DEFAULTS = {
         ("✅ تواصل مع الدعم", "contact_support", 2),
         ("🏆 مسابقة الدعوة", "referral_contest_view", 2),
         ("📧 احصل على نقاط مقابل إيميل جيميل", "gmail_points", 1),
+        ("🔑 إحالة بوت اجباري", "forced_ref", 2),
     ],
     "services_menu": [(label, value, 2) for label, value in SERVICE_PLATFORMS],
     "services_menu_tg": [
@@ -7015,6 +7269,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ تعذّر التحقق الآن (خطأ شبكي)، حاول مجدداً بعد قليل.")
         return
 
+    if state == 'await_forced_ref_channels':
+        await _forced_ref_handle_channels(update, context)
+        return
+    if state == 'await_forced_ref_link':
+        await _forced_ref_handle_link(update, context)
+        return
+    if state == 'await_forced_ref_qty':
+        await _forced_ref_handle_qty(update, context, user)
+        return
+
     if state == 'await_mansub_link':
         await _mansub_handle_link(update, context)
         return
@@ -9075,6 +9339,27 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if data == 'forced_ref':
+        await _forced_ref_start(update, context, user, q, is_own)
+        return
+
+    if data == 'forced_ref_skip_channels':
+        draft = context.user_data.setdefault('forced_ref_draft', {})
+        draft['channels'] = ''
+        context.user_data['state'] = 'await_forced_ref_link'
+        avail = get_forced_ref_account_count()
+        bp = int(get_setting('forced_ref_base_price') or '250')
+        await q.edit_message_text(
+            f'✅ بدون قنوات إجبارية.\n\n'
+            f'📎 *خطوة 2/3 — رابط الإحالة:*\n'
+            f'أرسل رابط إحالة البوت:\n'
+            f'`t.me/BotUsername?start=CODE`\n'
+            f'أو: `@BotUsername CODE`',
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔙 إلغاء', callback_data='main_menu')]])
+        )
+        return
+
     if data == 'mansub_skip_channels':
         draft = context.user_data.setdefault('mansub_draft', {})
         draft['channels'] = ''
@@ -9124,6 +9409,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("🔙 رجوع (تغيير الكمية)", callback_data="smm_back:qty")]
             ])
         )
+        return
+
+    if data.startswith('confirm_forced_ref:'):
+        await _handle_confirm_forced_ref(update, context, user, q, is_own, data)
         return
 
     if data.startswith('confirm_mansub:'):
