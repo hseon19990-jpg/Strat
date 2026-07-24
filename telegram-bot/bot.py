@@ -497,6 +497,8 @@ def init_db():
               "ALTER TABLE users ADD COLUMN IF NOT EXISTS banned_at TIMESTAMPTZ",
               "ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT",
               "ALTER TABLE channel_join_rewards ADD COLUMN IF NOT EXISTS joined_at TIMESTAMPTZ DEFAULT NOW()",
+              "ALTER TABLE mandatory_sub_orders ADD COLUMN IF NOT EXISTS reactivated_count INTEGER DEFAULT 0",
+              "ALTER TABLE forced_ref_orders ADD COLUMN IF NOT EXISTS reactivated_count INTEGER DEFAULT 0",
           ]:
               try: c.execute(_alt)
               except Exception: pass
@@ -1877,7 +1879,10 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
                                   mandatory_channels: str = "", folder_link: str = "") -> tuple:
     """
     ينضم للقنوات الإجبارية، يُنظّم المجلد (folder link)، ثم يُرسل /start مع بارامتر الإحالة.
-    يُرجع (success: bool, detail: str).
+    يُرجع (success: bool, reactivated: bool, detail: str).
+    — success=True,  reactivated=False → نجاح حقيقي (أول تفعيل)
+    — success=True,  reactivated=True  → البوت كان مفعّلاً مسبقاً (لا تعويض)
+    — success=False, reactivated=False → فشل حقيقي (تُستردّ نقاطه تلقائياً)
     """
     client = TelegramClient(
         StringSession(session_str),
@@ -1887,7 +1892,7 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
     try:
         await client.connect()
         if not await client.is_user_authorized():
-            return False, "جلسة منتهية أو مُلغاة"
+            return False, False, "جلسة منتهية أو مُلغاة"
 
         steps = []
 
@@ -1902,6 +1907,17 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
             await asyncio.sleep(1)
 
         bot_entity = await client.get_entity(bot_username)
+
+        # ─── كشف ما إذا كان البوت مفعّلاً مسبقاً ───
+        # نتحقق من وجود محادثة سابقة مع البوت قبل إرسال /start
+        _was_reactivated = False
+        try:
+            _prev_msgs = await client.get_messages(bot_entity, limit=1)
+            if _prev_msgs and len(_prev_msgs) > 0:
+                _was_reactivated = True
+        except Exception:
+            pass  # في حال الفشل نعتبره تفعيلاً جديداً
+
         await client(StartBotRequest(
             bot=bot_entity,
             peer=bot_entity,
@@ -1940,13 +1956,17 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
         if joined_channels:
             steps.append(f"انضم لـ {joined_channels} قناة (رد البوت)")
 
+        if _was_reactivated:
+            detail = "إعادة تفعيل (البوت كان مفعّلاً مسبقاً)" + (f" | {' | '.join(steps)}" if steps else "")
+            return True, True, detail
+
         detail = "تمت الإحالة بنجاح" + (f" | {' | '.join(steps)}" if steps else "")
-        return True, detail
+        return True, False, detail
 
     except Exception as e:
         err = str(e)
         logger.error(f"❌ فشلت إحالة {phone} → {bot_username}: {err}")
-        return False, err[:120]
+        return False, False, err[:120]
     finally:
         try:
             await client.disconnect()
@@ -2076,7 +2096,7 @@ async def _mansub_handle_qty(update, context, user):
         f'🔢 {qty} حساب × {cost_each} نقطة = *{total}* نقطة\n'
         f'💎 رصيدك: {pts} نقطة\n\n'
         f'⚡ الحسابات تعمل بترتيب عشوائي\n'
-        f'✅ الحساب الذي فعّل البوت سابقاً يُحتسب أيضاً',
+        f'💡 الفاشلة: تُستردّ نقاطها تلقائياً | إعادة التفعيل: لا تعويض',
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton('✅ تأكيد', callback_data='confirm_mansub:yes'),
@@ -2156,33 +2176,61 @@ async def _run_mansub_order(order_id, bot_user, start_p, channels, quantity, req
             f" AND NOT ({_sellable_filter_sql()})"
             " ORDER BY id"
         ).fetchall()
+    with db_conn() as _cm:
+        _order_meta = _cm.execute(
+            "SELECT cost_points, quantity FROM mandatory_sub_orders WHERE id=%s", (order_id,)
+        ).fetchone()
+    _total_cost = int(_order_meta["cost_points"] or 0) if _order_meta else 0
+    _qty_total  = int(_order_meta["quantity"] or 1) if _order_meta else max(1, quantity)
+    _cost_each  = round(_total_cost / _qty_total) if _qty_total else 0
+
     nums = [dict(r) for r in rows]
     _rnd.shuffle(nums)
     selected = nums[:quantity]
-    done = failed = 0
+    done = failed = reactivated = 0
+    refunded_pts = 0
     for num in selected:
         try:
-            ok, _ = await do_referral_for_number(
+            ok, reactiv, _ = await do_referral_for_number(
                 num['phone_number'], num['session_string'],
                 bot_user, start_p,
                 mandatory_channels=channels or '',
                 folder_link='',
             )
         except Exception as _e:
-            ok = False
+            ok = False; reactiv = False
         with db_conn() as c:
-            col = 'done_count' if ok else 'failed_count'
-            c.execute(f"UPDATE mandatory_sub_orders SET {col}={col}+1 WHERE id=%s", (order_id,))
-        if ok: done += 1
-        else:  failed += 1
+            if ok and reactiv:
+                c.execute("UPDATE mandatory_sub_orders SET reactivated_count=reactivated_count+1 WHERE id=%s", (order_id,))
+                reactivated += 1
+            elif ok:
+                c.execute("UPDATE mandatory_sub_orders SET done_count=done_count+1 WHERE id=%s", (order_id,))
+                done += 1
+            else:
+                c.execute("UPDATE mandatory_sub_orders SET failed_count=failed_count+1 WHERE id=%s", (order_id,))
+                failed += 1
         import asyncio as _aio2
         await _aio2.sleep(2)
+
+    # ─── استرداد نقاط الحسابات الفاشلة فقط (إعادة التفعيل لا تُعوَّض) ───
+    if failed > 0 and _cost_each > 0:
+        refunded_pts = failed * _cost_each
+        add_points(requester_id, refunded_pts)
+
     with db_conn() as c:
         c.execute("UPDATE mandatory_sub_orders SET status='done' WHERE id=%s", (order_id,))
+
+    _refund_line = f'\n💰 *استرداد تلقائي:* {refunded_pts:,} نقطة (عن {failed} فاشل)' if refunded_pts > 0 else ''
+    _reactiv_note = f'\n⚠️ _الحسابات التي كان البوت مفعّلاً بها مسبقاً لا تستحق تعويضاً_' if reactivated > 0 else ''
     try:
         await context.bot.send_message(
             requester_id,
-            f'✅ *اكتمل طلب الاشتراك الإجباري!*\n📌 @{bot_user}\n✅ نجح: {done}\n❌ فشل: {failed}',
+            f'✅ *اكتمل طلب الاشتراك الإجباري!*\n'
+            f'📌 @{bot_user}\n\n'
+            f'✅ الحسابات الناجحة: {done}\n'
+            f'❌ الفاشلة: {failed}\n'
+            f'🔄 إعادة تفعيل البوت: {reactivated}'
+            f'{_refund_line}{_reactiv_note}',
             parse_mode=ParseMode.MARKDOWN
         )
     except Exception: pass
@@ -2190,7 +2238,7 @@ async def _run_mansub_order(order_id, bot_user, start_p, channels, quantity, req
         try:
             await context.bot.send_message(
                 ADMIN_GROUP_ID,
-                f'🔑 اشتراك إجباري اكتمل | 👤 {requester_id} | @{bot_user} | ✅{done} ❌{failed}',
+                f'🔑 اشتراك إجباري اكتمل | 👤 {requester_id} | @{bot_user} | ✅{done} ❌{failed} 🔄{reactivated} | استرداد {refunded_pts}نقطة',
                 parse_mode=ParseMode.MARKDOWN
             )
         except Exception: pass
@@ -2315,7 +2363,8 @@ async def _forced_ref_handle_qty(update, context, user):
         f'📌 `@{_bu_f}` | كود: {_code_f}{ch_line}\n'
         f'🔢 {qty} حساب × {cost_each} نقطة = *{total}* نقطة\n'
         f'💎 رصيدك: {pts} نقطة\n\n'
-        f'⚡ الحسابات المستخدمة: غير معروضة وغير مباعة فقط',
+        f'⚡ الحسابات المستخدمة: غير معروضة وغير مباعة فقط\n'
+        f'💡 الفاشلة: تُستردّ نقاطها تلقائياً | إعادة التفعيل: لا تعويض',
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton('✅ تأكيد', callback_data='confirm_forced_ref:yes'),
@@ -2402,35 +2451,63 @@ async def _run_forced_ref_order(order_id, bot_user, start_p, channels, quantity,
     _global_ch_str = ' '.join(
         ('@' + r['channel_username'].lstrip('@')) for r in _global_ch_rows if r.get('channel_username')
     )
+    with db_conn() as _cfm:
+        _order_meta_f = _cfm.execute(
+            "SELECT cost_points, quantity FROM forced_ref_orders WHERE id=%s", (order_id,)
+        ).fetchone()
+    _total_cost_f = int(_order_meta_f["cost_points"] or 0) if _order_meta_f else 0
+    _qty_total_f  = int(_order_meta_f["quantity"] or 1) if _order_meta_f else max(1, quantity)
+    _cost_each_f  = round(_total_cost_f / _qty_total_f) if _qty_total_f else 0
+
     # دمج القنوات الإجبارية العامة + قنوات المستخدم المحددة في الطلب
     _all_channels = ' '.join(filter(None, [_global_ch_str, channels or ''])).strip()
     nums = [dict(r) for r in rows]
     _rnd.shuffle(nums)
     selected = nums[:quantity]
-    done = failed = 0
+    done = failed = reactivated = 0
+    refunded_pts = 0
     for num in selected:
         try:
-            ok, _ = await do_referral_for_number(
+            ok, reactiv, _ = await do_referral_for_number(
                 num['phone_number'], num['session_string'],
                 bot_user, start_p,
                 mandatory_channels=_all_channels,
                 folder_link='',
             )
         except Exception:
-            ok = False
+            ok = False; reactiv = False
         with db_conn() as c:
-            col = 'done_count' if ok else 'failed_count'
-            c.execute(f"UPDATE forced_ref_orders SET {col}={col}+1 WHERE id=%s", (order_id,))
-        if ok: done += 1
-        else:  failed += 1
+            if ok and reactiv:
+                c.execute("UPDATE forced_ref_orders SET reactivated_count=reactivated_count+1 WHERE id=%s", (order_id,))
+                reactivated += 1
+            elif ok:
+                c.execute("UPDATE forced_ref_orders SET done_count=done_count+1 WHERE id=%s", (order_id,))
+                done += 1
+            else:
+                c.execute("UPDATE forced_ref_orders SET failed_count=failed_count+1 WHERE id=%s", (order_id,))
+                failed += 1
         import asyncio as _aio2
         await _aio2.sleep(2)
+
+    # ─── استرداد نقاط الحسابات الفاشلة فقط (إعادة التفعيل لا تُعوَّض) ───
+    if failed > 0 and _cost_each_f > 0:
+        refunded_pts = failed * _cost_each_f
+        add_points(requester_id, refunded_pts)
+
     with db_conn() as c:
         c.execute("UPDATE forced_ref_orders SET status='done' WHERE id=%s", (order_id,))
+
+    _refund_line_f = f'\n💰 *استرداد تلقائي:* {refunded_pts:,} نقطة (عن {failed} فاشل)' if refunded_pts > 0 else ''
+    _reactiv_note_f = f'\n⚠️ _الحسابات التي كان البوت مفعّلاً بها مسبقاً لا تستحق تعويضاً_' if reactivated > 0 else ''
     try:
         await context.bot.send_message(
             requester_id,
-            f'✅ *اكتملت إحالة البوت الاجبارية!*\n📌 @{bot_user}\n✅ نجح: {done}\n❌ فشل: {failed}',
+            f'✅ *اكتملت إحالة البوت الاجبارية!*\n'
+            f'📌 @{bot_user}\n\n'
+            f'✅ الحسابات الناجحة: {done}\n'
+            f'❌ الفاشلة: {failed}\n'
+            f'🔄 إعادة تفعيل البوت: {reactivated}'
+            f'{_refund_line_f}{_reactiv_note_f}',
             parse_mode=ParseMode.MARKDOWN
         )
     except Exception: pass
@@ -2438,7 +2515,7 @@ async def _run_forced_ref_order(order_id, bot_user, start_p, channels, quantity,
         try:
             await context.bot.send_message(
                 ADMIN_GROUP_ID,
-                f'🔑 إحالة بوت اجباري اكتملت | 👤 {requester_id} | @{bot_user} | ✅{done} ❌{failed}',
+                f'🔑 إحالة بوت اجباري اكتملت | 👤 {requester_id} | @{bot_user} | ✅{done} ❌{failed} 🔄{reactivated} | استرداد {refunded_pts}نقطة',
                 parse_mode=ParseMode.MARKDOWN
             )
         except Exception: pass
@@ -2460,7 +2537,7 @@ async def run_referral_tasks_job(context: ContextTypes.DEFAULT_TYPE):
             # تخطي الأرقام التي لم تحصل على جلسة بعد (ستُشمل تلقائياً في الدورة القادمة)
             if not num.get("session_string"):
                 continue
-            success, detail = await do_referral_for_number(
+            success, _reactiv_t, detail = await do_referral_for_number(
                 num["phone_number"], num["session_string"],
                 task["bot_username"], task["start_param"],
                 mandatory_channels=task.get("mandatory_channels", "") or "",
@@ -12701,7 +12778,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if not num.get("session_string"):
                     skipped += 1
                     continue
-                success, detail = await do_referral_for_number(
+                success, _reactiv_t2, detail = await do_referral_for_number(
                     num["phone_number"], num["session_string"],
                     task["bot_username"], task["start_param"],
                     mandatory_channels=task.get("mandatory_channels", "") or "",
