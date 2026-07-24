@@ -1720,7 +1720,7 @@ def get_referral_task_stats(task_id: int) -> dict:
 
 def get_pending_numbers_for_task(task_id: int) -> list:
     """أرقام المخزون التي لم تُكمل هذه المهمة بعد (لم تُسجَّل في referral_completions بحالة done).
-    القيد: استبعاد الحسابات المباعة (ever_sold IS TRUE) والمعروضة للبيع.
+    القيد الوحيد: استبعاد الحسابات المباعة (ever_sold IS TRUE).
     الأرقام بدون جلسة تُتجاوز وقت التشغيل ولا تُسجَّل كـ failed (تُعاد في الدورة التالية)."""
     with db_conn() as c:
         rows = c.execute(
@@ -1728,16 +1728,6 @@ def get_pending_numbers_for_task(task_id: int) -> list:
             SELECT ns.id, ns.phone_number, ns.session_string
             FROM number_stock ns
             WHERE ns.ever_sold IS NOT TRUE
-              AND ns.force_listed IS NOT TRUE
-              AND NOT (
-                  ns.session_string IS NOT NULL
-                  AND ns.last_authorized IS NOT FALSE
-                  AND ns.twofa_password IS NOT NULL
-                  AND ns.twofa_password <> ''
-                  AND ns.frozen_at IS NULL
-                  AND ns.is_solo IS TRUE
-                  AND ns.can_send_code IS TRUE
-              )
               AND ns.id NOT IN (
                   SELECT stock_id FROM referral_completions
                   WHERE task_id=%s AND status='done'
@@ -2122,7 +2112,11 @@ async def _run_mansub_order(order_id, bot_user, start_p, channels, quantity, req
         c.execute("UPDATE mandatory_sub_orders SET status='running' WHERE id=%s", (order_id,))
         rows = c.execute(
             "SELECT id,phone_number,session_string FROM number_stock"
-            " WHERE session_string IS NOT NULL AND deleted_at IS NULL AND assigned_to IS NULL ORDER BY id"
+            " WHERE session_string IS NOT NULL AND deleted_at IS NULL AND assigned_to IS NULL"
+            " AND ever_sold IS NOT TRUE"
+            " AND force_listed IS NOT TRUE"
+            f" AND NOT ({_sellable_filter_sql()})"
+            " ORDER BY id"
         ).fetchall()
     nums = [dict(r) for r in rows]
     _rnd.shuffle(nums)
