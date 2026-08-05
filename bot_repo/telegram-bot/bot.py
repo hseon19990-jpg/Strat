@@ -713,6 +713,22 @@ def init_db():
           pass
       try:
           with db_conn() as c:
+              c.execute(
+                  "ALTER TABLE gmail_submissions "
+                  "ADD COLUMN IF NOT EXISTS rejection_reason TEXT DEFAULT ''"
+              )
+              c.execute(
+                  "ALTER TABLE gmail_submissions "
+                  "ADD COLUMN IF NOT EXISTS verification_completed BOOLEAN DEFAULT FALSE"
+              )
+              c.execute(
+                  "ALTER TABLE gmail_submissions "
+                  "ADD COLUMN IF NOT EXISTS verification_notified BOOLEAN DEFAULT FALSE"
+              )
+      except Exception as e:
+          logger.warning(f"⚠️ فشل تحديث أعمدة تحقق الإيميل: {e}")
+      try:
+          with db_conn() as c:
               c.execute("ALTER TABLE services ADD COLUMN panel INTEGER DEFAULT 1")
       except Exception:
           pass
@@ -11883,7 +11899,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _GATE_EXEMPT = {"check_mandatory_join", "noop", "skip_mandatory_gate"}
     _owner_admin_action = is_own and data.startswith("os:")
     _sv_admin_action    = is_supervisor_cb and data.startswith("sv:")
-    if data not in _GATE_EXEMPT and not data.startswith("join_verify:") and not data.startswith("thank_owner") and not _owner_admin_action and not _sv_admin_action:
+    _gmail_verification_done = data.startswith("gmail_verify_done:")
+    if data not in _GATE_EXEMPT and not _gmail_verification_done and not data.startswith("join_verify:") and not data.startswith("thank_owner") and not _owner_admin_action and not _sv_admin_action:
         try:
             _db_user = get_user(user.id)
             if _db_user and _db_user.get("verified", 0):
@@ -11903,6 +11920,90 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return
         except Exception as _gate_err:
             logger.warning(f"⚠️ خطأ في فحص القنوات الإجبارية (callback) للمستخدم {user.id}: {_gate_err}")
+
+    # ── العضو يُبلغ المالك بعد إكمال تحقق حساب الجيميل ──
+    if _gmail_verification_done:
+        try:
+            sub_id = int(data.split(":", 1)[1])
+        except (IndexError, TypeError, ValueError):
+            await q.answer("❌ رابط التحقق غير صالح.", show_alert=True)
+            return
+
+        try:
+            with db_conn() as c:
+                # قفل المعاملة يمنع ضغطتين متزامنتين من إرسال إشعارين.
+                lock = c.execute(
+                    "SELECT pg_try_advisory_xact_lock(%s) AS acquired",
+                    (sub_id,)
+                ).fetchone()
+                if not lock or not lock["acquired"]:
+                    await q.answer(
+                        "⏳ تتم معالجة طلبك الآن، حاول بعد لحظات.",
+                        show_alert=True
+                    )
+                    return
+
+                sub = c.execute(
+                    "SELECT id, user_id, gmail_email, status, rejection_reason, "
+                    "verification_completed, verification_notified "
+                    "FROM gmail_submissions WHERE id=%s",
+                    (sub_id,)
+                ).fetchone()
+
+                if not sub or sub["user_id"] != user.id:
+                    await q.answer("❌ هذا الزر لا يخص طلبك.", show_alert=True)
+                    return
+                if sub["status"] != "rejected" or sub["rejection_reason"] != "need_verify":
+                    await q.answer(
+                        "⚠️ لم يعد هذا الطلب بانتظار إكمال التحقق.",
+                        show_alert=True
+                    )
+                    return
+                if sub["verification_notified"]:
+                    await q.answer(
+                        "✅ تم إبلاغ المالك بهذا الطلب مسبقاً.",
+                        show_alert=True
+                    )
+                    try:
+                        await q.edit_message_reply_markup(reply_markup=None)
+                    except Exception:
+                        pass
+                    return
+
+                await context.bot.send_message(
+                    OWNER_ID,
+                    f"🔔 <b>العضو أتمّ التحقق من حساب الجيميل</b>\n\n"
+                    f"🆔 العضو: <code>{sub['user_id']}</code>\n"
+                    f"📬 الإيميل: <code>{sub['gmail_email']}</code>\n"
+                    f"📌 الطلب: <code>#{sub_id}</code>\n\n"
+                    "يمكنك مراجعة الطلب واتخاذ القرار من الزر أدناه.",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton(
+                            "📋 مراجعة الطلب",
+                            callback_data=f"gmail_detail:{sub_id}"
+                        )
+                    ]])
+                )
+                c.execute(
+                    "UPDATE gmail_submissions SET verification_completed=TRUE, "
+                    "verification_notified=TRUE WHERE id=%s",
+                    (sub_id,)
+                )
+            await q.answer("✅ تم إبلاغ المالك بإكمال التحقق.", show_alert=True)
+            try:
+                await q.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+        except Exception as _verify_notify_error:
+            logger.warning(
+                f"gmail verification owner notify error: {_verify_notify_error}"
+            )
+            await q.answer(
+                "⚠️ تعذر إبلاغ المالك حالياً. اضغط الزر مرة أخرى للمحاولة.",
+                show_alert=True
+            )
+        return
 
     # ── موافقة المالك على إرسال طلبه لكروب الطلبات ──
     if data.startswith("owner_fwd:") and is_own:
@@ -18691,7 +18792,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.answer("⚠️ هذا الطلب معالَج مسبقاً.", show_alert=True)
             return
         with db_conn() as c:
-            c.execute("UPDATE gmail_submissions SET status='rejected' WHERE id=%s", (sub_id,))
+            c.execute(
+                "UPDATE gmail_submissions SET status='rejected', "
+                "rejection_reason=%s, verification_completed=FALSE, "
+                "verification_notified=FALSE WHERE id=%s",
+                (reason, sub_id)
+            )
         reason_labels = {
             "wrong_email":  "❌ إيميل خطأ",
             "wrong_pass":   "🔑 باسورد خطأ",
@@ -18737,6 +18843,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         parse_mode=ParseMode.MARKDOWN,
                         reply_markup=InlineKeyboardMarkup([[
                             InlineKeyboardButton("🔐 التحقق", callback_data="totp_generator")
+                        ], [
+                            InlineKeyboardButton(
+                                "✅ أتممت التحقق — أبلغ المالك",
+                                callback_data=f"gmail_verify_done:{sub_id}"
+                            )
                         ]])
                     )
                 else:
@@ -18747,6 +18858,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         parse_mode=ParseMode.MARKDOWN,
                         reply_markup=InlineKeyboardMarkup([[
                             InlineKeyboardButton("🔐 التحقق", callback_data="totp_generator")
+                        ], [
+                            InlineKeyboardButton(
+                                "✅ أتممت التحقق — أبلغ المالك",
+                                callback_data=f"gmail_verify_done:{sub_id}"
+                            )
                         ]])
                     )
         except Exception as _rr_e:
@@ -18778,7 +18894,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with db_conn() as c:
             c.execute("UPDATE users SET points=points+%s WHERE user_id=%s",
                       (gmail_reward, sub["user_id"]))
-            c.execute("UPDATE gmail_submissions SET status='approved' WHERE id=%s", (sub_id,))
+            c.execute(
+                "UPDATE gmail_submissions SET status='approved', rejection_reason='', "
+                "verification_completed=FALSE, verification_notified=FALSE WHERE id=%s",
+                (sub_id,)
+            )
         try:
             await context.bot.send_message(
                 sub["user_id"],
