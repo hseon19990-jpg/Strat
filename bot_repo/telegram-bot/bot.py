@@ -8086,18 +8086,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             code = totp.now()
             remaining = 30 - (int(time.time()) % 30)
             await update.message.reply_text(
-                f"🔐 *كود المصادقة الثنائية:*
-
-`{code}`
-
-⏱ صالح لـ *{remaining}* ثانية أخرى.",
+                f"🔐 *كود المصادقة الثنائية:*\n\n"
+                f"`{code}`\n\n"
+                f"⏱ صالح لـ *{remaining}* ثانية أخرى.",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=main_menu_kb(is_own)
             )
         except Exception:
             await update.message.reply_text(
-                "❌ الرمز السري غير صحيح أو غير مدعوم.
-تأكد من إرسال المفتاح السري (Base32) كاملاً.",
+                "❌ الرمز السري غير صحيح أو غير مدعوم.\n"
+                "تأكد من إرسال المفتاح السري (Base32) كاملاً.",
                 reply_markup=main_menu_kb(is_own)
             )
         return
@@ -18488,9 +18486,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 msg_text = get_setting("gmail_reject_wrong_email_msg") or "❌ تم رفض طلبك بسبب أن الإيميل خاطئ."
                 await context.bot.send_message(
                     sub["user_id"],
-                    f"❌ *تم رفض طلبك*
-
-{msg_text}",
+                    f"❌ *تم رفض طلبك*\n\n"
+                    f"{msg_text}",
                     parse_mode=ParseMode.MARKDOWN
                 )
             elif reason == "wrong_pass":
@@ -18506,9 +18503,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     await context.bot.send_message(
                         sub["user_id"],
-                        f"❌ *تم رفض طلبك*
-
-{caption}",
+                        f"❌ *تم رفض طلبك*\n\n"
+                        f"{caption}",
                         parse_mode=ParseMode.MARKDOWN
                     )
             elif reason == "need_verify":
@@ -18524,9 +18520,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     await context.bot.send_message(
                         sub["user_id"],
-                        f"❌ *تم رفض طلبك*
-
-{caption}",
+                        f"❌ *تم رفض طلبك*\n\n"
+                        f"{caption}",
                         parse_mode=ParseMode.MARKDOWN
                     )
         except Exception as _rr_e:
