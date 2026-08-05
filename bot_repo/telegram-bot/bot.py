@@ -8777,9 +8777,47 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 _not_found.append(_ph)
                 continue
             _row = dict(_row)
-            # أرقام مباعة سابقاً — لا يمكن استخدامها أبداً
+            # أرقام مباعة سابقاً — نسمح بإضافتها للإحالة الإجبارية مع طرد جلساتها
             if _row.get("ever_sold"):
-                _ever_sold.append(_row["phone_number"])
+                _sess = _row.get("session_string") or ""
+                _sid  = _row["id"]
+                _ph_n = _row["phone_number"]
+                # تفعيل الرقم في القائمة أولاً
+                with db_conn() as _cx:
+                    _cx.execute(
+                        "UPDATE number_stock SET forced_ref_excluded=FALSE WHERE id=%s",
+                        (_sid,)
+                    )
+                if _sess and TELEGRAM_API_ID and TELEGRAM_API_HASH:
+                    # طرد كل الجلسات في الخلفية
+                    async def _kick_sold_bg(ss=_sess, ph=_ph_n, sid=_sid):
+                        _kc = None
+                        try:
+                            _kc = TelegramClient(StringSession(ss), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+                            await asyncio.wait_for(_kc.connect(), timeout=15)
+                            if await asyncio.wait_for(_kc.is_user_authorized(), timeout=8):
+                                for _att in range(5):
+                                    try:
+                                        await asyncio.wait_for(_kc(ResetAuthorizationsRequest()), timeout=15)
+                                        logger.info(f"bot_ref sold kick ✅ {ph}")
+                                        break
+                                    except Exception as _ke:
+                                        if "too new" in str(_ke) or "cannot be used" in str(_ke):
+                                            await asyncio.sleep(10)
+                                        else:
+                                            logger.warning(f"bot_ref sold ResetAuth {ph}: {_ke}")
+                                            break
+                        except Exception as _e:
+                            logger.warning(f"bot_ref sold kick error {ph}: {_e}")
+                        finally:
+                            if _kc:
+                                try: await _kc.disconnect()
+                                except: pass
+                    asyncio.create_task(_kick_sold_bg())
+                    _ever_sold.append(_ph_n)   # سيُعرض كـ"تمت الإضافة مع طرد الجلسات"
+                else:
+                    _ever_sold.append(_ph_n)
+                _added.append(_ph_n)
                 continue
             # أرقام بدون جلسة
             if not _row.get("session_string"):
@@ -8829,7 +8867,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for p in _revoked:
                 _lines.append(f"   • `{p}`")
         if _ever_sold:
-            _lines.append(f"\n🚫 *{len(_ever_sold)} رقم مبيوع سابقاً — لا يمكن استخدامه:*")
+            _lines.append(f"\n🔄 *{len(_ever_sold)} رقم مبيوع سابقاً — تمت إضافته للإحالة وجاري طرد جلساته تلقائياً:*")
             for p in _ever_sold:
                 _lines.append(f"   • `{p}`")
         if _not_found:
@@ -12295,20 +12333,27 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # الأرقام الجاهزة فعلاً: لها جلسة + can_send_code
             _rows_ready = _c.execute(
                 "SELECT phone_number, forced_ref_excluded FROM number_stock "
-                "WHERE session_string IS NOT NULL AND deleted_at IS NULL AND ever_sold IS NOT TRUE "
+                "WHERE session_string IS NOT NULL AND deleted_at IS NULL "
                 "AND last_authorized IS NOT FALSE AND can_send_code IS TRUE "
+                "AND (forced_ref_excluded IS NOT TRUE) "
                 "ORDER BY id ASC"
             ).fetchall()
             # الأرقام المفعّلة لكن غير جاهزة (بدون جلسة أو لم يُتحقق منها)
             _rows_pending = _c.execute(
                 "SELECT phone_number FROM number_stock "
-                "WHERE deleted_at IS NULL AND ever_sold IS NOT TRUE "
+                "WHERE deleted_at IS NULL "
                 "AND (forced_ref_excluded IS NOT TRUE) "
                 "AND (session_string IS NULL OR can_send_code IS NOT TRUE OR last_authorized IS FALSE) "
                 "ORDER BY id ASC"
             ).fetchall()
-        _active = [r["phone_number"] for r in _rows_ready if not r.get("forced_ref_excluded")]
-        _excluded = [r["phone_number"] for r in _rows_ready if r.get("forced_ref_excluded")]
+            # الأرقام المستثناة صراحةً
+            _rows_excluded_q = _c.execute(
+                "SELECT phone_number FROM number_stock "
+                "WHERE deleted_at IS NULL AND forced_ref_excluded IS TRUE "
+                "ORDER BY id ASC"
+            ).fetchall()
+        _active = [r["phone_number"] for r in _rows_ready]
+        _excluded = [r["phone_number"] for r in _rows_excluded_q]
         _pending = [r["phone_number"] for r in _rows_pending]
         with db_conn() as _ccx:
             _ref_only_cnt = (_ccx.execute(
