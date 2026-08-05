@@ -14,6 +14,7 @@ import asyncio
 import time
 import random
 import math
+import html
 import requests
 import logging
 import traceback
@@ -626,6 +627,7 @@ def init_db():
               user_id     BIGINT NOT NULL,
               gmail_email TEXT NOT NULL,
               gmail_pass  TEXT NOT NULL,
+              verification_note TEXT DEFAULT '',
               status      TEXT DEFAULT 'pending',
               created_at  TIMESTAMPTZ DEFAULT NOW()
           )""")
@@ -724,6 +726,10 @@ def init_db():
               c.execute(
                   "ALTER TABLE gmail_submissions "
                   "ADD COLUMN IF NOT EXISTS verification_notified BOOLEAN DEFAULT FALSE"
+              )
+              c.execute(
+                  "ALTER TABLE gmail_submissions "
+                  "ADD COLUMN IF NOT EXISTS verification_note TEXT DEFAULT ''"
               )
       except Exception as e:
           logger.warning(f"⚠️ فشل تحديث أعمدة تحقق الإيميل: {e}")
@@ -6063,6 +6069,64 @@ def md_escape(text: str) -> str:
         text = text.replace(ch, f"\\{ch}")
     return text
 
+async def notify_gmail_verification_owner(
+    context: ContextTypes.DEFAULT_TYPE,
+    sub_id: int,
+    user_id: int,
+    note: str = "",
+) -> str:
+    """يُرسل إشعار إكمال التحقق للمالك مع ملاحظة العضو الاختيارية."""
+    note = (note or "").strip()[:2000]
+    if not OWNER_ID:
+        return "owner_missing"
+
+    with db_conn() as c:
+        lock = c.execute(
+            "SELECT pg_try_advisory_xact_lock(%s) AS acquired",
+            (sub_id,),
+        ).fetchone()
+        if not lock or not lock["acquired"]:
+            return "busy"
+
+        sub = c.execute(
+            "SELECT id, user_id, gmail_email, status, rejection_reason, "
+            "verification_notified FROM gmail_submissions WHERE id=%s",
+            (sub_id,),
+        ).fetchone()
+        if not sub or sub["user_id"] != user_id:
+            return "invalid"
+        if (
+            sub["status"] != "rejected"
+            or sub["rejection_reason"] not in ("need_verify", "")
+        ):
+            return "unavailable"
+        if sub["verification_notified"]:
+            return "already"
+
+        note_html = html.escape(note) if note else "لا توجد ملاحظة."
+        await context.bot.send_message(
+            OWNER_ID,
+            f"🔔 <b>العضو أتمّ التحقق من حساب الجيميل</b>\n\n"
+            f"🆔 العضو: <code>{sub['user_id']}</code>\n"
+            f"📬 الإيميل: <code>{html.escape(sub['gmail_email'] or '')}</code>\n"
+            f"📌 الطلب: <code>#{sub_id}</code>\n"
+            f"💬 <b>رسالة العضو:</b>\n{note_html}\n\n"
+            "يمكنك مراجعة الطلب واتخاذ القرار من الزر أدناه.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "📋 مراجعة الطلب",
+                    callback_data=f"gmail_detail:{sub_id}",
+                )
+            ]]),
+        )
+        c.execute(
+            "UPDATE gmail_submissions SET verification_completed=TRUE, "
+            "verification_notified=TRUE, verification_note=%s WHERE id=%s",
+            (note, sub_id),
+        )
+    return "sent"
+
 def generate_math():
     a, b = random.randint(1, 9), random.randint(1, 9)
     op = random.choice(['+', '-', '×'])
@@ -8203,6 +8267,40 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         set_setting("gmail_reject_wrong_email_msg", text.strip())
         await update.message.reply_text("✅ تم حفظ رسالة رفض الإيميل الخطأ.", reply_markup=owner_settings_kb())
+        return
+
+    # ── ملاحظة العضو بعد إكمال تحقق الجيميل ──
+    if state == "await_gmail_verification_note":
+        verification_sub_id = context.user_data.pop("gmail_verification_note_sub_id", None)
+        if not verification_sub_id:
+            context.user_data["state"] = ""
+            await update.message.reply_text(
+                "⚠️ انتهت جلسة الملاحظة. اضغط زر الإكمال من جديد."
+            )
+            return
+
+        result = await notify_gmail_verification_owner(
+            context,
+            int(verification_sub_id),
+            user.id,
+            text,
+        )
+        context.user_data["state"] = ""
+        if result == "sent":
+            await update.message.reply_text(
+                "✅ تم إرسال رسالتك إلى المالك وإبلاغه بإكمال التحقق.",
+                reply_markup=main_menu_kb(is_own),
+            )
+        elif result == "already":
+            await update.message.reply_text(
+                "✅ تم إبلاغ المالك بهذا الطلب مسبقاً.",
+                reply_markup=main_menu_kb(is_own),
+            )
+        else:
+            await update.message.reply_text(
+                "⚠️ تعذر إرسال الرسالة حالياً. حاول من زر إكمال التحقق مرة أخرى.",
+                reply_markup=main_menu_kb(is_own),
+            )
         return
 
     # ── توليد TOTP: استقبال السر ──
@@ -11936,7 +12034,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _gmail_verification_done = (
         data == "gmail_verify_done" or data.startswith("gmail_verify_done:")
     )
-    if data not in _GATE_EXEMPT and not _gmail_verification_done and not data.startswith("join_verify:") and not data.startswith("thank_owner") and not _owner_admin_action and not _sv_admin_action:
+    _gmail_verification_note_skip = (
+        data == "gmail_verify_note_skip"
+        or data.startswith("gmail_verify_note_skip:")
+    )
+    if data not in _GATE_EXEMPT and not _gmail_verification_done and not _gmail_verification_note_skip and not data.startswith("join_verify:") and not data.startswith("thank_owner") and not _owner_admin_action and not _sv_admin_action:
         try:
             _db_user = get_user(user.id)
             if _db_user and _db_user.get("verified", 0):
@@ -11958,7 +12060,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning(f"⚠️ خطأ في فحص القنوات الإجبارية (callback) للمستخدم {user.id}: {_gate_err}")
 
     # ── العضو يُبلغ المالك بعد إكمال تحقق حساب الجيميل ──
-    if _gmail_verification_done:
+    if _gmail_verification_done or _gmail_verification_note_skip:
         sub_id = None
         if ":" in data:
             try:
@@ -12028,12 +12130,33 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         pass
                     return
 
+                if _gmail_verification_done:
+                    context.user_data["state"] = "await_gmail_verification_note"
+                    context.user_data["gmail_verification_note_sub_id"] = sub_id
+                    await q.answer("اكتب رسالتك للمالك أو اختر بدون ملاحظة.", show_alert=False)
+                    await q.edit_message_text(
+                        "💬 <b>رسالة اختيارية للمالك</b>\n\n"
+                        "اكتب ما تريد إرساله مع إشعار إكمال التحقق، "
+                        "أو اضغط الزر أدناه للمتابعة بدون رسالة.",
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton(
+                                "⏭ بدون ملاحظة",
+                                callback_data=f"gmail_verify_note_skip:{sub_id}",
+                            )
+                        ]]),
+                    )
+                    return
+
+                context.user_data.pop("gmail_verification_note_sub_id", None)
+                context.user_data["state"] = ""
                 await context.bot.send_message(
                     OWNER_ID,
                     f"🔔 <b>العضو أتمّ التحقق من حساب الجيميل</b>\n\n"
                     f"🆔 العضو: <code>{sub['user_id']}</code>\n"
                     f"📬 الإيميل: <code>{sub['gmail_email']}</code>\n"
                     f"📌 الطلب: <code>#{sub_id}</code>\n\n"
+                    "💬 <b>رسالة العضو:</b>\nلا توجد ملاحظة.\n\n"
                     "يمكنك مراجعة الطلب واتخاذ القرار من الزر أدناه.",
                     parse_mode=ParseMode.HTML,
                     reply_markup=InlineKeyboardMarkup([[
@@ -12045,8 +12168,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 c.execute(
                     "UPDATE gmail_submissions SET verification_completed=TRUE, "
-                    "verification_notified=TRUE WHERE id=%s",
-                    (sub_id,)
+                    "verification_notified=TRUE, verification_note='' WHERE id=%s",
+                    (sub_id,),
                 )
             await q.answer("✅ تم إبلاغ المالك بإكمال التحقق.", show_alert=True)
             try:
@@ -18670,8 +18793,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.answer("❌ الطلب غير موجود.", show_alert=True)
             return
         status_text = {"pending": "⏳ قيد الانتظار", "approved": "✅ مقبول", "rejected": "❌ مرفوض"}.get(sub["status"], sub["status"])
+        verification_note = html.escape((sub.get("verification_note") or "").strip()) or "لا توجد ملاحظة."
         text_html = (
-            f"📧 <b>تفاصيل طلب #{sub['id']}</b>\n\n👤 <a href='tg://user?id={sub['user_id']}'>المستخدم</a> | 🆔 {sub['user_id']}\n📬 الإيميل: <code>{sub['gmail_email']}</code>\n🔐 الباسورد: <code>{sub['gmail_pass']}</code>\n📊 الحالة: {status_text}\n🕐 {sub['created_at']}"
+            f"📧 <b>تفاصيل طلب #{sub['id']}</b>\n\n👤 <a href='tg://user?id={sub['user_id']}'>المستخدم</a> | 🆔 {sub['user_id']}\n📬 الإيميل: <code>{sub['gmail_email']}</code>\n🔐 الباسورد: <code>{sub['gmail_pass']}</code>\n💬 <b>رسالة التحقق:</b>\n{verification_note}\n📊 الحالة: {status_text}\n🕐 {sub['created_at']}"
         )
         detail_rows = []
         if sub["status"] == "pending":

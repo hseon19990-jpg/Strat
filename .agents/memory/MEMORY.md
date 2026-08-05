@@ -1,1 +1,1 @@
-- [GitHub push authentication](github-push.md) — use Git credential prompting for PATs and merge remote commits before a normal push.
+- [GitHub push authentication](github-push.md) — use Git credential prompting for PATs and merge remote commits before a normal push.- [Verification completion flow](verification-flow.md) — persist request context when completion requires a later member message.
