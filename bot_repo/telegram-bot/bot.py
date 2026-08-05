@@ -697,6 +697,7 @@ def init_db():
               ('gmail_button_label', '📧 احصل على نقاط مقابل إيميل جيميل'),
               ('gmail_email_prompt', '📧 *أرسل الإيميل*\n\nأرسل عنوان البريد الإلكتروني فقط بدون أي شيء آخر:'),
               ('gmail_password_prompt', '🔐 *أرسل الباسورد*\n\nأرسل كلمة مرور الحساب فقط بدون أي شيء آخر:'),
+              ('gmail_verification_note_prompt', '💬 <b>اكتب رسالتك للمالك</b>\n\nيجب كتابة ملاحظة قبل إرسال إشعار إكمال التحقق.'),
               ('gmail_reject_wrong_email_msg', '❌ تم رفض طلبك بسبب أن الإيميل الذي أرسلته خاطئ أو غير صحيح. يرجى التحقق من الإيميل والمحاولة مجدداً.'),
               ('gmail_reject_wrong_pass_caption', '❌ تم رفض طلبك بسبب أن كلمة المرور خاطئة. شاهد الفيديو التالي لمعرفة كيفية إدخال الباسورد الصحيح.'),
               ('gmail_reject_wrong_pass_video', ''),
@@ -5887,6 +5888,7 @@ BUILTIN_DEFAULTS = {
         ("✏️ نص رسالة الجيميل", "os:edit_gmail_msg", 2),
         ("🏷 اسم زر الإيميل", "os:edit_gmail_btn_label", 2),
         ("📨 رسالة طلب الإيميل", "os:edit_gmail_email_prompt", 2), ("🔑 رسالة طلب الباسورد", "os:edit_gmail_pass_prompt", 2),
+        ("💬 نص طلب ملاحظة التحقق", "os:edit_gmail_verification_note_prompt", 2),
         ("📹 فيديو رفض: باسورد خطأ", "os:edit_reject_pass_video", 2), ("✏️ نص رفض: باسورد خطأ", "os:edit_reject_pass_caption", 2),
         ("📹 فيديو رفض: يحتاج تحقق", "os:edit_reject_verify_video", 2), ("✏️ نص رفض: يحتاج تحقق", "os:edit_reject_verify_caption", 2),
         ("✏️ رسالة رفض: إيميل خطأ", "os:edit_reject_email_msg", 1),
@@ -8224,6 +8226,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_setting("gmail_password_prompt", text.strip())
         context.user_data["state"] = "main_menu"
         await update.message.reply_text("✅ تم تحديث رسالة طلب الباسورد.", reply_markup=owner_settings_kb())
+        return
+
+    if is_own and state == "os_await_gmail_verification_note_prompt":
+        new_prompt = text.strip()
+        if not new_prompt:
+            await update.message.reply_text(
+                "⚠️ النص لا يمكن أن يكون فارغاً. أرسل النص الجديد:"
+            )
+            return
+        set_setting("gmail_verification_note_prompt", new_prompt)
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(
+            "✅ تم تحديث نص طلب ملاحظة التحقق.",
+            reply_markup=owner_settings_kb(),
+        )
         return
 
     # ── إعداد فيديو رفض: باسورد خطأ ──
@@ -12183,9 +12200,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.user_data["state"] = "await_gmail_verification_note"
                 context.user_data["gmail_verification_note_sub_id"] = sub_id
                 await q.answer("اكتب رسالة للمالك للمتابعة.", show_alert=False)
-                await q.edit_message_text(
+                note_prompt = get_setting("gmail_verification_note_prompt") or (
                     "💬 <b>اكتب رسالتك للمالك</b>\n\n"
-                    "يجب كتابة ملاحظة قبل إرسال إشعار إكمال التحقق.",
+                    "يجب كتابة ملاحظة قبل إرسال إشعار إكمال التحقق."
+                )
+                await q.edit_message_text(
+                    note_prompt,
                     parse_mode=ParseMode.HTML,
                 )
                 return
@@ -18892,6 +18912,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "os_await_gmail_pass_prompt"
         await q.edit_message_text(
             f"🔑 رسالة طلب الباسورد الحالية:\n{cur}\n\nأرسل الرسالة الجديدة:"
+        )
+        return
+
+    if data == "os:edit_gmail_verification_note_prompt" and is_own:
+        cur = get_setting("gmail_verification_note_prompt") or (
+            "💬 <b>اكتب رسالتك للمالك</b>\n\n"
+            "يجب كتابة ملاحظة قبل إرسال إشعار إكمال التحقق."
+        )
+        context.user_data["state"] = "os_await_gmail_verification_note_prompt"
+        await q.edit_message_text(
+            f"💬 نص طلب ملاحظة التحقق الحالي:\n\n{cur}\n\nأرسل النص الجديد:",
+            parse_mode=ParseMode.HTML,
         )
         return
 
