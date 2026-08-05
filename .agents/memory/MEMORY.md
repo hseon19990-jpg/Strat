@@ -1,0 +1,1 @@
+- [GitHub push authentication](github-push.md) — use Git credential prompting for PATs and merge remote commits before a normal push.
