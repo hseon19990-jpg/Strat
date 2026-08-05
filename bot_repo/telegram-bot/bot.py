@@ -5780,7 +5780,6 @@ BUILTIN_DEFAULTS = {
         ("✅ تواصل مع الدعم", "contact_support", 2),
         ("🏆 مسابقة الدعوة", "referral_contest_view", 2),
         ("📧 احصل على نقاط مقابل إيميل جيميل", "gmail_points", 1),
-        ("🔐 توليد كود المصادقة الثنائية", "totp_generator", 1),
         ("🔑 إحالة بوت اجباري", "forced_ref", 2),
     ],
     "services_menu": [(label, value, 2) for label, value in SERVICE_PLATFORMS],
@@ -5885,7 +5884,8 @@ GOTO_TARGETS = [
 def seed_menu_items(menu: str):
     with db_conn() as c:
         c.execute(
-            "DELETE FROM menu_items WHERE menu='main' AND action_value IN ('daily_gift','join_channels')"
+            "DELETE FROM menu_items WHERE menu='main' AND action_value IN "
+            "('daily_gift','join_channels','totp_generator')"
         )
     if menu == "main":
         with db_conn() as c:
@@ -8079,7 +8079,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── توليد TOTP: استقبال السر ──
     if state == "await_totp_secret":
-        context.user_data["state"] = "main_menu"
+        context.user_data["state"] = ""
         secret_raw = text.strip().replace(" ", "").upper()
         try:
             totp = pyotp.TOTP(secret_raw)
@@ -8089,14 +8089,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🔐 *كود المصادقة الثنائية:*\n\n"
                 f"`{code}`\n\n"
                 f"⏱ صالح لـ *{remaining}* ثانية أخرى.",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=main_menu_kb(is_own)
+                parse_mode=ParseMode.MARKDOWN
             )
         except Exception:
             await update.message.reply_text(
                 "❌ الرمز السري غير صحيح أو غير مدعوم.\n"
                 "تأكد من إرسال المفتاح السري (Base32) كاملاً.",
-                reply_markup=main_menu_kb(is_own)
             )
         return
 
@@ -12756,6 +12754,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🎁 الهدية اليومية", callback_data="daily_gift_screen")],
             [InlineKeyboardButton("📡 الانضمام بقنوات", callback_data="join_channels")],
             [InlineKeyboardButton(get_setting("gmail_button_label") or "📧 احصل على نقاط مقابل إيميل جيميل", callback_data="gmail_points")],
+            [InlineKeyboardButton("🔐 التحقق", callback_data="totp_generator")],
             [InlineKeyboardButton("📋 الإيميلات المقبولة والمرفوضة", callback_data="my_gmail_history")],
             [InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")],
         ]
@@ -12776,6 +12775,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("✅ التالي", callback_data="gmail_next")],
+                [InlineKeyboardButton("🔐 التحقق", callback_data="totp_generator")],
                 [InlineKeyboardButton("❌ إلغاء", callback_data="collect_points")],
             ])
         )
@@ -18515,14 +18515,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         sub["user_id"],
                         video=video_id,
                         caption=caption,
-                        parse_mode=ParseMode.MARKDOWN
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("🔐 التحقق", callback_data="totp_generator")
+                        ]])
                     )
                 else:
                     await context.bot.send_message(
                         sub["user_id"],
                         f"❌ *تم رفض طلبك*\n\n"
                         f"{caption}",
-                        parse_mode=ParseMode.MARKDOWN
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("🔐 التحقق", callback_data="totp_generator")
+                        ]])
                     )
         except Exception as _rr_e:
             logger.warning(f"gmail_reject_reason notify error: {_rr_e}")
