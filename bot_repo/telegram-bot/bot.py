@@ -6114,7 +6114,7 @@ async def notify_gmail_verification_owner(
             f"🆔 العضو: <code>{sub['user_id']}</code>\n"
             f"📬 الإيميل: <code>{html.escape(sub['gmail_email'] or '')}</code>\n"
             f"📌 الطلب: <code>#{sub_id}</code>\n"
-            f"💬 <b>رسالة العضو:</b>\n{note_html}\n\n"
+            f"💬 <b>رسالة العضو:</b>\n<code>{note_html}</code>\n\n"
             "يمكنك مراجعة الطلب واتخاذ القرار من الزر أدناه.",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([[
