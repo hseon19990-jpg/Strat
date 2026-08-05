@@ -8216,8 +8216,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     latest_verification = c.execute(
                         "SELECT id FROM gmail_submissions "
                         "WHERE user_id=%s AND status='rejected' "
-                        "AND rejection_reason='need_verify' "
-                        "AND verification_notified=FALSE "
+                        "AND (rejection_reason='need_verify' OR rejection_reason='') "
+                        "AND COALESCE(verification_notified, FALSE)=FALSE "
                         "ORDER BY id DESC LIMIT 1",
                         (user.id,)
                     ).fetchone()
@@ -8233,14 +8233,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             totp = pyotp.TOTP(secret_raw)
             code = totp.now()
             remaining = 30 - (int(time.time()) % 30)
-            code_reply_markup = None
-            if verification_sub_id:
-                code_reply_markup = InlineKeyboardMarkup([[
-                    InlineKeyboardButton(
-                        "✅ أتممت التحقق — أبلغ المالك",
-                        callback_data=f"gmail_verify_done:{verification_sub_id}"
+            # يظهر الزر دائماً أسفل رسالة الكود. رقم الطلب اختياري لأن
+            # المعالج يستطيع استرجاع آخر طلب تحقق لهذا العضو عند الضغط.
+            code_reply_markup = InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "✅ أتممت التحقق — أبلغ المالك",
+                    callback_data=(
+                        f"gmail_verify_done:{verification_sub_id}"
+                        if verification_sub_id else "gmail_verify_done"
                     )
-                ]])
+                )
+            ]])
             await update.message.reply_text(
                 f"🔐 *كود المصادقة الثنائية:*\n\n"
                 f"`{code}`\n\n"
@@ -11930,7 +11933,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _GATE_EXEMPT = {"check_mandatory_join", "noop", "skip_mandatory_gate"}
     _owner_admin_action = is_own and data.startswith("os:")
     _sv_admin_action    = is_supervisor_cb and data.startswith("sv:")
-    _gmail_verification_done = data.startswith("gmail_verify_done:")
+    _gmail_verification_done = (
+        data == "gmail_verify_done" or data.startswith("gmail_verify_done:")
+    )
     if data not in _GATE_EXEMPT and not _gmail_verification_done and not data.startswith("join_verify:") and not data.startswith("thank_owner") and not _owner_admin_action and not _sv_admin_action:
         try:
             _db_user = get_user(user.id)
@@ -11954,14 +11959,33 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── العضو يُبلغ المالك بعد إكمال تحقق حساب الجيميل ──
     if _gmail_verification_done:
-        try:
-            sub_id = int(data.split(":", 1)[1])
-        except (IndexError, TypeError, ValueError):
-            await q.answer("❌ رابط التحقق غير صالح.", show_alert=True)
-            return
+        sub_id = None
+        if ":" in data:
+            try:
+                sub_id = int(data.split(":", 1)[1])
+            except (IndexError, TypeError, ValueError):
+                await q.answer("❌ رابط التحقق غير صالح.", show_alert=True)
+                return
 
         try:
             with db_conn() as c:
+                if sub_id is None:
+                    latest_verification = c.execute(
+                        "SELECT id FROM gmail_submissions "
+                        "WHERE user_id=%s AND status='rejected' "
+                        "AND (rejection_reason='need_verify' OR rejection_reason='') "
+                        "AND COALESCE(verification_notified, FALSE)=FALSE "
+                        "ORDER BY id DESC LIMIT 1",
+                        (user.id,)
+                    ).fetchone()
+                    sub_id = latest_verification["id"] if latest_verification else None
+                if sub_id is None:
+                    await q.answer(
+                        "⚠️ لا يوجد طلب إيميل يحتاج إكمال التحقق حالياً.",
+                        show_alert=True
+                    )
+                    return
+
                 # قفل المعاملة يمنع ضغطتين متزامنتين من إرسال إشعارين.
                 lock = c.execute(
                     "SELECT pg_try_advisory_xact_lock(%s) AS acquired",
@@ -11984,7 +12008,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if not sub or sub["user_id"] != user.id:
                     await q.answer("❌ هذا الزر لا يخص طلبك.", show_alert=True)
                     return
-                if sub["status"] != "rejected" or sub["rejection_reason"] != "need_verify":
+                if (
+                    sub["status"] != "rejected"
+                    or sub["rejection_reason"] not in ("need_verify", "")
+                ):
                     await q.answer(
                         "⚠️ لم يعد هذا الطلب بانتظار إكمال التحقق.",
                         show_alert=True
