@@ -8207,8 +8207,27 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── توليد TOTP: استقبال السر ──
     if state == "await_totp_secret":
-        context.user_data["state"] = ""
-        verification_sub_id = context.user_data.pop("gmail_verification_sub_id", None)
+        context.user_data["state"] = "await_totp_secret"
+        verification_sub_id = context.user_data.get("gmail_verification_sub_id")
+        if not verification_sub_id:
+            # استرجاع الطلب إذا انقطعت جلسة الزر أو بدأ العضو من زر التحقق العام.
+            try:
+                with db_conn() as c:
+                    latest_verification = c.execute(
+                        "SELECT id FROM gmail_submissions "
+                        "WHERE user_id=%s AND status='rejected' "
+                        "AND rejection_reason='need_verify' "
+                        "AND verification_notified=FALSE "
+                        "ORDER BY id DESC LIMIT 1",
+                        (user.id,)
+                    ).fetchone()
+                if latest_verification:
+                    verification_sub_id = latest_verification["id"]
+                    context.user_data["gmail_verification_sub_id"] = verification_sub_id
+            except Exception as _lookup_verification_error:
+                logger.warning(
+                    f"gmail verification request lookup error: {_lookup_verification_error}"
+                )
         secret_raw = text.strip().replace(" ", "").upper()
         try:
             totp = pyotp.TOTP(secret_raw)
@@ -8229,6 +8248,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=code_reply_markup
             )
+            context.user_data.pop("gmail_verification_sub_id", None)
+            context.user_data["state"] = ""
         except Exception:
             await update.message.reply_text(
                 "❌ الرمز السري غير صحيح أو غير مدعوم.\n"
