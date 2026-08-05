@@ -114,13 +114,11 @@ function Field({
   label,
   value,
   onChange,
-  multiline = false,
   isMono = false,
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
-  multiline?: boolean;
   isMono?: boolean;
 }) {
   const inputClass = `flex-1 w-full rounded-md border border-input bg-muted/30 px-3 py-2 text-[15px] shadow-sm placeholder:text-muted-foreground focus:bg-background focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all disabled:cursor-not-allowed disabled:opacity-50 ${
@@ -131,24 +129,85 @@ function Field({
     <div className="flex flex-col gap-2">
       <label className="text-sm font-bold text-foreground/90 mr-1">{label}</label>
       <div className="flex items-start gap-3">
-        {multiline ? (
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          dir={isMono ? 'ltr' : 'rtl'}
+          className={`${inputClass} h-[42px]`}
+        />
+        <CopyButton text={value} />
+      </div>
+    </div>
+  );
+}
+
+function ClickToCopyBlock({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const [editing, setEditing] = useState(false);
+
+  const handleClick = () => {
+    if (editing) return;
+    navigator.clipboard.writeText(value);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="flex flex-col gap-2">
+      <label className="text-sm font-bold text-foreground/90 mr-1">{label}</label>
+      <div className="relative group">
+        <AnimatePresence>
+          {copied && (
+            <motion.div
+              key="badge"
+              initial={{ opacity: 0, y: -6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.15 }}
+              className="absolute top-2 left-3 z-10 flex items-center gap-1 bg-primary text-primary-foreground text-xs font-bold px-2 py-0.5 rounded-md shadow"
+            >
+              ✓ تم النسخ
+            </motion.div>
+          )}
+        </AnimatePresence>
+        {editing ? (
           <textarea
+            autoFocus
             value={value}
             onChange={(e) => onChange(e.target.value)}
-            rows={4}
+            onBlur={() => setEditing(false)}
+            rows={3}
             dir="rtl"
-            className={`${inputClass} resize-y min-h-[96px] leading-relaxed`}
+            className="w-full rounded-md border-2 border-primary bg-background px-3 py-2.5 text-[15px] font-sans text-right shadow-sm focus:outline-none resize-none leading-relaxed"
           />
         ) : (
-          <input
-            type="text"
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            dir={isMono ? 'ltr' : 'rtl'}
-            className={`${inputClass} h-[42px]`}
-          />
+          <div
+            onClick={handleClick}
+            onDoubleClick={() => setEditing(true)}
+            title="اضغط لنسخ • اضغط مرتين للتعديل"
+            className={`w-full min-h-[52px] rounded-md border bg-slate-50 dark:bg-slate-900 px-3 py-2.5 text-[15px] font-sans text-right leading-relaxed cursor-pointer select-none transition-all shadow-sm whitespace-pre-wrap break-words
+              ${copied
+                ? 'border-primary bg-primary/5 text-primary'
+                : 'border-border hover:border-primary/50 hover:bg-slate-100 dark:hover:bg-slate-800 active:scale-[0.995]'
+              }`}
+          >
+            {value || <span className="text-muted-foreground text-sm">اضغط مرتين للتعديل...</span>}
+          </div>
         )}
-        <CopyButton text={value} />
+        {!editing && (
+          <p className="mt-1 text-xs text-muted-foreground text-right">
+            اضغط مرة للنسخ · مرتين للتعديل
+          </p>
+        )}
       </div>
     </div>
   );
@@ -191,12 +250,7 @@ function Home() {
           <Field label="الأيدي" value={id} onChange={setId} isMono={true} />
           <Field label="الإيميل" value={email} onChange={setEmail} isMono={true} />
           <Field label="الباسورد" value={password} onChange={setPassword} isMono={true} />
-          <Field
-            label="رسالة العضو"
-            value={message}
-            onChange={setMessage}
-            multiline={true}
-          />
+          <ClickToCopyBlock label="رسالة العضو" value={message} onChange={setMessage} />
         </div>
 
         {/* Footer */}
