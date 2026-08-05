@@ -6119,7 +6119,7 @@ async def notify_gmail_verification_owner(
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton(
-                    "📋 مراجعة الطلب",
+                    "📋 عرض التفاصيل",
                     callback_data=f"gmail_detail:{sub_id}",
                 )
             ]]),
@@ -18834,7 +18834,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_text = {"pending": "⏳ قيد الانتظار", "approved": "✅ مقبول", "rejected": "❌ مرفوض"}.get(sub["status"], sub["status"])
         verification_note = html.escape((sub.get("verification_note") or "").strip()) or "لا توجد ملاحظة."
         text_html = (
-            f"📧 <b>تفاصيل طلب #{sub['id']}</b>\n\n👤 <a href='tg://user?id={sub['user_id']}'>المستخدم</a> | 🆔 {sub['user_id']}\n📬 الإيميل: <code>{sub['gmail_email']}</code>\n🔐 الباسورد: <code>{sub['gmail_pass']}</code>\n💬 <b>رسالة التحقق:</b>\n{verification_note}\n📊 الحالة: {status_text}\n🕐 {sub['created_at']}"
+            f"📧 <b>تفاصيل طلب #{sub['id']}</b>\n\n👤 <a href='tg://user?id={sub['user_id']}'>المستخدم</a> | 🆔 {sub['user_id']}\n📬 الإيميل: <code>{sub['gmail_email']}</code>\n🔐 الباسورد: <code>{sub['gmail_pass']}</code>\n💬 <b>رسالة التحقق:</b>\n<code>{verification_note}</code>\n📊 الحالة: {status_text}\n🕐 {sub['created_at']}"
         )
         detail_rows = []
         if sub["status"] == "pending":
