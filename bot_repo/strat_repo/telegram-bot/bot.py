@@ -632,6 +632,14 @@ def init_db():
               ('internal_channel_min_members', '0'),
               ('owner_contact_label', '💬 تواصل مع المالك'),
               ('support_contact_label', '🛎 تواصل مع الدعم'),
+              ('thank_owner_button_label', '💌 شكر المالك'),
+              ('thank_owner_ar_button_label', '🇸🇦 رسالة بالعربية'),
+              ('thank_owner_en_button_label', '🇬🇧 Message in English'),
+              ('thank_owner_photo_button_label', '🖼️ إرسال صورة'),
+              ('thank_owner_ar_prompt', '💌 أرسل رسالة الشكر بالعربية:'),
+              ('thank_owner_en_prompt', '💌 Send your thank-you message in English:'),
+              ('thank_owner_photo_prompt', '🖼️ أرسل الصورة التي تريد مشاركتها مع المالك:'),
+              ('thank_owner_success_message', '✅ تم إرسال شكرك إلى المالك، شكراً لك!'),
               ('channel_leave_penalty', '75'),
               ('mandatory_stars_min_members', '50'),
               ('mandatory_stars_tier1_max', '120'),
@@ -829,6 +837,17 @@ def _do_set_setting(key: str, value: str):
 def set_setting(key: str, value: str):
     """حفظ إعداد مع إعادة محاولة تلقائية عند انقطاع الاتصال"""
     with_db_retry(_do_set_setting, key, value)
+
+THANK_OWNER_SETTINGS = {
+    "thank_owner_button_label": ("نص زر «شكر المالك»", "💌 شكر المالك"),
+    "thank_owner_ar_button_label": ("نص زر الرسالة العربية", "🇸🇦 رسالة بالعربية"),
+    "thank_owner_en_button_label": ("نص زر الرسالة الإنجليزية", "🇬🇧 Message in English"),
+    "thank_owner_photo_button_label": ("نص زر إرسال الصورة", "🖼️ إرسال صورة"),
+    "thank_owner_ar_prompt": ("رسالة طلب النص العربي", "💌 أرسل رسالة الشكر بالعربية:"),
+    "thank_owner_en_prompt": ("رسالة طلب النص الإنجليزي", "💌 Send your thank-you message in English:"),
+    "thank_owner_photo_prompt": ("رسالة طلب الصورة", "🖼️ أرسل الصورة التي تريد مشاركتها مع المالك:"),
+    "thank_owner_success_message": ("رسالة نجاح الإرسال", "✅ تم إرسال شكرك إلى المالك، شكراً لك!"),
+}
 
 def is_maintenance_on() -> bool:
     return int(get_setting("maintenance_mode") or "0") == 1
@@ -5421,6 +5440,7 @@ BUILTIN_DEFAULTS = {
         ("🎟 استخدام كود", "use_promo", 2), ("⭐ معلوماتي", "my_info", 2),
         ("🎁 الأكثر دعوةً اليوم", "top_ref_today", 2),
         ("✅ تواصل مع الدعم", "contact_support", 2),
+         ("💌 شكر المالك", "thank_owner", 2),
         ("🏆 مسابقة الدعوة", "referral_contest_view", 2),
         ("📧 احصل على نقاط مقابل إيميل جيميل", "gmail_points", 1),
         ("🔑 إحالة بوت اجباري", "forced_ref", 2),
@@ -5496,6 +5516,7 @@ BUILTIN_DEFAULTS = {
         ("🔍 من استخدم الكود", "os:search_code", 2),
         ("💰 منح/خصم نقاط", "os:manage_points", 2),
         ("💬 رابط تواصل المالك", "os:edit_contact", 2), ("✏️ نص زر التواصل", "os:edit_contact_label", 2),
+         ("💌 إعدادات شكر المالك", "os:thank_owner_settings", 1),
         ("📲 تعديل نص اسيا سيل", "os:edit_asiacell", 2),
         ("✏️ نص زر الدعم بالقائمة", "os:edit_support_label", 2), ("📢 رسالة جماعية", "os:broadcast", 2),
         ("🔐 تفعيل/تعطيل التحقق", "os:toggle_captcha", 2), ("📊 إحصائيات", "os:stats", 2),
@@ -5629,6 +5650,8 @@ def build_kb_rows(items):
     pending = None
     for it in items:
         label = it["label"]
+        if it["action_value"] == "thank_owner":
+            label = get_setting("thank_owner_button_label") or label
         if it["action_type"] == "url":
             btn = InlineKeyboardButton(label, url=it["action_value"])
         elif it["action_type"] == "text":
@@ -5838,6 +5861,15 @@ def owner_settings_kb():
                 row[i] = InlineKeyboardButton(base_label + _verify_suffix, callback_data="os:manage_channels")
     rows.append([InlineKeyboardButton("🧩 إضافة/إزالة خيار", callback_data="mb_menu:owner_settings")])
     rows.append([InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")])
+    return InlineKeyboardMarkup(rows)
+
+def thank_owner_settings_kb():
+    rows = []
+    for key, (title, default) in THANK_OWNER_SETTINGS.items():
+        current = get_setting(key) or default
+        label = title if len(current) <= 24 else f"{title[:18]}…"
+        rows.append([InlineKeyboardButton(label, callback_data=f"os:thank_owner_edit:{key}")])
+    rows.append([InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")])
     return InlineKeyboardMarkup(rows)
 
 def charge_points_kb():
@@ -6703,7 +6735,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state.startswith("os_") or state.startswith("await_mb_")
         or state in ("confirm_cancel_order", "confirm_complete_order")
     )
-    if state != "verify_math" and not _owner_admin_state:
+    _thank_owner_state = state in {"thank_owner_menu", "thank_owner_ar", "thank_owner_en", "thank_owner_photo"}
+    if state != "verify_math" and not _thank_owner_state and not _owner_admin_state:
         try:
             _db_user = get_user(user.id)
             if _db_user and _db_user.get("verified", 0):
@@ -6714,6 +6747,85 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return
         except Exception as _gate_err:
             logger.warning(f"⚠️ خطأ في فحص القنوات الإجبارية للمستخدم {user.id}: {_gate_err}")
+
+    if state in ("thank_owner_ar", "thank_owner_en") and not is_own:
+        if not text:
+            await update.message.reply_text("⚠️ أرسل رسالة نصية.")
+            return
+        language = "العربية" if state == "thank_owner_ar" else "الإنجليزية"
+        sender = f"{user.full_name or 'مستخدم'}"
+        if user.username:
+            sender += f" (@{user.username})"
+        owner_text = (
+            f"💌 رسالة شكر جديدة ({language})\n\n"
+            f"👤 المرسل: {sender}\n"
+            f"🆔 ID: {user.id}\n\n"
+            f"{text}"
+        )
+        try:
+            await context.bot.send_message(chat_id=OWNER_ID, text=owner_text[:4096])
+            await update.message.reply_text(
+                get_setting("thank_owner_success_message")
+                or "✅ تم إرسال شكرك إلى المالك، شكراً لك!",
+                reply_markup=main_menu_kb(False)
+            )
+        except Exception:
+            logger.exception("فشل إرسال رسالة شكر إلى المالك")
+            await update.message.reply_text(
+                "⚠️ تعذر إرسال الرسالة حالياً، حاول مرة أخرى لاحقاً.",
+                reply_markup=main_menu_kb(False)
+            )
+        context.user_data["state"] = "main_menu"
+        return
+
+    if state == "os_await_thank_owner_setting" and is_own:
+        key = context.user_data.get("thank_owner_setting_key")
+        if key not in THANK_OWNER_SETTINGS:
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text("⚠️ انتهت جلسة الإعداد، افتحها من جديد.", reply_markup=owner_settings_kb())
+            return
+        if not text:
+            await update.message.reply_text("⚠️ النص لا يمكن أن يكون فارغاً.")
+            return
+        set_setting(key, text)
+        context.user_data["state"] = "main_menu"
+        context.user_data.pop("thank_owner_setting_key", None)
+        await update.message.reply_text(
+            f"✅ تم تحديث: {THANK_OWNER_SETTINGS[key][0]}",
+            reply_markup=thank_owner_settings_kb()
+        )
+        return
+
+    if state == "thank_owner_photo" and not is_own and update.message.photo:
+        sender = f"{user.full_name or 'مستخدم'}"
+        if user.username:
+            sender += f" (@{user.username})"
+        caption = (
+            f"💌 صورة شكر جديدة\n\n"
+            f"👤 المرسل: {sender}\n"
+            f"🆔 ID: {user.id}"
+        )
+        if update.message.caption:
+            caption += f"\n\n💬 تعليق المرسل:\n{update.message.caption}"
+        try:
+            await context.bot.send_photo(
+                chat_id=OWNER_ID,
+                photo=update.message.photo[-1].file_id,
+                caption=caption[:1024]
+            )
+            await update.message.reply_text(
+                get_setting("thank_owner_success_message")
+                or "✅ تم إرسال شكرك إلى المالك، شكراً لك!",
+                reply_markup=main_menu_kb(False)
+            )
+        except Exception:
+            logger.exception("فشل إرسال صورة شكر إلى المالك")
+            await update.message.reply_text(
+                "⚠️ تعذر إرسال الصورة حالياً، حاول مرة أخرى لاحقاً.",
+                reply_markup=main_menu_kb(False)
+            )
+        context.user_data["state"] = "main_menu"
+        return
 
     if state == "os_import_hex" and is_own:
         context.user_data["state"] = ""
@@ -10623,6 +10735,32 @@ async def handle_unsupported_message(update: Update, context: ContextTypes.DEFAU
         )
         return
 
+    if state == "thank_owner_photo" and update.effective_user.id != OWNER_ID and update.message.photo:
+        user = update.effective_user
+        sender = f"{user.full_name or 'مستخدم'}"
+        if user.username:
+            sender += f" (@{user.username})"
+        caption = f"💌 صورة شكر جديدة\n\n👤 المرسل: {sender}\n🆔 ID: {user.id}"
+        try:
+            await context.bot.send_photo(
+                chat_id=OWNER_ID,
+                photo=update.message.photo[-1].file_id,
+                caption=caption
+            )
+            await update.message.reply_text(
+                get_setting("thank_owner_success_message")
+                or "✅ تم إرسال شكرك إلى المالك، شكراً لك!",
+                reply_markup=main_menu_kb(False)
+            )
+        except Exception:
+            logger.exception("فشل إرسال صورة شكر إلى المالك")
+            await update.message.reply_text(
+                "⚠️ تعذر إرسال الصورة حالياً، حاول مرة أخرى لاحقاً.",
+                reply_markup=main_menu_kb(False)
+            )
+        context.user_data["state"] = "main_menu"
+        return
+
     if state == "await_fund_channel":
         await update.message.reply_text(
             "⚠️ لم يصلني نص. يرجى إرسال *يوزرنيم قناتك كرسالة نصية* مباشرة، مثال: @mychannel\n"
@@ -10698,7 +10836,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     _GATE_EXEMPT = {"check_mandatory_join", "noop", "skip_mandatory_gate"}
     _owner_admin_action = is_own and data.startswith("os:")
-    if data not in _GATE_EXEMPT and not data.startswith("join_verify:") and not _owner_admin_action:
+    if data not in _GATE_EXEMPT and not data.startswith("join_verify:") and not data.startswith("thank_owner") and not _owner_admin_action:
         try:
             _db_user = get_user(user.id)
             if _db_user and _db_user.get("verified", 0):
@@ -11082,6 +11220,57 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton(label, url=contact)],
                 [InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")]
+            ])
+        )
+        return
+
+    if data == "thank_owner" and is_own:
+        await q.edit_message_text(
+            "💌 *إعدادات شكر المالك*\n\n"
+            "هذه الميزة مخصصة للأعضاء. يمكنك تعديل نصوصها من إعدادات المالك:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=thank_owner_settings_kb()
+        )
+        return
+
+    if data == "thank_owner" and not is_own:
+        context.user_data["state"] = "thank_owner_menu"
+        await q.edit_message_text(
+            "💌 *شكر المالك*\n\nاختر طريقة الشكر:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    get_setting("thank_owner_ar_button_label") or "🇸🇦 رسالة بالعربية",
+                    callback_data="thank_owner:ar"
+                )],
+                [InlineKeyboardButton(
+                    get_setting("thank_owner_en_button_label") or "🇬🇧 Message in English",
+                    callback_data="thank_owner:en"
+                )],
+                [InlineKeyboardButton(
+                    get_setting("thank_owner_photo_button_label") or "🖼️ إرسال صورة",
+                    callback_data="thank_owner:photo"
+                )],
+                [InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")],
+            ])
+        )
+        return
+
+    if data in ("thank_owner:ar", "thank_owner:en", "thank_owner:photo") and not is_own:
+        kind = data.split(":", 1)[1]
+        if kind == "ar":
+            context.user_data["state"] = "thank_owner_ar"
+            prompt = get_setting("thank_owner_ar_prompt") or "💌 أرسل رسالة الشكر بالعربية:"
+        elif kind == "en":
+            context.user_data["state"] = "thank_owner_en"
+            prompt = get_setting("thank_owner_en_prompt") or "💌 Send your thank-you message in English:"
+        else:
+            context.user_data["state"] = "thank_owner_photo"
+            prompt = get_setting("thank_owner_photo_prompt") or "🖼️ أرسل الصورة التي تريد مشاركتها مع المالك:"
+        await q.edit_message_text(
+            prompt,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 رجوع", callback_data="thank_owner")]
             ])
         )
         return
@@ -14747,6 +14936,36 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"مثال: `https://t.me/username`\n\n"
             f"(أرسل *حذف* لإزالة الرابط)",
             parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    if data == "os:thank_owner_settings" and is_own:
+        context.user_data["state"] = "main_menu"
+        await q.edit_message_text(
+            "💌 *إعدادات شكر المالك*\n\n"
+            "اختر النص الذي تريد تغييره. التغييرات تُحفظ مباشرةً وتظهر للأعضاء:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=thank_owner_settings_kb()
+        )
+        return
+
+    if data.startswith("os:thank_owner_edit:") and is_own:
+        key = data.split(":", 2)[2]
+        if key not in THANK_OWNER_SETTINGS:
+            await q.answer("⚠️ هذا الإعداد غير موجود.", show_alert=True)
+            return
+        title, default = THANK_OWNER_SETTINGS[key]
+        current = get_setting(key) or default
+        context.user_data["state"] = "os_await_thank_owner_setting"
+        context.user_data["thank_owner_setting_key"] = key
+        await q.edit_message_text(
+            f"✏️ *{title}*\n\n"
+            f"النص الحالي:\n{current}\n\n"
+            "أرسل النص الجديد:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 رجوع", callback_data="os:thank_owner_settings")]
+            ])
         )
         return
 
