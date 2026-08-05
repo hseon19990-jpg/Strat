@@ -8208,16 +8208,26 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── توليد TOTP: استقبال السر ──
     if state == "await_totp_secret":
         context.user_data["state"] = ""
+        verification_sub_id = context.user_data.pop("gmail_verification_sub_id", None)
         secret_raw = text.strip().replace(" ", "").upper()
         try:
             totp = pyotp.TOTP(secret_raw)
             code = totp.now()
             remaining = 30 - (int(time.time()) % 30)
+            code_reply_markup = None
+            if verification_sub_id:
+                code_reply_markup = InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        "✅ أتممت التحقق — أبلغ المالك",
+                        callback_data=f"gmail_verify_done:{verification_sub_id}"
+                    )
+                ]])
             await update.message.reply_text(
                 f"🔐 *كود المصادقة الثنائية:*\n\n"
                 f"`{code}`\n\n"
                 f"⏱ صالح لـ *{remaining}* ثانية أخرى.",
-                parse_mode=ParseMode.MARKDOWN
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=code_reply_markup
             )
         except Exception:
             await update.message.reply_text(
@@ -13084,7 +13094,36 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # ── توليد كود المصادقة الثنائية (TOTP) ──
-    if data == "totp_generator":
+    if data == "totp_generator" or data.startswith("totp_generator:"):
+        verification_sub_id = None
+        if data.startswith("totp_generator:"):
+            try:
+                verification_sub_id = int(data.split(":", 1)[1])
+            except (IndexError, TypeError, ValueError):
+                await q.answer("❌ رابط التحقق غير صالح.", show_alert=True)
+                return
+
+            with db_conn() as c:
+                verification_sub = c.execute(
+                    "SELECT user_id, status, rejection_reason "
+                    "FROM gmail_submissions WHERE id=%s",
+                    (verification_sub_id,)
+                ).fetchone()
+            if (
+                not verification_sub
+                or verification_sub["user_id"] != user.id
+                or verification_sub["status"] != "rejected"
+                or verification_sub["rejection_reason"] != "need_verify"
+            ):
+                await q.answer(
+                    "⚠️ لم يعد هذا الطلب متاحاً للتحقق.",
+                    show_alert=True
+                )
+                return
+            context.user_data["gmail_verification_sub_id"] = verification_sub_id
+        else:
+            context.user_data.pop("gmail_verification_sub_id", None)
+
         context.user_data["state"] = "await_totp_secret"
         await q.edit_message_text(
             "🔐 *توليد كود المصادقة الثنائية*\n\n"
@@ -18842,11 +18881,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         caption=caption,
                         parse_mode=ParseMode.MARKDOWN,
                         reply_markup=InlineKeyboardMarkup([[
-                            InlineKeyboardButton("🔐 التحقق", callback_data="totp_generator")
-                        ], [
                             InlineKeyboardButton(
-                                "✅ أتممت التحقق — أبلغ المالك",
-                                callback_data=f"gmail_verify_done:{sub_id}"
+                                "🔐 التحقق",
+                                callback_data=f"totp_generator:{sub_id}"
                             )
                         ]])
                     )
@@ -18857,11 +18894,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"{caption}",
                         parse_mode=ParseMode.MARKDOWN,
                         reply_markup=InlineKeyboardMarkup([[
-                            InlineKeyboardButton("🔐 التحقق", callback_data="totp_generator")
-                        ], [
                             InlineKeyboardButton(
-                                "✅ أتممت التحقق — أبلغ المالك",
-                                callback_data=f"gmail_verify_done:{sub_id}"
+                                "🔐 التحقق",
+                                callback_data=f"totp_generator:{sub_id}"
                             )
                         ]])
                     )
