@@ -92,6 +92,35 @@ def _maybe_convert_session(raw: str) -> str:
         except Exception:
             pass
     return s
+
+def _parse_hex_session_text(raw_text: str) -> tuple[list[str], list[str], bool]:
+    """يقرأ نص auth_key_hex:dc_id دون إعادة النص الحساس في رسائل الخطأ."""
+    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    if not lines:
+        return [], [], False
+
+    candidate_lines = []
+    for line in lines:
+        if ":" not in line:
+            return [], [], False
+        hex_part, dc_part = line.rsplit(":", 1)
+        compact_hex = "".join(hex_part.split())
+        if dc_part.strip() not in {"1", "2", "3", "4", "5"}:
+            return [], [], False
+        if not re.fullmatch(r"[0-9a-fA-F]{512}", compact_hex):
+            return [], [], False
+        candidate_lines.append((compact_hex, int(dc_part.strip())))
+
+    sessions = []
+    bad_lines = []
+    for index, (hex_part, dc_id) in enumerate(candidate_lines, start=1):
+        converted = pyrogram_json_to_telethon({"dc_id": dc_id, "auth_key": hex_part})
+        if converted:
+            sessions.append(converted)
+        else:
+            bad_lines.append(f"السطر {index}: auth_key غير صالح")
+    return sessions, bad_lines, True
+
 from telethon.errors import (
     SessionPasswordNeededError, PhoneCodeInvalidError, PhoneCodeExpiredError,
     PhoneNumberInvalidError, FloodWaitError, PasswordHashInvalidError,
@@ -7201,6 +7230,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state  = context.user_data.get("state", "")
     is_own = (user.id == OWNER_ID)
 
+    # يسمح للمالك بإرسال auth_key_hex:dc_id مباشرةً دون فتح أمر منفصل.
+    if is_own and state != "os_import_hex":
+        _, _, looks_like_hex_sessions = _parse_hex_session_text(text)
+        if looks_like_hex_sessions:
+            state = "os_import_hex"
+            context.user_data["state"] = state
+
     if not is_own and is_user_banned(user.id):
         await update.message.reply_text("🚫 تم حظرك من استخدام هذا البوت.")
         return
@@ -7309,24 +7345,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if state == "os_import_hex" and is_own:
         context.user_data["state"] = ""
-        raw_lines = [l.strip() for l in text.splitlines() if l.strip()]
-        sessions = []
-        bad_lines = []
-        for ln in raw_lines:
-            if ":" not in ln:
-                bad_lines.append(ln[:30])
-                continue
-            hex_part, dc_part = ln.rsplit(":", 1)
-            try:
-                dc_id = int(dc_part)
-                if dc_id not in (1, 2, 3, 4, 5):
-                    raise ValueError("dc_id خارج النطاق")
-                converted = pyrogram_json_to_telethon({"dc_id": dc_id, "auth_key": hex_part})
-                if not converted:
-                    raise ValueError("auth_key غير صالح (يجب 256 بايت = 512 حرف hex)")
-                sessions.append(converted)
-            except Exception as _e:
-                bad_lines.append(f"{ln[:30]}… ({_e})")
+        sessions, bad_lines, _ = _parse_hex_session_text(text)
         if not sessions:
             await update.message.reply_text(
                 f"❌ لم أجد أي جلسة صالحة في النص.\n"
