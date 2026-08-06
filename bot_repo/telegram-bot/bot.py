@@ -10805,6 +10805,132 @@ async def _remove_2fa_from_session(session_string: str) -> tuple[bool, str, str 
             pass
         return False, f"❌ خطأ: {e}", phone
 
+async def handle_hex_text_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """يستقبل ملف TXT من المالك يحتوي auth_key_hex:dc_id في كل سطر."""
+    user = update.effective_user
+    if user.id != OWNER_ID:
+        return
+    doc = update.message.document
+    if not doc:
+        return
+
+    fname = doc.file_name or "sessions.txt"
+    msg = await update.message.reply_text("⏳ جاري قراءة ملف الجلسات...")
+    raw_bytes = None
+    last_error = None
+    for attempt in range(3):
+        try:
+            tg_file = await context.bot.get_file(doc.file_id)
+            raw_bytes = await tg_file.download_as_bytearray()
+            break
+        except Exception as error:
+            last_error = error
+            if attempt < 2:
+                await asyncio.sleep(2)
+
+    if raw_bytes is None:
+        await msg.edit_text(
+            f"❌ تعذّر تنزيل الملف بعد 3 محاولات: `{last_error}`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    raw_text = bytes(raw_bytes).decode("utf-8-sig", errors="replace")
+    sessions, bad_lines, recognized = _parse_hex_session_text(raw_text)
+    if not recognized:
+        await msg.edit_text(
+            "❌ صيغة الملف غير صحيحة.\n"
+            "يجب أن يحتوي كل سطر على:\n"
+            "`auth_key_hex:dc_id`\n"
+            "ويجب أن يكون auth_key بطول 512 حرفًا وdc_id بين 1 و5.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+    if not sessions:
+        await msg.edit_text(
+            "❌ لم أجد أي جلسة صالحة في الملف.\n"
+            + "\n".join(f"• {line}" for line in bad_lines[:10]),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    warn = f"\n⚠️ {len(bad_lines)} سطر مرفوض." if bad_lines else ""
+    progress = await msg.edit_text(
+        f"⏳ تم العثور على {len(sessions)} جلسة في `{fname}`، جاري التحقق...{warn}",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+    ok_list, fail_list = [], []
+    for index, session in enumerate(sessions, start=1):
+        client = None
+        try:
+            if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
+                fail_list.append(f"#{index}: متغيرات Telegram API غير مضبوطة")
+                continue
+            client = TelegramClient(
+                StringSession(session),
+                int(TELEGRAM_API_ID),
+                TELEGRAM_API_HASH,
+            )
+            await asyncio.wait_for(client.connect(), timeout=20)
+            if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+                fail_list.append(f"#{index}: الجلسة منتهية أو غير مفعّلة")
+                continue
+            me = await client.get_me()
+            phone = me.phone if me.phone.startswith("+") else f"+{me.phone}"
+            with db_conn() as db:
+                existing = db.execute(
+                    "SELECT id FROM number_stock WHERE phone_number=%s",
+                    (phone,),
+                ).fetchone()
+                if existing:
+                    db.execute(
+                        "UPDATE number_stock SET session_string=%s, assigned_to=NULL,"
+                        " assigned_at=NULL, forced_ref_excluded=FALSE WHERE phone_number=%s",
+                        (session, phone),
+                    )
+                else:
+                    db.execute(
+                        "INSERT INTO number_stock "
+                        "(phone_number, session_string, forced_ref_excluded) VALUES (%s,%s,FALSE)",
+                        (phone, session),
+                    )
+            ok_list.append(phone)
+        except asyncio.TimeoutError:
+            fail_list.append(f"#{index}: انتهت مهلة الاتصال")
+        except Exception as error:
+            fail_list.append(f"#{index}: تعذّر التحقق ({type(error).__name__})")
+        finally:
+            if client is not None:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+        if index % 3 == 0 or index == len(sessions):
+            try:
+                await progress.edit_text(
+                    f"⏳ *{index}/{len(sessions)}* جاري التحقق...\n"
+                    f"✅ {len(ok_list)} نجح | ❌ {len(fail_list)} فشل",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+            except Exception:
+                pass
+
+    result_lines = [
+        f"📄 *نتيجة ملف الجلسات* — ✅ {len(ok_list)} نجح | ❌ {len(fail_list)} فشل"
+    ]
+    if ok_list:
+        result_lines.append("\n✅ *الحسابات المضافة:*")
+        result_lines.extend(f"  • `{phone}`" for phone in ok_list[:30])
+        if len(ok_list) > 30:
+            result_lines.append(f"  ... و{len(ok_list) - 30} أخرى")
+    if fail_list:
+        result_lines.append("\n❌ *الحسابات الفاشلة:*")
+        result_lines.extend(f"  • {failure}" for failure in fail_list[:20])
+        if len(fail_list) > 20:
+            result_lines.append(f"  ... و{len(fail_list) - 20} أخرى")
+    await progress.edit_text("\n".join(result_lines), parse_mode=ParseMode.MARKDOWN)
+
+
 async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """يستقبل ملف JSON من المالك ويستورد الجلسات المحتواة فيه مباشرة."""
     user = update.effective_user
@@ -12117,6 +12243,9 @@ async def handle_unsupported_message(update: Update, context: ContextTypes.DEFAU
             if fname_fb.endswith(".json") or "json" in mime_fb:
                 await handle_json_file(update, context)
                 return
+            if fname_fb.endswith(".txt") or "text/plain" in mime_fb:
+                await handle_hex_text_file(update, context)
+                return
         if fname_fb.endswith(".zip") or "zip" in mime_fb:
             await handle_zip_file(update, context)
             return
@@ -12125,6 +12254,9 @@ async def handle_unsupported_message(update: Update, context: ContextTypes.DEFAU
             return
         if fname_fb.endswith(".json") or "json" in mime_fb:
             await handle_json_file(update, context)
+            return
+        if fname_fb.endswith(".txt") or "text/plain" in mime_fb:
+            await handle_hex_text_file(update, context)
             return
 
     await update.message.reply_text("🏠 القائمة الرئيسية:", reply_markup=main_menu_kb(is_own))
