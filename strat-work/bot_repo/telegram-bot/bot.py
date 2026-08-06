@@ -691,6 +691,7 @@ def init_db():
               ('forced_ref_visible',            '0'),
               ('forced_ref_ai_visible',         '0'),
               ('referral_task_delay',            '30'),  # تأخير بين الحسابات في مهام الإحالة (ثوانٍ)
+              ('forced_ref_order_delay',         '60'),  # تأخير بين الحسابات في الطلبات المدفوعة — للمالك فقط (ثوانٍ)
               ('internal_leave_grace_hours', '24'),
               ('gmail_points_reward', '10000'),
               ('gmail_intro_message', 'للحصول على النقاط يجب عليك تقديم حساب جيميل لا تستخدمه، سيتم مراجعته من قبل المالك وإضافة النقاط بعد التحقق.'),
@@ -3276,13 +3277,20 @@ async def _forced_ref_start(update, context, user, q, is_own, with_ai: bool = Fa
         tgl_cb  = 'os:toggle_forced_ref_visible'
         ai_flag = '0'
     context.user_data['forced_ref_draft'] = {'use_ai': with_ai, 'payment_method': None}
-    own_row = [[InlineKeyboardButton(tgl, callback_data=tgl_cb)]] if user.id == OWNER_ID else []
+    if user.id == OWNER_ID:
+        _cur_order_delay = get_setting('forced_ref_order_delay') or '60'
+        own_rows = [
+            [InlineKeyboardButton(tgl, callback_data=tgl_cb)],
+            [InlineKeyboardButton(f'⏱️ سرعة التفعيل بين الحسابات: {_cur_order_delay}ث', callback_data='os:fr_order_delay')],
+        ]
+    else:
+        own_rows = []
     await q.edit_message_text(
         f'*{title}*\n\n'
         f'📌 {visnote}\n\n'
         f'اختر طريقة الدفع:',
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=InlineKeyboardMarkup(own_row + [
+        reply_markup=InlineKeyboardMarkup(own_rows + [
             [InlineKeyboardButton('⭐ بنجوم', callback_data=f'forced_ref_pm:stars:{ai_flag}')],
             [InlineKeyboardButton('💎 بنقاط', callback_data=f'forced_ref_pm:points:{ai_flag}')],
             [InlineKeyboardButton('🔙 رجوع', callback_data='main_menu')],
@@ -3965,9 +3973,15 @@ async def _run_forced_ref_order(order_id, bot_user, start_p, channels, quantity,
                 except Exception:
                     pass
 
-            # تأخير بين الحسابات (٤٥-٩٠ ثانية لتفريق الحسابات بأمان)
+            # تأخير بين الحسابات
+            # المالك: يستخدم الإعداد forced_ref_order_delay القابل للضبط
+            # غير المالك: تأخير عشوائي ثابت 2-8 دقائق لأمان الحسابات
             if _idx_f < len(_cycle):
-                await _aio2.sleep(_rnd2.uniform(45, 90))
+                if requester_id == OWNER_ID:
+                    _order_delay = float(get_setting('forced_ref_order_delay') or '60')
+                    await _aio2.sleep(max(0.00001, _order_delay))
+                else:
+                    await _aio2.sleep(_rnd2.uniform(120, 480))
 
         # إشعار المستخدم بوجود حسابات بديلة قيد التنفيذ
         if _pending and _live_msg_f:
@@ -9268,6 +9282,26 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 أرقام الإحالة", callback_data="os:bot_ref_numbers")]]))
         return
 
+    if is_own and state == "os_await_fr_order_delay":
+        context.user_data["state"] = "main_menu"
+        try:
+            _od_val = float(text.strip().replace(",", "."))
+            if _od_val < 0.00001:
+                _od_val = 0.00001
+        except ValueError:
+            await update.message.reply_text(
+                "⚠️ قيمة غير صالحة. أرسل رقماً مثل `1` أو `5` أو `0.5`.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")]]))
+            return
+        set_setting("forced_ref_order_delay", str(_od_val))
+        await update.message.reply_text(
+            f"✅ *تم ضبط سرعة التفعيل إلى {_od_val} ثانية بين كل حساب وحساب.*\n\n"
+            f"_(يُطبَّق على طلبات الإحالة الإجبارية للمالك فقط)_",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")]]))
+        return
+
     if is_own and state == "os_await_ref_user_id":
         _search_id = text.strip().lstrip("@")
         _inv = None
@@ -12938,6 +12972,25 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🔙 إلغاء", callback_data="os:bot_ref_numbers")
+            ]]))
+        return
+
+    if data == "os:fr_order_delay" and is_own:
+        context.user_data["state"] = "os_await_fr_order_delay"
+        _cur_od = get_setting("forced_ref_order_delay") or "60"
+        await q.edit_message_text(
+            f"⏱️ *ضبط سرعة التفعيل بين الحسابات*\n\n"
+            f"القيمة الحالية: *{_cur_od} ثانية*\n\n"
+            "أرسل الفرق الزمني بالثوانٍ بين كل حساب وحساب:\n"
+            "• `1` = ثانية واحدة بين كل حساب\n"
+            "• `5` = 5 ثوانٍ\n"
+            "• `0.5` = نصف ثانية\n"
+            "• `0.00001` = بلا تأخير تقريباً\n\n"
+            "⚠️ *ملاحظة:* هذا الإعداد للمالك فقط.\n"
+            "غير المالك يستخدم تأخيراً ثابتاً 2-8 دقائق.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 إلغاء", callback_data="main_menu")
             ]]))
         return
 
