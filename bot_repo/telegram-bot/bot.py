@@ -1426,13 +1426,9 @@ async def handle_contact_share(update: Update, context: ContextTypes.DEFAULT_TYP
         await finalize_verification(update, context, user, edit=False, skip_referral=True)
         if invited_by:
             try:
-                inviter_name = md_escape(f"@{user.username}") if user.username else md_escape(user.full_name or "مستخدم")
                 await context.bot.send_message(
-                    chat_id=OWNER_ID,
-                    text=(f"❌ *إحالة مرفوضة* — رقم غير عربي\n"
-                          f"المستخدم: {inviter_name} | الرقم: `{phone}`\n"
-                          f"السبب: الحساب وهمي"),
-                    parse_mode=ParseMode.MARKDOWN
+                    chat_id=invited_by,
+                    text="الحساب وهمي"
                 )
             except Exception:
                 pass
