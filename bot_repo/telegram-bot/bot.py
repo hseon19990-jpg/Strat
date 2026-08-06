@@ -13335,7 +13335,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.pop("gmail_verification_sub_id", None)
 
         context.user_data["state"] = "await_totp_secret"
-        await q.edit_message_text(
+        # Telegram لا يسمح بتحويل رسالة فيديو إلى رسالة نصية عبر
+        # edit_message_text؛ لذلك كان زر التحقق يبدو وكأنه لا يستجيب.
+        # نؤكد الضغط أولاً ثم نرسل التعليمات في رسالة جديدة.
+        await q.answer("✅ تم فتح خطوة التحقق.")
+        try:
+            await q.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            # بعض أنواع الرسائل/الفيديوهات قد لا تسمح بتعديل لوحة الأزرار.
+            pass
+        await context.bot.send_message(
+            user.id,
             "🔐 *توليد كود المصادقة الثنائية*\n\n"
             "أرسل المفتاح السري (Base32) الخاص بحساب المصادقة الثنائية\n"
             "وسيقوم البوت بتوليد الكود الحالي فوراً.\n\n"
