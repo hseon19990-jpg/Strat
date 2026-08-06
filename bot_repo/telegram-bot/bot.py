@@ -850,6 +850,24 @@ def init_db():
       except Exception as e:
           logger.warning(f"⚠️ فشل تنظيف أوصاف الأسعار: {e}")
 
+      try:
+          with db_conn() as c:
+              c.execute("""
+                  CREATE TABLE IF NOT EXISTS staging_services (
+                      id              SERIAL PRIMARY KEY,
+                      name_ar         TEXT,
+                      api_service_id  INTEGER,
+                      panel           INTEGER DEFAULT 1,
+                      min_qty         INTEGER DEFAULT 0,
+                      max_qty         INTEGER DEFAULT 0,
+                      price_per_point REAL DEFAULT 0,
+                      description     TEXT DEFAULT '',
+                      created_at      TIMESTAMPTZ DEFAULT NOW()
+                  )
+              """)
+      except Exception as _e:
+          logger.warning(f"⚠️ staging_services table: {_e}")
+
 def _normalize_desc(desc: str) -> str:
     """يُطبّع الاختصارات الشائعة في أوصاف خدمات SMM إلى العربية.
     K → ألف  |  /D → /يوم  |  /H → /ساعة  |  /W → /أسبوع  |  /M → /شهر
@@ -6631,6 +6649,7 @@ def owner_settings_kb():
     rows.append([InlineKeyboardButton("🛡 إضافة مشرف", callback_data="os:add_supervisor"),
                   InlineKeyboardButton("📋 إدارة المشرفين", callback_data="os:list_supervisors")])
     rows.append([InlineKeyboardButton("👁 حسابات المشرفين", callback_data="os:sv_accounts")])
+    rows.append([InlineKeyboardButton("📦 الخدمات الجديدة", callback_data="os:new_services")])
     rows.append([InlineKeyboardButton("🧩 إضافة/إزالة خيار", callback_data="mb_menu:owner_settings")])
     rows.append([InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")])
     return InlineKeyboardMarkup(rows)
@@ -9142,6 +9161,113 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         await _save_service(update, context, price)
         return
+
+    # ── الخدمات الجديدة: معالجات إدخال النص ─────────────────────
+    if is_own and state == "ns_await_api_id":
+        try:
+            api_id = int(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقم الخدمة (رقم فقط).")
+            return
+        panel = context.user_data.get("ns_panel", 1)
+        info  = smm_service_info(api_id, panel=panel)
+        if not info or info.get("error"):
+            await update.message.reply_text(
+                f"⚠️ لم يُعثر على الخدمة رقم {api_id} في هذا الموقع.\n"
+                "تأكد من الرقم وحاول مجدداً، أو اكتب اسماً مباشرةً.",
+            )
+        context.user_data["ns_api_id"] = api_id
+        context.user_data["ns_info"]   = info or {}
+        suggested_name = (info or {}).get("name", "") if info else ""
+        clean_name = _normalize_desc(suggested_name) if suggested_name else ""
+        kb = None
+        if clean_name:
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"✅ استخدم: {clean_name[:40]}", callback_data="ns_use_api_name")]])
+            context.user_data["ns_api_name"] = clean_name
+        await update.message.reply_text(
+            f"✏️ أرسل *اسم الخدمة* بالعربية{' أو اضغط الزر:' if kb else ':'}",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=kb
+        )
+        context.user_data["state"] = "ns_await_name"
+        return
+
+    if is_own and state == "ns_await_name":
+        context.user_data["ns_name"] = text.strip()
+        info = context.user_data.get("ns_info", {})
+        mn   = info.get("min", 0)
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"✅ استخدم ({mn})", callback_data=f"os:ns_use_min:{mn}")]])
+        await update.message.reply_text(
+            f"📉 *الحد الأدنى من الموقع: {mn}*\n\nاضغط الزر أو أرسل رقماً مختلفاً:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=kb
+        )
+        context.user_data["state"] = "ns_await_min"
+        return
+
+    if is_own and state == "ns_await_min":
+        try:
+            mn = int(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً.")
+            return
+        context.user_data["ns_min"] = mn
+        info = context.user_data.get("ns_info", {})
+        mx   = info.get("max", 0)
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"✅ استخدم ({mx})", callback_data=f"os:ns_use_max:{mx}")]])
+        await update.message.reply_text(
+            f"📈 *الحد الأعلى من الموقع: {mx}*\n\nاضغط الزر أو أرسل رقماً مختلفاً:",
+            parse_mode=ParseMode.MARKDOWN, reply_markup=kb
+        )
+        context.user_data["state"] = "ns_await_max"
+        return
+
+    if is_own and state == "ns_await_max":
+        try:
+            mx = int(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً.")
+            return
+        context.user_data["ns_max"] = mx
+        info = context.user_data.get("ns_info", {})
+        rate = float(info.get("rate", 0))
+        suggested = round(rate * 100000, 1)
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"✅ استخدم ({suggested} نقطة/1000)", callback_data=f"os:ns_use_price:{suggested}")]])
+        await update.message.reply_text(
+            f"💰 *السعر المقترح: {suggested} نقطة/1000 وحدة*\n\nاضغط الزر أو أرسل رقماً مختلفاً:",
+            parse_mode=ParseMode.MARKDOWN, reply_markup=kb
+        )
+        context.user_data["state"] = "ns_await_price"
+        return
+
+    if is_own and state == "ns_await_price":
+        try:
+            price = float(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً.")
+            return
+        name   = context.user_data.get("ns_name", "")
+        panel  = context.user_data.get("ns_panel", 1)
+        api_id = context.user_data.get("ns_api_id")
+        mn     = context.user_data.get("ns_min", 0)
+        mx     = context.user_data.get("ns_max", 0)
+        desc   = context.user_data.get("ns_desc", "")
+        with db_conn() as c:
+            c.execute(
+                "INSERT INTO staging_services (name_ar,api_service_id,panel,min_qty,max_qty,price_per_point,description) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                (name, api_id, panel, mn, mx, price, desc)
+            )
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(
+            f"✅ تمت إضافة *'{name}'* إلى الخدمات الجديدة!\n\nيمكنك نقلها لأي قسم متى تريد.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📦 الخدمات الجديدة", callback_data="os:new_services")],
+                [InlineKeyboardButton("⚙️ الإعدادات", callback_data="owner_settings")],
+            ])
+        )
+        return
+    # ─────────────────────────────────────────────────────────────
 
     if is_own and state == "os_await_gift_val":
         try:
@@ -14973,6 +15099,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     [InlineKeyboardButton("✏️ تعديل", callback_data=f"os_edit_svc:{s['id']}"),
                      InlineKeyboardButton(tog, callback_data=f"os_tog_svc:{s['id']}:{0 if s['active'] else 1}"),
                      InlineKeyboardButton("🗑 حذف", callback_data=f"os_del_svc:{s['id']}")],
+                    [InlineKeyboardButton("📤 نقل الخدمة", callback_data=f"os:move_svc:{s['id']}")],
                 ])
                 if first and update.callback_query:
                     await q.edit_message_text(svc_text, parse_mode=ParseMode.MARKDOWN, reply_markup=svc_kb)
@@ -15015,6 +15142,278 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "os_await_order_lookup"
         await q.edit_message_text("🔍 أرسل كود الطلب الذي تريد عرض تفاصيله:")
         return
+
+    # ══════════════════════════════════════════════════════════════
+    # ██  الخدمات الجديدة (Staging Area)
+    # ══════════════════════════════════════════════════════════════
+    if data == "os:new_services" and is_own:
+        with db_conn() as c:
+            staged = c.execute("SELECT * FROM staging_services ORDER BY id DESC").fetchall()
+        rows = []
+        for s in staged:
+            panel_name = PANEL_MAP.get(s["panel"] or 1, PANEL_MAP[1])["name"]
+            rows.append([
+                InlineKeyboardButton(
+                    f"🔹 {s['name_ar']} — {panel_name}",
+                    callback_data=f"os:ns_view:{s['id']}"
+                )
+            ])
+        rows.append([InlineKeyboardButton("➕ إضافة خدمة", callback_data="os:ns_add")])
+        rows.append([InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")])
+        count_txt = f"({len(staged)} خدمة)" if staged else "(فارغة)"
+        await q.edit_message_text(
+            f"📦 *الخدمات الجديدة* {count_txt}\n\n"
+            "هنا تضيف خدماتك مبدئياً ثم تنقلها لأي قسم تريد.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
+        return
+
+    if data == "os:ns_add" and is_own:
+        panel_rows = [
+            [InlineKeyboardButton(f"{pinfo['name']}", callback_data=f"os:ns_panel:{pid}")]
+            for pid, pinfo in PANEL_MAP.items() if pinfo["key"]
+        ]
+        panel_rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="os:new_services")])
+        await q.edit_message_text(
+            "➕ *إضافة خدمة جديدة*\n\nاختر *الموقع* (المنصة التقنية للخدمة):",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(panel_rows)
+        )
+        return
+
+    if data.startswith("os:ns_panel:") and is_own:
+        panel = int(data.split(":")[2])
+        context.user_data["ns_panel"] = panel
+        context.user_data["state"] = "ns_await_api_id"
+        site_name = PANEL_MAP.get(panel, PANEL_MAP[1])["name"]
+        await q.edit_message_text(
+            f"🌐 الموقع: *{site_name}*\n\nأرسل *رقم الخدمة* في هذا الموقع:",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    if data.startswith("os:ns_use_min:") and is_own:
+        mn = int(data.split(":")[2])
+        context.user_data["ns_min"] = mn
+        info = context.user_data.get("ns_info", {})
+        mx = info.get("max", 0)
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"✅ استخدم ({mx})", callback_data=f"os:ns_use_max:{mx}")]])
+        await q.edit_message_text(
+            f"✅ الحد الأدنى: {mn}\n\n📈 *الحد الأعلى من الموقع: {mx}*\n\nاضغط أو أرسل رقماً مختلفاً:",
+            parse_mode=ParseMode.MARKDOWN, reply_markup=kb
+        )
+        context.user_data["state"] = "ns_await_max"
+        return
+
+    if data.startswith("os:ns_use_max:") and is_own:
+        mx = int(data.split(":")[2])
+        context.user_data["ns_max"] = mx
+        info = context.user_data.get("ns_info", {})
+        rate = float(info.get("rate", 0))
+        suggested = round(rate * 100000, 1)
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"✅ استخدم ({suggested} نقطة/1000)", callback_data=f"os:ns_use_price:{suggested}")]])
+        await q.edit_message_text(
+            f"✅ الحد الأعلى: {mx}\n\n💰 *السعر المقترح: {suggested} نقطة/1000 وحدة*\n\nاضغط أو أرسل رقماً مختلفاً:",
+            parse_mode=ParseMode.MARKDOWN, reply_markup=kb
+        )
+        context.user_data["state"] = "ns_await_price"
+        return
+
+    if data.startswith("os:ns_use_price:") and is_own:
+        price = float(data.split(":")[2])
+        name    = context.user_data.get("ns_name", "")
+        panel   = context.user_data.get("ns_panel", 1)
+        api_id  = context.user_data.get("ns_api_id")
+        mn      = context.user_data.get("ns_min", 0)
+        mx      = context.user_data.get("ns_max", 0)
+        desc    = context.user_data.get("ns_desc", "")
+        with db_conn() as c:
+            c.execute(
+                "INSERT INTO staging_services (name_ar,api_service_id,panel,min_qty,max_qty,price_per_point,description) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                (name, api_id, panel, mn, mx, price, desc)
+            )
+        context.user_data["state"] = "main_menu"
+        await q.edit_message_text(
+            f"✅ تمت إضافة *'{name}'* إلى الخدمات الجديدة!\n\nيمكنك نقلها لأي قسم متى تريد.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📦 الخدمات الجديدة", callback_data="os:new_services"),
+                                                InlineKeyboardButton("⚙️ الإعدادات", callback_data="owner_settings")]])
+        )
+        return
+
+    if data.startswith("os:ns_view:") and is_own:
+        sid = int(data.split(":")[2])
+        with db_conn() as c:
+            s = c.execute("SELECT * FROM staging_services WHERE id=%s", (sid,)).fetchone()
+        if not s:
+            await q.answer("❌ الخدمة غير موجودة.", show_alert=True)
+            return
+        panel_name = PANEL_MAP.get(s["panel"] or 1, PANEL_MAP[1])["name"]
+        text = (
+            f"📦 *خدمة في المرحلة الجديدة*\n\n"
+            f"🔹 الاسم: *{s['name_ar']}*\n"
+            f"🌐 الموقع: {panel_name}\n"
+            f"🔢 رقم الخدمة: {s['api_service_id']}\n"
+            f"📉 الحد الأدنى: {s['min_qty']:,}\n"
+            f"📈 الحد الأعلى: {s['max_qty']:,}\n"
+            f"💰 السعر: {fmt_price(s['price_per_point'])} نقطة/1000\n"
+        )
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📤 نقل الخدمة", callback_data=f"os:ns_transfer:{sid}")],
+            [InlineKeyboardButton("🗑 حذف", callback_data=f"os:ns_del:{sid}"),
+             InlineKeyboardButton("🔙 رجوع", callback_data="os:new_services")],
+        ])
+        await q.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+        return
+
+    if data.startswith("os:ns_del:") and is_own:
+        sid = int(data.split(":")[2])
+        with db_conn() as c:
+            c.execute("DELETE FROM staging_services WHERE id=%s", (sid,))
+        await q.answer("✅ تم حذف الخدمة.")
+        # refresh list
+        with db_conn() as c:
+            staged = c.execute("SELECT * FROM staging_services ORDER BY id DESC").fetchall()
+        rows = []
+        for s in staged:
+            panel_name = PANEL_MAP.get(s["panel"] or 1, PANEL_MAP[1])["name"]
+            rows.append([InlineKeyboardButton(f"🔹 {s['name_ar']} — {panel_name}", callback_data=f"os:ns_view:{s['id']}")])
+        rows.append([InlineKeyboardButton("➕ إضافة خدمة", callback_data="os:ns_add")])
+        rows.append([InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")])
+        count_txt = f"({len(staged)} خدمة)" if staged else "(فارغة)"
+        await q.edit_message_text(
+            f"📦 *الخدمات الجديدة* {count_txt}\n\nهنا تضيف خدماتك مبدئياً ثم تنقلها لأي قسم تريد.",
+            parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(rows)
+        )
+        return
+
+    # ── نقل خدمة من الخدمات الجديدة إلى قسم ──────────────────
+    if data.startswith("os:ns_transfer:") and is_own:
+        sid = int(data.split(":")[2])
+        context.user_data["ns_transfer_id"] = sid
+        plat_rows = [[InlineKeyboardButton(lbl, callback_data=f"os:ns_tr_plat:{sid}:{PLATFORM_MENU_MAP[val]}")] for lbl, val in SERVICE_PLATFORMS]
+        plat_rows.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"os:ns_view:{sid}")])
+        await q.edit_message_text(
+            "📤 *نقل الخدمة*\n\nاختر *المنصة* التي تريد نقل الخدمة إليها:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(plat_rows)
+        )
+        return
+
+    if data.startswith("os:ns_tr_plat:") and is_own:
+        parts = data.split(":")
+        sid   = int(parts[2])
+        plat  = parts[3]
+        cats  = list(CATEGORY_MAP.items())
+        rows  = [[InlineKeyboardButton(v, callback_data=f"os:ns_tr_cat:{sid}:{plat}:{k}")] for k, v in cats]
+        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"os:ns_transfer:{sid}")])
+        plat_lbl = PLATFORM_LABEL_MAP.get(plat, plat)
+        await q.edit_message_text(
+            f"📤 *نقل الخدمة — {plat_lbl}*\n\nاختر *الفئة:*",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
+        return
+
+    if data.startswith("os:ns_tr_cat:") and is_own:
+        parts = data.split(":")
+        sid   = int(parts[2])
+        plat  = parts[3]
+        cat   = parts[4]
+        with db_conn() as c:
+            s = c.execute("SELECT * FROM staging_services WHERE id=%s", (sid,)).fetchone()
+        if not s:
+            await q.answer("❌ الخدمة غير موجودة.", show_alert=True)
+            return
+        with db_conn() as c:
+            c.execute(
+                "INSERT INTO services (category,api_service_id,panel,platform,name_ar,description,min_qty,max_qty,price_per_point) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (cat, s["api_service_id"], s["panel"], plat, s["name_ar"], s["description"] or "", s["min_qty"], s["max_qty"], s["price_per_point"])
+            )
+            c.execute("DELETE FROM staging_services WHERE id=%s", (sid,))
+        plat_lbl = PLATFORM_LABEL_MAP.get(plat, plat)
+        cat_lbl  = CATEGORY_MAP.get(cat, cat)
+        await q.edit_message_text(
+            f"✅ تم نقل *'{s['name_ar']}'* إلى:\n📱 {plat_lbl} ← {cat_lbl}",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📦 الخدمات الجديدة", callback_data="os:new_services"),
+                 InlineKeyboardButton("⚙️ الإعدادات", callback_data="owner_settings")]
+            ])
+        )
+        return
+
+    # ── نقل خدمة موجودة من قسم إلى آخر ───────────────────────
+    if data.startswith("os:move_svc:") and is_own:
+        sid = int(data.split(":")[2])
+        context.user_data["move_svc_id"] = sid
+        plat_rows = [[InlineKeyboardButton(lbl, callback_data=f"os:mv_plat:{sid}:{PLATFORM_MENU_MAP[val]}")] for lbl, val in SERVICE_PLATFORMS]
+        plat_rows.append([InlineKeyboardButton("📦 الخدمات الجديدة (تجميد)", callback_data=f"os:mv_staging:{sid}")])
+        plat_rows.append([InlineKeyboardButton("🔙 إلغاء", callback_data="os:view_services")])
+        await q.edit_message_text(
+            "📤 *نقل الخدمة*\n\nاختر *المنصة الجديدة:*",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(plat_rows)
+        )
+        return
+
+    if data.startswith("os:mv_plat:") and is_own:
+        parts = data.split(":")
+        sid   = int(parts[2])
+        plat  = parts[3]
+        cats  = list(CATEGORY_MAP.items())
+        rows  = [[InlineKeyboardButton(v, callback_data=f"os:mv_cat:{sid}:{plat}:{k}")] for k, v in cats]
+        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"os:move_svc:{sid}")])
+        plat_lbl = PLATFORM_LABEL_MAP.get(plat, plat)
+        await q.edit_message_text(
+            f"📤 *نقل إلى — {plat_lbl}*\n\nاختر *الفئة:*",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
+        return
+
+    if data.startswith("os:mv_cat:") and is_own:
+        parts = data.split(":")
+        sid   = int(parts[2])
+        plat  = parts[3]
+        cat   = parts[4]
+        with db_conn() as c:
+            s = c.execute("SELECT name_ar FROM services WHERE id=%s", (sid,)).fetchone()
+            c.execute("UPDATE services SET platform=%s, category=%s WHERE id=%s", (plat, cat, sid))
+        name = s["name_ar"] if s else f"#{sid}"
+        plat_lbl = PLATFORM_LABEL_MAP.get(plat, plat)
+        cat_lbl  = CATEGORY_MAP.get(cat, cat)
+        await q.edit_message_text(
+            f"✅ تم نقل *'{name}'* إلى:\n📱 {plat_lbl} ← {cat_lbl}",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚙️ الإعدادات", callback_data="owner_settings")]])
+        )
+        return
+
+    if data.startswith("os:mv_staging:") and is_own:
+        sid = int(data.split(":")[2])
+        with db_conn() as c:
+            s = c.execute("SELECT * FROM services WHERE id=%s", (sid,)).fetchone()
+        if not s:
+            await q.answer("❌ الخدمة غير موجودة.", show_alert=True)
+            return
+        with db_conn() as c:
+            c.execute(
+                "INSERT INTO staging_services (name_ar,api_service_id,panel,min_qty,max_qty,price_per_point,description) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                (s["name_ar"], s["api_service_id"], s["panel"] or 1, s["min_qty"], s["max_qty"], s["price_per_point"], s["description"] or "")
+            )
+            c.execute("DELETE FROM services WHERE id=%s", (sid,))
+        await q.edit_message_text(
+            f"✅ تم تجميد *'{s['name_ar']}'* في قسم الخدمات الجديدة.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📦 الخدمات الجديدة", callback_data="os:new_services"),
+                 InlineKeyboardButton("⚙️ الإعدادات", callback_data="owner_settings")]
+            ])
+        )
+        return
+    # ══════════════════════════════════════════════════════════════
 
     if data == "os:list_services" and is_own:
         text_, rows = _render_service_list()
