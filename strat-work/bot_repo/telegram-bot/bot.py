@@ -2398,6 +2398,43 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             if label:
                                 btn_labels.append(label)
                                 btn_objects[label] = btn
+
+                    async def _click_btn_smart(btn) -> bool:
+                        """يضغط الزر حسب نوعه: callback → click() | URL/WebApp → HTTP GET."""
+                        _burl  = getattr(btn, "url",  None) or ""
+                        _bdata = getattr(btn, "data", None)
+                        if _bdata is not None:
+                            await btn.click()
+                            return True
+                        if _burl and "t.me/" not in _burl and "telegram.me/" not in _burl:
+                            # حاول Web App (RequestWebViewRequest) أولاً
+                            try:
+                                from telethon.tl.functions.messages import RequestWebViewRequest
+                                import aiohttp as _aio_h
+                                _wv = await asyncio.wait_for(
+                                    client(RequestWebViewRequest(
+                                        peer=bot_entity, bot=bot_entity,
+                                        platform="android", url=_burl,
+                                    )), timeout=15,
+                                )
+                                _wv_url = getattr(_wv, "url", None) or ""
+                                _target = _wv_url or _burl
+                                _hdrs = {"User-Agent": "Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36"}
+                                async with _aio_h.ClientSession() as _s:
+                                    async with _s.get(_target, headers=_hdrs,
+                                                      timeout=_aio_h.ClientTimeout(total=15),
+                                                      allow_redirects=True) as _r:
+                                        logger.info(f"🌐 WebApp/URL تحقق → {_target[:60]} (status={_r.status})")
+                                return True
+                            except Exception as _cbe:
+                                logger.debug(f"_click_btn_smart URL: {_cbe}")
+                                return False
+                        # callback بدون data أو نوع غير معروف
+                        try:
+                            await btn.click()
+                            return True
+                        except Exception:
+                            return False
                     if not btn_labels:
                         continue
                     # هل تبدو رسالة تحقق؟ (تحقق، رياضيات، إيموجي...)
@@ -2459,7 +2496,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
 
                     if direct_chosen:
                         processed_ids.add(msg_id)
-                        await direct_chosen.click()
+                        await _click_btn_smart(direct_chosen)
                         result, msgs = await _wait_and_check()
                         detail = f"ضغط إيموجي مباشر: {getattr(direct_chosen, 'text', '')}"
                         all_details.append(detail)
@@ -2518,7 +2555,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             if not chosen:
                                 chosen = list(btn_objects.values())[0]
                             processed_ids.add(msg_id)
-                            await chosen.click()
+                            await _click_btn_smart(chosen)
                             result, msgs = await _wait_and_check()
                             detail = f"ضغط زر: {getattr(chosen, 'text', '')}"
                             all_details.append(detail)
@@ -2648,6 +2685,10 @@ async def _join_channels_from_buttons(client, msgs: list) -> int:
 async def _click_check_subscription_button(client, bot_entity, msgs: list) -> bool:
     """
     بعد الانضمام لقنوات البوت، يبحث عن زر "تحقق من الاشتراك" ويضغطه.
+    يدعم ثلاثة أنواع من الأزرار:
+      1. Callback button  → btn.click() مباشرة
+      2. URL button (غير t.me) → HTTP GET للرابط لتشغيل التحقق على السيرفر
+      3. Web App button   → RequestWebViewRequest ثم HTTP GET مع initData
     يُرجع True إذا وُجد الزر وتم ضغطه.
     """
     CHECK_KW = [
@@ -2655,19 +2696,86 @@ async def _click_check_subscription_button(client, bot_entity, msgs: list) -> bo
         "تم الاشتراك", "لقد اشتركت", "متابع", "اشتراك", "انضممت",
         "i've joined", "i joined", "subscribed",
     ]
+
+    async def _open_url_verify(url: str, label: str) -> bool:
+        """يفتح رابط التحقق بـ HTTP GET — يُفعّل التحقق على السيرفر."""
+        try:
+            import aiohttp
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36",
+                "Accept": "text/html,application/xhtml+xml,*/*",
+            }
+            async with aiohttp.ClientSession() as _sess:
+                async with _sess.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15), allow_redirects=True) as _r:
+                    logger.info(f"✅ فتح رابط التحقق '{label}' → {url} (status={_r.status})")
+            return True
+        except Exception as _ue:
+            logger.debug(f"_open_url_verify: {_ue}")
+            return False
+
+    async def _open_webapp_verify(btn, label: str) -> bool:
+        """يفتح Web App التحقق عبر Telethon ليحصل على initData الصحيح."""
+        try:
+            from telethon.tl.functions.messages import RequestWebViewRequest
+            btn_url = getattr(btn, "url", None) or ""
+            if not btn_url:
+                return False
+            _wv = await asyncio.wait_for(
+                client(RequestWebViewRequest(
+                    peer=bot_entity,
+                    bot=bot_entity,
+                    platform="android",
+                    url=btn_url,
+                )),
+                timeout=15,
+            )
+            _wv_url = getattr(_wv, "url", None) or ""
+            if _wv_url:
+                logger.info(f"🌐 Web App URL للتحقق '{label}': {_wv_url[:80]}...")
+                return await _open_url_verify(_wv_url, label)
+        except Exception as _we:
+            logger.debug(f"_open_webapp_verify: {_we}")
+        return False
+
     for msg in msgs:
         if not msg.buttons:
             continue
         for row in msg.buttons:
             for btn in row:
                 btn_text = (getattr(btn, "text", "") or "").lower()
-                if any(k in btn_text for k in CHECK_KW):
+                if not any(k in btn_text for k in CHECK_KW):
+                    continue
+                btn_url   = getattr(btn, "url",  None) or ""
+                btn_data  = getattr(btn, "data", None)
+                # ── نوع 1: Callback button (data موجود) ──
+                if btn_data is not None:
                     try:
                         await btn.click()
-                        logger.info(f"✅ ضغط زر التحقق من الاشتراك: '{btn.text}'")
+                        logger.info(f"✅ ضغط callback التحقق: '{btn.text}'")
                         return True
                     except Exception as _e:
-                        logger.debug(f"_click_check_subscription_button: {_e}")
+                        logger.debug(f"_click_check_subscription_button callback: {_e}")
+                # ── نوع 2 و 3: URL button أو Web App button ──
+                elif btn_url:
+                    is_channel_url = "t.me/" in btn_url or "telegram.me/" in btn_url
+                    if is_channel_url:
+                        # رابط قناة — ليس تحققاً — تجاهل
+                        continue
+                    # حاول Web App أولاً (RequestWebViewRequest)
+                    _done = await _open_webapp_verify(btn, btn.text)
+                    if not _done:
+                        # احتياطي: HTTP GET مباشر للرابط
+                        _done = await _open_url_verify(btn_url, btn.text)
+                    if _done:
+                        return True
+                else:
+                    # زر بدون url أو data — حاول click() كاحتياطي
+                    try:
+                        await btn.click()
+                        logger.info(f"✅ ضغط زر التحقق (unknown type): '{btn.text}'")
+                        return True
+                    except Exception as _e:
+                        logger.debug(f"_click_check_subscription_button unknown: {_e}")
     return False
 
 
