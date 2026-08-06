@@ -3418,6 +3418,51 @@ async def _forced_ref_handle_link(update, context):
             parse_mode=ParseMode.MARKDOWN
         )
 
+async def _show_forced_ref_confirmation(update, context, user):
+    draft = context.user_data.setdefault('forced_ref_draft', {})
+    qty = draft.get('qty', 0)
+    use_ai = draft.get('use_ai', False)
+    pm = draft.get('payment_method', 'points')
+    total_pts = draft.get('cost', 0)
+    total_stars = draft.get('cost_stars', 0)
+    cost_pts_channels = draft.get('cost_pts_channels', 0)
+    channels = draft.get('channels', '')
+    ch_count = len([t for t in channels.split() if t.strip()]) if channels else 0
+    db_user = get_user(user.id)
+    pts = db_user['points'] if db_user else 0
+    context.user_data['state'] = 'confirm_forced_ref'
+    _bu_f = draft.get('bot_user', '')
+    _sp_f = draft.get('start_p', '')
+    _code_f = f'`{_sp_f}`' if _sp_f else 'بدون كود'
+    ch_line = f'\n📢 القنوات: `{channels}`' if channels else ''
+    _title_conf = '🤖 تأكيد إحالة بميزة تحقق:' if use_ai else '🔑 تأكيد إحالة بوت فقط:'
+    if pm == 'stars':
+        if ch_count > 0:
+            cost_line = (f'⭐ التكلفة: *{total_stars:,} نجمة* (للحسابات)\n'
+                         f'💎 نقاط القنوات: *{cost_pts_channels:,} نقطة* تُخصم من رصيدك (رصيدك: {pts:,})')
+            lbl_confirm = f'✅ تأكيد ({total_stars:,}⭐ + {cost_pts_channels:,}💎)'
+        else:
+            cost_line = f'⭐ التكلفة الإجمالية: *{total_stars:,} نجمة*'
+            lbl_confirm = f'✅ تأكيد ({total_stars:,} نجمة)'
+        btn_confirm = InlineKeyboardButton(lbl_confirm, callback_data='confirm_forced_ref:stars')
+    else:
+        cost_line = f'💎 التكلفة الإجمالية: *{total_pts:,} نقطة* (رصيدك: {pts:,})'
+        btn_confirm = InlineKeyboardButton(f'✅ تأكيد ({total_pts:,} نقطة)', callback_data='confirm_forced_ref:yes')
+    await update.message.reply_text(
+        f'📋 *{_title_conf}*\n\n'
+        f'📌 `@{_bu_f}` | كود: {_code_f}{ch_line}\n'
+        f'🔢 {qty} حساب\n'
+        f'{cost_line}\n\n'
+        f'⚡ الحسابات المستخدمة: غير معروضة وغير مباعة فقط\n'
+        f'💡 الفاشلة: تُعوَّض دائماً | المكررة: تُعوَّض بالنجوم فقط',
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup([
+            [btn_confirm],
+            [InlineKeyboardButton('❌ إلغاء', callback_data='confirm_forced_ref:no')],
+        ])
+    )
+
+
 async def _forced_ref_handle_qty(update, context, user):
     try:
         qty = int(update.message.text.strip())
@@ -3459,39 +3504,39 @@ async def _forced_ref_handle_qty(update, context, user):
     draft['cost']             = total_pts
     draft['cost_stars']       = total_stars
     draft['cost_pts_channels'] = cost_pts_channels  # نقاط القنوات عند الدفع بالنجوم
-    db_user = get_user(user.id)
-    pts     = db_user['points'] if db_user else 0
-    context.user_data['state'] = 'confirm_forced_ref'
-    _bu_f   = draft.get('bot_user', '')
-    _sp_f   = draft.get('start_p', '')
-    _code_f = f'`{_sp_f}`' if _sp_f else 'بدون كود'
-    ch_line = f'\n📢 القنوات: `{channels}`' if channels else ''
-    _title_conf = '🤖 تأكيد إحالة بميزة تحقق:' if use_ai else '🔑 تأكيد إحالة بوت فقط:'
-    if pm == 'stars':
-        if ch_count > 0:
-            cost_line = (f'⭐ التكلفة: *{total_stars:,} نجمة* (للحسابات)\n'
-                         f'💎 نقاط القنوات: *{cost_pts_channels:,} نقطة* تُخصم من رصيدك (رصيدك: {pts:,})')
-            lbl_confirm = f'✅ تأكيد ({total_stars:,}⭐ + {cost_pts_channels:,}💎)'
-        else:
-            cost_line = f'⭐ التكلفة الإجمالية: *{total_stars:,} نجمة*'
-            lbl_confirm = f'✅ تأكيد ({total_stars:,} نجمة)'
-        btn_confirm = InlineKeyboardButton(lbl_confirm, callback_data='confirm_forced_ref:stars')
-    else:
-        cost_line = f'💎 التكلفة الإجمالية: *{total_pts:,} نقطة* (رصيدك: {pts:,})'
-        btn_confirm = InlineKeyboardButton(f'✅ تأكيد ({total_pts:,} نقطة)', callback_data='confirm_forced_ref:yes')
-    await update.message.reply_text(
-        f'📋 *{_title_conf}*\n\n'
-        f'📌 `@{_bu_f}` | كود: {_code_f}{ch_line}\n'
-        f'🔢 {qty} حساب\n'
-        f'{cost_line}\n\n'
-        f'⚡ الحسابات المستخدمة: غير معروضة وغير مباعة فقط\n'
-        f'💡 الفاشلة: تُعوَّض دائماً | المكررة: تُعوَّض بالنجوم فقط',
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=InlineKeyboardMarkup([
-            [btn_confirm],
-            [InlineKeyboardButton('❌ إلغاء', callback_data='confirm_forced_ref:no')],
-        ])
-    )
+    if user.id == OWNER_ID:
+        context.user_data['state'] = 'await_forced_ref_delay'
+        await update.message.reply_text(
+            '⏱️ *أرسل الفاصل الزمني بين الحسابات لهذا الطلب فقط بالثواني:*\n\n'
+            'مثال: `1`\n'
+            'أرسل `0` للتنفيذ بدون انتظار.',
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton('🔙 إلغاء', callback_data='main_menu')]
+            ])
+        )
+        return
+    await _show_forced_ref_confirmation(update, context, user)
+
+
+async def _forced_ref_handle_delay(update, context, user):
+    if user.id != OWNER_ID:
+        context.user_data['state'] = 'main_menu'
+        await update.message.reply_text('⚠️ هذه الخطوة متاحة للمالك فقط.')
+        return
+    try:
+        delay_seconds = float(update.message.text.strip().replace(',', '.'))
+        if not math.isfinite(delay_seconds) or delay_seconds < 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        await update.message.reply_text(
+            '⚠️ أرسل رقماً موجباً أو صفراً، مثل `1` أو `0.5` أو `0`.',
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    draft = context.user_data.setdefault('forced_ref_draft', {})
+    draft['delay_seconds'] = delay_seconds
+    await _show_forced_ref_confirmation(update, context, user)
 
 async def _handle_confirm_forced_ref(update, context, user, q, is_own, data):
     action = data.split(':')[1]
@@ -3583,7 +3628,11 @@ async def _handle_confirm_forced_ref(update, context, user, q, is_own, data):
     )
     import asyncio as _aio
     _use_ai = draft.get('use_ai', False)
-    _aio.create_task(_run_forced_ref_order(order_id, bot_user, start_p, channels, qty, user.id, context, use_ai=_use_ai, payment_method='points', cost_stars=0))
+    _aio.create_task(_run_forced_ref_order(
+        order_id, bot_user, start_p, channels, qty, user.id, context,
+        use_ai=_use_ai, payment_method='points', cost_stars=0,
+        delay_seconds=draft.get('delay_seconds') if user.id == OWNER_ID else None
+    ))
 
 # ═══════════════════════════════════════════════════════════════════════════
 # ══ إحالة إجبارية للمشرف — يستخدم حساباته الخاصة فقط، بدون تكلفة ══
@@ -3829,12 +3878,21 @@ async def _run_sv_forced_ref_order(bot_user, start_p, channels, quantity, superv
         pass
 
 async def _run_forced_ref_order(order_id, bot_user, start_p, channels, quantity, requester_id, context,
-                               use_ai: bool = False, payment_method: str = 'points', cost_stars: int = 0):
+                                use_ai: bool = False, payment_method: str = 'points', cost_stars: int = 0,
+                                delay_seconds: float | None = None):
     import random as _rnd
     import time as _time
 
     def _forced_ref_delay_seconds() -> float:
         """Return the owner's current delay, with a safe fallback for bad settings."""
+        if delay_seconds is not None:
+            try:
+                _value = float(delay_seconds)
+                if not math.isfinite(_value):
+                    raise ValueError("non-finite delay")
+                return max(0.0, _value)
+            except (TypeError, ValueError):
+                return 30.0
         try:
             _value = float(get_setting("referral_task_delay") or "30")
             if not math.isfinite(_value):
@@ -9869,6 +9927,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if state == 'await_forced_ref_qty':
         await _forced_ref_handle_qty(update, context, user)
+        return
+    if state == 'await_forced_ref_delay':
+        await _forced_ref_handle_delay(update, context, user)
         return
 
     # ── حالات إحالة إجبارية المشرف ──
@@ -20674,6 +20735,7 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
         bot_user = _draft.get('bot_user', '')
         start_p  = _draft.get('start_p', '')
         channels = _draft.get('channels', '')
+        delay_seconds = _draft.get('delay_seconds') if user.id == OWNER_ID else None
         if not bot_user:
             await update.message.reply_text(
                 '⚠️ تعذّر استرجاع بيانات الطلب. ابدأ من جديد.',
@@ -20710,7 +20772,8 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
         import asyncio as _aio_fr
         _aio_fr.create_task(_run_forced_ref_order(
             order_id, bot_user, start_p, channels, qty, user.id, context,
-            use_ai=use_ai, payment_method='stars', cost_stars=total_stars
+            use_ai=use_ai, payment_method='stars', cost_stars=total_stars,
+            delay_seconds=delay_seconds
         ))
 
     # ─── تمويل الاشتراك الإجباري بالنجوم ───
