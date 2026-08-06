@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "أداة نسخ بيانات العضو"
+description = "أداة بسيطة تعرض بيانات التحقق للعضو (الأيدي، الإيميل، الباسورد، رسالة العضو) مع زر نسخ لكل حقل بضغطة واحدة."
+version = "1.0.0"
+id = "artifacts/member-tool"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 22123
+
+[services.development]
+run = "pnpm --filter @workspace/member-tool run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/member-tool", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/member-tool/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "22123"
+BASE_PATH = "/"
