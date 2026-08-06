@@ -3710,8 +3710,16 @@ async def _sv_forced_ref_handle_qty(update, context, user):
 
 async def _run_sv_forced_ref_order(bot_user, start_p, channels, quantity, supervisor_id, context, use_ai: bool = False):
     """تنفيذ الإحالة الإجبارية باستخدام حسابات المشرف الخاصة فقط."""
-    import random as _rnd
     import asyncio as _aio_sv
+
+    def _supervisor_ref_delay_seconds() -> float:
+        try:
+            _value = float(get_setting("referral_task_delay") or "30")
+            if not math.isfinite(_value):
+                raise ValueError("non-finite delay")
+            return max(0.0, _value)
+        except (TypeError, ValueError):
+            return 30.0
 
     sv_accounts = get_supervisor_available_accounts(supervisor_id)
     pool = sv_accounts[:quantity]
@@ -3785,8 +3793,9 @@ async def _run_sv_forced_ref_order(bot_user, start_p, channels, quantity, superv
             except Exception:
                 pass
 
-        # تأخير عشوائي بين الحسابات
-        await _aio_sv.sleep(_rnd.uniform(5, 15))
+        # نفس فاصل المالك المستخدم في إحالة البوت الإجبارية المدفوعة.
+        if idx < len(pool):
+            await _aio_sv.sleep(_supervisor_ref_delay_seconds())
 
     # ── رسالة النهاية ──
     fail_lines = '\n'.join(_fail_reasons[:10]) if _fail_reasons else ''
@@ -3823,6 +3832,16 @@ async def _run_forced_ref_order(order_id, bot_user, start_p, channels, quantity,
                                use_ai: bool = False, payment_method: str = 'points', cost_stars: int = 0):
     import random as _rnd
     import time as _time
+
+    def _forced_ref_delay_seconds() -> float:
+        """Return the owner's current delay, with a safe fallback for bad settings."""
+        try:
+            _value = float(get_setting("referral_task_delay") or "30")
+            if not math.isfinite(_value):
+                raise ValueError("non-finite delay")
+            return max(0.0, _value)
+        except (TypeError, ValueError):
+            return 30.0
 
     # ── حماية: إذا استهدف المستخدم (غير المالك) البوت نفسه → طلب وهمي مكتمل بدون تعويض ──
     _clean_bot_target = bot_user.lower().lstrip("@").strip()
@@ -3917,7 +3936,6 @@ async def _run_forced_ref_order(order_id, bot_user, start_p, channels, quantity,
         pass
 
     import asyncio as _aio2
-    import random as _rnd2
 
     # الأخطاء الدائمة — لا فائدة من إعادة المحاولة
     _PERM_ERRORS = (
@@ -3995,9 +4013,10 @@ async def _run_forced_ref_order(order_id, bot_user, start_p, channels, quantity,
                 except Exception:
                     pass
 
-            # تأخير بين الحسابات (٤٥-٩٠ ثانية لتفريق الحسابات بأمان)
-            if _idx_f < len(_cycle):
-                await _aio2.sleep(_rnd2.uniform(45, 90))
+            # فاصل المالك بين كل حساب والذي يليه، بما في ذلك الحسابات البديلة.
+            # نقرأ الإعداد في كل مرة حتى يسري التعديل الجديد على الطلبات الجارية.
+            if _idx_f < len(_cycle) or _pending:
+                await _aio2.sleep(_forced_ref_delay_seconds())
 
         # إشعار المستخدم بوجود حسابات بديلة قيد التنفيذ
         if _pending and _live_msg_f:
@@ -9289,17 +9308,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if is_own and state == "os_await_bot_ref_delay":
-        context.user_data["state"] = "main_menu"
         try:
             _delay_val = float(text.strip().replace(",", "."))
-            if _delay_val < 0.00001:
-                _delay_val = 0.00001
-        except ValueError:
+            if not math.isfinite(_delay_val) or _delay_val < 0:
+                raise ValueError
+        except (TypeError, ValueError):
             await update.message.reply_text(
-                "⚠️ قيمة غير صالحة. أرسل رقماً مثل `5` أو `0.5` أو `120`.",
+                "⚠️ قيمة غير صالحة. أرسل رقماً موجباً أو صفراً مثل `1` أو `5` أو `0.5`.",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:bot_ref_numbers")]]))
             return
+        context.user_data["state"] = "main_menu"
         set_setting("referral_task_delay", str(_delay_val))
         await update.message.reply_text(
             f"✅ *تم ضبط التأخير بين الحسابات إلى {_delay_val} ثانية.*",
@@ -13139,9 +13158,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"⏱️ *ضبط التأخير بين الحسابات*\n\n"
             f"القيمة الحالية: *{_cur} ثانية*\n\n"
             "أرسل القيمة الجديدة بالثوانٍ:\n"
-            "• أدنى قيمة: `0.00001` (بلا تأخير تقريباً)\n"
+            "• أدنى قيمة: `0` (بدون تأخير)\n"
             "• أمثلة: `0.5` أو `5` أو `30` أو `120`\n\n"
-            "_(البوت كان يستخدم 30-60 ثانية افتراضياً)_",
+            "_يُطبّق الفاصل على إحالة البوت الإجبارية، بما فيها الحسابات البديلة._",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🔙 إلغاء", callback_data="os:bot_ref_numbers")
