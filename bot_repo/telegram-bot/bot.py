@@ -21,7 +21,8 @@ import traceback
 from datetime import date, datetime, timedelta, timezone
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
-    LabeledPrice, BotCommand, BotCommandScopeChat
+    LabeledPrice, BotCommand, BotCommandScopeChat,
+    KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
 )
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
@@ -1239,6 +1240,202 @@ COUNTRY_CODES = {
     "996": "🇰🇬 قيرغيزستان", "998": "🇺🇿 أوزبكستان",
 }
 _COUNTRY_PREFIXES_SORTED = sorted(COUNTRY_CODES.keys(), key=len, reverse=True)
+
+# ── تصنيف الأرقام للإحالات ──────────────────────────────────────────────────
+ARAB_ASIAN_PREFIXES = {
+    "966",  # السعودية
+    "971",  # الإمارات
+    "965",  # الكويت
+    "974",  # قطر
+    "973",  # البحرين
+    "968",  # عُمان
+    "962",  # الأردن
+    "964",  # العراق
+    "963",  # سوريا
+    "961",  # لبنان
+    "970",  # فلسطين
+    "967",  # اليمن
+}
+
+ARAB_AFRICAN_PREFIXES = {
+    "20",   # مصر
+    "218",  # ليبيا
+    "216",  # تونس
+    "213",  # الجزائر
+    "212",  # المغرب
+    "249",  # السودان
+    "222",  # موريتانيا
+    "252",  # الصومال
+    "253",  # جيبوتي
+    "269",  # جزر القمر
+}
+
+def classify_phone_region(phone: str) -> str:
+    """يصنّف رقم الهاتف إلى: arab_asian / arab_african / other"""
+    digits = phone.lstrip("+").strip()
+    for prefix in sorted(ARAB_ASIAN_PREFIXES | ARAB_AFRICAN_PREFIXES, key=len, reverse=True):
+        if digits.startswith(prefix):
+            return "arab_asian" if prefix in ARAB_ASIAN_PREFIXES else "arab_african"
+    return "other"
+
+async def _check_user_quality_via_telethon(user_id: int) -> dict:
+    """يفحص جودة حساب المستخدم عبر Telethon (ستوري، هدايا، تقييم، عمر)."""
+    result = {"premium": False, "has_story": False, "has_gifts": False,
+              "has_business": False, "old_account": False}
+    try:
+        sessions = get_all_sessions()
+        if not sessions:
+            return result
+        api_id_str = get_setting("api_id") or ""
+        api_hash = get_setting("api_hash") or ""
+        if not api_id_str or not api_hash:
+            return result
+        api_id = int(api_id_str)
+        session_str = sessions[0].get("session_string", "")
+        client = TelegramClient(StringSession(session_str), api_id, api_hash)
+        await client.connect()
+        try:
+            entity = await client.get_entity(user_id)
+            result["premium"] = bool(getattr(entity, "premium", False))
+            result["has_story"] = bool(getattr(entity, "stories_hidden", None) is not None)
+            result["has_gifts"] = bool(getattr(entity, "stargifts_count", 0))
+            result["has_business"] = bool(getattr(entity, "business_bot", None))
+        finally:
+            await client.disconnect()
+    except Exception as e:
+        logger.warning(f"⚠️ Telethon quality check failed for {user_id}: {e}")
+    return result
+
+async def check_arab_african_account_quality(user_id: int, user) -> dict:
+    """يجمع كل فحوصات الجودة للحسابات العربية الأفريقية، يُرجع {passed, details}."""
+    details = []
+    passed = False
+
+    tg_info = await _check_user_quality_via_telethon(user_id)
+
+    if tg_info["premium"]:
+        details.append("✅ حساب برميوم")
+        passed = True
+    if tg_info["has_story"]:
+        details.append("✅ لديه ستوري")
+        passed = True
+    if tg_info["has_gifts"]:
+        details.append("✅ لديه هدايا نجوم")
+        passed = True
+    if tg_info["has_business"]:
+        details.append("✅ حساب أعمال/تقييم")
+        passed = True
+
+    if not details:
+        details.append("❌ لم يجتز أي فحص جودة")
+
+    return {"passed": passed, "details": details}
+
+async def ask_for_phone_share(update: Update, context: ContextTypes.DEFAULT_TYPE, edit: bool = False):
+    """يطلب من المستخدم مشاركة رقم هاتفه إذا كانت هناك إحالة معلّقة."""
+    user = update.effective_user
+
+    # إذا لم تكن هناك إحالة معلّقة — أنهِ التحقق مباشرةً
+    pending = context.user_data.get("referral_pending") or get_setting(f"ref_pending_{user.id}")
+    has_pending = bool(pending)
+
+    # نتحقق أيضاً من جدول قاعدة البيانات
+    if not has_pending:
+        db_user = get_user(user.id)
+        if db_user and db_user.get("invited_by"):
+            has_pending = True
+
+    if not has_pending:
+        await finalize_verification(update, context, user, edit=edit, skip_referral=False)
+        return
+
+    context.user_data["state"] = "await_phone_share"
+    kb = ReplyKeyboardMarkup(
+        [[KeyboardButton("📱 مشاركة رقم هاتفي", request_contact=True)]],
+        one_time_keyboard=True,
+        resize_keyboard=True
+    )
+    msg = (
+        "📲 *خطوة أخيرة!*\n\n"
+        "لاحتساب نقاط إحالة صديقك، نحتاج التحقق من رقم هاتفك.\n"
+        "اضغط الزر أدناه لمشاركة رقمك بأمان مع البوت."
+    )
+    await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+# ── معالج مشاركة جهة الاتصال ────────────────────────────────────────────────
+async def handle_contact_share(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """يعالج مشاركة رقم الهاتف ويطبّق قواعد الإحالة."""
+    user = update.effective_user
+    contact = update.message.contact
+
+    if not contact or contact.user_id != user.id:
+        await update.message.reply_text(
+            "⚠️ يرجى مشاركة رقم هاتفك الخاص فقط.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return
+
+    phone = contact.phone_number or ""
+    region = classify_phone_region(phone)
+
+    # إزالة لوحة المفاتيح
+    await update.message.reply_text("⏳ جارٍ التحقق...", reply_markup=ReplyKeyboardRemove())
+
+    db_user = get_user(user.id)
+    invited_by = db_user.get("invited_by") if db_user else 0
+
+    if region == "arab_asian":
+        # قبول فوري
+        await finalize_verification(update, context, user, edit=False, skip_referral=False)
+        if invited_by:
+            try:
+                inviter_name = md_escape(f"@{user.username}") if user.username else md_escape(user.full_name or "مستخدم")
+                await context.bot.send_message(
+                    chat_id=OWNER_ID,
+                    text=(f"✅ *إحالة مقبولة* — رقم عربي آسيوي\n"
+                          f"المستخدم: {inviter_name} | الرقم: `{phone}`"),
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            except Exception:
+                pass
+
+    elif region == "arab_african":
+        # فحص جودة الحساب
+        quality = await check_arab_african_account_quality(user.id, user)
+        if quality["passed"]:
+            await finalize_verification(update, context, user, edit=False, skip_referral=False)
+        else:
+            await finalize_verification(update, context, user, edit=False, skip_referral=True)
+        details_text = "\n".join(quality["details"])
+        status_icon = "✅" if quality["passed"] else "❌"
+        if invited_by:
+            try:
+                inviter_name = md_escape(f"@{user.username}") if user.username else md_escape(user.full_name or "مستخدم")
+                await context.bot.send_message(
+                    chat_id=OWNER_ID,
+                    text=(f"{status_icon} *إحالة عربي أفريقي*\n"
+                          f"المستخدم: {inviter_name} | الرقم: `{phone}`\n"
+                          f"نتيجة الفحص:\n{details_text}"),
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            except Exception:
+                pass
+
+    else:
+        # غير عربي — لا إحالة
+        await finalize_verification(update, context, user, edit=False, skip_referral=True)
+        if invited_by:
+            try:
+                inviter_name = md_escape(f"@{user.username}") if user.username else md_escape(user.full_name or "مستخدم")
+                await context.bot.send_message(
+                    chat_id=OWNER_ID,
+                    text=(f"❌ *إحالة مرفوضة* — رقم غير عربي\n"
+                          f"المستخدم: {inviter_name} | الرقم: `{phone}`\n"
+                          f"السبب: الحساب وهمي"),
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            except Exception:
+                pass
 
 def guess_country(phone: str) -> str:
     """يحاول تحديد الدولة من مقدمة رقم الهاتف الدولي (+964...)."""
@@ -6825,11 +7022,11 @@ async def show_mandatory_gate(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
 
 async def proceed_after_mandatory(update: Update, context: ContextTypes.DEFAULT_TYPE, edit=False):
-    """بعد اجتياز بوابة الاشتراك الإجباري: يعرض سؤال التحقق الرياضي إن كان مفعّلاً، وإلا يُنهي التحقق مباشرة."""
+    """بعد اجتياز بوابة الاشتراك الإجباري: يعرض سؤال التحقق الرياضي إن كان مفعّلاً، وإلا يطلب الهاتف إن كانت هناك إحالة."""
     user = update.effective_user
     captcha_on = int(get_setting("captcha_enabled") or "0")
     if not captcha_on:
-        await finalize_verification(update, context, user, edit=edit)
+        await ask_for_phone_share(update, context, edit=edit)
         return
 
     prob, ans = generate_math()
@@ -6842,14 +7039,14 @@ async def proceed_after_mandatory(update: Update, context: ContextTypes.DEFAULT_
     else:
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
-async def finalize_verification(update: Update, context: ContextTypes.DEFAULT_TYPE, user, edit=False):
-    """تُستدعى بعد اجتياز الاشتراك الإجباري والتحقق: تُفعّل المستخدم، تمنح نقاط الإحالة، وتعرض القائمة الرئيسية."""
+async def finalize_verification(update: Update, context: ContextTypes.DEFAULT_TYPE, user, edit=False, skip_referral=False):
+    """تُستدعى بعد اجتياز التحقق: تُفعّل المستخدم، تمنح نقاط الإحالة (إلا إذا skip_referral=True)، وتعرض القائمة الرئيسية."""
     set_user_verified(user.id)
     await count_user_for_fundings(user.id, context)
     is_own = (user.id == OWNER_ID)
 
     referral_note = ""
-    credited = credit_referral_if_pending(user.id, context)
+    credited = (not skip_referral) and credit_referral_if_pending(user.id, context)
     if credited:
         invited_by, rp = credited
         invited_name = md_escape(f"@{user.username}") if user.username else md_escape(user.full_name or "مستخدم")
@@ -7577,7 +7774,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ أرسل رقماً فقط.")
             return
         if ans == correct:
-            await finalize_verification(update, context, user, edit=False)
+            await ask_for_phone_share(update, context, edit=False)
         else:
             prob, new_ans = generate_math()
             context.user_data["math_ans"] = new_ans
@@ -21305,6 +21502,10 @@ def main():
     app.add_handler(MessageHandler(
         filters.ChatType.PRIVATE & filters.Document.FileExtension("zip"),
         handle_zip_file
+    ))
+    app.add_handler(MessageHandler(
+        filters.ChatType.PRIVATE & filters.CONTACT,
+        handle_contact_share
     ))
     app.add_handler(MessageHandler(
         filters.ChatType.PRIVATE & ~filters.COMMAND & ~filters.SUCCESSFUL_PAYMENT,
