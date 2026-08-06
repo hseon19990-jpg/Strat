@@ -4005,83 +4005,91 @@ async def _run_forced_ref_order(order_id, bot_user, start_p, channels, quantity,
     def _is_permanent(detail: str) -> bool:
         return any(k in detail for k in _PERM_ERRORS)
 
-    # ── معالجة الحسابات مع دعم الاستبدال التلقائي الفوري ──
-    # عند فشل أي حساب (لأي سبب) يُستبدل فوراً بحساب بديل من المخزون
-    # يستمر حتى يكتمل العدد المطلوب أو ينفد المخزون
-    _pending = pool[:quantity]   # الدفعة الأولى
+    async def _run_one_forced_ref(num):
+        """Run one account; account attempts are launched concurrently at the configured rate."""
+        _started_at = _time.monotonic()
+        try:
+            _result = await do_referral_for_number(
+                num['phone_number'], num['session_string'],
+                bot_user, start_p,
+                mandatory_channels=_all_channels,
+                folder_link='',
+                use_ai=use_ai,
+                leave_channels_after=True,
+                stock_id=num.get('id', 0),
+            )
+        except Exception as _ex:
+            _result = (False, False, f'[{type(_ex).__name__}] {str(_ex)[:80]}')
+        logger.info(
+            f'⏱️ إحالة {num["phone_number"]} → @{bot_user}: '
+            f'{_time.monotonic() - _started_at:.1f}ث'
+        )
+        return _result
 
+    async def _record_forced_ref_result(num, result):
+        nonlocal done, failed, reactivated, _last_edit_time_f
+        ok, reactiv, _detail = result
+        if ok and reactiv:
+            with db_conn() as c:
+                c.execute("UPDATE forced_ref_orders SET reactivated_count=reactivated_count+1 WHERE id=%s", (order_id,))
+            reactivated += 1
+            _reactiv_phones.append(num['phone_number'])
+        elif ok:
+            with db_conn() as c:
+                c.execute("UPDATE forced_ref_orders SET done_count=done_count+1 WHERE id=%s", (order_id,))
+            done += 1
+            _done_phones.append(num['phone_number'])
+        else:
+            with db_conn() as c:
+                c.execute("UPDATE forced_ref_orders SET failed_count=failed_count+1 WHERE id=%s", (order_id,))
+            failed += 1
+            _fail_reasons.append(f"{num['phone_number']}: {_detail}")
+            _fail_phones.append((num['phone_number'], num.get('id', 0), _detail))
+
+        _now_f = _time.monotonic()
+        _total_done = done + failed + reactivated
+        if _live_msg_f and (_now_f - _last_edit_time_f >= _EDIT_INTERVAL_F or _total_done == quantity):
+            try:
+                _repl_note = f' | 🔁 بديل: {replaced}' if replaced > 0 else ''
+                await context.bot.edit_message_text(
+                    _forced_ref_progress_text(_total_done) + _repl_note,
+                    chat_id=requester_id,
+                    message_id=_live_msg_f.message_id,
+                    parse_mode='HTML'
+                )
+                _last_edit_time_f = _now_f
+            except Exception:
+                pass
+        return bool(ok)
+
+    # إطلاق الحسابات بفاصل زمني بين بدايات المحاولات، لا بعد انتهاء الحساب السابق.
+    # لذلك 40 حساباً مع فاصل 1ث تبدأ خلال نحو 40ث حتى لو استغرقت بعض المحاولات وقتاً أطول.
+    _pending = pool[:quantity]
     while _pending and done + reactivated < quantity:
         _cycle = list(_pending)
-        _pending = []            # ستُملأ بالحسابات البديلة عند الحاجة
+        _pending = []
+        _active = []
+        _launch_delay = _forced_ref_delay_seconds()
 
-        for _idx_f, num in enumerate(_cycle, 1):
-            if done + reactivated >= quantity:
-                break        # ✅ اكتمل الهدف — لا حاجة لمزيد من المعالجة
+        for _launch_idx, num in enumerate(_cycle):
+            _active.append((num, _aio2.create_task(_run_one_forced_ref(num))))
+            if _launch_idx < len(_cycle) - 1 and _launch_delay > 0:
+                await _aio2.sleep(_launch_delay)
 
-            try:
-                ok, reactiv, _detail = await do_referral_for_number(
-                    num['phone_number'], num['session_string'],
-                    bot_user, start_p,
-                    mandatory_channels=_all_channels,
-                    folder_link='',
-                    use_ai=use_ai,
-                    leave_channels_after=True,
-                    stock_id=num.get('id', 0),
-                )
-            except Exception as _ex:
-                ok = False; reactiv = False
-                _detail = f'[{type(_ex).__name__}] {str(_ex)[:80]}'
+        # تُجمع نتائج الدفعة بعد إطلاقها؛ الحسابات تعمل بالتوازي.
+        for num, task in _active:
+            _result = await task
+            _ok = await _record_forced_ref_result(num, _result)
+            if not _ok and pool_idx < len(pool):
+                _pending.append(pool[pool_idx])
+                pool_idx += 1
+                replaced += 1
 
-            if ok and reactiv:
-                with db_conn() as c:
-                    c.execute("UPDATE forced_ref_orders SET reactivated_count=reactivated_count+1 WHERE id=%s", (order_id,))
-                reactivated += 1
-                _reactiv_phones.append(num['phone_number'])
-            elif ok:
-                with db_conn() as c:
-                    c.execute("UPDATE forced_ref_orders SET done_count=done_count+1 WHERE id=%s", (order_id,))
-                done += 1
-                _done_phones.append(num['phone_number'])
-            else:
-                # فشل فوري — تخطّ واسحب حساباً بديلاً مباشرةً
-                with db_conn() as c:
-                    c.execute("UPDATE forced_ref_orders SET failed_count=failed_count+1 WHERE id=%s", (order_id,))
-                failed += 1
-                _fail_reasons.append(f"{num['phone_number']}: {_detail}")
-                _fail_phones.append((num['phone_number'], num.get('id', 0), _detail))
-                # ── سحب حساب بديل إذا لم يكتمل الهدف بعد ──
-                if done + reactivated < quantity and pool_idx < len(pool):
-                    _pending.append(pool[pool_idx])
-                    pool_idx += 1
-                    replaced += 1
-
-            # ─── تحديث رسالة التقدم الحي ───
-            _now_f = _time.monotonic()
-            _total_done = done + failed + reactivated
-            if _live_msg_f and (_now_f - _last_edit_time_f >= _EDIT_INTERVAL_F or _total_done == quantity):
-                try:
-                    _repl_note  = f' | 🔁 بديل: {replaced}' if replaced > 0 else ''
-                    await context.bot.edit_message_text(
-                        _forced_ref_progress_text(_total_done) + _repl_note,
-                        chat_id=requester_id,
-                        message_id=_live_msg_f.message_id,
-                        parse_mode='HTML'
-                    )
-                    _last_edit_time_f = _now_f
-                except Exception:
-                    pass
-
-            # فاصل المالك بين كل حساب والذي يليه، بما في ذلك الحسابات البديلة.
-            # نقرأ الإعداد في كل مرة حتى يسري التعديل الجديد على الطلبات الجارية.
-            if _idx_f < len(_cycle) or _pending:
-                await _aio2.sleep(_forced_ref_delay_seconds())
-
-        # إشعار المستخدم بوجود حسابات بديلة قيد التنفيذ
         if _pending and _live_msg_f:
             try:
                 await context.bot.edit_message_text(
                     _forced_ref_progress_text(done + failed + reactivated) +
-                    f'\n🔁 جاري تجربة {len(_pending)} حساب بديل...',
+                    f'\n🔁 جاري إطلاق {len(_pending)} حساب بديل بفاصل {_launch_delay:g}ث...',
                     chat_id=requester_id,
                     message_id=_live_msg_f.message_id,
                     parse_mode='HTML'
