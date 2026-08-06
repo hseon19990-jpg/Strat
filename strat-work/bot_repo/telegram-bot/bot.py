@@ -2138,93 +2138,80 @@ async def _join_folder_link(client, folder_url: str) -> str:
         logger.warning(f"⚠️ تعذّر الانضمام للمجلد: {e}")
         return f"فشل المجلد: {str(e)[:60]}"
 
-async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "", max_rounds: int = 4) -> tuple:
+async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "", max_rounds: int = 6) -> tuple:
     """
-    يستخدم Gemini AI لكشف وحل جميع أنواع التحقق الشائعة في بوتات تيليغرام:
-    ① كابتشا صورة   ② أزرار / إيموجي   ③ سؤال نصي / رياضي
-    ④ مشاركة ملف شخصي / Contact   ⑤ Poll / Quiz   ⑥ ردود فعل Reactions
-    ⑦ إيموجي كرسالة   ⑧ إعادة المحاولة تلقائياً عند الإجابة الخاطئة
+    نظام شامل متعدد الذكاء الاصطناعي لحل جميع أنواع التحقق في بوتات تيليغرام.
+    سلسلة الذكاء: Gemini 2.0 Flash → Gemini 1.5 Pro → OpenAI GPT-4o → Claude 3.5 Sonnet
+    الأنواع المدعومة:
+      ① صورة CAPTCHA (نص مشوّه)       ② صوت/رسالة صوتية (audio captcha)
+      ③ سؤال نصي / رياضي             ④ إيموجي من أزرار
+      ⑤ Poll / Quiz                  ⑥ مشاركة جهة اتصال
+      ⑦ ردود فعل (Reactions)         ⑧ أزرار URL / Web App
+      ⑨ QR Code (قراءة محتواه)       ⑩ أي تحقق غير معروف (Universal AI)
     يُرجع (solved: bool, detail: str).
     """
-    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-    if not GEMINI_API_KEY:
-        return False, "GEMINI_API_KEY غير مضبوط"
+    import base64 as _b64
 
-    GEMINI_URL = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-    )
+    # ════════════════════════════════════════════════════════════
+    # ── مفاتيح الذكاء الاصطناعي ──────────────────────────────
+    # ════════════════════════════════════════════════════════════
+    GEMINI_KEY      = os.environ.get("GEMINI_API_KEY",    "")
+    OPENAI_KEY      = os.environ.get("OPENAI_API_KEY",    "")
+    ANTHROPIC_KEY   = os.environ.get("ANTHROPIC_API_KEY", "")
+    GEMINI_FLASH    = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_KEY}"
+    GEMINI_PRO      = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key={GEMINI_KEY}"
 
-    # ── كلمات دلالية ──────────────────────────────────────────
+    # ════════════════════════════════════════════════════════════
+    # ── كلمات دلالية موسّعة ──────────────────────────────────
+    # ════════════════════════════════════════════════════════════
     SUCCESS_KW = [
         "✅", "تم", "نجح", "مبروك", "أهلاً", "مرحباً", "welcome", "success",
         "تم التحقق", "مقبول", "accepted", "verified", "شكراً", "برافو",
         "اشتركت", "سجلت", "تسجيل", "دخلت", "ترحيب", "congratulations",
         "passed", "اجتزت", "صحيح", "correct", "ممتاز", "👍", "تم قبولك",
-        "تم التسجيل", "انتهت عملية", "تم التفعيل", "بنجاح",
+        "تم التسجيل", "انتهت عملية", "تم التفعيل", "بنجاح", "welcome",
+        "أهلا وسهلا", "تمت العملية", "مرحب", "تم إضافتك", "تم قبولك",
     ]
     FAIL_KW = [
         "خطأ", "غلط", "wrong", "incorrect", "فشل", "error", "❌",
         "حاول مجدداً", "try again", "retry", "invalid", "غير صحيح",
-        "أعد", "مجدداً", "again", "حاول ثانية", "إجابة خاطئة",
+        "أعد", "مجدداً", "again", "حاول ثانية", "إجابة خاطئة", "لا يطابق",
     ]
     CAPTCHA_KW = [
         "تحقق", "verify", "captcha", "اضغط", "ادخل", "أجب", "اختر",
         "robot", "بشر", "human", "confirm", "verification", "كابتشا",
         "لست روبوت", "لست بوت", "not a robot", "prove", "إثبت",
+        "تأكيد", "تحديد", "ليس روبوت", "اثبت", "أنت إنسان", "human check",
+        "security check", "فحص", "اختبار", "quiz", "puzzle", "riddle",
+        "انتبه", "مهمة", "mission", "task", "challenge", "أكمل",
     ]
     MATH_KW = [
         "=", "؟", "?", "كم", "احسب", "حل", "اكتب", "أدخل",
         "اجمع", "اطرح", "اضرب", "اقسم", "ناتج", "حاصل", "result",
         "calculate", "solve", "answer", "الإجابة", "الجواب", "الرقم",
+        "+", "-", "×", "÷", "*", "/", "^", "sqrt", "جذر",
     ]
     FORWARD_KW = [
         "شارك", "أرسل ملف", "ارسل ملف", "forward", "ملفك الشخصي",
         "profile", "بروفايل", "contact", "جهة اتصال", "رقمك",
         "رقم هاتفك", "شارك ملفك", "ارسل بياناتك", "بياناتك الشخصية",
+        "share contact", "send contact", "phone number",
     ]
     REACTION_KW = [
         "تفاعل", "react", "reaction", "اضغط على", "ارسل إيموجي",
         "أرسل إيموجي", "انقر", "إيموجي", "emoji", "رد بـ", "reply with",
-        "أرسل رد", "ارسل رد",
+        "أرسل رد", "ارسل رد", "like", "press emoji", "click emoji",
     ]
 
-    # ── دوال مساعدة ───────────────────────────────────────────
-    async def _gemini_text(prompt: str) -> str | None:
-        def _do_request():
-            r = requests.post(
-                GEMINI_URL,
-                json={"contents": [{"parts": [{"text": prompt}]}]},
-                timeout=25,
-            )
-            if r.status_code == 200:
-                return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-            return None
-        try:
-            return await asyncio.to_thread(_do_request)
-        except Exception as _e:
-            logger.warning(f"⚠️ Gemini text error ({phone}): {_e}")
-        return None
-
-    async def _gemini_image(prompt: str, img_bytes: bytes) -> str | None:
-        def _do_request():
-            img_b64 = base64.b64encode(img_bytes).decode()
-            r = requests.post(
-                GEMINI_URL,
-                json={"contents": [{"parts": [
-                    {"text": prompt},
-                    {"inlineData": {"mimeType": "image/jpeg", "data": img_b64}},
-                ]}]},
-                timeout=30,
-            )
-            if r.status_code == 200:
-                return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-            return None
-        try:
-            return await asyncio.to_thread(_do_request)
-        except Exception as _e:
-            logger.warning(f"⚠️ Gemini image error ({phone}): {_e}")
-        return None
+    def _extract_emojis(text: str) -> list:
+        """يستخرج جميع الإيموجيات من أي نص."""
+        out = []
+        for ch in text:
+            cp = ord(ch)
+            if (0x1F300 <= cp <= 0x1FFFF or 0x2600 <= cp <= 0x27BF or
+                    0x1F900 <= cp <= 0x1F9FF or 0x1FA00 <= cp <= 0x1FAFF):
+                out.append(ch)
+        return out
 
     def _is_success(text: str) -> bool:
         t = (text or "").lower()
@@ -2234,81 +2221,344 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
         t = (text or "").lower()
         return any(k.lower() in t for k in FAIL_KW)
 
-    async def _wait_and_check(limit: int = 3) -> tuple:
-        """ينتظر رد البوت ويُرجع ('success'|'fail'|'unknown', new_msgs)."""
-        await asyncio.sleep(3)
-        new_msgs = await client.get_messages(bot_entity, limit=limit)
+    # ════════════════════════════════════════════════════════════
+    # ── محركات AI متعددة — نص ────────────────────────────────
+    # ════════════════════════════════════════════════════════════
+    async def _gemini_call(url: str, parts: list) -> str | None:
+        def _req():
+            r = requests.post(url, json={"contents": [{"parts": parts}]}, timeout=30)
+            if r.status_code == 200:
+                return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            logger.debug(f"Gemini {r.status_code}: {r.text[:200]}")
+            return None
+        try:
+            return await asyncio.to_thread(_req)
+        except Exception as _e:
+            logger.debug(f"Gemini call error: {_e}")
+        return None
+
+    async def _openai_call(prompt: str, img_b64: str | None = None, mime: str = "image/jpeg") -> str | None:
+        if not OPENAI_KEY:
+            return None
+        def _req():
+            content: list = [{"type": "text", "text": prompt}]
+            if img_b64:
+                content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{img_b64}"}})
+            r = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENAI_KEY}", "Content-Type": "application/json"},
+                json={"model": "gpt-4o", "messages": [{"role": "user", "content": content}], "max_tokens": 200},
+                timeout=35,
+            )
+            if r.status_code == 200:
+                return r.json()["choices"][0]["message"]["content"].strip()
+            logger.debug(f"OpenAI {r.status_code}: {r.text[:200]}")
+            return None
+        try:
+            return await asyncio.to_thread(_req)
+        except Exception as _e:
+            logger.debug(f"OpenAI error: {_e}")
+        return None
+
+    async def _claude_call(prompt: str, img_b64: str | None = None, mime: str = "image/jpeg") -> str | None:
+        if not ANTHROPIC_KEY:
+            return None
+        def _req():
+            content: list = []
+            if img_b64:
+                content.append({"type": "image", "source": {"type": "base64", "media_type": mime, "data": img_b64}})
+            content.append({"type": "text", "text": prompt})
+            r = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": ANTHROPIC_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "Content-Type": "application/json",
+                },
+                json={"model": "claude-3-5-sonnet-20241022", "max_tokens": 200,
+                      "messages": [{"role": "user", "content": content}]},
+                timeout=35,
+            )
+            if r.status_code == 200:
+                return r.json()["content"][0]["text"].strip()
+            logger.debug(f"Claude {r.status_code}: {r.text[:200]}")
+            return None
+        try:
+            return await asyncio.to_thread(_req)
+        except Exception as _e:
+            logger.debug(f"Claude error: {_e}")
+        return None
+
+    async def _ai_text(prompt: str, tried: set | None = None) -> str | None:
+        """يُرسل السؤال لجميع AI بالتتابع حتى يحصل على إجابة."""
+        tried = tried or set()
+        if GEMINI_KEY and "gemini_flash" not in tried:
+            ans = await _gemini_call(GEMINI_FLASH, [{"text": prompt}])
+            if ans:
+                logger.info(f"🤖 Gemini Flash text → '{ans[:60]}' ({phone})")
+                return ans
+        if GEMINI_KEY and "gemini_pro" not in tried:
+            ans = await _gemini_call(GEMINI_PRO, [{"text": prompt}])
+            if ans:
+                logger.info(f"🤖 Gemini Pro text → '{ans[:60]}' ({phone})")
+                return ans
+        if OPENAI_KEY and "openai" not in tried:
+            ans = await _openai_call(prompt)
+            if ans:
+                logger.info(f"🤖 GPT-4o text → '{ans[:60]}' ({phone})")
+                return ans
+        if ANTHROPIC_KEY and "claude" not in tried:
+            ans = await _claude_call(prompt)
+            if ans:
+                logger.info(f"🤖 Claude text → '{ans[:60]}' ({phone})")
+                return ans
+        return None
+
+    async def _ai_vision(prompt: str, media_bytes: bytes, mime: str = "image/jpeg") -> str | None:
+        """يُرسل الصورة/الوسائط لجميع AI بالتتابع."""
+        b64 = _b64.b64encode(media_bytes).decode()
+        # Gemini Flash
+        if GEMINI_KEY:
+            ans = await _gemini_call(GEMINI_FLASH, [
+                {"text": prompt},
+                {"inlineData": {"mimeType": mime, "data": b64}},
+            ])
+            if ans:
+                logger.info(f"🤖 Gemini Flash vision → '{ans[:60]}' ({phone})")
+                return ans
+            # Gemini Pro fallback
+            ans = await _gemini_call(GEMINI_PRO, [
+                {"text": prompt},
+                {"inlineData": {"mimeType": mime, "data": b64}},
+            ])
+            if ans:
+                logger.info(f"🤖 Gemini Pro vision → '{ans[:60]}' ({phone})")
+                return ans
+        # OpenAI GPT-4o
+        if OPENAI_KEY:
+            ans = await _openai_call(prompt, img_b64=b64, mime=mime)
+            if ans:
+                logger.info(f"🤖 GPT-4o vision → '{ans[:60]}' ({phone})")
+                return ans
+        # Claude
+        if ANTHROPIC_KEY:
+            ans = await _claude_call(prompt, img_b64=b64, mime=mime)
+            if ans:
+                logger.info(f"🤖 Claude vision → '{ans[:60]}' ({phone})")
+                return ans
+        return None
+
+    async def _ai_audio(audio_bytes: bytes) -> str | None:
+        """يحاول قراءة كود من رسالة صوتية (audio captcha)."""
+        # Gemini يفهم الصوت عبر inlineData
+        if GEMINI_KEY:
+            prompt = (
+                "هذه رسالة صوتية من بوت تيليغرام تحتوي على كود أو أرقام للتحقق. "
+                "اكتب فقط ما سمعته من أرقام أو كلمات بدون أي شرح إضافي."
+            )
+            b64 = _b64.b64encode(audio_bytes).decode()
+            ans = await _gemini_call(GEMINI_FLASH, [
+                {"text": prompt},
+                {"inlineData": {"mimeType": "audio/ogg", "data": b64}},
+            ])
+            if ans:
+                return ans
+            ans = await _gemini_call(GEMINI_PRO, [
+                {"text": prompt},
+                {"inlineData": {"mimeType": "audio/ogg", "data": b64}},
+            ])
+            if ans:
+                return ans
+        # OpenAI Whisper
+        if OPENAI_KEY:
+            def _whisper():
+                import io
+                r = requests.post(
+                    "https://api.openai.com/v1/audio/transcriptions",
+                    headers={"Authorization": f"Bearer {OPENAI_KEY}"},
+                    files={"file": ("audio.ogg", io.BytesIO(audio_bytes), "audio/ogg")},
+                    data={"model": "whisper-1"},
+                    timeout=30,
+                )
+                if r.status_code == 200:
+                    return r.json().get("text", "").strip()
+                return None
+            try:
+                return await asyncio.to_thread(_whisper)
+            except Exception as _we:
+                logger.debug(f"Whisper error: {_we}")
+        return None
+
+    # ════════════════════════════════════════════════════════════
+    # ── ضغط الأزرار بذكاء (Callback / URL / WebApp) ──────────
+    # ════════════════════════════════════════════════════════════
+    async def _click_smart(btn) -> bool:
+        burl  = getattr(btn, "url",  None) or ""
+        bdata = getattr(btn, "data", None)
+        # Callback button
+        if bdata is not None:
+            try:
+                await btn.click()
+                return True
+            except Exception as _ce:
+                logger.debug(f"callback click: {_ce}")
+                return False
+        # URL / WebApp
+        if burl and "t.me/" not in burl and "telegram.me/" not in burl:
+            try:
+                from telethon.tl.functions.messages import RequestWebViewRequest
+                import aiohttp as _ah
+                try:
+                    _wv = await asyncio.wait_for(client(RequestWebViewRequest(
+                        peer=bot_entity, bot=bot_entity, platform="android", url=burl,
+                    )), timeout=15)
+                    _target = getattr(_wv, "url", None) or burl
+                except Exception:
+                    _target = burl
+                _hdrs = {"User-Agent": "TelegramAndroid/10.14 (Samsung; Android 14)"}
+                async with _ah.ClientSession() as _s:
+                    async with _s.get(_target, headers=_hdrs,
+                                      timeout=_ah.ClientTimeout(total=15),
+                                      allow_redirects=True) as _r:
+                        logger.info(f"🌐 URL/WebApp تحقق → status={_r.status} ({phone})")
+                return True
+            except Exception as _ue:
+                logger.debug(f"URL click: {_ue}")
+                return False
+        # fallback
+        try:
+            await btn.click()
+            return True
+        except Exception:
+            return False
+
+    # ════════════════════════════════════════════════════════════
+    # ── انتظار رد البوت وتحليله ──────────────────────────────
+    # ════════════════════════════════════════════════════════════
+    async def _wait_bot(secs: int = 4, limit: int = 5) -> tuple:
+        await asyncio.sleep(secs)
+        new_msgs = await asyncio.wait_for(client.get_messages(bot_entity, limit=limit), timeout=10)
         for m in new_msgs:
-            t = getattr(m, "message", "") or ""
+            t = getattr(m, "message", "") or getattr(m, "text", "") or ""
             if _is_success(t):
                 return "success", new_msgs
             if _is_fail(t):
                 return "fail", new_msgs
         return "unknown", new_msgs
 
+    # ════════════════════════════════════════════════════════════
+    # ── تأكّد من وجود مفتاح AI واحد على الأقل ────────────────
+    # ════════════════════════════════════════════════════════════
+    if not any([GEMINI_KEY, OPENAI_KEY, ANTHROPIC_KEY]):
+        return False, "لا يوجد مفتاح AI (GEMINI_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY)"
+
     all_details: list[str] = []
     processed_ids: set[int] = set()
+    _ai_failed_rounds: int = 0   # عدد مرات الفشل المتتالي — للتحكم في التوقف المبكر
 
-    # ── حلقة المحاولات (تدعم تحقق متعدد المراحل) ─────────────
+    # ════════════════════════════════════════════════════════════
+    # ── الحلقة الرئيسية (max_rounds جولات) ──────────────────
+    # ════════════════════════════════════════════════════════════
     for _round in range(max_rounds):
         if _round > 0:
             await asyncio.sleep(3)
-            msgs = await client.get_messages(bot_entity, limit=6)
+            msgs = await asyncio.wait_for(client.get_messages(bot_entity, limit=8), timeout=10)
 
         for msg in msgs:
-            msg_id = getattr(msg, "id", 0)
+            msg_id  = getattr(msg, "id", 0)
             if msg_id in processed_ids:
                 continue
 
-            msg_text       = getattr(msg, "message", "") or getattr(msg, "text", "") or ""
-            msg_text_lower = msg_text.lower()
-            has_photo      = bool(getattr(msg, "photo", None))
-            has_doc        = bool(getattr(msg, "document", None))
-            has_media      = has_photo or has_doc
-            has_btns       = bool(msg.buttons)
-            has_poll       = bool(getattr(msg, "poll", None))
+            msg_text  = getattr(msg, "message", "") or getattr(msg, "text", "") or ""
+            msg_lower = msg_text.lower()
+            has_photo = bool(getattr(msg, "photo", None))
+            has_doc   = bool(getattr(msg, "document", None))
+            has_voice = bool(getattr(msg, "voice", None)) or bool(getattr(msg, "audio", None))
+            has_media = has_photo or has_doc
+            has_btns  = bool(msg.buttons)
+            has_poll  = bool(getattr(msg, "poll", None))
 
-            # اكتشاف نجاح مبكر — إذا وصلنا رسالة ترحيب بعد حل سابق
+            # نجاح مبكر — رسالة ترحيب وصلت بعد حل سابق
             if _is_success(msg_text) and all_details:
                 return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
 
             # ════════════════════════════════════════════════════
-            # 1. كابتشا صورة (CAPTCHA بصورة مشوّهة)
+            # 1. رسالة صوتية / Audio CAPTCHA
             # ════════════════════════════════════════════════════
-            if has_media:
+            if has_voice:
                 try:
-                    img_bytes = await client.download_media(msg, bytes)
-                    if not img_bytes:
-                        continue
-                    prompt = (
-                        "هذه صورة كابتشا (CAPTCHA) من بوت تيليغرام.\n"
-                        f"النص المرافق للصورة: {msg_text or '(لا يوجد)'}\n\n"
-                        "اقرأ بدقة النص أو الأرقام الظاهرة في الصورة وأجب بها فقط "
-                        "بدون أي شرح أو مسافات إضافية."
-                    )
-                    answer = await _gemini_image(prompt, img_bytes)
-                    if answer:
-                        logger.info(f"🤖 AI كابتشا صورة → '{answer}' ({phone})")
-                        processed_ids.add(msg_id)
-                        await asyncio.sleep(1)
-                        await client.send_message(bot_entity, answer)
-                        result, msgs = await _wait_and_check()
-                        detail = f"كابتشا صورة: {answer}"
-                        all_details.append(detail)
-                        if result == "success":
-                            return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
-                        elif result == "fail":
-                            break  # حاول في الجولة التالية
-                        else:
-                            return True, f"أُرسلت إجابة الصورة | {' | '.join(all_details)}"
-                except Exception as _e:
-                    logger.warning(f"⚠️ AI image captcha ({phone}): {_e}")
+                    audio_bytes = await client.download_media(msg, bytes)
+                    if audio_bytes:
+                        answer = await _ai_audio(audio_bytes)
+                        if answer:
+                            # استخرج الأرقام/الكود فقط
+                            nums = re.findall(r"[\d]+", answer)
+                            send_ans = "".join(nums) if nums else answer.strip()
+                            logger.info(f"🔊 Audio CAPTCHA → '{send_ans}' ({phone})")
+                            processed_ids.add(msg_id)
+                            await asyncio.sleep(1)
+                            await client.send_message(bot_entity, send_ans)
+                            result, msgs = await _wait_bot()
+                            all_details.append(f"Audio: {send_ans}")
+                            if result == "success":
+                                return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
+                            elif result == "fail":
+                                break
+                            else:
+                                return True, f"أُرسل كود صوتي | {' | '.join(all_details)}"
+                except Exception as _ae:
+                    logger.warning(f"⚠️ Audio captcha ({phone}): {_ae}")
                 continue
 
             # ════════════════════════════════════════════════════
-            # 2. مشاركة ملف شخصي / Contact
+            # 2. صورة CAPTCHA (نص مشوّه، QR، رياضيات، ألوان، أشكال)
             # ════════════════════════════════════════════════════
-            if any(k in msg_text_lower for k in FORWARD_KW):
+            if has_media:
+                try:
+                    media_bytes = await client.download_media(msg, bytes)
+                    if not media_bytes:
+                        continue
+                    # اكتشف نوع الملف تلقائياً
+                    mime = "image/jpeg"
+                    if has_doc:
+                        _mime_raw = getattr(getattr(msg.document, "mime_type", None), "__str__", lambda: "")() or ""
+                        if _mime_raw:
+                            mime = _mime_raw
+                    prompt_img = (
+                        "أنت خبير في حل اختبارات التحقق (CAPTCHA) في بوتات تيليغرام.\n"
+                        f"رسالة البوت المرافقة: {msg_text or '(لا يوجد نص)'}\n\n"
+                        "مهمتك: اقرأ هذه الصورة بدقة وأجب بما تراه:\n"
+                        "• إذا كانت أرقام/حروف مشوّهة → اكتبها كما هي\n"
+                        "• إذا كان QR Code → اقرأ محتواه\n"
+                        "• إذا كانت معادلة رياضية → احسب الناتج\n"
+                        "• إذا كانت أشكال/ألوان → اذكر ما يطلبه البوت\n"
+                        "• أجب بكلمة واحدة أو رقم أو جملة قصيرة فقط بدون شرح."
+                    )
+                    answer = await _ai_vision(prompt_img, media_bytes, mime)
+                    if answer:
+                        send_ans = answer.strip()
+                        logger.info(f"🖼 Image CAPTCHA → '{send_ans}' ({phone})")
+                        processed_ids.add(msg_id)
+                        await asyncio.sleep(1)
+                        await client.send_message(bot_entity, send_ans)
+                        result, msgs = await _wait_bot()
+                        all_details.append(f"صورة: {send_ans}")
+                        if result == "success":
+                            return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
+                        elif result == "fail":
+                            # حاول بـ AI مختلف في الجولة القادمة
+                            _ai_failed_rounds += 1
+                            break
+                        else:
+                            return True, f"أُرسلت إجابة الصورة | {' | '.join(all_details)}"
+                except Exception as _ie:
+                    logger.warning(f"⚠️ Image captcha ({phone}): {_ie}")
+                continue
+
+            # ════════════════════════════════════════════════════
+            # 3. مشاركة جهة اتصال / Contact
+            # ════════════════════════════════════════════════════
+            if any(k in msg_lower for k in FORWARD_KW):
                 try:
                     from telethon.tl.types import InputMediaContact
                     me    = await client.get_me()
@@ -2317,30 +2567,23 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                     ph    = getattr(me, "phone",      "") or phone.lstrip("+")
                     if not ph.startswith("+"):
                         ph = "+" + ph
-                    logger.info(f"🤖 AI مشاركة ملف شخصي ({phone})")
                     processed_ids.add(msg_id)
-                    await client.send_file(
-                        bot_entity,
-                        InputMediaContact(
-                            phone_number=ph,
-                            first_name=first,
-                            last_name=last,
-                            vcard="",
-                        ),
-                    )
-                    result, msgs = await _wait_and_check()
-                    detail = "شارك ملفه الشخصي (Contact)"
-                    all_details.append(detail)
+                    await client.send_file(bot_entity, InputMediaContact(
+                        phone_number=ph, first_name=first, last_name=last, vcard="",
+                    ))
+                    result, msgs = await _wait_bot()
+                    all_details.append("Contact sharing")
+                    logger.info(f"📱 شارك جهة اتصال ({phone})")
                     if result == "success":
                         return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
                     elif result != "fail":
                         return True, f"أُرسل الملف الشخصي | {' | '.join(all_details)}"
                     continue
-                except Exception as _e:
-                    logger.warning(f"⚠️ AI forward profile ({phone}): {_e}")
+                except Exception as _ce2:
+                    logger.warning(f"⚠️ Contact share ({phone}): {_ce2}")
 
             # ════════════════════════════════════════════════════
-            # 3. Poll / Quiz (اختبار متعدد الخيارات)
+            # 4. Poll / Quiz
             # ════════════════════════════════════════════════════
             if has_poll:
                 try:
@@ -2348,297 +2591,302 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                     question = getattr(poll_obj, "question", "") or ""
                     answers  = [getattr(a, "text", "") for a in (getattr(poll_obj, "answers", []) or [])]
                     if question and answers:
-                        prompt = (
-                            f"بوت تيليغرام يطرح اختباراً:\nالسؤال: {question}\n"
-                            "الخيارات:\n" + "\n".join(f"{i+1}. {a}" for i, a in enumerate(answers)) + "\n\n"
-                            "أي خيار هو الصحيح؟ أجب برقم الخيار فقط (1، 2، 3...)."
+                        prompt_poll = (
+                            f"اختيار من متعدد — اختر الإجابة الصحيحة:\n"
+                            f"السؤال: {question}\n"
+                            + "\n".join(f"{i+1}. {a}" for i, a in enumerate(answers))
+                            + "\n\nأجب برقم الخيار فقط (1 أو 2 أو 3...)."
                         )
-                        ai_ans = await _gemini_text(prompt)
+                        ai_ans = await _ai_text(prompt_poll)
                         chosen_idx = 0
                         if ai_ans:
-                            # حاول استخراج رقم
                             nums = re.findall(r"\d+", ai_ans)
                             if nums:
-                                chosen_idx = max(0, int(nums[0]) - 1)
+                                chosen_idx = min(max(0, int(nums[0]) - 1), len(answers) - 1)
                             else:
-                                # مطابقة نصية
                                 for i, a in enumerate(answers):
                                     if ai_ans.strip().lower() in a.lower():
                                         chosen_idx = i
                                         break
-                        chosen_idx = min(chosen_idx, len(answers) - 1)
                         processed_ids.add(msg_id)
                         await msg.click(chosen_idx)
-                        result, msgs = await _wait_and_check()
-                        detail = f"أجاب Poll: {answers[chosen_idx]}"
-                        all_details.append(detail)
-                        logger.info(f"🤖 AI Poll → '{answers[chosen_idx]}' ({phone})")
+                        result, msgs = await _wait_bot()
+                        all_details.append(f"Poll: {answers[chosen_idx]}")
+                        logger.info(f"🗳 Poll → '{answers[chosen_idx]}' ({phone})")
                         if result == "success":
                             return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
                         elif result != "fail":
-                            return True, f"أجاب على اختبار | {' | '.join(all_details)}"
+                            return True, f"أجاب Poll | {' | '.join(all_details)}"
                         continue
-                except Exception as _e:
-                    logger.warning(f"⚠️ AI poll captcha ({phone}): {_e}")
+                except Exception as _pe:
+                    logger.warning(f"⚠️ Poll captcha ({phone}): {_pe}")
 
             # ════════════════════════════════════════════════════
-            # 4. أزرار اختيار (كابتشا أزرار / إيموجي / خيارات)
+            # 5. أزرار (إيموجي / نص / URL / WebApp)
             # ════════════════════════════════════════════════════
-            if has_btns and msg_text:
+            if has_btns:
                 try:
                     btn_labels  = []
-                    btn_objects = {}
+                    btn_objects = {}   # label → btn
+                    url_btns    = {}   # label → btn (URL type, non-t.me)
                     for row in msg.buttons:
                         for btn in row:
-                            label = getattr(btn, "text", "") or ""
-                            url   = getattr(btn, "url",  None) or ""
-                            # تخطي أزرار روابط القنوات — تُعالج لاحقاً في do_referral_for_number
-                            if url and ("t.me/" in url or "telegram.me/" in url):
+                            label  = getattr(btn, "text", "") or ""
+                            burl   = getattr(btn, "url",  None) or ""
+                            is_channel_url = burl and ("t.me/" in burl or "telegram.me/" in burl)
+                            if is_channel_url:
                                 continue
+                            if burl and label:
+                                url_btns[label] = btn
                             if label:
                                 btn_labels.append(label)
                                 btn_objects[label] = btn
 
-                    async def _click_btn_smart(btn) -> bool:
-                        """يضغط الزر حسب نوعه: callback → click() | URL/WebApp → HTTP GET."""
-                        _burl  = getattr(btn, "url",  None) or ""
-                        _bdata = getattr(btn, "data", None)
-                        if _bdata is not None:
-                            await btn.click()
-                            return True
-                        if _burl and "t.me/" not in _burl and "telegram.me/" not in _burl:
-                            # حاول Web App (RequestWebViewRequest) أولاً
-                            try:
-                                from telethon.tl.functions.messages import RequestWebViewRequest
-                                import aiohttp as _aio_h
-                                _wv = await asyncio.wait_for(
-                                    client(RequestWebViewRequest(
-                                        peer=bot_entity, bot=bot_entity,
-                                        platform="android", url=_burl,
-                                    )), timeout=15,
-                                )
-                                _wv_url = getattr(_wv, "url", None) or ""
-                                _target = _wv_url or _burl
-                                _hdrs = {"User-Agent": "Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36"}
-                                async with _aio_h.ClientSession() as _s:
-                                    async with _s.get(_target, headers=_hdrs,
-                                                      timeout=_aio_h.ClientTimeout(total=15),
-                                                      allow_redirects=True) as _r:
-                                        logger.info(f"🌐 WebApp/URL تحقق → {_target[:60]} (status={_r.status})")
-                                return True
-                            except Exception as _cbe:
-                                logger.debug(f"_click_btn_smart URL: {_cbe}")
-                                return False
-                        # callback بدون data أو نوع غير معروف
-                        try:
-                            await btn.click()
-                            return True
-                        except Exception:
-                            return False
+                    # ─── 5a. أزرار URL للتحقق (غير t.me) — اضغط مباشرة ──────
+                    CHECK_BTN_KW = [
+                        "تحقق", "verify", "check", "تأكيد", "confirm", "اشتركت",
+                        "joined", "متابع", "تم", "done", "✅", "proceed", "continue",
+                    ]
+                    for label, btn in url_btns.items():
+                        if any(k in label.lower() for k in CHECK_BTN_KW):
+                            processed_ids.add(msg_id)
+                            ok = await _click_smart(btn)
+                            if ok:
+                                result, msgs = await _wait_bot(secs=5)
+                                all_details.append(f"URL-verify: {label}")
+                                if result == "success":
+                                    return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
+                                elif result != "fail":
+                                    return True, f"ضغط رابط تحقق | {' | '.join(all_details)}"
+
                     if not btn_labels:
                         continue
-                    # هل تبدو رسالة تحقق؟ (تحقق، رياضيات، إيموجي...)
+
+                    # ─── 5b. كشف مباشر للإيموجي المطلوب ──────────────────────
+                    is_emoji_q = (
+                        "correct emoji" in msg_lower or "select emoji" in msg_lower
+                        or "choose emoji" in msg_lower or "pick emoji" in msg_lower
+                        or "اختر الإيموجي" in msg_text or "الإيموجي الصحيح" in msg_text
+                    )
+                    direct_btn = None
+                    if is_emoji_q:
+                        msg_emojis = _extract_emojis(msg_text)
+                        if msg_emojis:
+                            for lbl, btn in btn_objects.items():
+                                if msg_emojis[0] in lbl:
+                                    direct_btn = btn
+                                    logger.info(f"🎯 إيموجي مباشر '{msg_emojis[0]}' ({phone})")
+                                    break
+                            if not direct_btn:
+                                for lbl, btn in btn_objects.items():
+                                    if _extract_emojis(lbl) and _extract_emojis(lbl)[0] == msg_emojis[0]:
+                                        direct_btn = btn
+                                        break
+                    if direct_btn:
+                        processed_ids.add(msg_id)
+                        await _click_smart(direct_btn)
+                        result, msgs = await _wait_bot()
+                        all_details.append(f"إيموجي مباشر: {getattr(direct_btn, 'text', '')}")
+                        if result == "success":
+                            return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
+                        elif result == "fail":
+                            break
+                        else:
+                            return True, f"ضغط إيموجي | {' | '.join(all_details)}"
+
+                    # ─── 5c. هل هذه رسالة تحقق أصلاً؟ ──────────────────────
                     is_verif = (
-                        any(k in msg_text_lower for k in CAPTCHA_KW)
-                        or any(k in msg_text_lower for k in MATH_KW)
-                        or any(k in msg_text_lower for k in REACTION_KW)
-                        or "select" in msg_text_lower
-                        or "choose" in msg_text_lower
-                        or "click" in msg_text_lower
-                        or "press" in msg_text_lower
-                        or "pick" in msg_text_lower
+                        any(k in msg_lower for k in CAPTCHA_KW)
+                        or any(k in msg_lower for k in MATH_KW)
+                        or any(k in msg_lower for k in REACTION_KW)
+                        or "select" in msg_lower or "choose" in msg_lower
+                        or "click" in msg_lower or "press" in msg_lower
+                        or "pick" in msg_lower or len(btn_labels) >= 2
                     )
                     if not is_verif:
                         continue
 
-                    # ── كشف مباشر: نمط "select the correct emoji: X" ──────
-                    # يستخرج الإيموجي المستهدف مباشرةً من النص بدون الحاجة لـ AI
-                    def _extract_emojis_from_text(text: str) -> list:
-                        """يستخرج جميع الإيموجيات من النص."""
-                        result = []
-                        for ch in text:
-                            cp = ord(ch)
-                            if (0x1F300 <= cp <= 0x1FFFF or  # إيموجي ورموز متنوعة
-                                0x2600 <= cp <= 0x27BF or    # رموز متنوعة
-                                0x1F900 <= cp <= 0x1F9FF or  # رموز تكميلية
-                                0x1FA00 <= cp <= 0x1FAFF):   # رموز موسعة
-                                result.append(ch)
-                        return result
-
-                    direct_chosen = None
-                    # نمط: "correct emoji: X" أو "اختر الإيموجي: X" أو "select emoji X"
-                    is_emoji_select = (
-                        "correct emoji" in msg_text_lower
-                        or "select emoji" in msg_text_lower
-                        or "choose emoji" in msg_text_lower
-                        or "pick emoji" in msg_text_lower
-                        or "اختر الإيموجي" in msg_text
-                        or "الإيموجي الصحيح" in msg_text
-                    )
-                    if is_emoji_select:
-                        msg_emojis = _extract_emojis_from_text(msg_text)
-                        if msg_emojis:
-                            target_emoji = msg_emojis[0]
-                            # ابحث عن الزر المطابق
-                            for lbl, btn in btn_objects.items():
-                                if target_emoji in lbl:
-                                    direct_chosen = btn
-                                    logger.info(f"🎯 كشف مباشر للإيموجي '{target_emoji}' ({phone})")
-                                    break
-                            # إذا لم نجد مطابقة مباشرة، حاول باستخراج إيموجيات الأزرار
-                            if not direct_chosen:
+                    # ─── 5d. AI يختار الزر الصحيح ────────────────────────────
+                    all_emoji_btns = all(bool(_extract_emojis(lbl)) for lbl in btn_labels)
+                    if all_emoji_btns:
+                        prompt_btn = (
+                            f"Telegram bot verification. Message:\n{msg_text}\n\n"
+                            "Buttons:\n" + "\n".join(f"- {b}" for b in btn_labels)
+                            + "\n\nWhich EXACT emoji button should be clicked? Reply with ONLY that emoji."
+                        )
+                    else:
+                        prompt_btn = (
+                            f"بوت تيليغرام يطلب التحقق. الرسالة:\n{msg_text}\n\n"
+                            "الأزرار المتاحة:\n" + "\n".join(f"- {b}" for b in btn_labels)
+                            + "\n\nأجب بنص الزر الصحيح فقط كما هو بالضبط."
+                        )
+                    ai_ans = await _ai_text(prompt_btn)
+                    if ai_ans:
+                        chosen = None
+                        a_clean = ai_ans.strip()
+                        a_lower = a_clean.lower()
+                        # مطابقة دقيقة
+                        for lbl, btn in btn_objects.items():
+                            if lbl.strip() == a_clean:
+                                chosen = btn; break
+                        # مطابقة بالإيموجي
+                        if not chosen:
+                            ans_emojis = _extract_emojis(a_clean)
+                            if ans_emojis:
                                 for lbl, btn in btn_objects.items():
-                                    btn_emojis = _extract_emojis_from_text(lbl)
-                                    if btn_emojis and btn_emojis[0] == target_emoji:
-                                        direct_chosen = btn
-                                        logger.info(f"🎯 كشف إيموجي بمطابقة الكود '{target_emoji}' ({phone})")
-                                        break
-
-                    if direct_chosen:
+                                    if ans_emojis[0] in lbl:
+                                        chosen = btn; break
+                        # مطابقة نصية
+                        if not chosen:
+                            for lbl, btn in btn_objects.items():
+                                if a_lower in lbl.lower() or lbl.lower() in a_lower:
+                                    chosen = btn; break
+                        if not chosen:
+                            chosen = list(btn_objects.values())[0]
                         processed_ids.add(msg_id)
-                        await _click_btn_smart(direct_chosen)
-                        result, msgs = await _wait_and_check()
-                        detail = f"ضغط إيموجي مباشر: {getattr(direct_chosen, 'text', '')}"
-                        all_details.append(detail)
+                        await _click_smart(chosen)
+                        result, msgs = await _wait_bot()
+                        all_details.append(f"زر: {getattr(chosen, 'text', '')}")
+                        logger.info(f"🤖 AI اختار زر '{getattr(chosen, 'text', '')}' ({phone})")
                         if result == "success":
                             return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
                         elif result == "fail":
-                            break  # حاول مجدداً
+                            _ai_failed_rounds += 1
+                            break
                         else:
-                            return True, f"ضغط الإيموجي | {' | '.join(all_details)}"
-                    else:
-                        # ── الوضع الاحتياطي: استخدم Gemini AI ────────────────
-                        # إذا كانت الأزرار كلها إيموجيات، وضّح ذلك لـ Gemini
-                        all_emoji_btns = all(
-                            bool(_extract_emojis_from_text(lbl)) for lbl in btn_labels
-                        )
-                        if all_emoji_btns:
-                            prompt = (
-                                f"Telegram bot verification:\n{msg_text}\n\n"
-                                "Available emoji buttons:\n"
-                                + "\n".join(f"- {b}" for b in btn_labels)
-                                + "\n\nWhich emoji button should be clicked? "
-                                "Reply with ONLY the exact emoji character, nothing else."
-                            )
-                        else:
-                            prompt = (
-                                f"بوت تيليغرام يطلب التحقق:\n{msg_text}\n\n"
-                                "الأزرار المتاحة:\n"
-                                + "\n".join(f"- {b}" for b in btn_labels)
-                                + "\n\nأي زر يجب الضغط عليه؟ أجب بنص الزر فقط كما هو بالضبط."
-                            )
-                        answer = await _gemini_text(prompt)
-                        if answer:
-                            logger.info(f"🤖 AI اختار زر → '{answer}' ({phone})")
-                            chosen = None
-                            a_clean = answer.strip()
-                            a_lower = a_clean.lower()
-                            # مطابقة دقيقة أولاً
-                            for label, btn in btn_objects.items():
-                                if label.strip() == a_clean:
-                                    chosen = btn
-                                    break
-                            # مطابقة بالإيموجي (إذا أرجع Gemini نصاً يحتوي إيموجي)
-                            if not chosen:
-                                ans_emojis = _extract_emojis_from_text(a_clean)
-                                if ans_emojis:
-                                    for label, btn in btn_objects.items():
-                                        if ans_emojis[0] in label:
-                                            chosen = btn
-                                            break
-                            # مطابقة نصية احتياطية
-                            if not chosen:
-                                for label, btn in btn_objects.items():
-                                    if a_lower in label.lower() or label.lower() in a_lower:
-                                        chosen = btn
-                                        break
-                            if not chosen:
-                                chosen = list(btn_objects.values())[0]
-                            processed_ids.add(msg_id)
-                            await _click_btn_smart(chosen)
-                            result, msgs = await _wait_and_check()
-                            detail = f"ضغط زر: {getattr(chosen, 'text', '')}"
-                            all_details.append(detail)
-                            if result == "success":
-                                return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
-                            elif result == "fail":
-                                break  # حاول مجدداً
-                            else:
-                                return True, f"ضغط الزر | {' | '.join(all_details)}"
-                except Exception as _e:
-                    logger.warning(f"⚠️ AI button captcha ({phone}): {_e}")
+                            return True, f"ضغط زر | {' | '.join(all_details)}"
+                except Exception as _be:
+                    logger.warning(f"⚠️ Button captcha ({phone}): {_be}")
                 continue
 
             # ════════════════════════════════════════════════════
-            # 5. سؤال نصي / رياضي / إيموجي كرسالة نصية
+            # 6. سؤال نصي (رياضيات، أحاجي، إيموجي كرسالة)
             # ════════════════════════════════════════════════════
-            if msg_text and not has_btns and not has_media and not has_poll:
-                is_captcha_q = any(k in msg_text_lower for k in CAPTCHA_KW)
-                is_math_q    = any(k in msg_text_lower for k in MATH_KW)
-                is_react_q   = any(k in msg_text_lower for k in REACTION_KW)
-                if not (is_captcha_q or is_math_q or is_react_q):
+            if msg_text and not has_btns and not has_media and not has_poll and not has_voice:
+                is_q = (
+                    any(k in msg_lower for k in CAPTCHA_KW)
+                    or any(k in msg_lower for k in MATH_KW)
+                    or any(k in msg_lower for k in REACTION_KW)
+                    or bool(_extract_emojis(msg_text))
+                )
+                if not is_q:
                     continue
+                prompt_txt = (
+                    f"بوت تيليغرام يطلب منك الإجابة للتحقق:\n{msg_text}\n\n"
+                    "أجب بالإجابة الصحيحة فقط بدون أي شرح:\n"
+                    "• إذا كان سؤالاً رياضياً → الرقم فقط\n"
+                    "• إذا كان إيموجي → الإيموجي المطلوب فقط\n"
+                    "• إذا كان سؤالاً نصياً → كلمة أو جملة قصيرة"
+                )
                 try:
-                    prompt = (
-                        f"بوت تيليغرام يطرح هذا السؤال للتحقق:\n{msg_text}\n\n"
-                        "أجب بالرقم أو النص أو الإيموجي المطلوب فقط "
-                        "بدون أي شرح أو رموز إضافية. إذا كان السؤال رياضياً أجب بالرقم فقط."
-                    )
-                    answer = await _gemini_text(prompt)
+                    answer = await _ai_text(prompt_txt)
                     if answer:
-                        logger.info(f"🤖 AI سؤال نصي → '{answer}' ({phone})")
                         processed_ids.add(msg_id)
                         await asyncio.sleep(1)
-                        await client.send_message(bot_entity, answer)
-                        result, msgs = await _wait_and_check()
-                        detail = f"أجاب: {answer}"
-                        all_details.append(detail)
+                        await client.send_message(bot_entity, answer.strip())
+                        result, msgs = await _wait_bot()
+                        all_details.append(f"نص: {answer.strip()}")
+                        logger.info(f"🤖 Text answer → '{answer.strip()}' ({phone})")
                         if result == "success":
                             return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
                         elif result == "fail":
-                            break  # حاول مجدداً
+                            _ai_failed_rounds += 1
+                            break
                         else:
-                            return True, f"أُرسلت الإجابة | {' | '.join(all_details)}"
-                except Exception as _e:
-                    logger.warning(f"⚠️ AI text captcha ({phone}): {_e}")
+                            return True, f"أُرسلت إجابة | {' | '.join(all_details)}"
+                except Exception as _te:
+                    logger.warning(f"⚠️ Text captcha ({phone}): {_te}")
 
             # ════════════════════════════════════════════════════
-            # 6. ردود فعل Reactions (البوت يطلب تفاعلاً على رسالة)
+            # 7. ردود فعل Reactions
             # ════════════════════════════════════════════════════
-            if any(k in msg_text_lower for k in REACTION_KW):
+            if any(k in msg_lower for k in REACTION_KW):
                 try:
                     from telethon.tl.functions.messages import SendReactionRequest
                     from telethon.tl.types import ReactionEmoji
-                    prompt = (
-                        f"بوت تيليغرام يطلب منك التفاعل:\n{msg_text}\n\n"
-                        "ما هو الإيموجي أو التفاعل المطلوب؟ "
-                        "أجب بالإيموجي فقط (مثال: 👍 أو ❤️ أو 🔥)."
+                    prompt_react = (
+                        f"بوت تيليغرام يطلب التفاعل:\n{msg_text}\n\n"
+                        "ما هو الإيموجي المطلوب؟ أجب بالإيموجي فقط مثل: 👍 ❤️ 🔥"
                     )
-                    emoji_answer = await _gemini_text(prompt)
-                    if emoji_answer:
-                        # خذ أول إيموجي فقط
-                        emoji_clean = emoji_answer.strip().split()[0]
+                    emoji_ans = await _ai_text(prompt_react)
+                    if emoji_ans:
+                        emoji_clean = (_extract_emojis(emoji_ans) or ["👍"])[0]
                         processed_ids.add(msg_id)
                         await client(SendReactionRequest(
-                            peer=bot_entity,
-                            msg_id=msg_id,
+                            peer=bot_entity, msg_id=msg_id,
                             reaction=[ReactionEmoji(emoticon=emoji_clean)],
                         ))
-                        result, msgs = await _wait_and_check()
-                        detail = f"تفاعل: {emoji_clean}"
-                        all_details.append(detail)
-                        logger.info(f"🤖 AI Reaction → '{emoji_clean}' ({phone})")
+                        result, msgs = await _wait_bot()
+                        all_details.append(f"Reaction: {emoji_clean}")
+                        logger.info(f"🤖 Reaction → '{emoji_clean}' ({phone})")
                         if result == "success":
                             return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
                         elif result != "fail":
-                            return True, f"أُرسل التفاعل | {' | '.join(all_details)}"
-                except Exception as _e:
-                    logger.warning(f"⚠️ AI reaction ({phone}): {_e}")
+                            return True, f"أُرسل تفاعل | {' | '.join(all_details)}"
+                except Exception as _re:
+                    logger.warning(f"⚠️ Reaction ({phone}): {_re}")
 
-    # ── النتيجة النهائية ───────────────────────────────────────
+            # ════════════════════════════════════════════════════
+            # 8. المعالج الشامل — أي رسالة غير معروفة تُحلَّل بالكامل
+            # ════════════════════════════════════════════════════
+            if msg_text and msg_id not in processed_ids and _round >= 1:
+                try:
+                    btn_summary = ""
+                    if has_btns:
+                        _lbls = [getattr(b, "text", "") for row in msg.buttons for b in row]
+                        btn_summary = f"\nالأزرار: {', '.join(_lbls)}"
+                    prompt_universal = (
+                        "أنت مساعد ذكي يحل تحقق بوتات تيليغرام.\n"
+                        f"الرسالة من البوت:\n{msg_text}{btn_summary}\n\n"
+                        "قرر: ما الإجراء الصحيح للمستخدم للاجتياز؟\n"
+                        "إذا كان سؤالاً → أجب بالإجابة فقط\n"
+                        "إذا كان كوداً في الصورة → قل 'IMAGE'\n"
+                        "إذا يطلب ضغط زر → قل اسم الزر بالضبط\n"
+                        "إذا لا يوجد تحقق → قل 'NONE'\n"
+                        "أجب بكلمة أو جملة قصيرة فقط."
+                    )
+                    univ_ans = await _ai_text(prompt_universal)
+                    if univ_ans and univ_ans.strip().upper() not in ("NONE", "IMAGE"):
+                        # ابحث عن الزر المطابق أولاً
+                        _matched_btn = None
+                        if has_btns:
+                            for row in msg.buttons:
+                                for btn in row:
+                                    lbl = getattr(btn, "text", "") or ""
+                                    if lbl and (univ_ans.strip() in lbl or lbl in univ_ans.strip()):
+                                        _matched_btn = btn
+                                        break
+                        if _matched_btn:
+                            processed_ids.add(msg_id)
+                            await _click_smart(_matched_btn)
+                            result, msgs = await _wait_bot()
+                            all_details.append(f"Universal-btn: {getattr(_matched_btn, 'text', '')}")
+                            if result == "success":
+                                return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
+                        else:
+                            # أرسل كنص
+                            processed_ids.add(msg_id)
+                            await client.send_message(bot_entity, univ_ans.strip())
+                            result, msgs = await _wait_bot()
+                            all_details.append(f"Universal-text: {univ_ans.strip()}")
+                            logger.info(f"🌐 Universal handler → '{univ_ans.strip()}' ({phone})")
+                            if result == "success":
+                                return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
+                            elif result == "fail":
+                                _ai_failed_rounds += 1
+                except Exception as _ue2:
+                    logger.warning(f"⚠️ Universal handler ({phone}): {_ue2}")
+
+        # توقف مبكر إذا فشل AI كثيراً
+        if _ai_failed_rounds >= 4:
+            break
+
+    # ════════════════════════════════════════════════════════════
+    # ── النتيجة النهائية ──────────────────────────────────────
+    # ════════════════════════════════════════════════════════════
     if all_details:
         return True, f"حُلّ جزئياً | {' | '.join(all_details)}"
-    return False, "لم يُكتشف تحقق"
+    return False, "لم يُكتشف تحقق — تحقق من إعداد مفاتيح AI"
 
 
 # ═══════════════════════════════════════════════════════════
