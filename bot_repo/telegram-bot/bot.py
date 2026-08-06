@@ -5883,7 +5883,8 @@ BUILTIN_DEFAULTS = {
         ("⏱ مهلة المغادرة الآمنة (ساعة)", "os:edit_leave_grace", 1),
         ("⭐ إجباري: حد أدنى (نجوم)", "os:edit_mstars_min", 2), ("⭐ إجباري: حد الشريحة 1", "os:edit_mstars_t1max", 2),
         ("⭐ إجباري: سعر ش1 (×100)", "os:edit_mstars_t1p", 2), ("⭐ إجباري: سعر ش2 (×100)", "os:edit_mstars_t2p", 2),
-        ("📧 إيميلات جيميل", "os:list_gmail", 2), ("📋 سجل كل الإيميلات", "os:all_gmail_history", 2),
+        ("📧 إيميلات جيميل", "os:list_gmail", 2), ("🔐 حسابات التحقق", "os:verified_gmail", 2),
+        ("📋 سجل كل الإيميلات", "os:all_gmail_history", 2),
         ("⚙️ نقاط طلب جيميل", "os:edit_gmail_reward", 2),
         ("✏️ نص رسالة الجيميل", "os:edit_gmail_msg", 2),
         ("🏷 اسم زر الإيميل", "os:edit_gmail_btn_label", 2),
@@ -18823,9 +18824,74 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if (data == "os:verified_gmail" or data.startswith("os:verified_gmail:")) and is_own:
+        _verified_page = 0
+        if data.startswith("os:verified_gmail:"):
+            try:
+                _verified_page = int(data.split(":")[2])
+            except Exception:
+                _verified_page = 0
+        _verified_limit = 20
+        _verified_offset = _verified_page * _verified_limit
+        with db_conn() as c:
+            _verified_total = c.execute(
+                "SELECT COUNT(*) AS n FROM gmail_submissions "
+                "WHERE status='rejected' "
+                "AND rejection_reason='need_verify' "
+                "AND COALESCE(verification_completed, FALSE)=TRUE "
+                "AND COALESCE(verification_notified, FALSE)=TRUE"
+            ).fetchone()["n"]
+            verified_subs = c.execute(
+                "SELECT gs.*, u.points FROM gmail_submissions gs "
+                "LEFT JOIN users u ON u.user_id=gs.user_id "
+                "WHERE gs.status='rejected' "
+                "AND gs.rejection_reason='need_verify' "
+                "AND COALESCE(gs.verification_completed, FALSE)=TRUE "
+                "AND COALESCE(gs.verification_notified, FALSE)=TRUE "
+                "ORDER BY gs.id DESC LIMIT %s OFFSET %s",
+                (_verified_limit, _verified_offset),
+            ).fetchall()
+        if not verified_subs and _verified_page == 0:
+            await q.edit_message_text(
+                "🔐 لا توجد حسابات أكملت التحقق بانتظار المراجعة.",
+                reply_markup=back_kb("owner_settings"),
+            )
+            return
+        rows = []
+        for s in verified_subs:
+            rows.append([InlineKeyboardButton(
+                f"🔐 #{s['id']} — {s['gmail_email']}",
+                callback_data=f"gmail_detail:{s['id']}:verified",
+            )])
+        _nav = []
+        if _verified_page > 0:
+            _nav.append(InlineKeyboardButton(
+                "◀️ السابق",
+                callback_data=f"os:verified_gmail:{_verified_page - 1}",
+            ))
+        if _verified_offset + _verified_limit < _verified_total:
+            _nav.append(InlineKeyboardButton(
+                "التالي ▶️",
+                callback_data=f"os:verified_gmail:{_verified_page + 1}",
+            ))
+        if _nav:
+            rows.append(_nav)
+        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
+        _start = _verified_offset + 1
+        _end = min(_verified_offset + _verified_limit, _verified_total)
+        await q.edit_message_text(
+            f"🔐 *حسابات التحقق* — {_start}–{_end} من {_verified_total}\n\n"
+            "هذه الحسابات أتمّ أصحابها التحقق وتحتاج قرار المالك.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(rows),
+        )
+        return
+
     if data.startswith("gmail_detail:") and is_own:
         context.user_data.pop("gmail_verification_note_edit_sub_id", None)
-        sub_id = int(data.split(":")[1])
+        _detail_parts = data.split(":")
+        sub_id = int(_detail_parts[1])
+        _detail_source = _detail_parts[2] if len(_detail_parts) > 2 else "all"
         with db_conn() as c:
             sub = c.execute("SELECT * FROM gmail_submissions WHERE id=%s", (sub_id,)).fetchone()
         if not sub:
@@ -18837,15 +18903,27 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📧 <b>تفاصيل طلب #{sub['id']}</b>\n\n👤 <a href='tg://user?id={sub['user_id']}'>المستخدم</a> | 🆔 {sub['user_id']}\n📬 الإيميل: <code>{sub['gmail_email']}</code>\n🔐 الباسورد: <code>{sub['gmail_pass']}</code>\n💬 <b>رسالة التحقق:</b>\n<code>{verification_note}</code>\n📊 الحالة: {status_text}\n🕐 {sub['created_at']}"
         )
         detail_rows = []
-        if sub["status"] == "pending":
+        _is_verified_pending = (
+            sub["status"] == "rejected"
+            and sub.get("rejection_reason") == "need_verify"
+            and bool(sub.get("verification_completed"))
+            and bool(sub.get("verification_notified"))
+        )
+        if sub["status"] == "pending" or _is_verified_pending:
             gmail_reward = int(get_setting("gmail_points_reward") or "10000")
             detail_rows.append([InlineKeyboardButton(f"✅ قبول وإعطاء {gmail_reward:,} نقطة", callback_data=f"gmail_approve:{sub_id}")])
-            detail_rows.append([InlineKeyboardButton("❌ رفض", callback_data=f"gmail_reject:{sub_id}")])
+            _reject_callback = (
+                f"gmail_reject:{sub_id}:verified"
+                if _is_verified_pending
+                else f"gmail_reject:{sub_id}"
+            )
+            detail_rows.append([InlineKeyboardButton("❌ رفض", callback_data=_reject_callback)])
         detail_rows.append([InlineKeyboardButton(
             "✏️ تعديل رسالة التحقق",
             callback_data=f"gmail_edit_verification_note:{sub_id}",
         )])
-        detail_rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="os:list_gmail")])
+        _detail_back = "os:verified_gmail" if _detail_source == "verified" else "os:list_gmail"
+        detail_rows.append([InlineKeyboardButton("🔙 رجوع", callback_data=_detail_back)])
         await q.edit_message_text(text_html, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(detail_rows))
         return
 
@@ -18986,13 +19064,23 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not sub:
             await q.answer("❌ الطلب غير موجود.", show_alert=True)
             return
-        if sub["status"] != "pending":
+        _is_verified_pending = (
+            sub["status"] == "rejected"
+            and sub.get("rejection_reason") == "need_verify"
+            and bool(sub.get("verification_completed"))
+            and bool(sub.get("verification_notified"))
+        )
+        if sub["status"] != "pending" and not _is_verified_pending:
             await q.answer("⚠️ هذا الطلب معالَج مسبقاً.", show_alert=True)
             return
         gmail_reward = int(get_setting("gmail_points_reward") or "10000")
         with db_conn() as c:
             c.execute("UPDATE users SET points=points+%s WHERE user_id=%s", (gmail_reward, sub["user_id"]))
-            c.execute("UPDATE gmail_submissions SET status='approved' WHERE id=%s", (sub_id,))
+            c.execute(
+                "UPDATE gmail_submissions SET status='approved', rejection_reason='', "
+                "verification_completed=FALSE, verification_notified=FALSE WHERE id=%s",
+                (sub_id,),
+            )
         try:
             await context.bot.send_message(
                 sub["user_id"],
@@ -19049,16 +19137,29 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data.startswith("gmail_reject:") and is_own:
-        sub_id = int(data.split(":")[1])
+        _reject_parts = data.split(":")
+        sub_id = int(_reject_parts[1])
+        _reject_source = _reject_parts[2] if len(_reject_parts) > 2 else "all"
         with db_conn() as c:
             sub = c.execute("SELECT * FROM gmail_submissions WHERE id=%s", (sub_id,)).fetchone()
         if not sub:
             await q.answer("❌ الطلب غير موجود.", show_alert=True)
             return
-        if sub["status"] != "pending":
+        _is_verified_pending = (
+            sub["status"] == "rejected"
+            and sub.get("rejection_reason") == "need_verify"
+            and bool(sub.get("verification_completed"))
+            and bool(sub.get("verification_notified"))
+        )
+        if sub["status"] != "pending" and not _is_verified_pending:
             await q.answer("⚠️ هذا الطلب معالَج مسبقاً.", show_alert=True)
             return
         user_link = f"tg://user?id={sub['user_id']}"
+        _reject_back = (
+            f"gmail_detail:{sub_id}:verified"
+            if _reject_source == "verified"
+            else f"gmail_detail:{sub_id}"
+        )
         await q.edit_message_text(
             f"❌ <b>رفض طلب الجيميل</b>\n\n👤 <a href='{user_link}'>المستخدم</a> | 🆔 {sub['user_id']}\n\nاختر سبب الرفض:",
             parse_mode=ParseMode.HTML,
@@ -19066,7 +19167,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("❌ إيميل خطأ", callback_data=f"gmail_reject_reason:wrong_email:{sub_id}")],
                 [InlineKeyboardButton("🔑 باسورد خطأ", callback_data=f"gmail_reject_reason:wrong_pass:{sub_id}")],
                 [InlineKeyboardButton("🔐 يحتاج تحقق", callback_data=f"gmail_reject_reason:need_verify:{sub_id}")],
-                [InlineKeyboardButton("🔙 رجوع", callback_data=f"gmail_detail:{sub_id}")],
+                [InlineKeyboardButton("🔙 رجوع", callback_data=_reject_back)],
             ])
         )
         return
@@ -19080,7 +19181,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not sub:
             await q.answer("❌ الطلب غير موجود.", show_alert=True)
             return
-        if sub["status"] != "pending":
+        _is_verified_pending = (
+            sub["status"] == "rejected"
+            and sub.get("rejection_reason") == "need_verify"
+            and bool(sub.get("verification_completed"))
+            and bool(sub.get("verification_notified"))
+        )
+        if sub["status"] != "pending" and not _is_verified_pending:
             await q.answer("⚠️ هذا الطلب معالَج مسبقاً.", show_alert=True)
             return
         with db_conn() as c:
