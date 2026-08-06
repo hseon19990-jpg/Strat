@@ -10795,10 +10795,22 @@ async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not doc:
         return
     msg = await update.message.reply_text("⏳ جاري قراءة الملف...")
+    import json as _json
+    raw_bytes = None
+    _last_err = None
+    for _attempt in range(3):
+        try:
+            file = await context.bot.get_file(doc.file_id)
+            raw_bytes = await file.download_as_bytearray()
+            break
+        except Exception as e:
+            _last_err = e
+            if _attempt < 2:
+                await asyncio.sleep(2)
+    if raw_bytes is None:
+        await msg.edit_text(f"❌ تعذّر تنزيل الملف (3 محاولات):\n`{_last_err}`", parse_mode=ParseMode.MARKDOWN)
+        return
     try:
-        file = await context.bot.get_file(doc.file_id)
-        raw_bytes = await file.download_as_bytearray()
-        import json as _json
         data = _json.loads(raw_bytes.decode("utf-8"))
     except Exception as e:
         await msg.edit_text(f"❌ تعذّر قراءة الملف:\n`{e}`", parse_mode=ParseMode.MARKDOWN)
@@ -10980,11 +10992,19 @@ async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE
     msg = await update.message.reply_text(f"⏳ جاري قراءة الملف `{fname}`...", parse_mode=ParseMode.MARKDOWN)
     import tempfile, sqlite3 as _sq3
 
-    try:
-        tg_file = await context.bot.get_file(doc.file_id)
-        raw_bytes = await tg_file.download_as_bytearray()
-    except Exception as e:
-        await msg.edit_text(f"❌ تعذّر تنزيل الملف:\n`{e}`", parse_mode=ParseMode.MARKDOWN)
+    raw_bytes = None
+    _last_err2 = None
+    for _att2 in range(3):
+        try:
+            tg_file = await context.bot.get_file(doc.file_id)
+            raw_bytes = await tg_file.download_as_bytearray()
+            break
+        except Exception as e:
+            _last_err2 = e
+            if _att2 < 2:
+                await asyncio.sleep(2)
+    if raw_bytes is None:
+        await msg.edit_text(f"❌ تعذّر تنزيل الملف (3 محاولات):\n`{_last_err2}`", parse_mode=ParseMode.MARKDOWN)
         return
 
     session_string = None
@@ -11757,11 +11777,19 @@ async def handle_zip_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.MARKDOWN
     )
 
-    try:
-        tg_file = await context.bot.get_file(doc.file_id)
-        raw_zip = await tg_file.download_as_bytearray()
-    except Exception as e:
-        await msg.edit_text(f"❌ تعذّر تنزيل الملف:\n`{e}`", parse_mode=ParseMode.MARKDOWN)
+    raw_zip = None
+    _last_err3 = None
+    for _att3 in range(3):
+        try:
+            tg_file = await context.bot.get_file(doc.file_id)
+            raw_zip = await tg_file.download_as_bytearray()
+            break
+        except Exception as e:
+            _last_err3 = e
+            if _att3 < 2:
+                await asyncio.sleep(3)
+    if raw_zip is None:
+        await msg.edit_text(f"❌ تعذّر تنزيل الملف (3 محاولات):\n`{_last_err3}`", parse_mode=ParseMode.MARKDOWN)
         return
 
     import zipfile, io
