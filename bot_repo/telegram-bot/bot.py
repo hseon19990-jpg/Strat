@@ -11470,11 +11470,19 @@ async def _import_one_session_bytes(
         return {"ok": False, "phone": None, "msg": "TELEGRAM_API_ID/HASH غير محدّد", "session": session_string, "stock_id": None}
     try:
         _cli = TelegramClient(StringSession(session_string), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
-        await _cli.connect()
-        if not await _cli.is_user_authorized():
+        try:
+            await asyncio.wait_for(_cli.connect(), timeout=20)
+        except asyncio.TimeoutError:
+            return {"ok": False, "phone": None, "msg": "انتهت مهلة الاتصال بخوادم تيليجرام", "session": session_string, "stock_id": None}
+        try:
+            authorized = await asyncio.wait_for(_cli.is_user_authorized(), timeout=10)
+        except asyncio.TimeoutError:
+            await _cli.disconnect()
+            return {"ok": False, "phone": None, "msg": "انتهت مهلة التحقق — الجلسة قد تكون سليمة، أعد المحاولة", "session": session_string, "stock_id": None}
+        if not authorized:
             await _cli.disconnect()
             return {"ok": False, "phone": None, "msg": "الجلسة منتهية أو غير صالحة", "session": session_string, "stock_id": None}
-        me = await _cli.get_me()
+        me = await asyncio.wait_for(_cli.get_me(), timeout=10)
         phone = me.phone if me.phone.startswith("+") else f"+{me.phone}"
         await _cli.disconnect()
     except Exception as _ve:
