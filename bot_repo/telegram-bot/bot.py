@@ -1446,29 +1446,16 @@ async def handle_contact_share(update: Update, context: ContextTypes.DEFAULT_TYP
     db_user = get_user(user.id)
     invited_by = db_user.get("invited_by") if db_user else 0
 
-    if region == "arab_asian":
-        # قبول فوري
+    if region in ("arab_asian", "arab_african"):
+        # جميع الدول العربية مقبولة للإحالة بدون فحص جودة إضافي.
         credited = await finalize_verification(update, context, user, edit=False, skip_referral=False)
-        await notify_referral_result_to_numbers_group(
-            context.bot, user.id, phone, accepted=True, credited=credited
-        )
-
-    elif region == "arab_african":
-        # فحص جودة الحساب
-        quality = await check_arab_african_account_quality(user.id, user)
-        if quality["passed"]:
-            credited = await finalize_verification(update, context, user, edit=False, skip_referral=False)
-        else:
-            credited = await finalize_verification(update, context, user, edit=False, skip_referral=True)
-        details_text = "\n".join(quality["details"])
-        status_icon = "✅" if quality["passed"] else "❌"
         await notify_referral_result_to_numbers_group(
             context.bot,
             user.id,
             phone,
-            accepted=quality["passed"],
+            accepted=True,
             credited=credited,
-            details=quality["details"],
+            details=["الحساب من دولة عربية مقبولة"],
         )
 
     else:
