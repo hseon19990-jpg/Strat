@@ -6554,6 +6554,49 @@ def _render_service_list():
     rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
     return "\n".join(lines), rows
 
+
+def _render_staging_services(selected_ids=None):
+    """يعرض الخدمات الجديدة مع دعم تحديد عدة خدمات للنقل الجماعي."""
+    selected_ids = {int(item) for item in (selected_ids or [])}
+    with db_conn() as c:
+        staged = c.execute("SELECT * FROM staging_services ORDER BY id DESC").fetchall()
+
+    rows = []
+    for service in staged:
+        panel_name = PANEL_MAP.get(service["panel"] or 1, PANEL_MAP[1])["name"]
+        mark = "✅" if int(service["id"]) in selected_ids else "⬜"
+        rows.append([
+            InlineKeyboardButton(
+                f"{mark} {service['name_ar']} — {panel_name}",
+                callback_data=f"os:ns_toggle:{service['id']}"
+            ),
+            InlineKeyboardButton(
+                "🔍 التفاصيل",
+                callback_data=f"os:ns_view:{service['id']}"
+            ),
+        ])
+
+    if staged:
+        rows.append([
+            InlineKeyboardButton(
+                f"📤 نقل المحدد ({len(selected_ids)})",
+                callback_data="os:ns_move_start"
+            ),
+            InlineKeyboardButton("☑️ تحديد الكل", callback_data="os:ns_select_all"),
+        ])
+        rows.append([
+            InlineKeyboardButton("🧹 إلغاء التحديد", callback_data="os:ns_clear_selection")
+        ])
+
+    rows.append([InlineKeyboardButton("➕ إضافة خدمة", callback_data="os:ns_add")])
+    rows.append([InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")])
+    count_txt = f"({len(staged)} خدمة)" if staged else "(فارغة)"
+    text = (
+        f"📦 *الخدمات الجديدة* {count_txt}\n\n"
+        "حدد خدمة واحدة أو عدة خدمات من الأزرار، ثم اضغط «نقل المحدد»."
+    )
+    return text, rows
+
 async def send_services_overview(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """يعرض كل الخدمات مجمّعة حسب الفئة — رسالة مستقلة لكل فئة (الأعضاء برسالة، التفاعلات برسالة، وهكذا)."""
     chat_id = update.effective_chat.id
@@ -15193,23 +15236,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ██  الخدمات الجديدة (Staging Area)
     # ══════════════════════════════════════════════════════════════
     if data == "os:new_services" and is_own:
-        with db_conn() as c:
-            staged = c.execute("SELECT * FROM staging_services ORDER BY id DESC").fetchall()
-        rows = []
-        for s in staged:
-            panel_name = PANEL_MAP.get(s["panel"] or 1, PANEL_MAP[1])["name"]
-            rows.append([
-                InlineKeyboardButton(
-                    f"🔹 {s['name_ar']} — {panel_name}",
-                    callback_data=f"os:ns_view:{s['id']}"
-                )
-            ])
-        rows.append([InlineKeyboardButton("➕ إضافة خدمة", callback_data="os:ns_add")])
-        rows.append([InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")])
-        count_txt = f"({len(staged)} خدمة)" if staged else "(فارغة)"
+        context.user_data.pop("ns_move_ids", None)
+        text, rows = _render_staging_services()
         await q.edit_message_text(
-            f"📦 *الخدمات الجديدة* {count_txt}\n\n"
-            "هنا تضيف خدماتك مبدئياً ثم تنقلها لأي قسم تريد.",
+            text,
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(rows)
         )
@@ -15318,19 +15348,166 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with db_conn() as c:
             c.execute("DELETE FROM staging_services WHERE id=%s", (sid,))
         await q.answer("✅ تم حذف الخدمة.")
-        # refresh list
-        with db_conn() as c:
-            staged = c.execute("SELECT * FROM staging_services ORDER BY id DESC").fetchall()
-        rows = []
-        for s in staged:
-            panel_name = PANEL_MAP.get(s["panel"] or 1, PANEL_MAP[1])["name"]
-            rows.append([InlineKeyboardButton(f"🔹 {s['name_ar']} — {panel_name}", callback_data=f"os:ns_view:{s['id']}")])
-        rows.append([InlineKeyboardButton("➕ إضافة خدمة", callback_data="os:ns_add")])
-        rows.append([InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")])
-        count_txt = f"({len(staged)} خدمة)" if staged else "(فارغة)"
+        context.user_data.pop("ns_move_ids", None)
+        text, rows = _render_staging_services()
         await q.edit_message_text(
-            f"📦 *الخدمات الجديدة* {count_txt}\n\nهنا تضيف خدماتك مبدئياً ثم تنقلها لأي قسم تريد.",
-            parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(rows)
+            text, parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
+        return
+
+    # ── تحديد عدة خدمات جديدة ونقلها دفعة واحدة ────────────────
+    if data == "os:ns_move_mode" and is_own:
+        text, rows = _render_staging_services(context.user_data.get("ns_move_ids"))
+        await q.edit_message_text(
+            text, parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
+        return
+
+    if data.startswith("os:ns_toggle:") and is_own:
+        sid = int(data.split(":")[2])
+        with db_conn() as c:
+            exists = c.execute("SELECT id FROM staging_services WHERE id=%s", (sid,)).fetchone()
+        if not exists:
+            await q.answer("❌ الخدمة غير موجودة.", show_alert=True)
+            return
+        selected = {int(item) for item in context.user_data.get("ns_move_ids", [])}
+        if sid in selected:
+            selected.remove(sid)
+        else:
+            selected.add(sid)
+        context.user_data["ns_move_ids"] = sorted(selected)
+        text, rows = _render_staging_services(selected)
+        await q.edit_message_text(
+            text, parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
+        return
+
+    if data == "os:ns_select_all" and is_own:
+        with db_conn() as c:
+            staged = c.execute("SELECT id FROM staging_services").fetchall()
+        selected = [int(row["id"]) for row in staged]
+        context.user_data["ns_move_ids"] = selected
+        text, rows = _render_staging_services(selected)
+        await q.edit_message_text(
+            text, parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
+        return
+
+    if data == "os:ns_clear_selection" and is_own:
+        context.user_data["ns_move_ids"] = []
+        text, rows = _render_staging_services()
+        await q.edit_message_text(
+            text, parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
+        return
+
+    if data == "os:ns_move_start" and is_own:
+        selected = sorted({
+            int(item) for item in context.user_data.get("ns_move_ids", [])
+        })
+        if not selected:
+            await q.answer("حدد خدمة واحدة على الأقل أولاً", show_alert=True)
+            return
+        context.user_data["ns_move_ids"] = selected
+        panel_rows = [
+            [InlineKeyboardButton(
+                label,
+                callback_data=f"os:ns_move_plat:{PLATFORM_MENU_MAP[value]}"
+            )]
+            for label, value in SERVICE_PLATFORMS
+        ]
+        panel_rows.append([
+            InlineKeyboardButton("🔙 رجوع للتحديد", callback_data="os:ns_move_mode")
+        ])
+        await q.edit_message_text(
+            f"📤 تم تحديد {len(selected)} خدمة.\n\nاختر *المنصة* التي تريد نقلها إليها:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(panel_rows)
+        )
+        return
+
+    if data.startswith("os:ns_move_plat:") and is_own:
+        platform = data.split(":")[2]
+        selected = sorted({
+            int(item) for item in context.user_data.get("ns_move_ids", [])
+        })
+        if not selected:
+            await q.answer("انتهى التحديد، اختر الخدمات من جديد", show_alert=True)
+            text, rows = _render_staging_services()
+            await q.edit_message_text(
+                text, parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup(rows)
+            )
+            return
+        category_rows = [
+            [InlineKeyboardButton(
+                label,
+                callback_data=f"os:ns_move_cat:{platform}:{category}"
+            )]
+            for category, label in CATEGORY_MAP.items()
+        ]
+        category_rows.append([
+            InlineKeyboardButton("🔙 رجوع لاختيار المنصة", callback_data="os:ns_move_start")
+        ])
+        platform_label = PLATFORM_LABEL_MAP.get(platform, platform)
+        await q.edit_message_text(
+            f"📤 تم اختيار {len(selected)} خدمة.\n"
+            f"المنصة: *{platform_label}*\n\nاختر *الفئة* الجديدة:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(category_rows)
+        )
+        return
+
+    if data.startswith("os:ns_move_cat:") and is_own:
+        parts = data.split(":")
+        platform = parts[2]
+        category = parts[3]
+        selected = sorted({
+            int(item) for item in context.user_data.get("ns_move_ids", [])
+        })
+        if not selected:
+            await q.answer("انتهى التحديد، اختر الخدمات من جديد", show_alert=True)
+            text, rows = _render_staging_services()
+            await q.edit_message_text(
+                text, parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup(rows)
+            )
+            return
+        placeholders = ",".join(["%s"] * len(selected))
+        with db_conn() as c:
+            staged = c.execute(
+                f"SELECT * FROM staging_services WHERE id IN ({placeholders}) ORDER BY id",
+                tuple(selected)
+            ).fetchall()
+            for service in staged:
+                c.execute(
+                    "INSERT INTO services (category,api_service_id,panel,platform,name_ar,description,min_qty,max_qty,price_per_point) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (
+                        category, service["api_service_id"], service["panel"] or 1,
+                        platform, service["name_ar"], service["description"] or "",
+                        service["min_qty"], service["max_qty"], service["price_per_point"]
+                    )
+                )
+            c.execute(
+                f"DELETE FROM staging_services WHERE id IN ({placeholders})",
+                tuple(selected)
+            )
+        moved_count = len(staged)
+        context.user_data.pop("ns_move_ids", None)
+        platform_label = PLATFORM_LABEL_MAP.get(platform, platform)
+        category_label = CATEGORY_MAP.get(category, category)
+        text, rows = _render_staging_services()
+        await q.edit_message_text(
+            f"✅ تم نقل *{moved_count} خدمة* بنجاح.\n"
+            f"📱 المنصة: {platform_label}\n"
+            f"📂 الفئة: {category_label}\n\n{text}",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(rows)
         )
         return
 
