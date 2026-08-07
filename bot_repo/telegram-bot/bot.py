@@ -6551,8 +6551,44 @@ def _render_service_list():
             InlineKeyboardButton(tog, callback_data=f"os_tog_svc:{s['id']}:{1 if not s['active'] else 0}"),
             InlineKeyboardButton("🗑", callback_data=f"os_del_svc:{s['id']}")
         ])
+    rows.append([InlineKeyboardButton("📝 مشاركة الوصف", callback_data="os:share_description")])
     rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
     return "\n".join(lines), rows
+
+
+def _render_description_service_selection(selected_ids=None):
+    """عرض الخدمات لتحديد الخدمات التي سيُطبّق عليها الوصف المشترك."""
+    selected_ids = {int(item) for item in (selected_ids or [])}
+    with db_conn() as c:
+        svcs = c.execute("SELECT * FROM services ORDER BY category, id").fetchall()
+
+    rows = []
+    for service in svcs:
+        mark = "✅" if int(service["id"]) in selected_ids else "⬜"
+        rows.append([
+            InlineKeyboardButton(
+                f"{mark} {service['name_ar'][:28]}",
+                callback_data=f"os:desc_toggle:{service['id']}"
+            )
+        ])
+
+    if svcs:
+        rows.append([
+            InlineKeyboardButton(
+                f"✅ تطبيق الوصف ({len(selected_ids)})",
+                callback_data="os:desc_apply"
+            ),
+            InlineKeyboardButton("☑️ تحديد الكل", callback_data="os:desc_select_all"),
+        ])
+        rows.append([
+            InlineKeyboardButton("🧹 إلغاء التحديد", callback_data="os:desc_clear")
+        ])
+    rows.append([InlineKeyboardButton("🔙 إلغاء", callback_data="os:list_services")])
+    text = (
+        f"📝 *اختيار خدمات لمشاركة الوصف* ({len(svcs)} خدمة)\n\n"
+        "حدد الخدمات التي تريد وضع الوصف عليها، ثم اضغط «تطبيق الوصف»."
+    )
+    return text, rows
 
 
 def _render_staging_services(selected_ids=None):
@@ -11173,6 +11209,23 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ تم تحديث السعر إلى: {fmt_price(price)} نقطة/1000 وحدة", reply_markup=owner_settings_kb())
         return
 
+    if is_own and state == "os_await_shared_description":
+        shared_description = None if text.strip() == "-" else text.strip()
+        if shared_description is None:
+            description_label = "حذف الوصف من الخدمات المحددة"
+        else:
+            description_label = shared_description
+        context.user_data["shared_description"] = shared_description
+        context.user_data["shared_desc_ids"] = []
+        context.user_data["state"] = "main_menu"
+        selection_text, selection_rows = _render_description_service_selection()
+        await update.message.reply_text(
+            f"✅ تم حفظ الوصف المشترك:\n\n{description_label}\n\n"
+            "الآن حدد الخدمات التي تريد تطبيقه عليها:",
+            reply_markup=InlineKeyboardMarkup(selection_rows),
+        )
+        return
+
     if is_own and state == "os_edit_await_desc":
         sid = context.user_data.get("edit_svc_id")
         if text.strip() == "-":
@@ -15645,6 +15698,91 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         await q.edit_message_text(text_, parse_mode=ParseMode.MARKDOWN,
                                    reply_markup=InlineKeyboardMarkup(rows))
+        return
+
+    if data == "os:share_description" and is_own:
+        context.user_data["state"] = "os_await_shared_description"
+        await q.edit_message_text(
+            "📝 *مشاركة الوصف*\n\n"
+            "اكتب الوصف الذي تريد مشاركته مع عدة خدمات.\n"
+            "أرسل `-` إذا كنت تريد حذف الوصف من الخدمات المحددة.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ إلغاء", callback_data="os:list_services")]
+            ])
+        )
+        return
+
+    if data.startswith("os:desc_toggle:") and is_own:
+        sid = int(data.split(":")[2])
+        with db_conn() as c:
+            exists = c.execute("SELECT id FROM services WHERE id=%s", (sid,)).fetchone()
+        if not exists:
+            await q.answer("⚠️ الخدمة غير موجودة", show_alert=True)
+            return
+        selected = {int(item) for item in context.user_data.get("shared_desc_ids", [])}
+        if sid in selected:
+            selected.remove(sid)
+        else:
+            selected.add(sid)
+        context.user_data["shared_desc_ids"] = sorted(selected)
+        text, rows = _render_description_service_selection(selected)
+        await q.edit_message_text(
+            text, parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
+        return
+
+    if data == "os:desc_select_all" and is_own:
+        with db_conn() as c:
+            services = c.execute("SELECT id FROM services ORDER BY id").fetchall()
+        selected = [int(service["id"]) for service in services]
+        context.user_data["shared_desc_ids"] = selected
+        text, rows = _render_description_service_selection(selected)
+        await q.edit_message_text(
+            text, parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
+        return
+
+    if data == "os:desc_clear" and is_own:
+        context.user_data["shared_desc_ids"] = []
+        text, rows = _render_description_service_selection()
+        await q.edit_message_text(
+            text, parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
+        return
+
+    if data == "os:desc_apply" and is_own:
+        has_description = "shared_description" in context.user_data
+        description = context.user_data.get("shared_description")
+        selected = sorted({
+            int(item) for item in context.user_data.get("shared_desc_ids", [])
+        })
+        if not has_description:
+            await q.answer("اكتب الوصف أولاً", show_alert=True)
+            return
+        if not selected:
+            await q.answer("حدد خدمة واحدة على الأقل", show_alert=True)
+            return
+
+        placeholders = ",".join(["%s"] * len(selected))
+        with db_conn() as c:
+            c.execute(
+                f"UPDATE services SET description=%s WHERE id IN ({placeholders})",
+                tuple([description, *selected])
+            )
+        applied_count = len(selected)
+        context.user_data.pop("shared_description", None)
+        context.user_data.pop("shared_desc_ids", None)
+        context.user_data["state"] = "main_menu"
+        text_, rows = _render_service_list()
+        await q.edit_message_text(
+            f"✅ تم تطبيق الوصف على {applied_count} خدمة.\n\n{text_}",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(rows) if rows else owner_settings_kb()
+        )
         return
 
     if data.startswith("os_tog_svc:") and is_own:
