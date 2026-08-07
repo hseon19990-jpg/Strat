@@ -35,6 +35,7 @@ from telethon.sessions import StringSession
 from campaigns import (
     configure_campaigns, campaign_start, campaign_cancel,
     campaign_zip_file, campaign_callback,
+    account_details_open, account_details_callback, account_details_text, account_details_media,
 )
 import struct, base64, socket as _socket
 
@@ -5863,6 +5864,7 @@ def owner_settings_kb():
             elif btn.callback_data == "os:manage_channels":
                 base_label = btn.text.split(" (")[0]
                 row[i] = InlineKeyboardButton(base_label + _verify_suffix, callback_data="os:manage_channels")
+    rows.append([InlineKeyboardButton("👤 تفاصيل الحسابات", callback_data="account_details:menu")])
     rows.append([InlineKeyboardButton("🧩 إضافة/إزالة خيار", callback_data="mb_menu:owner_settings")])
     rows.append([InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")])
     return InlineKeyboardMarkup(rows)
@@ -6733,6 +6735,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_maintenance_on() and not is_own:
         await update.message.reply_text(MAINTENANCE_MESSAGE, parse_mode=ParseMode.MARKDOWN)
+        return
+
+    if await account_details_text(update, context):
         return
 
     _owner_admin_state = is_own and (
@@ -17509,6 +17514,9 @@ def main():
     app.add_handler(CallbackQueryHandler(
         campaign_callback, pattern=r"^campaign_(confirm|cancel)$"
     ))
+    app.add_handler(CallbackQueryHandler(
+        account_details_callback, pattern=r"^account_details:"
+    ))
     app.add_handler(MessageHandler(
         (filters.TEXT | filters.CAPTION) & ~filters.COMMAND & filters.ChatType.PRIVATE,
         handle_text
@@ -17516,6 +17524,10 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(PreCheckoutQueryHandler(pre_checkout))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
+    app.add_handler(MessageHandler(
+        filters.ChatType.PRIVATE & (filters.PHOTO | filters.VIDEO),
+        account_details_media
+    ))
     app.add_handler(MessageHandler(
         filters.ChatType.PRIVATE & filters.Document.MimeType("application/json"),
         handle_json_file

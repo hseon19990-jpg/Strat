@@ -390,3 +390,207 @@ async def campaign_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"فشلت الحملة قبل الإكمال: {exc}")
     finally:
         _cleanup_state(context)
+
+
+# ────────────────────────────────────────────────────────────
+# تفاصيل حسابات الأرقام — واجهة المالك
+# ────────────────────────────────────────────────────────────
+_ACCOUNT_DETAILS_KEY = "account_details_campaign"
+
+def account_details_kb():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📝 بايو الأرقام", callback_data="account_details:bio")],
+        [InlineKeyboardButton("📖 ستوري الأرقام", callback_data="account_details:stories")],
+        [InlineKeyboardButton("🔤 اسم الأرقام", callback_data="account_details:name")],
+        [InlineKeyboardButton("@ يوزر الأرقام", callback_data="account_details:username")],
+        [InlineKeyboardButton("🖼 أفتار / صور الأرقام", callback_data="account_details:avatar")],
+        [InlineKeyboardButton("📤 إرسال المعلومات", callback_data="account_details:send")],
+        [InlineKeyboardButton("🗑 مسح المعلومات", callback_data="account_details:clear")],
+        [InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")],
+    ])
+
+def _new_account_details_state() -> dict[str, Any]:
+    return {
+        "stage": "menu", "bios": {}, "names": {}, "usernames": {},
+        "avatars": {}, "stories": [],
+        "media_dir": tempfile.mkdtemp(prefix="telegram-account-details-"),
+    }
+
+def _details_state(context: ContextTypes.DEFAULT_TYPE) -> dict[str, Any]:
+    state = context.user_data.get(_ACCOUNT_DETAILS_KEY)
+    if not isinstance(state, dict):
+        state = _new_account_details_state()
+        context.user_data[_ACCOUNT_DETAILS_KEY] = state
+    return state
+
+def _details_phone(value: str) -> str:
+    return re.sub(r"[^0-9+]", "", str(value or ""))
+
+def _details_menu_text(state: dict[str, Any]) -> str:
+    return (
+        "👤 تفاصيل الحسابات\n\n"
+        f"البايو: {len(state.get('bios', {}))}\n"
+        f"الأسماء: {len(state.get('names', {}))}\n"
+        f"اليوزرات: {len(state.get('usernames', {}))}\n"
+        f"الأفتارات: {len(state.get('avatars', {}))}\n"
+        f"الستوريات: {len(state.get('stories', []))}\n\n"
+        "اختر القسم وأرسل بياناته، وبعد الانتهاء اضغط إرسال المعلومات."
+    )
+
+async def account_details_open(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_user or update.effective_user.id != _owner_id:
+        return
+    state = _details_state(context)
+    query = update.callback_query
+    text = _details_menu_text(state)
+    if query:
+        await query.edit_message_text(text, reply_markup=account_details_kb())
+    elif update.message:
+        await update.message.reply_text(text, reply_markup=account_details_kb())
+
+async def account_details_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query or not update.effective_user or update.effective_user.id != _owner_id:
+        return
+    await query.answer()
+    action = (query.data or "").split(":", 1)[-1]
+    state = _details_state(context)
+    if action == "menu":
+        await account_details_open(update, context)
+        return
+    if action == "clear":
+        shutil.rmtree(state.get("media_dir", ""), ignore_errors=True)
+        context.user_data[_ACCOUNT_DETAILS_KEY] = _new_account_details_state()
+        await query.edit_message_text("تم مسح تفاصيل الحملة الحالية.", reply_markup=account_details_kb())
+        return
+    if action == "send":
+        if not state.get("stories") and not any(state.get(k) for k in ("bios", "names", "usernames", "avatars")):
+            await query.answer("أرسل بيانات واحدة على الأقل أولاً.", show_alert=True)
+            return
+        state["stage"] = "running"
+        await query.edit_message_text("بدأت معالجة تفاصيل الحسابات بالتتابع...", reply_markup=None)
+        try:
+            zip_path, manifest = _build_details_archive(state)
+            results, fatal = await _run_campaign(zip_path, manifest)
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=_report(results, fatal))
+            try:
+                os.unlink(zip_path)
+            except OSError:
+                pass
+        except Exception as exc:
+            logger.exception("Account details campaign failed")
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"فشلت العملية: {exc}")
+        finally:
+            _cleanup_account_details(context)
+        return
+    prompts = {
+        "bio": "أرسل البايو بهذا الشكل، سطرًا لكل حساب:\nرقم الحساب | البايو",
+        "name": "أرسل الاسم بهذا الشكل:\nرقم الحساب | الاسم الأول | اللقب",
+        "username": "أرسل اليوزر بهذا الشكل:\nرقم الحساب | username",
+        "stories": "أرسل الآن صور أو فيديوهات الستوريات واحدًا بعد الآخر. سيتم توزيعها بالتتابع.",
+        "avatar": "أرسل صورة الأفتار واكتب رقم الحساب في Caption للصورة.",
+    }
+    if action in prompts:
+        state["stage"] = action
+        await query.edit_message_text(prompts[action], reply_markup=account_details_kb())
+
+def _parse_detail_lines(text: str, kind: str) -> dict[str, Any]:
+    parsed: dict[str, Any] = {}
+    for raw_line in text.splitlines():
+        parts = [part.strip() for part in raw_line.split("|")]
+        if len(parts) < 2:
+            continue
+        phone = _details_phone(parts[0])
+        if not phone:
+            continue
+        if kind == "bio":
+            parsed[phone] = parts[1]
+        elif kind == "username":
+            parsed[phone] = parts[1].lstrip("@")
+        elif kind == "name":
+            parsed[phone] = {"first_name": parts[1], "last_name": parts[2] if len(parts) >= 3 else ""}
+    return parsed
+
+async def account_details_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    user = update.effective_user
+    state = context.user_data.get(_ACCOUNT_DETAILS_KEY)
+    if not user or user.id != _owner_id or not isinstance(state, dict) or state.get("stage") not in {"bio", "name", "username"}:
+        return False
+    parsed = _parse_detail_lines((update.message.text or "").strip(), state["stage"] )
+    if not parsed:
+        await update.message.reply_text("الصيغة غير صحيحة. استخدم | بين رقم الحساب والبيانات.")
+        return True
+    key = {"bio": "bios", "name": "names", "username": "usernames"}[state["stage"]]
+    state.setdefault(key, {}).update(parsed)
+    state["stage"] = "menu"
+    await update.message.reply_text(f"تم حفظ {len(parsed)} حساب.", reply_markup=account_details_kb())
+    return True
+
+async def account_details_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    user = update.effective_user
+    state = context.user_data.get(_ACCOUNT_DETAILS_KEY)
+    if not user or user.id != _owner_id or not isinstance(state, dict) or state.get("stage") not in {"stories", "avatar"}:
+        return False
+    message = update.message
+    file_id = None
+    extension = ".bin"
+    if message.photo:
+        file_id, extension = message.photo[-1].file_id, ".jpg"
+    elif message.video:
+        file_id, extension = message.video.file_id, ".mp4"
+    if not file_id:
+        return False
+    media_dir = state.get("media_dir") or tempfile.mkdtemp(prefix="telegram-account-details-")
+    state["media_dir"] = media_dir
+    if state["stage"] == "avatar":
+        phone = _details_phone(message.caption or "")
+        if not phone:
+            await message.reply_text("اكتب رقم الحساب في Caption للصورة.")
+            return True
+        target = os.path.join(media_dir, f"avatar_{len(state['avatars'])}{extension}")
+        tg_file = await context.bot.get_file(file_id)
+        await tg_file.download_to_drive(custom_path=target)
+        state.setdefault("avatars", {})[phone] = target
+        await message.reply_text(f"تم حفظ أفتار الحساب {phone}.", reply_markup=account_details_kb())
+    else:
+        target = os.path.join(media_dir, f"story_{len(state['stories'])}{extension}")
+        tg_file = await context.bot.get_file(file_id)
+        await tg_file.download_to_drive(custom_path=target)
+        state.setdefault("stories", []).append(target)
+        await message.reply_text(f"تم حفظ الستوري رقم {len(state['stories'])}.", reply_markup=account_details_kb())
+    return True
+
+def _all_detail_rows() -> list[dict[str, Any]]:
+    if _db_conn is None:
+        raise RuntimeError("قاعدة البيانات غير مهيأة")
+    with _db_conn() as conn:
+        return conn.execute("SELECT id, phone_number, session_string FROM number_stock WHERE session_string IS NOT NULL AND deleted_at IS NULL ORDER BY id").fetchall()
+
+def _build_details_archive(state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    rows = _all_detail_rows()
+    if not rows:
+        raise ValueError("لا توجد حسابات بجلسات صالحة في مخزون البوت")
+    zip_path = tempfile.mktemp(prefix="telegram-account-details-", suffix=".zip")
+    stories: list[str] = []
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for index, source in enumerate(state.get("stories", []), 1):
+            name = f"stories/{index:03d}{PurePosixPath(source).suffix.lower()}"
+            zf.write(source, name)
+            stories.append(name)
+        avatar_paths: dict[str, str] = {}
+        for index, (phone, source) in enumerate(state.get("avatars", {}).items(), 1):
+            name = f"profiles/{index:03d}{PurePosixPath(source).suffix.lower()}"
+            zf.write(source, name)
+            avatar_paths[phone] = name
+        accounts = []
+        for row in rows:
+            phone = _details_phone(row.get("phone_number", ""))
+            name_data = state.get("names", {}).get(phone, {})
+            accounts.append({"phone_number": row.get("phone_number"), "first_name": name_data.get("first_name", "") if isinstance(name_data, dict) else "", "last_name": name_data.get("last_name", "") if isinstance(name_data, dict) else "", "bio": state.get("bios", {}).get(phone, ""), "username": state.get("usernames", {}).get(phone, ""), "profile_photo": avatar_paths.get(phone)})
+        zf.writestr("manifest.json", json.dumps({"distribution": "round_robin", "stories": stories, "accounts": accounts}, ensure_ascii=False, indent=2))
+    return zip_path, {"distribution": "round_robin", "stories": stories, "accounts": accounts}
+
+def _cleanup_account_details(context: ContextTypes.DEFAULT_TYPE) -> None:
+    state = context.user_data.pop(_ACCOUNT_DETAILS_KEY, None)
+    if isinstance(state, dict):
+        shutil.rmtree(state.get("media_dir", ""), ignore_errors=True)
