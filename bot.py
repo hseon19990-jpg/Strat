@@ -11,6 +11,7 @@
 """
 
 import os
+import re
 import sqlite3
 import random
 import math
@@ -212,6 +213,16 @@ def init_db():
             PRIMARY KEY (user_id, channel_id)
         );
 
+        CREATE TABLE IF NOT EXISTS owner_content (
+            content_type TEXT PRIMARY KEY,
+            body         TEXT DEFAULT '',
+            media_type   TEXT DEFAULT '',
+            media_file_id TEXT DEFAULT '',
+            caption      TEXT DEFAULT '',
+            item_count   INTEGER DEFAULT 0,
+            updated_at   TEXT DEFAULT (datetime('now'))
+        );
+
         INSERT OR IGNORE INTO settings VALUES ('join_channel_reward','20');
         INSERT OR IGNORE INTO settings VALUES ('daily_gift_points','50');
         INSERT OR IGNORE INTO settings VALUES ('referral_points','30');
@@ -249,6 +260,44 @@ def get_setting(key: str) -> str:
 def set_setting(key: str, value: str):
     with db_conn() as c:
         c.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", (key, value))
+
+OWNER_CONTENT_LABELS = {
+    "story": "الستوري",
+    "username": "اليوزر",
+    "bio": "البايو",
+    "name": "الاسم",
+    "other": "بقية المعلومات",
+}
+
+def get_owner_content(content_type: str) -> dict:
+    with db_conn() as c:
+        row = c.execute(
+            "SELECT * FROM owner_content WHERE content_type=?",
+            (content_type,)
+        ).fetchone()
+    return dict(row) if row else {}
+
+def save_owner_text(content_type: str, body: str, item_count: int = 1):
+    with db_conn() as c:
+        c.execute(
+            """
+            INSERT OR REPLACE INTO owner_content
+                (content_type, body, media_type, media_file_id, caption, item_count, updated_at)
+            VALUES (?, ?, '', '', '', ?, datetime('now'))
+            """,
+            (content_type, body, item_count),
+        )
+
+def save_owner_media(content_type: str, media_type: str, file_id: str, caption: str):
+    with db_conn() as c:
+        c.execute(
+            """
+            INSERT OR REPLACE INTO owner_content
+                (content_type, body, media_type, media_file_id, caption, item_count, updated_at)
+            VALUES (?, '', ?, ?, ?, 1, datetime('now'))
+            """,
+            (content_type, media_type, file_id, caption),
+        )
 
 def get_or_create_user(user_id: int, username: str, full_name: str, invited_by: int = 0) -> dict:
     with db_conn() as c:
@@ -418,6 +467,11 @@ def owner_settings_kb():
         [InlineKeyboardButton("📢 سعر تمويل إجباري", callback_data="os:edit_mandatory_cost"),
          InlineKeyboardButton("🔄 سعر تمويل داخلي", callback_data="os:edit_internal_cost")],
         [InlineKeyboardButton("🎁 نقاط الانضمام للقنوات", callback_data="os:edit_join_reward")],
+        [InlineKeyboardButton("📖 الستوري", callback_data="owner_content:story"),
+         InlineKeyboardButton("👤 اليوزر", callback_data="owner_content:username")],
+        [InlineKeyboardButton("📝 البايو", callback_data="owner_content:bio"),
+         InlineKeyboardButton("🏷 الاسم", callback_data="owner_content:name")],
+        [InlineKeyboardButton("📋 بقية المعلومات", callback_data="owner_content:other")],
         [InlineKeyboardButton("📡 إدارة قنوات الاشتراك", callback_data="os:manage_channels"),
          InlineKeyboardButton("❌ إلغاء صفقة", callback_data="os:cancel_order")],
         [InlineKeyboardButton("🎟 إنشاء كود ترويجي", callback_data="os:create_promo"),
@@ -616,6 +670,69 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text   = update.message.text.strip()
     state  = context.user_data.get("state", "")
     is_own = (user.id == OWNER_ID)
+
+    # ── محتوى حسابات المالك: نص واحد لكل قسم ──
+    if is_own and state.startswith("owner_content_await_"):
+        content_type = state.removeprefix("owner_content_await_")
+
+        if content_type == "username":
+            usernames = []
+            invalid = []
+            for raw_line in text.splitlines():
+                value = raw_line.strip()
+                if not value:
+                    continue
+                value = value.lstrip("@")
+                if not re.fullmatch(r"[A-Za-z0-9_]{1,32}", value):
+                    invalid.append(raw_line.strip())
+                else:
+                    usernames.append(f"@{value}")
+
+            if not usernames:
+                await update.message.reply_text(
+                    "⚠️ لم أجد أي يوزر صالح. أرسل يوزراً واحداً في كل سطر."
+                )
+                return
+            if len(usernames) > 1000:
+                await update.message.reply_text(
+                    f"⚠️ أرسلت {len(usernames)} يوزر. الحد الأقصى هو 1000 يوزر في الرسالة."
+                )
+                return
+            if invalid:
+                preview = "\n".join(f"• {item}" for item in invalid[:10])
+                more = f"\n... و{len(invalid) - 10} أسطر أخرى" if len(invalid) > 10 else ""
+                await update.message.reply_text(
+                    "⚠️ توجد أسطر غير صالحة. صححها وأرسل القائمة كاملة من جديد:\n\n"
+                    f"{preview}{more}\n\n"
+                    "المسموح: حروف إنجليزية وأرقام وشرطة سفلية فقط."
+                )
+                return
+
+            save_owner_text("username", "\n".join(usernames), len(usernames))
+            await update.message.reply_text(
+                f"✅ تم حفظ {len(usernames)} يوزر.\n"
+                "كل سطر محفوظ كعنصر مستقل وجاهز للمعالجة بالترتيب.",
+                reply_markup=owner_settings_kb()
+            )
+            context.user_data["state"] = "main_menu"
+            return
+
+        if content_type not in OWNER_CONTENT_LABELS:
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text(
+                "⚠️ انتهت جلسة الإدخال. افتح القسم من إعدادات المالك من جديد.",
+                reply_markup=owner_settings_kb()
+            )
+            return
+
+        save_owner_text(content_type, text)
+        await update.message.reply_text(
+            f"✅ تم حفظ {OWNER_CONTENT_LABELS[content_type]}.\n"
+            "سيبقى المحتوى محفوظاً حتى بعد إعادة تشغيل البوت.",
+            reply_markup=owner_settings_kb()
+        )
+        context.user_data["state"] = "main_menu"
+        return
 
     # ── التحقق الرياضي ──
     if state == "verify_math":
@@ -1548,6 +1665,38 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🏠 القائمة الرئيسية:", reply_markup=main_menu_kb(is_own))
 
 
+async def handle_owner_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """يحفظ صورة أو فيديو الستوري الذي يرسله المالك في رسالة واحدة."""
+    user = update.effective_user
+    if not user or user.id != OWNER_ID:
+        return
+
+    state = context.user_data.get("state", "")
+    if state != "owner_content_await_story":
+        return
+
+    message = update.message
+    caption = (message.caption or "").strip()
+    if message.photo:
+        file_id = message.photo[-1].file_id
+        save_owner_media("story", "photo", file_id, caption)
+        media_label = "الصورة"
+    elif message.video:
+        file_id = message.video.file_id
+        save_owner_media("story", "video", file_id, caption)
+        media_label = "الفيديو"
+    else:
+        await message.reply_text("⚠️ أرسل صورة أو فيديو فقط لقسم الستوري.")
+        return
+
+    await message.reply_text(
+        f"✅ تم حفظ {media_label} الستوري بنجاح.\n"
+        "تم حفظ Telegram file_id حتى لا نحتاج إلى تنزيل الملف أو فقدانه.",
+        reply_markup=owner_settings_kb()
+    )
+    context.user_data["state"] = "main_menu"
+
+
 async def _save_service(update, context, price: float):
     """حفظ الخدمة الجديدة بعد تحديد جميع القيم"""
     cat    = context.user_data.get("new_svc_cat", "followers")
@@ -2089,6 +2238,48 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "owner_settings" and is_own:
         await q.edit_message_text("⚙️ *إعدادات المالك:*", parse_mode=ParseMode.MARKDOWN,
                                    reply_markup=owner_settings_kb())
+        return
+
+    if data.startswith("owner_content:") and is_own:
+        content_type = data.split(":", 1)[1]
+        label = OWNER_CONTENT_LABELS.get(content_type)
+        if not label:
+            await q.answer("⚠️ القسم غير معروف", show_alert=True)
+            return
+
+        saved = get_owner_content(content_type)
+        if content_type == "story":
+            current = "محفوظ ✅" if saved.get("media_file_id") else "غير محفوظ"
+            prompt = (
+                f"📖 *إعداد {label}*\n\n"
+                f"الحالة الحالية: {current}\n\n"
+                "أرسل صورة أو فيديو واحد فقط في رسالة واحدة.\n"
+                "يمكنك إضافة وصف للصورة أو الفيديو."
+            )
+        elif content_type == "username":
+            count = saved.get("item_count", 0)
+            prompt = (
+                f"👤 *إعداد {label}*\n\n"
+                f"المحفوظ حالياً: {count} يوزر\n\n"
+                "أرسل كل يوزر في سطر مستقل.\n"
+                "الحد الأقصى: 1000 يوزر في رسالة واحدة."
+            )
+        else:
+            current = "محفوظ ✅" if saved.get("body") else "غير محفوظ"
+            prompt = (
+                f"📝 *إعداد {label}*\n\n"
+                f"الحالة الحالية: {current}\n\n"
+                "أرسل المحتوى كاملاً في رسالة واحدة."
+            )
+
+        context.user_data["state"] = f"owner_content_await_{content_type}"
+        await q.edit_message_text(
+            prompt,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")]
+            ])
+        )
         return
 
     if data == "os:add_service" and is_own:
@@ -2673,6 +2864,10 @@ def main():
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("admin", cmd_admin))
+    app.add_handler(MessageHandler(
+        (filters.PHOTO | filters.VIDEO) & ~filters.COMMAND,
+        handle_owner_media
+    ))
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND & filters.UpdateType.MESSAGE,
         handle_text
