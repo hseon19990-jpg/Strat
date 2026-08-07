@@ -6230,6 +6230,7 @@ BUILTIN_DEFAULTS = {
         ("➕ إضافة خدمة", "os:add_service", 2), ("📋 قائمة الخدمات", "os:list_services", 2),
         ("🗂 عرض الخدمات", "os:view_services", 2), ("🔍 الفحص", "os:inspect_services", 2),
         ("📦 قسم الطلبات", "os:orders_section", 2),
+        ("📝 تعديل وصف عدة خدمات", "os:share_description", 2),
         ("🎁 تعديل الهدية اليومية", "os:edit_gift", 2), ("🎀 جوائز مخصصة", "os:manage_prizes", 2),
         ("🔗 تعديل نقاط الدعوة", "os:edit_referral", 2),
         ("⭐ سعر النجمة شحن", "os:edit_star_rate", 2), ("🏆 سعر نجمة الجوائز", "os:edit_exchange_rate", 2),
@@ -6546,7 +6547,7 @@ def _render_service_list():
             InlineKeyboardButton(tog, callback_data=f"os_tog_svc:{s['id']}:{1 if not s['active'] else 0}"),
             InlineKeyboardButton("🗑", callback_data=f"os_del_svc:{s['id']}")
         ])
-    rows.append([InlineKeyboardButton("📝 مشاركة الوصف", callback_data="os:share_description")])
+    rows.append([InlineKeyboardButton("📝 تعديل وصف عدة خدمات", callback_data="os:share_description")])
     rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
     return "\n".join(lines), rows
 
@@ -15870,8 +15871,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "os:share_description" and is_own:
         context.user_data["state"] = "os_await_shared_description"
         await q.edit_message_text(
-            "📝 *مشاركة الوصف*\n\n"
-            "اكتب الوصف الذي تريد مشاركته مع عدة خدمات.\n"
+            "📝 *تعديل وصف عدة خدمات*\n\n"
+            "اكتب الوصف الذي تريد تطبيقه على عدة خدمات.\n"
             "أرسل `-` إذا كنت تريد حذف الوصف من الخدمات المحددة.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([
