@@ -5540,27 +5540,34 @@ def smm_request(action: str, panel: int = 1, **params) -> dict:
 _services_cache: dict = {}  # panel -> (timestamp, list)
 _SERVICES_CACHE_TTL = 3600  # ثانية
 
-def smm_service_info(service_id: int, panel: int = 1) -> dict:
+def smm_services_list(panel: int = 1, force_refresh: bool = False):
+    """يجلب قائمة خدمات الموقع، مع إمكانية إجبار تحديثها عند فحص الخدمات."""
     now = time.time()
     cached = _services_cache.get(panel)
-    if cached and now - cached[0] < _SERVICES_CACHE_TTL:
-        services = cached[1]
+    if cached and not force_refresh and now - cached[0] < _SERVICES_CACHE_TTL:
+        return cached[1]
+
+    raw = smm_request("services", panel=panel)
+    if isinstance(raw, list):
+        services = raw
+    elif isinstance(raw, dict) and "error" not in raw:
+        services = []
+        for k, v in raw.items():
+            if isinstance(v, dict):
+                if "service" not in v:
+                    v = dict(v, service=k)
+                services.append(v)
     else:
-        raw = smm_request("services", panel=panel)
-        if isinstance(raw, list):
-            services = raw
-        elif isinstance(raw, dict) and "error" not in raw:
-            services = []
-            for k, v in raw.items():
-                if isinstance(v, dict):
-                    if "service" not in v:
-                        v = dict(v, service=k)
-                    services.append(v)
-        else:
-            site_name = PANEL_MAP.get(panel, PANEL_MAP[1])["name"]
-            logger.warning(f"⚠️ smm_service_info: رد غير متوقع من {site_name} (panel={panel}): {str(raw)[:300]}")
-            return {}
-        _services_cache[panel] = (now, services)
+        site_name = PANEL_MAP.get(panel, PANEL_MAP[1])["name"]
+        logger.warning(f"⚠️ smm_services_list: رد غير متوقع من {site_name} (panel={panel}): {str(raw)[:300]}")
+        return None
+    _services_cache[panel] = (now, services)
+    return services
+
+def smm_service_info(service_id: int, panel: int = 1) -> dict:
+    services = smm_services_list(panel=panel)
+    if services is None:
+        return {}
     for s in services:
         if str(s.get("service")) == str(service_id):
             return s
@@ -6234,7 +6241,8 @@ BUILTIN_DEFAULTS = {
     ],
     "owner_settings": [
         ("➕ إضافة خدمة", "os:add_service", 2), ("📋 قائمة الخدمات", "os:list_services", 2),
-        ("🗂 عرض الخدمات", "os:view_services", 2), ("📦 قسم الطلبات", "os:orders_section", 2),
+        ("🗂 عرض الخدمات", "os:view_services", 2), ("🔍 الفحص", "os:inspect_services", 2),
+        ("📦 قسم الطلبات", "os:orders_section", 2),
         ("🎁 تعديل الهدية اليومية", "os:edit_gift", 2), ("🎀 جوائز مخصصة", "os:manage_prizes", 2),
         ("🔗 تعديل نقاط الدعوة", "os:edit_referral", 2),
         ("⭐ سعر النجمة شحن", "os:edit_star_rate", 2), ("🏆 سعر نجمة الجوائز", "os:edit_exchange_rate", 2),
@@ -6674,6 +6682,173 @@ async def send_services_overview(update: Update, context: ContextTypes.DEFAULT_T
         return
 
     await context.bot.send_message(chat_id=chat_id, text="⬆️ هذه كل الخدمات المتاحة حالياً.", reply_markup=owner_settings_kb())
+
+
+def _inspection_display(value, fallback="—") -> str:
+    if value is None or value == "":
+        return fallback
+    return str(value)
+
+
+def _inspection_num(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _inspection_same(left, right) -> bool:
+    left_num = _inspection_num(left)
+    right_num = _inspection_num(right)
+    if left_num is not None and right_num is not None:
+        return left_num == right_num
+    return str(left or "").strip() == str(right or "").strip()
+
+
+def _inspection_line(label: str, local_value, site_value, site_label: str = "الموقع") -> str:
+    marker = "✅" if _inspection_same(local_value, site_value) else "⚠️"
+    return (
+        f"{marker} <b>{html.escape(label)}:</b> "
+        f"المحلي: <code>{html.escape(_inspection_display(local_value))}</code> | "
+        f"{html.escape(site_label)}: <code>{html.escape(_inspection_display(site_value))}</code>"
+    )
+
+
+def _render_service_inspection_block(local_service, remote_service, site_name: str) -> str:
+    """يبني تقرير مقارنة واحد بين الخدمة المحفوظة وردّ الموقع."""
+    local = local_service
+    remote = remote_service or {}
+    remote_price = None
+    rate_num = _inspection_num(remote.get("rate"))
+    if rate_num is not None:
+        remote_price = fmt_price(rate_num * 100_000)
+
+    if remote_service is None:
+        return (
+            f"🧾 <b>الخدمة المحلية #{local['id']}</b> — API: "
+            f"<code>{html.escape(_inspection_display(local['api_service_id']))}</code>\n"
+            f"🌐 الموقع: <b>{html.escape(site_name)}</b>\n"
+            f"❌ لم يتم العثور على الخدمة في ردّ الموقع أو تعذّر جلبه.\n\n"
+            f"🏠 <b>بيانات البوت</b>\n"
+            f"الاسم: <code>{html.escape(_inspection_display(local['name_ar']))}</code>\n"
+            f"الوصف: <code>{html.escape(_inspection_display(local['description']))}</code>\n"
+            f"السعر: <code>{html.escape(fmt_price(local['price_per_point']))}</code> نقطة/1000\n"
+            f"الحدود: <code>{local['min_qty']}</code> — <code>{local['max_qty']}</code>\n"
+        )
+
+    lines = [
+        f"🧾 <b>الخدمة المحلية #{local['id']}</b> — API: "
+        f"<code>{html.escape(_inspection_display(local['api_service_id']))}</code>",
+        f"🌐 الموقع: <b>{html.escape(site_name)}</b>",
+        "🏠 <b>بيانات البوت مقابل 🌐 بيانات الموقع</b>",
+        _inspection_line("الاسم", local["name_ar"], remote.get("name")),
+        _inspection_line("الوصف", local["description"], remote.get("description")),
+        _inspection_line("السعر/1000", fmt_price(local["price_per_point"]), remote_price),
+        _inspection_line("الحد الأدنى", local["min_qty"], remote.get("min")),
+        _inspection_line("الحد الأعلى", local["max_qty"], remote.get("max")),
+        _inspection_line("الفئة", CATEGORY_MAP.get(local["category"], local["category"]), remote.get("category")),
+        _inspection_line("النوع", local.get("service_type"), remote.get("type")),
+        f"الحالة في البوت: {'✅ مفعّلة' if local['active'] else '❌ معطّلة'}",
+    ]
+
+    # عرض بقية بيانات الموقع كما وردت من API، وليس الحقول الأساسية فقط.
+    known_keys = {"service", "name", "description", "rate", "min", "max", "category", "type"}
+    extra = [
+        (key, value) for key, value in remote.items()
+        if key not in known_keys and value not in (None, "")
+    ]
+    if extra:
+        lines.append("📋 <b>بقية بيانات الموقع:</b>")
+        for key, value in sorted(extra, key=lambda item: str(item[0])):
+            lines.append(
+                f"• <code>{html.escape(str(key))}</code>: "
+                f"<code>{html.escape(str(value))}</code>"
+            )
+    return "\n".join(lines)
+
+
+async def send_services_inspection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """يفحص كل الخدمات محلياً مقابل بياناتها المباشرة من مواقع SMM."""
+    with db_conn() as c:
+        services = c.execute("SELECT * FROM services ORDER BY panel, id").fetchall()
+
+    if not services:
+        await update.callback_query.edit_message_text(
+            "🔍 لا توجد خدمات لفحصها.",
+            reply_markup=owner_settings_kb()
+        )
+        return
+
+    # تحديث مباشر لكل موقع مستخدم، حتى لا يعرض الفحص نتيجة قديمة من الكاش.
+    remote_by_panel = {}
+    for panel in sorted({int(s["panel"] or 1) for s in services}):
+        try:
+            remote_list = await asyncio.to_thread(smm_services_list, panel, True)
+            remote_by_panel[panel] = (
+                {str(item.get("service")): item for item in (remote_list or [])}
+                if remote_list is not None else None
+            )
+        except Exception as exc:
+            logger.warning(f"⚠️ فشل فحص خدمات الموقع {panel}: {exc}")
+            remote_by_panel[panel] = None
+
+    blocks = []
+    found_count = 0
+    different_count = 0
+    for local in services:
+        panel = int(local["panel"] or 1)
+        site_name = PANEL_MAP.get(panel, PANEL_MAP[1])["name"]
+        panel_services = remote_by_panel.get(panel)
+        remote = panel_services.get(str(local["api_service_id"])) if panel_services is not None else None
+        if remote is not None:
+            found_count += 1
+            remote_price_num = _inspection_num(remote.get("rate"))
+            remote_price = fmt_price(remote_price_num * 100_000) if remote_price_num is not None else None
+            if any([
+                not _inspection_same(local["name_ar"], remote.get("name")),
+                not _inspection_same(local["description"], remote.get("description")),
+                not _inspection_same(fmt_price(local["price_per_point"]), remote_price),
+                not _inspection_same(local["min_qty"], remote.get("min")),
+                not _inspection_same(local["max_qty"], remote.get("max")),
+            ]):
+                different_count += 1
+        blocks.append(_render_service_inspection_block(local, remote, site_name))
+
+    header = (
+        f"🔍 <b>فحص الخدمات</b>\n"
+        f"📊 الإجمالي: <b>{len(services)}</b> | موجودة بالموقع: <b>{found_count}</b> | "
+        f"بها اختلافات: <b>{different_count}</b>\n"
+        f"✅ مطابق | ⚠️ مختلف\n\n"
+    )
+
+    # نرسل التقرير على دفعات آمنة ضمن حد تيليغرام، مع بقاء كل خدمة كاملة في رسالة واحدة.
+    chunks = []
+    current = header
+    for block in blocks:
+        candidate = current + block + "\n\n" + ("─" * 25) + "\n\n"
+        if len(candidate) > 3800 and current != header:
+            chunks.append(current)
+            current = block + "\n\n" + ("─" * 25) + "\n\n"
+        else:
+            current = candidate
+    if current.strip():
+        chunks.append(current)
+
+    for index, chunk in enumerate(chunks):
+        if index == 0:
+            await update.callback_query.edit_message_text(chunk, parse_mode=ParseMode.HTML)
+        else:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=chunk,
+                parse_mode=ParseMode.HTML
+            )
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text="✅ انتهى الفحص. هذه مقارنة مباشرة بين إعدادات البوت وبيانات الموقع.",
+        reply_markup=owner_settings_kb()
+    )
+
 
 ORDERS_PAGE_SIZE = 10
 
@@ -15174,6 +15349,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(rows)
         )
+        return
+
+    if data == "os:inspect_services" and is_own:
+        await q.answer("⏳ جارٍ فحص الخدمات من المواقع مباشرة...")
+        await send_services_inspection(update, context)
         return
 
     if data.startswith("os_view_plat:") and is_own:
