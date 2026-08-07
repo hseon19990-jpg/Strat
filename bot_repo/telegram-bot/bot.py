@@ -1972,17 +1972,27 @@ def get_available_number_count() -> int:
         ).fetchone()
         return row["cnt"] if row else 0
 
-def get_forced_ref_account_count() -> int:
-    """عدد الحسابات المؤهلة للإحالة الإجبارية: فقط الحسابات التي يمكن للبوت فعلاً فتحها والعمل بها
-    (can_send_code=TRUE وغير مجمّدة)."""
+def get_referral_session_count() -> int:
+    """عدد كل الأرقام التي يملك البوت جلسة محفوظة لها.
+
+    الإحالة لا تعتمد على حالة البيع أو 2FA أو معرفة إرسال الكود أو كون
+    الجلسة الوحيدة. المحاولة الفعلية داخل do_referral_for_number هي التي
+    تتحقق من أن الجلسة ما زالت صالحة وقابلة للعمل.
+    """
     with db_conn() as c:
         row = c.execute(
-            f"SELECT COUNT(*) as cnt FROM number_stock"
-            f" WHERE session_string IS NOT NULL AND deleted_at IS NULL AND assigned_to IS NULL"
-            f" AND ever_sold IS NOT TRUE AND can_send_code IS TRUE AND last_authorized IS NOT FALSE"
-            f" AND frozen_at IS NULL AND forced_ref_excluded IS NOT TRUE"
+            "SELECT COUNT(*) AS cnt FROM number_stock "
+            "WHERE session_string IS NOT NULL AND BTRIM(session_string) <> '' "
+            "AND deleted_at IS NULL"
         ).fetchone()
         return row["cnt"] if row else 0
+
+def get_forced_ref_account_count() -> int:
+    """عدد كل الأرقام ذات الجلسات المحفوظة للإحالة الإجبارية.
+
+    هذا العدد خاص بالإحالة فقط، وليس بعدد الأرقام القابلة للبيع.
+    """
+    return get_referral_session_count()
 
 async def _test_and_set_can_send_code(phone: str, session_str: str, stock_id: int):
     """يتحقق من قدرة البوت على الوصول للحساب وجلب الكودات:
@@ -3149,7 +3159,7 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
 # ══════════════════════════════════════════════════════════
 
 async def _mansub_start(update, context, user, q, is_own):
-    avail = get_available_number_count()
+    avail = get_referral_session_count()
     bp = int(get_setting('mansub_base_price') or '250')
     cp = int(get_setting('mansub_channel_price') or '50')
     vis = get_setting('mansub_visible') == '1'
@@ -3219,7 +3229,7 @@ async def _mansub_handle_channels(update, context):
     draft = context.user_data.setdefault('mansub_draft', {})
     draft['channels'] = '' if raw.lower() in ('تخطي', 'skip', '-') else raw
     context.user_data['state'] = 'await_mansub_qty'
-    avail = get_available_number_count()
+    avail = get_referral_session_count()
     ch_count = len([t for t in raw.split() if t.strip()]) if draft['channels'] else 0
     bp = int(get_setting('mansub_base_price') or '250')
     cp = int(get_setting('mansub_channel_price') or '50')
@@ -3239,7 +3249,7 @@ async def _mansub_handle_qty(update, context, user):
     except ValueError:
         await update.message.reply_text('⚠️ أرسل رقماً صحيحاً.')
         return
-    avail = get_available_number_count()
+    avail = get_referral_session_count()
     if qty < 1 or qty > avail:
         await update.message.reply_text(f'⚠️ الكمية خارج النطاق (1 – {avail}).')
         return
@@ -3337,10 +3347,8 @@ async def _run_mansub_order(order_id, bot_user, start_p, channels, quantity, req
         c.execute("UPDATE mandatory_sub_orders SET status='running' WHERE id=%s", (order_id,))
         rows = c.execute(
             "SELECT id,phone_number,session_string FROM number_stock"
-            " WHERE session_string IS NOT NULL AND deleted_at IS NULL AND assigned_to IS NULL"
-            " AND ever_sold IS NOT TRUE AND can_send_code IS TRUE AND last_authorized IS NOT FALSE"
-            " AND force_listed IS NOT TRUE AND forced_ref_excluded IS NOT TRUE"
-            f" AND NOT ({_sellable_filter_sql()})"
+            " WHERE session_string IS NOT NULL AND BTRIM(session_string) <> ''"
+            " AND deleted_at IS NULL"
             " ORDER BY id"
         ).fetchall()
     with db_conn() as _cm:
@@ -3690,7 +3698,7 @@ async def _show_forced_ref_confirmation(update, context, user):
         f'📌 `@{_bu_f}` | كود: {_code_f}{ch_line}\n'
         f'🔢 {qty} حساب\n'
         f'{cost_line}\n\n'
-        f'⚡ الحسابات المستخدمة: غير معروضة وغير مباعة فقط\n'
+        f'⚡ الحسابات المستخدمة: كل رقم لديه جلسة محفوظة لدى البوت، مباعاً كان أو غير مباع\n'
         f'💡 الفاشلة: تُعوَّض دائماً | المكررة: تُعوَّض بالنجوم فقط',
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=InlineKeyboardMarkup([
@@ -4163,9 +4171,8 @@ async def _run_forced_ref_order(order_id, bot_user, start_p, channels, quantity,
         c.execute("UPDATE forced_ref_orders SET status='running' WHERE id=%s", (order_id,))
         rows = c.execute(
             "SELECT id,phone_number,session_string FROM number_stock"
-            " WHERE session_string IS NOT NULL AND deleted_at IS NULL AND assigned_to IS NULL"
-            " AND ever_sold IS NOT TRUE AND can_send_code IS TRUE AND last_authorized IS NOT FALSE"
-            " AND frozen_at IS NULL AND forced_ref_excluded IS NOT TRUE"
+            " WHERE session_string IS NOT NULL AND BTRIM(session_string) <> ''"
+            " AND deleted_at IS NULL"
             " ORDER BY id"
         ).fetchall()
         # جلب القنوات الإجبارية العامة للبوت — الحسابات تنضم إليها أولاً قبل الضغط على الرابط
