@@ -217,7 +217,7 @@ _allow_5min_phones = {}  # phone_number -> {"until": float, "used": bool}
 _permanently_allowed_phones = set()  # أرقام فيها جلسة خارجية مسموح لها بالبقاء للأبد
 _OWN_BOT_USERNAME: str = ""          # يُضبط عند الإقلاع — يُستخدم لتخطي الإحالة الذاتية
 JUSTANOTHERPANEL_API_URL = "https://justanotherpanel.com/api/v2"
-SMMFOLLOWS_API_URL       = "https://smmfollows.io/api/v2"
+SMMFOLLOWS_API_URL       = "https://smmfollows.com/api/v2"
 
 # ────────────────────────────────────────────────────────────
 # ────────────────────────────────────────────────────────────
@@ -8349,7 +8349,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     InlineKeyboardButton("🔑 كود الدخول", callback_data=f"buyer:request_code:{auto_nc_number}"),
                 ],
                 [InlineKeyboardButton("📷 باركود الرقم", callback_data=f"buyer:barcode:{auto_nc_number}")],
-                                [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
+                [InlineKeyboardButton("🚪 مغادرة البوت", callback_data=f"buyer:leave_account:{auto_nc_number}")],
+                [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
             ]
             await update.message.reply_text(
                 f"{'🧪 *كود تجريبي — الرقم سيبقى معروضاً للبيع*' if _IS_TEST_CODE else '✅ *تم! رقمك جاهز*'}\n\n"
@@ -14449,7 +14450,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     InlineKeyboardButton("🔑 كود الدخول", callback_data=f"buyer:request_code:{auto_number}"),
                 ],
                 [InlineKeyboardButton("📷 باركود الرقم", callback_data=f"buyer:barcode:{auto_number}")],
-                                [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
+                [InlineKeyboardButton("🚪 مغادرة البوت", callback_data=f"buyer:leave_account:{auto_number}")],
+                [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
             ]
             await q.edit_message_text(
                 f"✅ *تم شراء رقمك بنجاح!*\n\n"
@@ -14611,6 +14613,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     InlineKeyboardButton("\U0001f511 \u0643\u0648\u062f", callback_data="buyer:request_code:" + _mn_phone),
                     InlineKeyboardButton("\U0001f4f7 \u0628\u0627\u0631\u0643\u0648\u062f",  callback_data="buyer:barcode:"       + _mn_phone),
                 ])
+                _mn_kb.append([InlineKeyboardButton(
+                    "🚪 مغادرة البوت",
+                    callback_data="buyer:leave_account:" + _mn_phone
+                )])
         _mn_kb.append([InlineKeyboardButton("\U0001f519 \u0631\u062c\u0648\u0639", callback_data="main_menu")])
         _mn_total  = len(_mn_rows)
         _mn_active = _mn_total - _mn_kicked_count
