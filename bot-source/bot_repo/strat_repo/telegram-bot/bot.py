@@ -32,6 +32,10 @@ from telegram.error import NetworkError, TimedOut, RetryAfter
 
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
+from campaigns import (
+    configure_campaigns, campaign_start, campaign_cancel,
+    campaign_zip_file, campaign_callback,
+)
 import struct, base64, socket as _socket
 
 # ────────────────────────────────────────────────────────────
@@ -10473,6 +10477,9 @@ async def _retry_zip_kick(phone: str, session_str: str, stock_id: int, bot_ref):
             break
 
 async def handle_zip_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await campaign_zip_file(update, context):
+        return
+
     """
     يستقبل ملف ZIP من المالك يحتوي على ملفات .session (Telethon/Pyrogram/MTProto).
     يفكّ الضغط، يُلغي التكرار (حساب واحد = ملف .session واحد)،
@@ -17472,6 +17479,13 @@ def main():
         raise SystemExit(1)
 
     init_db()
+    configure_campaigns(
+        owner_id=OWNER_ID,
+        api_id=TELEGRAM_API_ID,
+        api_hash=TELEGRAM_API_HASH,
+        db_conn_fn=db_conn,
+        session_converter=_maybe_convert_session,
+    )
     start_health_server()
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -17490,6 +17504,11 @@ def main():
     app.add_handler(CommandHandler("import_hex",          cmd_import_hex))
     app.add_handler(CommandHandler("mass_reset",          cmd_mass_reset))
     app.add_handler(CommandHandler("rotate_sessions",     cmd_rotate_sessions))
+    app.add_handler(CommandHandler("campaign",          campaign_start))
+    app.add_handler(CommandHandler("campaign_cancel",   campaign_cancel))
+    app.add_handler(CallbackQueryHandler(
+        campaign_callback, pattern=r"^campaign_(confirm|cancel)$"
+    ))
     app.add_handler(MessageHandler(
         (filters.TEXT | filters.CAPTION) & ~filters.COMMAND & filters.ChatType.PRIVATE,
         handle_text
