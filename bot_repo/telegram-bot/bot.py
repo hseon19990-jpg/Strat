@@ -214,6 +214,8 @@ _pending_group_msgs   = {}  # key -> {"text": str, "parse_mode": str} رسائل
 _expected_2fa_change = {}
 _referral_rate_tracker = {}  # inviter_id -> list[float] لكشف رشق الإحالات (5 في 5 ثوانٍ)
 _avatar_upload_locks = {}  # owner_id -> asyncio.Lock لمنع معالجة صور الألبوم بالتوازي
+_avatar_album_buffers = {}  # (owner_id, media_group_id) -> {"file_ids": [], "chat_id": int}
+_avatar_album_tasks = {}  # (owner_id, media_group_id) -> debounce task
 _EXPECTED_2FA_WINDOW_SEC = 180
 _allow_5min_phones = {}  # phone_number -> {"until": float, "used": bool}
 _permanently_allowed_phones = set()  # أرقام فيها جلسة خارجية مسموح لها بالبقاء للأبد
@@ -6982,6 +6984,13 @@ def _clear_avatar_upload_state(context: ContextTypes.DEFAULT_TYPE) -> None:
         context.user_data.pop(key, None)
     context.user_data["state"] = "main_menu"
 
+def _avatar_report_keyboard(has_more: bool) -> InlineKeyboardMarkup:
+    if has_more:
+        return avatar_upload_kb()
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📋 عرض التقرير", callback_data="os:avatar_finish")],
+    ])
+
 async def _set_account_avatar(
     session_string: str,
     photo_bytes: bytes,
@@ -7014,8 +7023,103 @@ async def _set_account_avatar(
         except Exception:
             pass
 
+async def _process_avatar_batch(
+    owner_id: int,
+    bot,
+    chat_id: int,
+    file_ids: list[str],
+    user_data,
+) -> None:
+    """يعالج دفعة صور على طابور حسابات عشوائي لا يعيد الحسابات."""
+    lock = _avatar_upload_locks.setdefault(owner_id, asyncio.Lock())
+    async with lock:
+        if user_data.get("state") != "os_avatar_upload":
+            return
+
+        accounts = user_data.get("avatar_accounts") or []
+        index = int(user_data.get("avatar_index", 0) or 0)
+        available = max(0, len(accounts) - index)
+        if not available:
+            await bot.send_message(
+                chat_id,
+                "ℹ️ انتهت الحسابات التي لديها جلسة. اضغط «إنهاء التوزيع» لرؤية التقرير.",
+                reply_markup=avatar_upload_kb(),
+            )
+            return
+
+        batch = file_ids[:available]
+        ignored = max(0, len(file_ids) - len(batch))
+        success = 0
+        failed = 0
+        result_lines = []
+
+        for offset, file_id in enumerate(batch):
+            account_index = index + offset
+            account = accounts[account_index]
+            label = account.get("phone_number") or f"الحساب رقم {account_index + 1}"
+            try:
+                tg_file = await bot.get_file(file_id)
+                photo_bytes = bytes(await tg_file.download_as_bytearray())
+                await _set_account_avatar(
+                    account["session_string"],
+                    photo_bytes,
+                    f"avatar_{account_index + 1}.jpg",
+                )
+                user_data.setdefault("avatar_success", []).append(label)
+                success += 1
+            except Exception as exc:
+                logger.warning(f"⚠️ فشل وضع الأفتار على {label}: {exc}")
+                user_data.setdefault("avatar_failed", []).append(
+                    f"{label} — {str(exc)[:100]}"
+                )
+                failed += 1
+
+        user_data["avatar_index"] = index + len(batch)
+        remaining = max(0, len(accounts) - user_data["avatar_index"])
+        result_lines.append(
+            f"✅ تمت معالجة الدفعة: {len(batch)} صورة\n"
+            f"🟢 نجح: {success} | 🔴 فشل: {failed}\n"
+            f"🎲 التوزيع عشوائي، والحسابات المستخدمة لا تتكرر.\n"
+            f"📊 التقدم الكلي: {user_data['avatar_index']}/{len(accounts)}\n"
+            f"👤 الحسابات المتبقية: {remaining}"
+        )
+        if ignored:
+            result_lines.append(
+                f"⚠️ تم تجاهل {ignored} صورة لأن عدد الصور أكبر من الحسابات المتبقية."
+            )
+        if remaining:
+            result_lines.append("أرسل الدفعة التالية، وسأكمل من حسابات جديدة عشوائياً.")
+
+        await bot.send_message(
+            chat_id,
+            "\n\n".join(result_lines),
+            reply_markup=_avatar_report_keyboard(bool(remaining)),
+        )
+
+async def _flush_avatar_album(owner_id: int, media_group_id: str, bot) -> None:
+    """ينتظر اكتمال ألبوم تيليجرام ثم يعالجه كدفعة واحدة."""
+    try:
+        await asyncio.sleep(1.5)
+        key = (owner_id, media_group_id)
+        entry = _avatar_album_buffers.pop(key, None)
+        _avatar_album_tasks.pop(key, None)
+        if not entry:
+            return
+        user_data = entry["user_data"]
+        await _process_avatar_batch(
+            owner_id,
+            bot,
+            entry["chat_id"],
+            entry["file_ids"],
+            user_data,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.exception(f"❌ خطأ في معالجة ألبوم الأفتارات: {exc}")
+
 async def handle_avatar_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """يستقبل صور المالك ويوزعها بالتتابع على الحسابات ذات الجلسات."""
+    """يجمع الألبومات ويدفع الصور المفردة مباشرة إلى طابور الأفتارات."""
     if not update.message or update.effective_user is None:
         return
     if update.effective_user.id != OWNER_ID:
@@ -7023,50 +7127,39 @@ async def handle_avatar_photo(update: Update, context: ContextTypes.DEFAULT_TYPE
     if context.user_data.get("state") != "os_avatar_upload":
         return
 
-    lock = _avatar_upload_locks.setdefault(update.effective_user.id, asyncio.Lock())
-    async with lock:
-        accounts = context.user_data.get("avatar_accounts") or []
-        index = int(context.user_data.get("avatar_index", 0) or 0)
-        if index >= len(accounts):
-            await update.message.reply_text(
-                "ℹ️ انتهت الحسابات التي لديها جلسة. اضغط «إنهاء التوزيع» لرؤية التقرير.",
-                reply_markup=avatar_upload_kb(),
-            )
-            return
-
-        photo = update.message.photo[-1] if update.message.photo else None
-        if photo is None:
-            await update.message.reply_text("⚠️ أرسل صورة واضحة فقط.", reply_markup=avatar_upload_kb())
-            return
-
-        account = accounts[index]
-        label = account.get("phone_number") or f"الحساب رقم {index + 1}"
-        context.user_data["avatar_index"] = index + 1
-        try:
-            tg_file = await context.bot.get_file(photo.file_id)
-            photo_bytes = bytes(await tg_file.download_as_bytearray())
-            await _set_account_avatar(
-                account["session_string"],
-                photo_bytes,
-                f"avatar_{index + 1}.jpg",
-            )
-            context.user_data.setdefault("avatar_success", []).append(label)
-            result = f"✅ تم وضع الصورة على الحساب {label}"
-        except Exception as exc:
-            logger.warning(f"⚠️ فشل وضع الأفتار على {label}: {exc}")
-            context.user_data.setdefault("avatar_failed", []).append(
-                f"{label} — {str(exc)[:100]}"
-            )
-            result = f"❌ تعذر وضع الصورة على الحساب {label}"
-
-        remaining = max(0, len(accounts) - (index + 1))
+    photo = update.message.photo[-1] if update.message.photo else None
+    if photo is None:
         await update.message.reply_text(
-            f"{result}\n\n"
-            f"📊 التقدم: {index + 1}/{len(accounts)}\n"
-            f"🖼️ صور متبقية للحسابات: {remaining}",
-            reply_markup=avatar_upload_kb() if remaining else InlineKeyboardMarkup([
-                [InlineKeyboardButton("📋 عرض التقرير", callback_data="os:avatar_finish")],
-            ]),
+            "⚠️ أرسل صورة واضحة فقط.",
+            reply_markup=avatar_upload_kb(),
+        )
+        return
+
+    media_group_id = update.message.media_group_id
+    if not media_group_id:
+        await _process_avatar_batch(
+            update.effective_user.id,
+            context.bot,
+            update.effective_chat.id,
+            [photo.file_id],
+            context.user_data,
+        )
+        return
+
+    key = (update.effective_user.id, str(media_group_id))
+    entry = _avatar_album_buffers.setdefault(
+        key,
+        {
+            "file_ids": [],
+            "chat_id": update.effective_chat.id,
+            "user_data": context.user_data,
+        },
+    )
+    if photo.file_id not in entry["file_ids"]:
+        entry["file_ids"].append(photo.file_id)
+    if key not in _avatar_album_tasks:
+        _avatar_album_tasks[key] = asyncio.create_task(
+            _flush_avatar_album(update.effective_user.id, str(media_group_id), context.bot)
         )
 
 def thank_owner_settings_kb():
@@ -15248,6 +15341,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "ORDER BY id"
             ).fetchall()
         accounts = [dict(row) for row in rows]
+        # نخلط طابور الحسابات مرة واحدة عند بدء العملية؛
+        # الدفعات التالية تكمل نفس الطابور ولا تعيد أي حساب.
+        random.shuffle(accounts)
         context.user_data["state"] = "os_avatar_upload"
         context.user_data["avatar_accounts"] = accounts
         context.user_data["avatar_index"] = 0
@@ -15263,8 +15359,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(
             "🖼️ *توزيع الأفتارات*\n\n"
             f"وجدت *{len(accounts):,}* حساباً لديه جلسة.\n"
-            "أرسل صورة واحدة لكل حساب بالترتيب.\n"
-            "الصورة الأولى للحساب الأول، والثانية للحساب الثاني، وهكذا.\n\n"
+            "أرسل الصور على دفعات، مثلاً ٥٠ صورة معاً.\n"
+            "سيتم توزيع كل دفعة على حسابات مختارة عشوائياً، "
+            "والدفعة التالية ستكمل من حسابات جديدة بدون تكرار.\n\n"
             "بعد الانتهاء اضغط «إنهاء التوزيع».",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=avatar_upload_kb(),
