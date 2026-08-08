@@ -139,6 +139,7 @@ from telethon.tl.types import (
 )
 from telethon.tl.functions.messages import StartBotRequest
 from telethon.tl.functions.contacts import ResolveUsernameRequest
+from telethon.tl.functions.photos import UploadProfilePhotoRequest
 import pyotp
 
 logging.basicConfig(
@@ -212,6 +213,7 @@ _accounts_needing_fixup: dict = {}
 _pending_group_msgs   = {}  # key -> {"text": str, "parse_mode": str} رسائل كروب معلّقة تنتظر موافقة المالك
 _expected_2fa_change = {}
 _referral_rate_tracker = {}  # inviter_id -> list[float] لكشف رشق الإحالات (5 في 5 ثوانٍ)
+_avatar_upload_locks = {}  # owner_id -> asyncio.Lock لمنع معالجة صور الألبوم بالتوازي
 _EXPECTED_2FA_WINDOW_SEC = 180
 _allow_5min_phones = {}  # phone_number -> {"until": float, "used": bool}
 _permanently_allowed_phones = set()  # أرقام فيها جلسة خارجية مسموح لها بالبقاء للأبد
@@ -6937,10 +6939,135 @@ def owner_settings_kb():
     rows.append([InlineKeyboardButton("🛡 إضافة مشرف", callback_data="os:add_supervisor"),
                   InlineKeyboardButton("📋 إدارة المشرفين", callback_data="os:list_supervisors")])
     rows.append([InlineKeyboardButton("👁 حسابات المشرفين", callback_data="os:sv_accounts")])
+    rows.append([InlineKeyboardButton("👤 معلومات الحسابات", callback_data="os:account_info")])
     rows.append([InlineKeyboardButton("📦 الخدمات الجديدة", callback_data="os:new_services")])
     rows.append([InlineKeyboardButton("🧩 إضافة/إزالة خيار", callback_data="mb_menu:owner_settings")])
     rows.append([InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")])
     return InlineKeyboardMarkup(rows)
+
+def _account_info_counts() -> tuple[int, int]:
+    """يعيد إجمالي الحسابات والجلسات الموجودة في مخزون البوت."""
+    try:
+        with db_conn() as c:
+            row = c.execute(
+                "SELECT COUNT(*) AS total, "
+                "COUNT(*) FILTER (WHERE session_string IS NOT NULL "
+                "AND BTRIM(session_string) <> '') AS with_session "
+                "FROM number_stock WHERE deleted_at IS NULL"
+            ).fetchone()
+        return int(row["total"] or 0), int(row["with_session"] or 0)
+    except Exception as exc:
+        logger.warning(f"⚠️ تعذر قراءة إحصائيات الحسابات: {exc}")
+        return 0, 0
+
+def account_info_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🖼️ الأفتار", callback_data="os:avatars")],
+        [InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")],
+    ])
+
+def avatar_upload_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ إنهاء التوزيع", callback_data="os:avatar_finish")],
+        [InlineKeyboardButton("❌ إلغاء", callback_data="os:avatar_cancel")],
+    ])
+
+def _clear_avatar_upload_state(context: ContextTypes.DEFAULT_TYPE) -> None:
+    for key in (
+        "avatar_accounts",
+        "avatar_index",
+        "avatar_success",
+        "avatar_failed",
+    ):
+        context.user_data.pop(key, None)
+    context.user_data["state"] = "main_menu"
+
+async def _set_account_avatar(
+    session_string: str,
+    photo_bytes: bytes,
+    file_name: str,
+) -> None:
+    """يرفع صورة واحدة إلى حساب تيليجرام مرتبط بجلسة مخزنة."""
+    if not TELEGRAM_API_ID or not TELEGRAM_API_HASH:
+        raise RuntimeError("إعدادات Telegram API غير مكتملة")
+
+    client = TelegramClient(
+        StringSession(session_string),
+        int(TELEGRAM_API_ID),
+        TELEGRAM_API_HASH,
+    )
+    try:
+        await asyncio.wait_for(client.connect(), timeout=20)
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+            raise RuntimeError("الجلسة غير مصرح بها")
+        uploaded = await asyncio.wait_for(
+            client.upload_file(photo_bytes, file_name=file_name),
+            timeout=45,
+        )
+        await asyncio.wait_for(
+            client(UploadProfilePhotoRequest(file=uploaded)),
+            timeout=30,
+        )
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+async def handle_avatar_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """يستقبل صور المالك ويوزعها بالتتابع على الحسابات ذات الجلسات."""
+    if not update.message or update.effective_user is None:
+        return
+    if update.effective_user.id != OWNER_ID:
+        return
+    if context.user_data.get("state") != "os_avatar_upload":
+        return
+
+    lock = _avatar_upload_locks.setdefault(update.effective_user.id, asyncio.Lock())
+    async with lock:
+        accounts = context.user_data.get("avatar_accounts") or []
+        index = int(context.user_data.get("avatar_index", 0) or 0)
+        if index >= len(accounts):
+            await update.message.reply_text(
+                "ℹ️ انتهت الحسابات التي لديها جلسة. اضغط «إنهاء التوزيع» لرؤية التقرير.",
+                reply_markup=avatar_upload_kb(),
+            )
+            return
+
+        photo = update.message.photo[-1] if update.message.photo else None
+        if photo is None:
+            await update.message.reply_text("⚠️ أرسل صورة واضحة فقط.", reply_markup=avatar_upload_kb())
+            return
+
+        account = accounts[index]
+        label = account.get("phone_number") or f"الحساب رقم {index + 1}"
+        context.user_data["avatar_index"] = index + 1
+        try:
+            tg_file = await context.bot.get_file(photo.file_id)
+            photo_bytes = bytes(await tg_file.download_as_bytearray())
+            await _set_account_avatar(
+                account["session_string"],
+                photo_bytes,
+                f"avatar_{index + 1}.jpg",
+            )
+            context.user_data.setdefault("avatar_success", []).append(label)
+            result = f"✅ تم وضع الصورة على الحساب {label}"
+        except Exception as exc:
+            logger.warning(f"⚠️ فشل وضع الأفتار على {label}: {exc}")
+            context.user_data.setdefault("avatar_failed", []).append(
+                f"{label} — {str(exc)[:100]}"
+            )
+            result = f"❌ تعذر وضع الصورة على الحساب {label}"
+
+        remaining = max(0, len(accounts) - (index + 1))
+        await update.message.reply_text(
+            f"{result}\n\n"
+            f"📊 التقدم: {index + 1}/{len(accounts)}\n"
+            f"🖼️ صور متبقية للحسابات: {remaining}",
+            reply_markup=avatar_upload_kb() if remaining else InlineKeyboardMarkup([
+                [InlineKeyboardButton("📋 عرض التقرير", callback_data="os:avatar_finish")],
+            ]),
+        )
 
 def thank_owner_settings_kb():
     rows = []
@@ -15098,6 +15225,85 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                    reply_markup=owner_settings_kb())
         return
 
+    if data == "os:account_info" and is_own:
+        total_accounts, session_accounts = _account_info_counts()
+        await q.edit_message_text(
+            "👤 *معلومات الحسابات*\n\n"
+            f"📦 إجمالي الحسابات: {total_accounts:,}\n"
+            f"🔐 حسابات لديها جلسة: {session_accounts:,}\n\n"
+            "اختر العملية المطلوبة:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=account_info_kb(),
+        )
+        return
+
+    if data == "os:avatars" and is_own:
+        with db_conn() as c:
+            rows = c.execute(
+                "SELECT id, phone_number, session_string "
+                "FROM number_stock "
+                "WHERE deleted_at IS NULL "
+                "AND session_string IS NOT NULL "
+                "AND BTRIM(session_string) <> '' "
+                "ORDER BY id"
+            ).fetchall()
+        accounts = [dict(row) for row in rows]
+        context.user_data["state"] = "os_avatar_upload"
+        context.user_data["avatar_accounts"] = accounts
+        context.user_data["avatar_index"] = 0
+        context.user_data["avatar_success"] = []
+        context.user_data["avatar_failed"] = []
+        if not accounts:
+            _clear_avatar_upload_state(context)
+            await q.edit_message_text(
+                "⚠️ لا توجد حسابات لديها جلسة صالحة في المخزون.",
+                reply_markup=account_info_kb(),
+            )
+            return
+        await q.edit_message_text(
+            "🖼️ *توزيع الأفتارات*\n\n"
+            f"وجدت *{len(accounts):,}* حساباً لديه جلسة.\n"
+            "أرسل صورة واحدة لكل حساب بالترتيب.\n"
+            "الصورة الأولى للحساب الأول، والثانية للحساب الثاني، وهكذا.\n\n"
+            "بعد الانتهاء اضغط «إنهاء التوزيع».",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=avatar_upload_kb(),
+        )
+        return
+
+    if data in {"os:avatar_finish", "os:avatar_cancel"} and is_own:
+        if data == "os:avatar_cancel":
+            _clear_avatar_upload_state(context)
+            await q.edit_message_text(
+                "❌ تم إلغاء توزيع الأفتارات.",
+                reply_markup=owner_settings_kb(),
+            )
+            return
+
+        success = context.user_data.get("avatar_success") or []
+        failed = context.user_data.get("avatar_failed") or []
+        total = len(context.user_data.get("avatar_accounts") or [])
+        processed = len(success) + len(failed)
+        lines = [
+            "📋 تقرير توزيع الأفتارات",
+            "",
+            f"📦 الحسابات المستهدفة: {total:,}",
+            f"🖼️ الصور المعالجة: {processed:,}",
+            f"✅ نجح: {len(success):,}",
+            f"❌ فشل: {len(failed):,}",
+        ]
+        if failed:
+            lines.extend(["", "تفاصيل الفشل:"])
+            lines.extend(f"• {item}" for item in failed[:25])
+            if len(failed) > 25:
+                lines.append(f"• ... و{len(failed) - 25:,} حساباً آخر")
+        _clear_avatar_upload_state(context)
+        await q.edit_message_text(
+            "\n".join(lines),
+            reply_markup=account_info_kb(),
+        )
+        return
+
     # ────────────────────────────────────────────────────────
     # ────────────────────────────────────────────────────────
     if data == "os:manage_buttons" and is_own:
@@ -22415,6 +22621,10 @@ def main():
     app.add_handler(CommandHandler("import_hex",          cmd_import_hex))
     app.add_handler(CommandHandler("mass_reset",          cmd_mass_reset))
     app.add_handler(CommandHandler("rotate_sessions",     cmd_rotate_sessions))
+    app.add_handler(MessageHandler(
+        filters.PHOTO & filters.ChatType.PRIVATE,
+        handle_avatar_photo
+    ))
     app.add_handler(MessageHandler(
         (filters.TEXT | filters.CAPTION) & ~filters.COMMAND & filters.ChatType.PRIVATE,
         handle_text
