@@ -7984,8 +7984,9 @@ async def _publish_account_story(
                     peer=await client.get_me(),
                     media=media,
                     # Stories created from Details → Stories → Publish Story
-                    # must never use an archived/restricted audience.
+                    # must be public and pinned to the profile after expiry.
                     privacy_rules=_public_story_privacy_rules(),
+                    pinned=True,
                     random_id=random.randint(-(1 << 63), (1 << 63) - 1),
                 )
             ),
