@@ -7011,6 +7011,9 @@ def account_info_kb() -> InlineKeyboardMarkup:
             InlineKeyboardButton("📖 الستوري", callback_data="os:stories"),
             InlineKeyboardButton("📊 نتائج الستوري", callback_data="os:media_report:stories:summary"),
         ],
+        [
+            InlineKeyboardButton("🌍 جعل الستوريات عامة", callback_data="os:make_stories_public"),
+        ],
         [InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")],
     ])
 
@@ -7584,6 +7587,162 @@ _STORY_VIDEO_EXTENSIONS = {
 def _public_story_privacy_rules() -> list[InputPrivacyValueAllowAll]:
     """Return a fresh privacy rule list that makes every new story public."""
     return [InputPrivacyValueAllowAll()]
+
+async def _story_ids_for_account(client: TelegramClient, me) -> list[int]:
+    """Collect active and archived story IDs without returning duplicate IDs."""
+    story_ids: list[int] = []
+    seen: set[int] = set()
+
+    def add_story_ids(items) -> None:
+        for item in items or []:
+            story_id = getattr(item, "id", None)
+            if isinstance(story_id, int) and story_id > 0 and story_id not in seen:
+                seen.add(story_id)
+                story_ids.append(story_id)
+
+    active = await client(
+        functions.stories.GetPeerStoriesRequest(peer=me)
+    )
+    add_story_ids(getattr(active, "stories", None))
+
+    # Telegram returns the archive in pages. The next page starts at the
+    # smallest story ID from the previous page.
+    archive_offset = 0
+    visited_offsets: set[int] = set()
+    archive_limit = 100
+    while archive_offset not in visited_offsets:
+        visited_offsets.add(archive_offset)
+        archive = await client(
+            functions.stories.GetStoriesArchiveRequest(
+                peer=me,
+                offset_id=archive_offset,
+                limit=archive_limit,
+            )
+        )
+        page = getattr(archive, "stories", None) or []
+        page_ids = [
+            story_id
+            for story_id in (getattr(item, "id", None) for item in page)
+            if isinstance(story_id, int) and story_id > 0
+        ]
+        if not page_ids:
+            break
+        add_story_ids(page)
+        next_offset = min(page_ids)
+        if next_offset == archive_offset or next_offset in visited_offsets:
+            break
+        archive_offset = next_offset
+        if len(page) < archive_limit:
+            break
+
+    return story_ids
+
+async def _make_account_stories_public(session_string: str) -> tuple[int, int, list[str]]:
+    """Make every accessible active and archived story public for one account."""
+    if not TELEGRAM_API_ID or not TELEGRAM_API_HASH:
+        raise RuntimeError("إعدادات Telegram API غير مكتملة")
+
+    client = TelegramClient(
+        StringSession(session_string),
+        int(TELEGRAM_API_ID),
+        TELEGRAM_API_HASH,
+    )
+    success = 0
+    failed: list[str] = []
+    try:
+        await asyncio.wait_for(client.connect(), timeout=20)
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+            raise RuntimeError("الجلسة غير مصرح بها")
+
+        me = await client.get_me()
+        story_ids = await asyncio.wait_for(
+            _story_ids_for_account(client, me),
+            timeout=45,
+        )
+        for story_id in story_ids:
+            try:
+                await asyncio.wait_for(
+                    client(
+                        functions.stories.EditStoryRequest(
+                            peer=me,
+                            id=story_id,
+                            privacy_rules=_public_story_privacy_rules(),
+                        )
+                    ),
+                    timeout=30,
+                )
+                success += 1
+                await asyncio.sleep(0.15)
+            except Exception as exc:
+                failed.append(f"#{story_id}: {str(exc)[:100]}")
+        return len(story_ids), success, failed
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+async def _make_all_stories_public_job(
+    bot,
+    chat_id: int,
+    accounts: list[dict],
+    user_data: dict,
+) -> None:
+    """Process all stored accounts sequentially and send the owner a report."""
+    account_success: list[str] = []
+    account_failed: list[str] = []
+    total_stories = 0
+    public_stories = 0
+
+    try:
+        for index, account in enumerate(accounts, 1):
+            label = account.get("phone_number") or f"الحساب رقم {index}"
+            try:
+                total, success, failures = await _make_account_stories_public(
+                    account["session_string"]
+                )
+                total_stories += total
+                public_stories += success
+                if failures:
+                    account_failed.append(
+                        f"{label} — {success}/{total} نجحت: {'؛ '.join(failures[:3])}"
+                    )
+                else:
+                    account_success.append(f"{label} — {success} ستوري")
+            except Exception as exc:
+                account_failed.append(f"{label} — {str(exc)[:120]}")
+            await asyncio.sleep(0.4)
+
+        lines = [
+            "🌍 تقرير جعل الستوريات عامة",
+            "",
+            f"📦 الحسابات المعالجة: {len(accounts):,}",
+            f"📖 إجمالي الستوريات التي تم العثور عليها: {total_stories:,}",
+            f"✅ تم جعلها عامة: {public_stories:,}",
+            f"❌ الحسابات التي لديها فشل: {len(account_failed):,}",
+        ]
+        if account_failed:
+            lines.extend(["", "تفاصيل الفشل:"])
+            lines.extend(f"• {item}" for item in account_failed[:25])
+            if len(account_failed) > 25:
+                lines.append(f"• ... و{len(account_failed) - 25:,} حساباً آخر")
+        if not accounts:
+            lines.append("\nلا توجد حسابات لديها جلسة صالحة.")
+
+        await bot.send_message(
+            chat_id,
+            "\n".join(lines),
+            reply_markup=account_info_kb(),
+        )
+    except Exception:
+        logger.exception("❌ فشل تقرير جعل الستوريات عامة")
+        await bot.send_message(
+            chat_id,
+            "❌ تعذر إكمال عملية جعل الستوريات عامة. راجع السجل وحاول مرة أخرى.",
+            reply_markup=account_info_kb(),
+        )
+    finally:
+        user_data.pop("make_stories_public_running", None)
 
 def _clear_story_upload_state(context: ContextTypes.DEFAULT_TYPE) -> None:
     for key in (
@@ -16060,6 +16219,42 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "اختر العملية المطلوبة:",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=account_info_kb(),
+        )
+        return
+
+    if data == "os:make_stories_public" and is_own:
+        if context.user_data.get("make_stories_public_running"):
+            await q.answer("العملية جارية بالفعل، انتظر التقرير النهائي.", show_alert=True)
+            return
+
+        with db_conn() as c:
+            rows = c.execute(
+                "SELECT phone_number, session_string "
+                "FROM number_stock "
+                "WHERE deleted_at IS NULL "
+                "AND session_string IS NOT NULL "
+                "AND BTRIM(session_string) <> '' "
+                "ORDER BY id"
+            ).fetchall()
+        accounts = [dict(row) for row in rows]
+        context.user_data["make_stories_public_running"] = True
+        await q.edit_message_text(
+            "🌍 *جعل الستوريات عامة*\n\n"
+            f"سيتم فحص *{len(accounts):,}* حساباً، ثم تعديل الستوريات الحالية "
+            "والمؤرشفة لتصبح متاحة للجميع.\n\n"
+            "بدأت العملية، سيصلك تقرير عند الانتهاء.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⏳ العملية جارية...", callback_data="os:account_info")]
+            ]),
+        )
+        asyncio.create_task(
+            _make_all_stories_public_job(
+                context.bot,
+                q.message.chat_id,
+                accounts,
+                context.user_data,
+            )
         )
         return
 
