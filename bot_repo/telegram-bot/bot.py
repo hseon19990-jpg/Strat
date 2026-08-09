@@ -509,6 +509,15 @@ def init_db():
               created_at          TEXT DEFAULT CURRENT_TIMESTAMP
           )""")
           c.execute("""
+          CREATE TABLE IF NOT EXISTS number_star_purchases (
+              telegram_payment_id TEXT PRIMARY KEY,
+              user_id             BIGINT NOT NULL,
+              stars               INTEGER NOT NULL,
+              phone_number        TEXT,
+              status              TEXT DEFAULT 'pending',
+              created_at          TIMESTAMPTZ DEFAULT NOW()
+          )""")
+          c.execute("""
           CREATE TABLE IF NOT EXISTS point_transfers (
               id         SERIAL PRIMARY KEY,
               from_user  BIGINT,
@@ -712,6 +721,7 @@ def init_db():
               ('star_to_points', '250'),
               ('exchange_star_rate', '2000'),
               ('telegram_number_cost', '5000'),
+              ('telegram_number_stars', '18'),
               ('transfer_fee_percent', '1'),
               ('mandatory_channel_cost', '200'),
               ('internal_channel_cost', '100'),
@@ -2115,7 +2125,7 @@ def assign_next_number(user_id: int):
         already_sold = c.execute(
             "SELECT prize_value FROM prize_exchanges "
             "WHERE user_id=%s AND status IN ('completed','duplicate_compensated') "
-            "AND prize_type IN ('telegram_number','telegram_number_code') "
+            "AND prize_type IN ('telegram_number','telegram_number_code','telegram_number_stars') "
             "AND prize_value NOT IN ('number','manual')",
             (user_id,)
         ).fetchall()
@@ -2173,7 +2183,7 @@ async def assign_verified_number(user_id: int, bot=None) -> dict | None:
         _already = _dup_c.execute(
             "SELECT prize_value FROM prize_exchanges "
             "WHERE user_id=%s AND status IN ('completed','duplicate_compensated') "
-            "AND prize_type IN ('telegram_number','telegram_number_code') "
+            "AND prize_type IN ('telegram_number','telegram_number_code','telegram_number_stars') "
             "AND prize_value NOT IN ('number','manual')",
             (user_id,)
         ).fetchall()
@@ -6007,7 +6017,7 @@ async def compensate_duplicate_sales_job(context: ContextTypes.DEFAULT_TYPE):
                     array_agg(points_cost ORDER BY created_at ASC) AS costs,
                     array_agg(order_code  ORDER BY created_at ASC) AS codes
                 FROM prize_exchanges
-                WHERE prize_type IN ('telegram_number', 'telegram_number_code')
+                WHERE prize_type IN ('telegram_number', 'telegram_number_code', 'telegram_number_stars')
                   AND prize_value NOT IN ('number', 'manual')
                   AND status = 'completed'
                 GROUP BY prize_value
@@ -6302,7 +6312,8 @@ BUILTIN_DEFAULTS = {
         ("🔗 تعديل نقاط الدعوة", "os:edit_referral", 2),
         ("⭐ سعر النجمة شحن", "os:edit_star_rate", 2), ("🏆 سعر نجمة الجوائز", "os:edit_exchange_rate", 2),
         ("📦 باقات الاستبدال بنجوم", "os:manage_star_packages", 1),
-        ("📱 سعر رقم تيلغرام", "os:edit_number_cost", 2), ("💌 رسالة الترحيب", "os:edit_welcome", 2),
+        ("📱 سعر رقم تيلغرام", "os:edit_number_cost", 2),
+        ("⭐ سعر رقم بالنجوم", "os:edit_number_stars", 2), ("💌 رسالة الترحيب", "os:edit_welcome", 2),
         ("📥 مخزون أرقام تيلغرام", "os:manage_numbers", 2),
         ("🎟 أكواد شراء رقم", "os:manage_num_codes", 2),
         ("🔄 سعر تمويل داخلي", "os:edit_internal_cost", 2),
@@ -8230,6 +8241,7 @@ def exchange_kb():
     rows = [
         [InlineKeyboardButton("⭐ استبدال نقاط بنجوم", callback_data="exchange:stars")],
         [InlineKeyboardButton("📱 شراء رقم تيلغرام",  callback_data="exchange:number")],
+        [InlineKeyboardButton("📱 شراء رقم بالنجوم", callback_data="exchange:number_stars")],
         [InlineKeyboardButton("🎟 شراء عبر كود",       callback_data="exchange:num_code")],
     ]
     for p in prizes:
@@ -11306,7 +11318,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "FROM prize_exchanges pe "
                 "LEFT JOIN users u ON u.user_id = pe.user_id "
                 "WHERE UPPER(pe.order_code) = %s "
-                "  AND pe.prize_type IN ('telegram_number','telegram_number_code')",
+                "  AND pe.prize_type IN ('telegram_number','telegram_number_code','telegram_number_stars')",
                 (search_code,)
             ).fetchone()
             ns = None
@@ -11388,7 +11400,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "FROM number_stock ns "
                 "LEFT JOIN prize_exchanges pe ON pe.prize_value = ns.phone_number "
                 "     AND pe.status = 'completed' "
-                "     AND pe.prize_type IN ('telegram_number','telegram_number_code') "
+                "     AND pe.prize_type IN ('telegram_number','telegram_number_code','telegram_number_stars') "
                 "LEFT JOIN users u ON u.user_id = ns.assigned_to "
                 "WHERE ns.phone_number LIKE %s "
                 "ORDER BY ns.id DESC LIMIT 5",
@@ -11465,7 +11477,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "FROM number_stock ns "
                 "LEFT JOIN prize_exchanges pe ON pe.prize_value = ns.phone_number "
                 "     AND pe.status = 'completed' "
-                "     AND pe.prize_type IN ('telegram_number','telegram_number_code') "
+                "     AND pe.prize_type IN ('telegram_number','telegram_number_code','telegram_number_stars') "
                 "LEFT JOIN users u ON u.user_id = pe.user_id "
                 "WHERE ns.phone_number LIKE %s AND ns.ever_sold IS TRUE",
                 (f"%{query_phone}%",)
@@ -11525,6 +11537,22 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         set_setting("telegram_number_cost", str(val))
         await update.message.reply_text(f"✅ سعر رقم تيلغرام = {val} نقطة.", reply_markup=owner_settings_kb())
+        context.user_data["state"] = "main_menu"
+        return
+
+    if is_own and state == "os_await_number_stars":
+        try:
+            val = int(text)
+            if val <= 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل عدداً صحيحاً أكبر من صفر.")
+            return
+        set_setting("telegram_number_stars", str(val))
+        await update.message.reply_text(
+            f"✅ سعر شراء رقم تيلغرام بالنجوم = {val} نجمة.",
+            reply_markup=owner_settings_kb()
+        )
         context.user_data["state"] = "main_menu"
         return
 
@@ -16059,6 +16087,31 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if data == "exchange:number_stars":
+        if not is_number_exchange_on():
+            await q.answer("🔒 شراء الأرقام مغلق حالياً. تواصل مع المالك.", show_alert=True)
+            return
+        stars = int(get_setting("telegram_number_stars") or "18")
+        if stars <= 0:
+            await q.answer("⚠️ شراء الرقم بالنجوم غير متاح حالياً.", show_alert=True)
+            return
+        await q.edit_message_text(
+            f"📱 *شراء رقم تيلغرام بالنجوم*\n\n"
+            f"⭐ السعر: *{stars} نجمة*\n"
+            f"سيتم تسليم الرقم تلقائياً بعد نجاح الدفع.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        await context.bot.send_invoice(
+            chat_id=user.id,
+            title="شراء رقم تيلغرام",
+            description=f"رقم تيلغرام جاهز مقابل {stars} نجمة",
+            payload=f"number_stars:{user.id}:{stars}",
+            provider_token="",
+            currency="XTR",
+            prices=[LabeledPrice("رقم تيلغرام", stars)],
+        )
+        return
+
     if data == "exchange:num_code":
         if not is_number_exchange_on():
             await q.answer("🔒 شراء الأرقام مغلق حالياً. تواصل مع المالك.", show_alert=True)
@@ -16124,7 +16177,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 " FROM prize_exchanges pe"
                 " LEFT JOIN number_stock ns ON ns.phone_number = pe.prize_value"
                 " WHERE pe.user_id = %s AND pe.status = 'completed'"
-                " AND pe.prize_type IN ('telegram_number', 'telegram_number_code')"
+                " AND pe.prize_type IN ('telegram_number', 'telegram_number_code', 'telegram_number_stars')"
                 " ORDER BY pe.created_at DESC",
                 (user.id,)
             ).fetchall()
@@ -17759,7 +17812,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 phone = row["phone_number"]
                 pe = c.execute(
                     "SELECT id, user_id, points_cost, compensated_at FROM prize_exchanges "
-                    "WHERE prize_value=%s AND prize_type IN ('telegram_number','telegram_number_code') "
+                    "WHERE prize_value=%s AND prize_type IN ('telegram_number','telegram_number_code','telegram_number_stars') "
                     "AND status='completed' ORDER BY id DESC LIMIT 1",
                     (phone,)
                 ).fetchone()
@@ -20736,6 +20789,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(f"📱 سعر رقم تيلغرام الحالي: {cur} نقطة\n\nأرسل القيمة الجديدة:")
         return
 
+    if data == "os:edit_number_stars" and is_own:
+        context.user_data["state"] = "os_await_number_stars"
+        cur = get_setting("telegram_number_stars") or "18"
+        await q.edit_message_text(
+            f"⭐ سعر شراء رقم تيلغرام بالنجوم حالياً: {cur} نجمة\n\n"
+            "أرسل السعر الجديد بالنجوم:"
+        )
+        return
+
     # ─── إعدادات النجوم للاشتراك الإجباري ───
     if data == "os:edit_mstars_min" and is_own:
         cur = get_setting("mandatory_stars_min_members") or "50"
@@ -22616,7 +22678,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ).fetchone()
             was_buyer = c_lv.execute(
                 "SELECT id FROM prize_exchanges WHERE user_id=%s AND prize_value=%s "
-                "AND prize_type IN ('telegram_number','telegram_number_code') AND status='completed'",
+                "AND prize_type IN ('telegram_number','telegram_number_code','telegram_number_stars') AND status='completed'",
                 (user.id, leave_phone)
             ).fetchone()
         if not row_lv or (row_lv["assigned_to"] != user.id and not was_buyer):
@@ -22723,7 +22785,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "FROM number_stock ns "
                 "LEFT JOIN prize_exchanges pe ON pe.prize_value = ns.phone_number "
                 "     AND pe.status = 'completed' "
-                "     AND pe.prize_type IN ('telegram_number','telegram_number_code') "
+                "     AND pe.prize_type IN ('telegram_number','telegram_number_code','telegram_number_stars') "
                 "LEFT JOIN users u ON u.user_id = ns.assigned_to "
                 "WHERE ns.assigned_to IS NOT NULL AND ns.deleted_at IS NULL "
                 "ORDER BY ns.assigned_at DESC LIMIT 50"
@@ -22736,7 +22798,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "FROM number_stock ns "
                 "LEFT JOIN prize_exchanges pe ON pe.prize_value = ns.phone_number "
                 "     AND pe.status = 'completed' "
-                "     AND pe.prize_type IN ('telegram_number','telegram_number_code') "
+                "     AND pe.prize_type IN ('telegram_number','telegram_number_code','telegram_number_stars') "
                 "LEFT JOIN users u ON u.user_id = pe.user_id "
                 "WHERE ns.ever_sold IS TRUE AND ns.assigned_to IS NULL AND ns.deleted_at IS NULL "
                 "ORDER BY pe.created_at DESC NULLS LAST LIMIT 30"
@@ -22745,7 +22807,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             dupes_check = c.execute(
                 "SELECT prize_value, COUNT(*) AS cnt "
                 "FROM prize_exchanges "
-                "WHERE prize_type IN ('telegram_number','telegram_number_code') "
+                "WHERE prize_type IN ('telegram_number','telegram_number_code','telegram_number_stars') "
                 "  AND prize_value NOT IN ('number','manual') "
                 "  AND status IN ('completed','duplicate_compensated') "
                 "GROUP BY prize_value HAVING COUNT(*) > 1"
@@ -22829,7 +22891,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "FROM number_stock ns "
                 "LEFT JOIN prize_exchanges pe ON pe.prize_value = ns.phone_number "
                 "     AND pe.status = 'completed' "
-                "     AND pe.prize_type IN ('telegram_number','telegram_number_code') "
+                "     AND pe.prize_type IN ('telegram_number','telegram_number_code','telegram_number_stars') "
                 "LEFT JOIN users u ON u.user_id = ns.assigned_to "
                 "WHERE ns.id=%s",
                 (stock_id,)
@@ -23099,7 +23161,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "FROM prize_exchanges pe "
                 "LEFT JOIN users u ON u.user_id = pe.user_id "
                 "WHERE pe.status = 'pending' "
-                "  AND pe.prize_type IN ('telegram_number','telegram_number_code') "
+                "  AND pe.prize_type IN ('telegram_number','telegram_number_code','telegram_number_stars') "
                 "  AND pe.points_cost > 0 "
                 "  AND pe.created_at < NOW() - INTERVAL '2 hours' "
                 "ORDER BY pe.created_at ASC LIMIT 30"
@@ -23111,7 +23173,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "FROM prize_exchanges pe "
                 "LEFT JOIN users u ON u.user_id = pe.user_id "
                 "WHERE pe.compensated_at IS NOT NULL "
-                "  AND pe.prize_type IN ('telegram_number','telegram_number_code') "
+                "  AND pe.prize_type IN ('telegram_number','telegram_number_code','telegram_number_stars') "
                 "ORDER BY pe.compensated_at DESC LIMIT 10"
             ).fetchall()
 
@@ -23204,7 +23266,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "SELECT id, user_id, points_cost, order_code "
                 "FROM prize_exchanges "
                 "WHERE status = 'pending' "
-                "  AND prize_type IN ('telegram_number','telegram_number_code') "
+                "  AND prize_type IN ('telegram_number','telegram_number_code','telegram_number_stars') "
                 "  AND points_cost > 0 "
                 "  AND compensated_at IS NULL "
                 "  AND created_at < NOW() - INTERVAL '2 hours'"
@@ -23340,6 +23402,14 @@ async def pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if query.from_user.id == uid_in_payload and actual_stars == expected_stars:
                     valid = True
 
+        if payload.startswith("number_stars:"):
+            parts = payload.split(":")
+            if len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
+                uid_in_payload = int(parts[1])
+                expected_stars = int(parts[2])
+                if query.from_user.id == uid_in_payload and query.total_amount == expected_stars:
+                    valid = True
+
         # ─── الاشتراك الإجباري بالنجوم ───
         if payload.startswith("fund_mandatory:"):
             parts = payload.split(":")
@@ -23460,6 +23530,143 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
             use_ai=use_ai, payment_method='stars', cost_stars=total_stars,
             delay_seconds=delay_seconds
         ))
+
+    # ─── شراء رقم تيلغرام بالنجوم ───
+    elif payload.startswith("number_stars:"):
+        parts = payload.split(":")
+        if len(parts) != 3 or not parts[1].isdigit() or not parts[2].isdigit():
+            await update.message.reply_text("⚠️ بيانات الدفع غير صالحة.", reply_markup=main_menu_kb(is_own))
+            return
+
+        payload_user_id = int(parts[1])
+        stars = int(parts[2])
+        charge_id = payment.telegram_payment_charge_id
+        if payload_user_id != user.id or payment.total_amount != stars:
+            logger.error(
+                f"❌ بيانات شراء رقم بالنجوم غير متطابقة: user={user.id}, "
+                f"payload_user={payload_user_id}, paid={payment.total_amount}, expected={stars}"
+            )
+            await update.message.reply_text("⚠️ تعذّر التحقق من عملية الدفع.", reply_markup=main_menu_kb(is_own))
+            return
+
+        # يمنع تسليم رقمين إذا أعاد تيليغرام إرسال إشعار الدفع.
+        with db_conn() as c:
+            c.execute(
+                "INSERT INTO number_star_purchases "
+                "(telegram_payment_id,user_id,stars,status) VALUES (%s,%s,%s,'pending') "
+                "ON CONFLICT (telegram_payment_id) DO NOTHING",
+                (charge_id, user.id, stars)
+            )
+            claim = c.execute(
+                "UPDATE number_star_purchases SET status='processing' "
+                "WHERE telegram_payment_id=%s AND status='pending' RETURNING telegram_payment_id",
+                (charge_id,)
+            ).fetchone()
+            existing = c.execute(
+                "SELECT status, phone_number FROM number_star_purchases WHERE telegram_payment_id=%s",
+                (charge_id,)
+            ).fetchone()
+        if not claim:
+            if existing and existing["status"] == "completed":
+                await update.message.reply_text(
+                    f"✅ تم تسجيل عملية شراء هذا الرقم مسبقاً: `{existing['phone_number']}`",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=main_menu_kb(is_own)
+                )
+            elif existing and existing["status"] == "refunded":
+                await update.message.reply_text(
+                    "ℹ️ تمت إعادة قيمة هذه العملية لأن المخزون لم يكن متاحاً.",
+                    reply_markup=main_menu_kb(is_own)
+                )
+            else:
+                await update.message.reply_text("⏳ تتم معالجة عملية الدفع حالياً، يرجى الانتظار.")
+            return
+
+        auto = await assign_verified_number(user.id, bot=context.bot)
+        if not auto:
+            refunded = False
+            try:
+                await context.bot.refund_star_payment(
+                    user_id=user.id,
+                    telegram_payment_charge_id=charge_id
+                )
+                refunded = True
+            except Exception as refund_err:
+                logger.error(f"❌ تعذّر إعادة نجوم شراء الرقم {charge_id}: {refund_err}")
+            with db_conn() as c:
+                c.execute(
+                    "UPDATE number_star_purchases SET status=%s WHERE telegram_payment_id=%s",
+                    ("refunded" if refunded else "refund_failed", charge_id)
+                )
+            await update.message.reply_text(
+                "😔 لا يتوفر حالياً رقم صالح في المخزون.\n"
+                + ("✅ تمت إعادة النجوم إلى حسابك." if refunded
+                   else "⚠️ تعذّرت الإعادة التلقائية، يرجى التواصل مع المالك فوراً."),
+                reply_markup=main_menu_kb(is_own)
+            )
+            return
+
+        auto_number = auto["phone_number"]
+        code = next_order_code(user.id)
+        with db_conn() as c:
+            pe = c.execute(
+                "INSERT INTO prize_exchanges "
+                "(user_id,prize_type,prize_value,points_cost,status,order_code) "
+                "VALUES (%s,%s,%s,0,'completed',%s) RETURNING id",
+                (user.id, "telegram_number_stars", auto_number, code)
+            ).fetchone()
+            c.execute(
+                "UPDATE number_star_purchases SET phone_number=%s,status='completed' "
+                "WHERE telegram_payment_id=%s",
+                (auto_number, charge_id)
+            )
+
+        display_number = auto_number.lstrip("+")
+        result_kb = [
+            [
+                InlineKeyboardButton("🔐 رمز التحقق (2FA)", callback_data=f"buyer:show_twofa:{auto_number}"),
+                InlineKeyboardButton("🔑 كود الدخول", callback_data=f"buyer:request_code:{auto_number}"),
+            ],
+            [InlineKeyboardButton("📷 باركود الرقم", callback_data=f"buyer:barcode:{auto_number}")],
+            [InlineKeyboardButton("🚪 مغادرة البوت", callback_data=f"buyer:leave_account:{auto_number}")],
+            [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
+        ]
+        await update.message.reply_text(
+            f"✅ *تم شراء رقمك بالنجوم بنجاح!*\n\n"
+            f"📱 *الرقم:*\n`{display_number}`\n"
+            f"⭐ المدفوع: {stars} نجمة\n\n"
+            "اضغط على الأزرار أدناه للحصول على رمز التحقق وكود الدخول عند الحاجة.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(result_kb)
+        )
+        try:
+            await context.bot.send_message(
+                user.id,
+                "📋 *إشعار تبرئة ذمة — يُرجى القراءة بعناية*\n\n"
+                "بإتمامك عملية الشراء فإنك تُقرّ بأن الحساب والرقم أصبحا مسؤوليتك الكاملة "
+                "من لحظة الاستلام، ولا يحق المطالبة باسترداد بعد استلام بيانات الدخول.\n\n"
+                "شكراً لثقتك 🤍",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception:
+            pass
+        if pe:
+            await notify_prize_exchange_owner(
+                context, pe["id"],
+                text_html=(
+                    f"📱 <b>شراء رقم تيلغرام بالنجوم — تسليم تلقائي ✅</b>\n"
+                    f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
+                    f"📱 الرقم: <code>{auto_number}</code>\n"
+                    f"⭐ {stars} نجمة\n"
+                    f"📌 {code}"
+                ),
+                group_text_html=(
+                    f"📱 <b>شراء رقم تيلغرام بالنجوم — تسليم تلقائي ✅</b>\n"
+                    f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
+                    f"⭐ {stars} نجمة\n"
+                    f"📌 {code}"
+                )
+            )
 
     # ─── تمويل الاشتراك الإجباري بالنجوم ───
     elif payload.startswith("fund_mandatory:"):
