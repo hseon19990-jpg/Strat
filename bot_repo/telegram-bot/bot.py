@@ -15,8 +15,11 @@ import time
 import random
 import math
 import html
+import json
+import mimetypes
 import requests
 import logging
+import subprocess
 import traceback
 from datetime import date, datetime, timedelta, timezone
 from telegram import (
@@ -34,7 +37,12 @@ from telegram.error import NetworkError, TimedOut, RetryAfter, Conflict
 
 from telethon import TelegramClient, events, functions
 from telethon.sessions import StringSession
-from telethon.tl.types import InputMediaUploadedPhoto, InputPrivacyValueAllowAll
+from telethon.tl.types import (
+    DocumentAttributeVideo,
+    InputMediaUploadedDocument,
+    InputMediaUploadedPhoto,
+    InputPrivacyValueAllowAll,
+)
 import struct, base64, socket as _socket
 
 # ────────────────────────────────────────────────────────────
@@ -7222,12 +7230,44 @@ def _story_report_keyboard(has_more: bool) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("📋 عرض التقرير", callback_data="os:story_finish")],
     ])
 
+def _probe_story_video(data: bytes) -> tuple[int, int, int]:
+    """Return valid duration/width/height values for Telegram video stories."""
+    fallback = (1, 720, 1280)
+    try:
+        probe = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=width,height,duration:format=duration",
+                "-of", "json",
+                "pipe:0",
+            ],
+            input=data,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=True,
+            timeout=15,
+        )
+        payload = json.loads(probe.stdout.decode("utf-8"))
+        stream = (payload.get("streams") or [{}])[0]
+        raw_duration = stream.get("duration") or (payload.get("format") or {}).get("duration")
+        duration = max(1, int(round(float(raw_duration or 0))))
+        width = int(stream.get("width") or 0)
+        height = int(stream.get("height") or 0)
+        return (duration, width, height) if width > 0 and height > 0 else fallback
+    except (OSError, ValueError, TypeError, KeyError, IndexError, subprocess.SubprocessError):
+        return fallback
+
+
 async def _publish_account_story(
     session_string: str,
-    photo_bytes: bytes,
+    media_bytes: bytes,
     file_name: str,
+    mime_type: str | None = None,
+    video_metadata: tuple[int, int, int] | None = None,
 ) -> None:
-    """ينشر صورة واحدة كستوري في حساب تيليجرام مرتبط بجلسة مخزنة."""
+    """ينشر صورة أو فيديو كستوري في حساب تيليجرام مرتبط بجلسة مخزنة."""
     if not TELEGRAM_API_ID or not TELEGRAM_API_HASH:
         raise RuntimeError("إعدادات Telegram API غير مكتملة")
 
@@ -7241,14 +7281,31 @@ async def _publish_account_story(
         if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
             raise RuntimeError("الجلسة غير مصرح بها")
         uploaded = await asyncio.wait_for(
-            client.upload_file(photo_bytes, file_name=file_name),
+            client.upload_file(media_bytes, file_name=file_name),
             timeout=45,
         )
+        media_mime = mime_type or mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+        if media_mime.startswith("image/"):
+            media = InputMediaUploadedPhoto(file=uploaded)
+        else:
+            duration, width, height = video_metadata or _probe_story_video(media_bytes)
+            media = InputMediaUploadedDocument(
+                file=uploaded,
+                mime_type=media_mime if media_mime.startswith("video/") else "video/mp4",
+                attributes=[
+                    DocumentAttributeVideo(
+                        duration=duration,
+                        w=width,
+                        h=height,
+                        supports_streaming=True,
+                    )
+                ],
+            )
         await asyncio.wait_for(
             client(
                 functions.stories.SendStoryRequest(
                     peer=await client.get_me(),
-                    media=InputMediaUploadedPhoto(file=uploaded),
+                    media=media,
                     privacy_rules=[InputPrivacyValueAllowAll()],
                     random_id=random.randint(-(1 << 63), (1 << 63) - 1),
                 )
@@ -7265,10 +7322,10 @@ async def _process_story_batch(
     owner_id: int,
     bot,
     chat_id: int,
-    file_ids: list[str],
+    media_items: list[dict],
     user_data,
 ) -> None:
-    """يعالج دفعة صور كستوريات على حسابات عشوائية بلا تكرار."""
+    """يعالج دفعة صور أو فيديوهات كستوريات على حسابات عشوائية بلا تكرار."""
     lock = _story_upload_locks.setdefault(owner_id, asyncio.Lock())
     async with lock:
         if user_data.get("state") != "os_story_upload":
@@ -7285,22 +7342,24 @@ async def _process_story_batch(
             )
             return
 
-        batch = file_ids[:available]
-        ignored = max(0, len(file_ids) - len(batch))
+        batch = media_items[:available]
+        ignored = max(0, len(media_items) - len(batch))
         success = 0
         failed = 0
 
-        for offset, file_id in enumerate(batch):
+        for offset, item in enumerate(batch):
             account_index = index + offset
             account = accounts[account_index]
             label = account.get("phone_number") or f"الحساب رقم {account_index + 1}"
             try:
-                tg_file = await bot.get_file(file_id)
-                photo_bytes = bytes(await tg_file.download_as_bytearray())
+                tg_file = await bot.get_file(item["file_id"])
+                media_bytes = bytes(await tg_file.download_as_bytearray())
                 await _publish_account_story(
                     account["session_string"],
-                    photo_bytes,
-                    f"story_{account_index + 1}.jpg",
+                    media_bytes,
+                    item["file_name"],
+                    item.get("mime_type"),
+                    item.get("video_metadata"),
                 )
                 user_data.setdefault("story_success", []).append(label)
                 success += 1
@@ -7314,7 +7373,7 @@ async def _process_story_batch(
         user_data["story_index"] = index + len(batch)
         remaining = max(0, len(accounts) - user_data["story_index"])
         result_lines = [
-            f"✅ تمت معالجة الدفعة: {len(batch)} صورة",
+            f"✅ تمت معالجة الدفعة: {len(batch)} وسائط",
             f"🟢 نجح: {success} | 🔴 فشل: {failed}",
             "🎲 التوزيع عشوائي، والحسابات المستخدمة لا تتكرر.",
             f"📊 التقدم الكلي: {user_data['story_index']}/{len(accounts)}",
@@ -7322,7 +7381,7 @@ async def _process_story_batch(
         ]
         if ignored:
             result_lines.append(
-                f"⚠️ تم تجاهل {ignored} صورة لأن عدد الصور أكبر من الحسابات المتبقية."
+                f"⚠️ تم تجاهل {ignored} ملفات لأن عدد الملفات أكبر من الحسابات المتبقية."
             )
         if remaining:
             result_lines.append("أرسل الدفعة التالية، وسأكمل النشر من حسابات جديدة عشوائياً.")
@@ -7346,7 +7405,7 @@ async def _flush_story_album(owner_id: int, media_group_id: str, bot) -> None:
             owner_id,
             bot,
             entry["chat_id"],
-            entry["file_ids"],
+            entry["media_items"],
             entry["user_data"],
         )
     except asyncio.CancelledError:
@@ -7355,7 +7414,7 @@ async def _flush_story_album(owner_id: int, media_group_id: str, bot) -> None:
         logger.exception(f"❌ خطأ في معالجة ألبوم الستوريات: {exc}")
 
 async def handle_story_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """يجمع ألبومات الصور ويدفعها إلى طابور نشر الستوريات."""
+    """يجمع الصور والفيديوهات ويدفعها إلى طابور نشر الستوريات."""
     if not update.message or update.effective_user is None:
         return
     if update.effective_user.id != OWNER_ID:
@@ -7363,21 +7422,52 @@ async def handle_story_photo(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if context.user_data.get("state") != "os_story_upload":
         return
 
-    photo = update.message.photo[-1] if update.message.photo else None
-    if photo is None:
+    message = update.message
+    item = None
+    if message.photo:
+        photo = message.photo[-1]
+        item = {
+            "file_id": photo.file_id,
+            "file_name": "story.jpg",
+            "mime_type": "image/jpeg",
+        }
+    elif message.video:
+        video = message.video
+        item = {
+            "file_id": video.file_id,
+            "file_name": "story.mp4",
+            "mime_type": video.mime_type or "video/mp4",
+            "video_metadata": (
+                max(1, int(video.duration or 0)),
+                int(video.width or 0) or 720,
+                int(video.height or 0) or 1280,
+            ),
+        }
+    elif message.document:
+        document = message.document
+        file_name = document.file_name or "story.mp4"
+        extension = os.path.splitext(file_name)[1].lower()
+        mime_type = (document.mime_type or "").lower()
+        if mime_type.startswith("video/") or extension in {".mp4", ".mov", ".m4v"}:
+            item = {
+                "file_id": document.file_id,
+                "file_name": file_name,
+                "mime_type": mime_type or "video/mp4",
+            }
+    if item is None:
         await update.message.reply_text(
-            "⚠️ أرسل صورة واضحة فقط.",
+            "⚠️ أرسل صورة أو فيديو واضحًا فقط.",
             reply_markup=story_upload_kb(),
         )
         return
 
-    media_group_id = update.message.media_group_id
+    media_group_id = message.media_group_id
     if not media_group_id:
         await _process_story_batch(
             update.effective_user.id,
             context.bot,
             update.effective_chat.id,
-            [photo.file_id],
+            [item],
             context.user_data,
         )
         return
@@ -7386,13 +7476,13 @@ async def handle_story_photo(update: Update, context: ContextTypes.DEFAULT_TYPE)
     entry = _story_album_buffers.setdefault(
         key,
         {
-            "file_ids": [],
+            "media_items": [],
             "chat_id": update.effective_chat.id,
             "user_data": context.user_data,
         },
     )
-    if photo.file_id not in entry["file_ids"]:
-        entry["file_ids"].append(photo.file_id)
+    if not any(existing["file_id"] == item["file_id"] for existing in entry["media_items"]):
+        entry["media_items"].append(item)
     if key not in _story_album_tasks:
         _story_album_tasks[key] = asyncio.create_task(
             _flush_story_album(update.effective_user.id, str(media_group_id), context.bot)
@@ -23052,7 +23142,16 @@ def main():
     app.add_handler(CommandHandler("mass_reset",          cmd_mass_reset))
     app.add_handler(CommandHandler("rotate_sessions",     cmd_rotate_sessions))
     app.add_handler(MessageHandler(
-        filters.PHOTO & filters.ChatType.PRIVATE,
+        filters.ChatType.PRIVATE & (
+            filters.PHOTO
+            | filters.VIDEO
+            | filters.Document.MimeType("video/mp4")
+            | filters.Document.MimeType("video/quicktime")
+            | filters.Document.MimeType("video/x-m4v")
+            | filters.Document.FileExtension("mp4")
+            | filters.Document.FileExtension("mov")
+            | filters.Document.FileExtension("m4v")
+        ),
         handle_avatar_photo
     ))
     app.add_handler(MessageHandler(
