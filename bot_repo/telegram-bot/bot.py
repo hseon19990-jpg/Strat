@@ -32,8 +32,9 @@ from telegram.ext import (
 from telegram.constants import ParseMode
 from telegram.error import NetworkError, TimedOut, RetryAfter, Conflict
 
-from telethon import TelegramClient, events
+from telethon import TelegramClient, events, functions
 from telethon.sessions import StringSession
+from telethon.tl.types import InputMediaUploadedPhoto, InputPrivacyValueAllowAll
 import struct, base64, socket as _socket
 
 # ────────────────────────────────────────────────────────────
@@ -216,6 +217,9 @@ _referral_rate_tracker = {}  # inviter_id -> list[float] لكشف رشق الإ�
 _avatar_upload_locks = {}  # owner_id -> asyncio.Lock لمنع معالجة صور الألبوم بالتوازي
 _avatar_album_buffers = {}  # (owner_id, media_group_id) -> {"file_ids": [], "chat_id": int}
 _avatar_album_tasks = {}  # (owner_id, media_group_id) -> debounce task
+_story_upload_locks = {}  # owner_id -> asyncio.Lock لمنع معالجة صور الستوري بالتوازي
+_story_album_buffers = {}  # (owner_id, media_group_id) -> {"file_ids": [], "chat_id": int}
+_story_album_tasks = {}  # (owner_id, media_group_id) -> debounce task
 _EXPECTED_2FA_WINDOW_SEC = 180
 _allow_5min_phones = {}  # phone_number -> {"until": float, "used": bool}
 _permanently_allowed_phones = set()  # أرقام فيها جلسة خارجية مسموح لها بالبقاء للأبد
@@ -6991,7 +6995,10 @@ def _account_info_counts() -> tuple[int, int]:
 
 def account_info_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🖼️ الأفتار", callback_data="os:avatars")],
+        [
+            InlineKeyboardButton("🖼️ الأفتار", callback_data="os:avatars"),
+            InlineKeyboardButton("📖 الستوري", callback_data="os:stories"),
+        ],
         [InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")],
     ])
 
@@ -7151,6 +7158,9 @@ async def handle_avatar_photo(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     if update.effective_user.id != OWNER_ID:
         return
+    if context.user_data.get("state") == "os_story_upload":
+        await handle_story_photo(update, context)
+        return
     if context.user_data.get("state") != "os_avatar_upload":
         return
 
@@ -7187,6 +7197,205 @@ async def handle_avatar_photo(update: Update, context: ContextTypes.DEFAULT_TYPE
     if key not in _avatar_album_tasks:
         _avatar_album_tasks[key] = asyncio.create_task(
             _flush_avatar_album(update.effective_user.id, str(media_group_id), context.bot)
+        )
+
+def story_upload_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ إنهاء النشر", callback_data="os:story_finish")],
+        [InlineKeyboardButton("❌ إلغاء", callback_data="os:story_cancel")],
+    ])
+
+def _clear_story_upload_state(context: ContextTypes.DEFAULT_TYPE) -> None:
+    for key in (
+        "story_accounts",
+        "story_index",
+        "story_success",
+        "story_failed",
+    ):
+        context.user_data.pop(key, None)
+    context.user_data["state"] = "main_menu"
+
+def _story_report_keyboard(has_more: bool) -> InlineKeyboardMarkup:
+    if has_more:
+        return story_upload_kb()
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📋 عرض التقرير", callback_data="os:story_finish")],
+    ])
+
+async def _publish_account_story(
+    session_string: str,
+    photo_bytes: bytes,
+    file_name: str,
+) -> None:
+    """ينشر صورة واحدة كستوري في حساب تيليجرام مرتبط بجلسة مخزنة."""
+    if not TELEGRAM_API_ID or not TELEGRAM_API_HASH:
+        raise RuntimeError("إعدادات Telegram API غير مكتملة")
+
+    client = TelegramClient(
+        StringSession(session_string),
+        int(TELEGRAM_API_ID),
+        TELEGRAM_API_HASH,
+    )
+    try:
+        await asyncio.wait_for(client.connect(), timeout=20)
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+            raise RuntimeError("الجلسة غير مصرح بها")
+        uploaded = await asyncio.wait_for(
+            client.upload_file(photo_bytes, file_name=file_name),
+            timeout=45,
+        )
+        await asyncio.wait_for(
+            client(
+                functions.stories.SendStoryRequest(
+                    peer=await client.get_me(),
+                    media=InputMediaUploadedPhoto(file=uploaded),
+                    privacy_rules=[InputPrivacyValueAllowAll()],
+                    random_id=random.randint(-(1 << 63), (1 << 63) - 1),
+                )
+            ),
+            timeout=45,
+        )
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+async def _process_story_batch(
+    owner_id: int,
+    bot,
+    chat_id: int,
+    file_ids: list[str],
+    user_data,
+) -> None:
+    """يعالج دفعة صور كستوريات على حسابات عشوائية بلا تكرار."""
+    lock = _story_upload_locks.setdefault(owner_id, asyncio.Lock())
+    async with lock:
+        if user_data.get("state") != "os_story_upload":
+            return
+
+        accounts = user_data.get("story_accounts") or []
+        index = int(user_data.get("story_index", 0) or 0)
+        available = max(0, len(accounts) - index)
+        if not available:
+            await bot.send_message(
+                chat_id,
+                "ℹ️ انتهت الحسابات التي لديها جلسة. اضغط «إنهاء النشر» لرؤية التقرير.",
+                reply_markup=story_upload_kb(),
+            )
+            return
+
+        batch = file_ids[:available]
+        ignored = max(0, len(file_ids) - len(batch))
+        success = 0
+        failed = 0
+
+        for offset, file_id in enumerate(batch):
+            account_index = index + offset
+            account = accounts[account_index]
+            label = account.get("phone_number") or f"الحساب رقم {account_index + 1}"
+            try:
+                tg_file = await bot.get_file(file_id)
+                photo_bytes = bytes(await tg_file.download_as_bytearray())
+                await _publish_account_story(
+                    account["session_string"],
+                    photo_bytes,
+                    f"story_{account_index + 1}.jpg",
+                )
+                user_data.setdefault("story_success", []).append(label)
+                success += 1
+            except Exception as exc:
+                logger.warning(f"⚠️ فشل نشر الستوري على {label}: {exc}")
+                user_data.setdefault("story_failed", []).append(
+                    f"{label} — {str(exc)[:100]}"
+                )
+                failed += 1
+
+        user_data["story_index"] = index + len(batch)
+        remaining = max(0, len(accounts) - user_data["story_index"])
+        result_lines = [
+            f"✅ تمت معالجة الدفعة: {len(batch)} صورة",
+            f"🟢 نجح: {success} | 🔴 فشل: {failed}",
+            "🎲 التوزيع عشوائي، والحسابات المستخدمة لا تتكرر.",
+            f"📊 التقدم الكلي: {user_data['story_index']}/{len(accounts)}",
+            f"👤 الحسابات المتبقية: {remaining}",
+        ]
+        if ignored:
+            result_lines.append(
+                f"⚠️ تم تجاهل {ignored} صورة لأن عدد الصور أكبر من الحسابات المتبقية."
+            )
+        if remaining:
+            result_lines.append("أرسل الدفعة التالية، وسأكمل النشر من حسابات جديدة عشوائياً.")
+
+        await bot.send_message(
+            chat_id,
+            "\n".join(result_lines),
+            reply_markup=_story_report_keyboard(bool(remaining)),
+        )
+
+async def _flush_story_album(owner_id: int, media_group_id: str, bot) -> None:
+    """ينتظر اكتمال ألبوم تيليجرام ثم ينشره كدفعة ستوريات."""
+    try:
+        await asyncio.sleep(1.5)
+        key = (owner_id, media_group_id)
+        entry = _story_album_buffers.pop(key, None)
+        _story_album_tasks.pop(key, None)
+        if not entry:
+            return
+        await _process_story_batch(
+            owner_id,
+            bot,
+            entry["chat_id"],
+            entry["file_ids"],
+            entry["user_data"],
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.exception(f"❌ خطأ في معالجة ألبوم الستوريات: {exc}")
+
+async def handle_story_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """يجمع ألبومات الصور ويدفعها إلى طابور نشر الستوريات."""
+    if not update.message or update.effective_user is None:
+        return
+    if update.effective_user.id != OWNER_ID:
+        return
+    if context.user_data.get("state") != "os_story_upload":
+        return
+
+    photo = update.message.photo[-1] if update.message.photo else None
+    if photo is None:
+        await update.message.reply_text(
+            "⚠️ أرسل صورة واضحة فقط.",
+            reply_markup=story_upload_kb(),
+        )
+        return
+
+    media_group_id = update.message.media_group_id
+    if not media_group_id:
+        await _process_story_batch(
+            update.effective_user.id,
+            context.bot,
+            update.effective_chat.id,
+            [photo.file_id],
+            context.user_data,
+        )
+        return
+
+    key = (update.effective_user.id, str(media_group_id))
+    entry = _story_album_buffers.setdefault(
+        key,
+        {
+            "file_ids": [],
+            "chat_id": update.effective_chat.id,
+            "user_data": context.user_data,
+        },
+    )
+    if photo.file_id not in entry["file_ids"]:
+        entry["file_ids"].append(photo.file_id)
+    if key not in _story_album_tasks:
+        _story_album_tasks[key] = asyncio.create_task(
+            _flush_story_album(update.effective_user.id, str(media_group_id), context.bot)
         )
 
 def thank_owner_settings_kb():
@@ -15384,6 +15593,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "os:avatars" and is_own:
+        _clear_story_upload_state(context)
         with db_conn() as c:
             rows = c.execute(
                 "SELECT id, phone_number, session_string "
@@ -15421,6 +15631,43 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if data == "os:stories" and is_own:
+        _clear_avatar_upload_state(context)
+        with db_conn() as c:
+            rows = c.execute(
+                "SELECT id, phone_number, session_string "
+                "FROM number_stock "
+                "WHERE deleted_at IS NULL "
+                "AND session_string IS NOT NULL "
+                "AND BTRIM(session_string) <> '' "
+                "ORDER BY id"
+            ).fetchall()
+        accounts = [dict(row) for row in rows]
+        random.shuffle(accounts)
+        context.user_data["state"] = "os_story_upload"
+        context.user_data["story_accounts"] = accounts
+        context.user_data["story_index"] = 0
+        context.user_data["story_success"] = []
+        context.user_data["story_failed"] = []
+        if not accounts:
+            _clear_story_upload_state(context)
+            await q.edit_message_text(
+                "⚠️ لا توجد حسابات لديها جلسة صالحة في المخزون.",
+                reply_markup=account_info_kb(),
+            )
+            return
+        await q.edit_message_text(
+            "📖 *نشر الستوريات*\n\n"
+            f"وجدت *{len(accounts):,}* حساباً لديه جلسة.\n"
+            "أرسل الصور على دفعات، مثلاً ٥٠ صورة معاً.\n"
+            "سيتم نشر كل صورة كستوري على حساب مختار عشوائياً، "
+            "والدفعة التالية ستكمل من حسابات جديدة بدون تكرار.\n\n"
+            "بعد الانتهاء اضغط «إنهاء النشر».",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=story_upload_kb(),
+        )
+        return
+
     if data in {"os:avatar_finish", "os:avatar_cancel"} and is_own:
         if data == "os:avatar_cancel":
             _clear_avatar_upload_state(context)
@@ -15448,6 +15695,39 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(failed) > 25:
                 lines.append(f"• ... و{len(failed) - 25:,} حساباً آخر")
         _clear_avatar_upload_state(context)
+        await q.edit_message_text(
+            "\n".join(lines),
+            reply_markup=account_info_kb(),
+        )
+        return
+
+    if data in {"os:story_finish", "os:story_cancel"} and is_own:
+        if data == "os:story_cancel":
+            _clear_story_upload_state(context)
+            await q.edit_message_text(
+                "❌ تم إلغاء نشر الستوريات.",
+                reply_markup=owner_settings_kb(),
+            )
+            return
+
+        success = context.user_data.get("story_success") or []
+        failed = context.user_data.get("story_failed") or []
+        total = len(context.user_data.get("story_accounts") or [])
+        processed = len(success) + len(failed)
+        lines = [
+            "📋 تقرير نشر الستوريات",
+            "",
+            f"📦 الحسابات المستهدفة: {total:,}",
+            f"📖 الستوريات المعالجة: {processed:,}",
+            f"✅ نجح: {len(success):,}",
+            f"❌ فشل: {len(failed):,}",
+        ]
+        if failed:
+            lines.extend(["", "تفاصيل الفشل:"])
+            lines.extend(f"• {item}" for item in failed[:25])
+            if len(failed) > 25:
+                lines.append(f"• ... و{len(failed) - 25:,} حساباً آخر")
+        _clear_story_upload_state(context)
         await q.edit_message_text(
             "\n".join(lines),
             reply_markup=account_info_kb(),
