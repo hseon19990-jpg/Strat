@@ -467,6 +467,18 @@ def init_db():
               value TEXT
           )""")
           c.execute("""
+          CREATE TABLE IF NOT EXISTS account_media_assignments (
+              id           SERIAL PRIMARY KEY,
+              kind         TEXT NOT NULL CHECK (kind IN ('stories', 'avatar')),
+              stock_id     INTEGER NOT NULL,
+              phone_number TEXT,
+              status       TEXT NOT NULL DEFAULT 'processing'
+                           CHECK (status IN ('processing', 'completed')),
+              assigned_at  TIMESTAMPTZ DEFAULT NOW(),
+              completed_at TIMESTAMPTZ,
+              UNIQUE (kind, stock_id)
+          )""")
+          c.execute("""
           CREATE TABLE IF NOT EXISTS daily_gifts (
               user_id    BIGINT PRIMARY KEY,
               last_claim TEXT
@@ -7017,6 +7029,112 @@ def account_info_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")],
     ])
 
+def _seed_historical_media_assignments(kind: str) -> None:
+    """ينقل الحسابات الناجحة في التقارير القديمة إلى سجل الاستخدام الدائم."""
+    if kind not in {"stories", "avatar"}:
+        raise ValueError(f"نوع توزيع غير معروف: {kind}")
+
+    successful_phones: set[str] = set()
+    for report in _load_media_reports(kind):
+        successful_phones.update(
+            str(phone).strip()
+            for phone in report.get("success") or []
+            if str(phone).strip()
+        )
+
+    # قد تكون هناك عملية قُطعت قبل الضغط على «إنهاء»، لذلك نقرأ تقرير التقدم
+    # أيضًا حتى لا تعود الحسابات التي نجحت في تلك العملية بعد إعادة التشغيل.
+    try:
+        progress = json.loads(get_setting(_media_report_progress_key(kind)) or "null")
+        if isinstance(progress, dict):
+            successful_phones.update(
+                str(phone).strip()
+                for phone in progress.get("success") or []
+                if str(phone).strip()
+            )
+    except Exception:
+        pass
+
+    if not successful_phones:
+        return
+
+    with db_conn() as c:
+        for phone in successful_phones:
+            c.execute(
+                """
+                INSERT INTO account_media_assignments
+                    (kind, stock_id, phone_number, status, assigned_at, completed_at)
+                SELECT %s, id, phone_number, 'completed', COALESCE(added_at, NOW()), NOW()
+                FROM number_stock
+                WHERE phone_number = %s
+                ON CONFLICT (kind, stock_id) DO NOTHING
+                """,
+                (kind, phone),
+            )
+
+def _load_unused_media_accounts(kind: str) -> list[dict]:
+    """يعيد الحسابات التي لم تُستخدم لهذا النوع طوال عمرها."""
+    if kind not in {"stories", "avatar"}:
+        raise ValueError(f"نوع توزيع غير معروف: {kind}")
+
+    _seed_historical_media_assignments(kind)
+    with db_conn() as c:
+        rows = c.execute(
+            """
+            SELECT ns.id, ns.phone_number, ns.session_string
+            FROM number_stock ns
+            WHERE ns.deleted_at IS NULL
+              AND ns.session_string IS NOT NULL
+              AND BTRIM(ns.session_string) <> ''
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM account_media_assignments ama
+                  WHERE ama.kind = %s
+                    AND ama.stock_id = ns.id
+              )
+            ORDER BY ns.id
+            """,
+            (kind,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+def _claim_media_account(kind: str, stock_id: int, phone_number: str | None) -> bool:
+    """يحجز الحساب مرة واحدة فقط، حتى مع وصول عمليتين في نفس الوقت."""
+    with db_conn() as c:
+        row = c.execute(
+            """
+            INSERT INTO account_media_assignments
+                (kind, stock_id, phone_number, status)
+            VALUES (%s, %s, %s, 'processing')
+            ON CONFLICT (kind, stock_id) DO NOTHING
+            RETURNING stock_id
+            """,
+            (kind, stock_id, phone_number),
+        ).fetchone()
+    return bool(row)
+
+def _complete_media_account(kind: str, stock_id: int) -> None:
+    with db_conn() as c:
+        c.execute(
+            """
+            UPDATE account_media_assignments
+            SET status = 'completed', completed_at = NOW()
+            WHERE kind = %s AND stock_id = %s AND status = 'processing'
+            """,
+            (kind, stock_id),
+        )
+
+def _release_media_account(kind: str, stock_id: int) -> None:
+    """يفتح الحجز عند فشل النشر قبل أن يستلم الحساب أي محتوى."""
+    with db_conn() as c:
+        c.execute(
+            """
+            DELETE FROM account_media_assignments
+            WHERE kind = %s AND stock_id = %s AND status = 'processing'
+            """,
+            (kind, stock_id),
+        )
+
 _MEDIA_REPORT_PAGE_SIZE = 20
 _MEDIA_REPORT_HISTORY_PAGE_SIZE = 8
 _MEDIA_REPORT_HISTORY_MAX = 50
@@ -7463,6 +7581,14 @@ async def _process_avatar_batch(
             account_index = index + offset
             account = accounts[account_index]
             label = account.get("phone_number") or f"الحساب رقم {account_index + 1}"
+            stock_id = int(account["id"])
+            if not _claim_media_account("avatar", stock_id, account.get("phone_number")):
+                user_data.setdefault("avatar_failed", []).append(
+                    f"{label} — الحساب مستخدم مسبقاً في توزيع سابق"
+                )
+                failed += 1
+                continue
+            published = False
             try:
                 tg_file = await bot.get_file(file_id)
                 photo_bytes = bytes(await tg_file.download_as_bytearray())
@@ -7471,9 +7597,18 @@ async def _process_avatar_batch(
                     photo_bytes,
                     f"avatar_{account_index + 1}.jpg",
                 )
+                published = True
+                _complete_media_account("avatar", stock_id)
                 user_data.setdefault("avatar_success", []).append(label)
                 success += 1
             except Exception as exc:
+                # إذا نجح تيليجرام ثم فشل حفظ الحالة، نُبقي الحجز حتى لا
+                # تؤدي إعادة المحاولة إلى وضع أفتار ثانٍ على الحساب.
+                if not published:
+                    try:
+                        _release_media_account("avatar", stock_id)
+                    except Exception as release_exc:
+                        logger.error(f"❌ تعذر تحرير حجز الأفتار للحساب {label}: {release_exc}")
                 logger.warning(f"⚠️ فشل وضع الأفتار على {label}: {exc}")
                 user_data.setdefault("avatar_failed", []).append(
                     f"{label} — {str(exc)[:100]}"
@@ -7884,6 +8019,14 @@ async def _process_story_batch(
             account_index = index + offset
             account = accounts[account_index]
             label = account.get("phone_number") or f"الحساب رقم {account_index + 1}"
+            stock_id = int(account["id"])
+            if not _claim_media_account("stories", stock_id, account.get("phone_number")):
+                user_data.setdefault("story_failed", []).append(
+                    f"{label} — الحساب مستخدم مسبقاً في توزيع سابق"
+                )
+                failed += 1
+                continue
+            published = False
             try:
                 tg_file = await bot.get_file(item["file_id"])
                 media_bytes = bytes(await tg_file.download_as_bytearray())
@@ -7894,9 +8037,18 @@ async def _process_story_batch(
                     item.get("mime_type"),
                     item.get("video_metadata"),
                 )
+                published = True
+                _complete_media_account("stories", stock_id)
                 user_data.setdefault("story_success", []).append(label)
                 success += 1
             except Exception as exc:
+                # إذا نُشرت الستوري ثم تعذر حفظ الحالة، نُبقي الحجز لمنع
+                # إعادة النشر على الحساب نفسه في المحاولة التالية.
+                if not published:
+                    try:
+                        _release_media_account("stories", stock_id)
+                    except Exception as release_exc:
+                        logger.error(f"❌ تعذر تحرير حجز الستوري للحساب {label}: {release_exc}")
                 logger.warning(f"⚠️ فشل نشر الستوري على {label}: {exc}")
                 user_data.setdefault("story_failed", []).append(
                     f"{label} — {str(exc)[:100]}"
@@ -16348,16 +16500,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "os:avatars" and is_own:
         _clear_story_upload_state(context)
-        with db_conn() as c:
-            rows = c.execute(
-                "SELECT id, phone_number, session_string "
-                "FROM number_stock "
-                "WHERE deleted_at IS NULL "
-                "AND session_string IS NOT NULL "
-                "AND BTRIM(session_string) <> '' "
-                "ORDER BY id"
-            ).fetchall()
-        accounts = [dict(row) for row in rows]
+        accounts = _load_unused_media_accounts("avatar")
         # نخلط طابور الحسابات مرة واحدة عند بدء العملية؛
         # الدفعات التالية تكمل نفس الطابور ولا تعيد أي حساب.
         random.shuffle(accounts)
@@ -16370,7 +16513,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not accounts:
             _clear_avatar_upload_state(context)
             await q.edit_message_text(
-                "⚠️ لا توجد حسابات لديها جلسة صالحة في المخزون.",
+                "⚠️ لا توجد حسابات متاحة: كل الحسابات التي لديها جلسة استلمت أفتاراً من قبل.",
                 reply_markup=account_info_kb(),
             )
             return
@@ -16379,7 +16522,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"وجدت *{len(accounts):,}* حساباً لديه جلسة.\n"
             "أرسل الصور على دفعات، مثلاً ٥٠ صورة معاً.\n"
             "سيتم توزيع كل دفعة على حسابات مختارة عشوائياً، "
-            "والدفعة التالية ستكمل من حسابات جديدة بدون تكرار.\n\n"
+            "والدفعة التالية ستكمل من حسابات جديدة بدون تكرار، ولن يُستخدم أي حساب "
+            "استلم أفتاراً في عملية سابقة.\n\n"
             "بعد الانتهاء اضغط «إنهاء التوزيع».",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=avatar_upload_kb(),
@@ -16388,16 +16532,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "os:stories" and is_own:
         _clear_avatar_upload_state(context)
-        with db_conn() as c:
-            rows = c.execute(
-                "SELECT id, phone_number, session_string "
-                "FROM number_stock "
-                "WHERE deleted_at IS NULL "
-                "AND session_string IS NOT NULL "
-                "AND BTRIM(session_string) <> '' "
-                "ORDER BY id"
-            ).fetchall()
-        accounts = [dict(row) for row in rows]
+        accounts = _load_unused_media_accounts("stories")
         random.shuffle(accounts)
         context.user_data["state"] = "os_story_upload"
         context.user_data["story_accounts"] = accounts
@@ -16408,7 +16543,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not accounts:
             _clear_story_upload_state(context)
             await q.edit_message_text(
-                "⚠️ لا توجد حسابات لديها جلسة صالحة في المخزون.",
+                "⚠️ لا توجد حسابات متاحة: كل الحسابات التي لديها جلسة استلمت ستوري من قبل.",
                 reply_markup=account_info_kb(),
             )
             return
@@ -16417,7 +16552,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"وجدت *{len(accounts):,}* حساباً لديه جلسة.\n"
             "أرسل الصور أو الفيديوهات على دفعات، مثلاً ٥٠ وسائط معاً.\n"
             "سيتم نشر كل وسيط كستوري على حساب مختار عشوائياً، "
-            "والدفعة التالية ستكمل من حسابات جديدة بدون تكرار.\n"
+            "والدفعة التالية ستكمل من حسابات جديدة بدون تكرار، ولن يُستخدم أي حساب "
+            "استلم ستوري في عملية سابقة.\n"
             "كل ستوري ستُنشر عامة وليست مؤرشفة أو مقيّدة.\n\n"
             "بعد الانتهاء اضغط «إنهاء النشر».",
             parse_mode=ParseMode.MARKDOWN,
