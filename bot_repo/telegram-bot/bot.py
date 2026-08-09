@@ -7003,8 +7003,8 @@ def owner_settings_kb():
     rows.append([InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")])
     return InlineKeyboardMarkup(rows)
 
-def _account_info_counts() -> tuple[int, int]:
-    """يعيد إجمالي الحسابات والجلسات الموجودة في مخزون البوت."""
+def _account_info_counts() -> tuple[int, int, int, int]:
+    """يعيد إجمالي الحسابات والجلسات والحصص المتبقية للستوري والأفتار."""
     try:
         with db_conn() as c:
             row = c.execute(
@@ -7013,10 +7013,14 @@ def _account_info_counts() -> tuple[int, int]:
                 "AND BTRIM(session_string) <> '') AS with_session "
                 "FROM number_stock WHERE deleted_at IS NULL"
             ).fetchone()
-        return int(row["total"] or 0), int(row["with_session"] or 0)
+        total = int(row["total"] or 0)
+        with_session = int(row["with_session"] or 0)
+        story_available = len(_load_unused_media_accounts("stories"))
+        avatar_available = len(_load_unused_media_accounts("avatar"))
+        return total, with_session, story_available, avatar_available
     except Exception as exc:
         logger.warning(f"⚠️ تعذر قراءة إحصائيات الحسابات: {exc}")
-        return 0, 0
+        return 0, 0, 0, 0
 
 def account_info_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
@@ -7072,7 +7076,7 @@ def _seed_historical_media_assignments(kind: str) -> None:
                 SELECT %s, id, phone_number, 'completed', COALESCE(added_at, NOW()), NOW()
                 FROM number_stock
                 WHERE phone_number = %s
-                ON CONFLICT (kind, stock_id) DO NOTHING
+                ON CONFLICT DO NOTHING
                 """,
                 (kind, phone),
             )
@@ -7117,7 +7121,7 @@ def _claim_media_account(kind: str, stock_id: int, phone_number: str | None) -> 
             INSERT INTO account_media_assignments
                 (kind, stock_id, phone_number, status)
             VALUES (%s, %s, %s, 'processing')
-            ON CONFLICT (kind, stock_id) DO NOTHING
+            ON CONFLICT DO NOTHING
             RETURNING stock_id
             """,
             (kind, stock_id, phone_number),
@@ -16375,11 +16379,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "os:account_info" and is_own:
-        total_accounts, session_accounts = _account_info_counts()
+        total_accounts, session_accounts, story_available, avatar_available = _account_info_counts()
         await q.edit_message_text(
             "👤 *معلومات الحسابات*\n\n"
             f"📦 إجمالي الحسابات: {total_accounts:,}\n"
-            f"🔐 حسابات لديها جلسة: {session_accounts:,}\n\n"
+            f"🔐 حسابات لديها جلسة: {session_accounts:,}\n"
+            f"📖 المتبقي للستوري: {story_available:,}\n"
+            f"🖼️ المتبقي للأفتار: {avatar_available:,}\n\n"
             "اختر العملية المطلوبة:",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=account_info_kb(),
