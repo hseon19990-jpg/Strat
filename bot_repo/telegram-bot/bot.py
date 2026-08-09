@@ -7015,11 +7015,23 @@ def account_info_kb() -> InlineKeyboardMarkup:
     ])
 
 _MEDIA_REPORT_PAGE_SIZE = 20
+_MEDIA_REPORT_HISTORY_PAGE_SIZE = 8
+_MEDIA_REPORT_HISTORY_MAX = 50
 
 def _media_report_key(kind: str) -> str:
     if kind not in {"stories", "avatar"}:
         raise ValueError(f"نوع تقرير غير معروف: {kind}")
     return f"media_report_{kind}"
+
+def _media_report_history_key(kind: str) -> str:
+    if kind not in {"stories", "avatar"}:
+        raise ValueError(f"نوع تقرير غير معروف: {kind}")
+    return f"media_report_history_{kind}"
+
+def _media_report_progress_key(kind: str) -> str:
+    if kind not in {"stories", "avatar"}:
+        raise ValueError(f"نوع تقرير غير معروف: {kind}")
+    return f"media_report_progress_{kind}"
 
 def _normalise_failed_media_item(item: object) -> dict[str, str]:
     """يحافظ على توافق التقارير القديمة التي كانت تُخزّن كسطر نصي واحد."""
@@ -7035,13 +7047,75 @@ def _normalise_failed_media_item(item: object) -> dict[str, str]:
         "reason": reason.strip() if separator else "سبب غير محدد",
     }
 
+def _normalise_media_report(report: object, kind: str) -> dict | None:
+    if not isinstance(report, dict):
+        return None
+    report = dict(report)
+    report["kind"] = kind
+    report["saved_at"] = str(report.get("saved_at") or "")
+    report["total"] = int(report.get("total") or 0)
+    report["processed"] = int(report.get("processed") or 0)
+    report["success"] = [str(item) for item in report.get("success") or []]
+    report["failed"] = [
+        _normalise_failed_media_item(item) for item in report.get("failed") or []
+    ]
+    return report
+
+def _decode_media_report_history(raw: str, kind: str) -> list[dict]:
+    if not raw:
+        return []
+    try:
+        decoded = json.loads(raw)
+    except Exception:
+        return []
+    candidates = decoded if isinstance(decoded, list) else [decoded]
+    reports = [
+        report
+        for report in (_normalise_media_report(item, kind) for item in candidates)
+        if report
+    ]
+    return reports[:_MEDIA_REPORT_HISTORY_MAX]
+
+def _load_media_reports(kind: str) -> list[dict]:
+    """يعيد كل التقارير بترتيب الأحدث أولاً، مع ترحيل التقرير القديم المفرد."""
+    try:
+        history = _decode_media_report_history(
+            get_setting(_media_report_history_key(kind)),
+            kind,
+        )
+        if history:
+            return history
+
+        # قبل دعم السجل كانت آخر نتيجة محفوظة في هذا المفتاح المفرد.
+        # نُبقيها ظاهرة كي لا تختفي التقارير القديمة بعد التحديث.
+        legacy = _normalise_media_report(
+            json.loads(get_setting(_media_report_key(kind)) or "null"),
+            kind,
+        )
+        return [legacy] if legacy else []
+    except Exception as exc:
+        logger.warning(f"⚠️ تعذر قراءة سجل تقارير {kind}: {exc}")
+        return []
+
+def _begin_media_report(kind: str) -> None:
+    """يهيئ السجل قبل عملية جديدة من دون خلط تقدمها بالتقارير المكتملة."""
+    try:
+        history = _load_media_reports(kind)
+        set_setting(
+            _media_report_history_key(kind),
+            json.dumps(history[:_MEDIA_REPORT_HISTORY_MAX], ensure_ascii=False),
+        )
+        set_setting(_media_report_progress_key(kind), "")
+    except Exception as exc:
+        logger.warning(f"⚠️ تعذر تهيئة سجل تقارير {kind}: {exc}")
+
 def _save_media_report(
     kind: str,
     total: int,
     success: list[object],
     failed: list[object],
 ) -> None:
-    """يحفظ آخر نتيجة حتى تبقى قابلة للعرض بعد انتهاء العملية أو إعادة التشغيل."""
+    """يحفظ النتيجة الأخيرة ويضيفها إلى سجل العمليات المكتملة."""
     payload = {
         "kind": kind,
         "saved_at": datetime.now(timezone.utc).isoformat(),
@@ -7050,39 +7124,43 @@ def _save_media_report(
         "success": [str(phone) for phone in success],
         "failed": [_normalise_failed_media_item(item) for item in failed],
     }
+    history = _load_media_reports(kind)
+    history.insert(0, payload)
+    set_setting(
+        _media_report_history_key(kind),
+        json.dumps(history[:_MEDIA_REPORT_HISTORY_MAX], ensure_ascii=False),
+    )
     set_setting(_media_report_key(kind), json.dumps(payload, ensure_ascii=False))
+    set_setting(_media_report_progress_key(kind), "")
 
 def _persist_upload_report(kind: str, user_data: dict) -> None:
-    """يحفظ تقرير التقدم الحالي دون تعطيل عملية الرفع إذا تعطلت قاعدة البيانات مؤقتاً."""
+    """يحفظ تقدم العملية الحالية دون تسجيلها كسجل مكتمل."""
     try:
         accounts_key = "story_accounts" if kind == "stories" else "avatar_accounts"
         success_key = "story_success" if kind == "stories" else "avatar_success"
         failed_key = "story_failed" if kind == "stories" else "avatar_failed"
-        _save_media_report(
-            kind,
-            len(user_data.get(accounts_key) or []),
-            user_data.get(success_key) or [],
-            user_data.get(failed_key) or [],
+        payload = {
+            "kind": kind,
+            "saved_at": datetime.now(timezone.utc).isoformat(),
+            "total": int(len(user_data.get(accounts_key) or [])),
+            "processed": len(user_data.get(success_key) or [])
+            + len(user_data.get(failed_key) or []),
+            "success": [str(phone) for phone in user_data.get(success_key) or []],
+            "failed": [
+                _normalise_failed_media_item(item)
+                for item in user_data.get(failed_key) or []
+            ],
+        }
+        set_setting(
+            _media_report_progress_key(kind),
+            json.dumps(payload, ensure_ascii=False),
         )
     except Exception as exc:
         logger.warning(f"⚠️ تعذر حفظ تقرير {kind}: {exc}")
 
 def _load_media_report(kind: str) -> dict | None:
-    try:
-        raw = get_setting(_media_report_key(kind))
-        if not raw:
-            return None
-        report = json.loads(raw)
-        if not isinstance(report, dict):
-            return None
-        report["success"] = [str(item) for item in report.get("success") or []]
-        report["failed"] = [
-            _normalise_failed_media_item(item) for item in report.get("failed") or []
-        ]
-        return report
-    except Exception as exc:
-        logger.warning(f"⚠️ تعذر قراءة تقرير {kind}: {exc}")
-        return None
+    reports = _load_media_reports(kind)
+    return reports[0] if reports else None
 
 def _media_reports_text() -> str:
     lines = [
@@ -7091,13 +7169,15 @@ def _media_reports_text() -> str:
         "اختر نوع العملية لعرض الأرقام الناجحة والأرقام الفاشلة مع سبب الفشل.",
     ]
     for kind, label in (("stories", "الستوري"), ("avatar", "الأفتار")):
-        report = _load_media_report(kind)
+        reports = _load_media_reports(kind)
+        report = reports[0] if reports else None
         if not report:
             lines.append(f"\n{label}: لا يوجد تقرير محفوظ بعد.")
             continue
         lines.append(
             f"\n{label}: ✅ {len(report['success']):,} ناجح | "
-            f"❌ {len(report['failed']):,} فاشل"
+            f"❌ {len(report['failed']):,} فاشل | "
+            f"📚 {len(reports):,} عملية محفوظة"
         )
     return "\n".join(lines)
 
@@ -7110,7 +7190,12 @@ def _media_reports_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
     ])
 
-def _media_report_summary(kind: str, report: dict | None) -> tuple[str, InlineKeyboardMarkup]:
+def _media_report_summary(
+    kind: str,
+    report: dict | None,
+    report_index: int = 0,
+    report_count: int = 0,
+) -> tuple[str, InlineKeyboardMarkup]:
     label = "الستوري" if kind == "stories" else "الأفتار"
     if not report:
         return (
@@ -7135,24 +7220,97 @@ def _media_report_summary(kind: str, report: dict | None) -> tuple[str, InlineKe
             [
                 InlineKeyboardButton(
                     f"✅ الأرقام الناجحة ({len(report['success']):,})",
-                    callback_data=f"os:media_report:{kind}:success:0",
+                    callback_data=f"os:media_report:{kind}:success:{report_index}:0",
                 ),
             ],
             [
                 InlineKeyboardButton(
                     f"❌ الأرقام الفاشلة ({len(report['failed']):,})",
-                    callback_data=f"os:media_report:{kind}:failed:0",
+                    callback_data=f"os:media_report:{kind}:failed:{report_index}:0",
                 ),
             ],
+            *(
+                [[InlineKeyboardButton(
+                    f"📚 السجلات السابقة ({report_count:,})",
+                    callback_data=f"os:media_report:{kind}:history:0",
+                )]]
+                if report_count > 1
+                else []
+            ),
             [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
         ]),
     )
+
+def _media_report_history_page(
+    kind: str,
+    page: int,
+) -> tuple[str, InlineKeyboardMarkup]:
+    label = "الستوري" if kind == "stories" else "الأفتار"
+    reports = _load_media_reports(kind)
+    total_pages = max(
+        1,
+        (len(reports) + _MEDIA_REPORT_HISTORY_PAGE_SIZE - 1)
+        // _MEDIA_REPORT_HISTORY_PAGE_SIZE,
+    )
+    page = max(0, min(page, total_pages - 1))
+    start = page * _MEDIA_REPORT_HISTORY_PAGE_SIZE
+    current = reports[start:start + _MEDIA_REPORT_HISTORY_PAGE_SIZE]
+    lines = [
+        f"📚 سجل تقارير {label}",
+        "",
+        f"📄 الصفحة {page + 1}/{total_pages} | الإجمالي: {len(reports):,}",
+        "",
+    ]
+    if not current:
+        lines.append("لا توجد تقارير محفوظة.")
+
+    rows = []
+    for offset, report in enumerate(current):
+        report_index = start + offset
+        saved_at = str(report.get("saved_at") or "").replace("T", " ").split(".")[0]
+        rows.append([
+            InlineKeyboardButton(
+                f"عملية {report_index + 1} — {saved_at or 'وقت غير معروف'}",
+                callback_data=f"os:media_report:{kind}:run:{report_index}",
+            )
+        ])
+        lines.append(
+            f"{report_index + 1}. {saved_at or 'وقت غير معروف'} — "
+            f"✅ {len(report['success']):,} | ❌ {len(report['failed']):,}"
+        )
+
+    nav = []
+    if page > 0:
+        nav.append(
+            InlineKeyboardButton(
+                "◀️ السابق",
+                callback_data=f"os:media_report:{kind}:history:{page - 1}",
+            )
+        )
+    if page < total_pages - 1:
+        nav.append(
+            InlineKeyboardButton(
+                "التالي ▶️",
+                callback_data=f"os:media_report:{kind}:history:{page + 1}",
+            )
+        )
+    if nav:
+        rows.append(nav)
+    rows.extend([
+        [InlineKeyboardButton(
+            "🔙 أحدث تقرير",
+            callback_data=f"os:media_report:{kind}:summary",
+        )],
+        [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
+    ])
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
 
 def _media_report_page(
     kind: str,
     section: str,
     page: int,
     report: dict | None,
+    report_index: int = 0,
 ) -> tuple[str, InlineKeyboardMarkup]:
     label = "الستوري" if kind == "stories" else "الأفتار"
     if not report:
@@ -7182,12 +7340,33 @@ def _media_report_page(
 
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton("◀️ السابق", callback_data=f"os:media_report:{kind}:{section}:{page - 1}"))
+        nav.append(
+            InlineKeyboardButton(
+                "◀️ السابق",
+                callback_data=(
+                    f"os:media_report:{kind}:{section}:{report_index}:{page - 1}"
+                ),
+            )
+        )
     if page < total_pages - 1:
-        nav.append(InlineKeyboardButton("التالي ▶️", callback_data=f"os:media_report:{kind}:{section}:{page + 1}"))
+        nav.append(
+            InlineKeyboardButton(
+                "التالي ▶️",
+                callback_data=(
+                    f"os:media_report:{kind}:{section}:{report_index}:{page + 1}"
+                ),
+            )
+        )
     rows = [nav] if nav else []
     rows.extend([
-        [InlineKeyboardButton("🔙 ملخص التقرير", callback_data=f"os:media_report:{kind}:summary")],
+        [InlineKeyboardButton(
+            "🔙 ملخص التقرير",
+            callback_data=(
+                f"os:media_report:{kind}:summary"
+                if report_index == 0
+                else f"os:media_report:{kind}:run:{report_index}"
+            ),
+        )],
         [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
     ])
     return "\n".join(lines), InlineKeyboardMarkup(rows)
@@ -15887,29 +16066,82 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("os:media_report:") and is_own:
         parts = data.split(":")
-        if len(parts) not in {4, 5}:
+        if len(parts) not in {4, 5, 6}:
             await q.answer("تقرير غير صالح.", show_alert=True)
             return
         _, _, kind, section, *page_parts = parts
-        if kind not in {"stories", "avatar"} or section not in {"summary", "success", "failed"}:
+        if kind not in {"stories", "avatar"} or section not in {
+            "summary", "history", "run", "success", "failed"
+        }:
             await q.answer("تقرير غير صالح.", show_alert=True)
             return
-        page = 0
-        if section != "summary":
+        reports = _load_media_reports(kind)
+        if section == "history":
             if len(page_parts) != 1:
                 await q.answer("صفحة غير صالحة.", show_alert=True)
                 return
             try:
-                page = int(page_parts[0])
+                history_page = int(page_parts[0])
             except ValueError:
                 await q.answer("صفحة غير صالحة.", show_alert=True)
                 return
+            text, markup = _media_report_history_page(kind, history_page)
+            await q.edit_message_text(text, reply_markup=markup)
+            return
 
-        report = _load_media_report(kind)
+        report_index = 0
+        page = 0
         if section == "summary":
-            text, markup = _media_report_summary(kind, report)
+            if page_parts:
+                await q.answer("تقرير غير صالح.", show_alert=True)
+                return
+        elif section == "run":
+            if len(page_parts) != 1:
+                await q.answer("عملية غير صالحة.", show_alert=True)
+                return
+            try:
+                report_index = int(page_parts[0])
+            except ValueError:
+                await q.answer("عملية غير صالحة.", show_alert=True)
+                return
         else:
-            text, markup = _media_report_page(kind, section, page, report)
+            # التوافق مع أزرار التقارير القديمة: section:page
+            if len(page_parts) == 1:
+                try:
+                    page = int(page_parts[0])
+                except ValueError:
+                    await q.answer("صفحة غير صالحة.", show_alert=True)
+                    return
+            elif len(page_parts) == 2:
+                try:
+                    report_index = int(page_parts[0])
+                    page = int(page_parts[1])
+                except ValueError:
+                    await q.answer("صفحة غير صالحة.", show_alert=True)
+                    return
+            else:
+                await q.answer("صفحة غير صالحة.", show_alert=True)
+                return
+
+        if section != "summary" and (report_index < 0 or report_index >= len(reports)):
+            await q.answer("هذا التقرير غير موجود.", show_alert=True)
+            return
+        report = reports[report_index] if reports else None
+        if section == "summary" or section == "run":
+            text, markup = _media_report_summary(
+                kind,
+                report,
+                report_index,
+                len(reports),
+            )
+        else:
+            text, markup = _media_report_page(
+                kind,
+                section,
+                page,
+                report,
+                report_index,
+            )
         await q.edit_message_text(text, reply_markup=markup)
         return
 
@@ -15933,6 +16165,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["avatar_index"] = 0
         context.user_data["avatar_success"] = []
         context.user_data["avatar_failed"] = []
+        _begin_media_report("avatar")
         if not accounts:
             _clear_avatar_upload_state(context)
             await q.edit_message_text(
@@ -15970,6 +16203,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["story_index"] = 0
         context.user_data["story_success"] = []
         context.user_data["story_failed"] = []
+        _begin_media_report("stories")
         if not accounts:
             _clear_story_upload_state(context)
             await q.edit_message_text(
