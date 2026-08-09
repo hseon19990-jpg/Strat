@@ -1987,7 +1987,8 @@ def get_referral_session_count() -> int:
         row = c.execute(
             "SELECT COUNT(*) AS cnt FROM number_stock "
             "WHERE session_string IS NOT NULL AND BTRIM(session_string) <> '' "
-            "AND deleted_at IS NULL"
+            "AND deleted_at IS NULL "
+            "AND forced_ref_excluded IS NOT TRUE"
         ).fetchone()
         return row["cnt"] if row else 0
 
@@ -1997,6 +1998,31 @@ def get_forced_ref_account_count() -> int:
     هذا العدد خاص بالإحالة فقط، وليس بعدد الأرقام القابلة للبيع.
     """
     return get_referral_session_count()
+
+def find_and_enable_referral_sessions() -> dict:
+    """يضم كل أرقام المخزون غير المحذوفة التي تحتوي جلسة إلى قائمة الإحالة.
+
+    لا ينشئ سجلات جديدة ولا يكرر الأرقام؛ الأرقام الموجودة مسبقاً تُعاد
+    تفعيلها فقط إذا كانت مستثناة من الإحالة.
+    """
+    with db_conn() as c:
+        rows = c.execute(
+            "SELECT id, forced_ref_excluded FROM number_stock "
+            "WHERE session_string IS NOT NULL AND BTRIM(session_string) <> '' "
+            "AND deleted_at IS NULL"
+        ).fetchall()
+        total = len(rows)
+        reenabled = sum(1 for row in rows if row["forced_ref_excluded"] is True)
+        c.execute(
+            "UPDATE number_stock SET forced_ref_excluded=FALSE "
+            "WHERE session_string IS NOT NULL AND BTRIM(session_string) <> '' "
+            "AND deleted_at IS NULL"
+        )
+    return {
+        "total": total,
+        "added": reenabled,
+        "already_active": total - reenabled,
+    }
 
 async def _test_and_set_can_send_code(phone: str, session_str: str, stock_id: int):
     """يتحقق من قدرة البوت على الوصول للحساب وجلب الكودات:
@@ -4177,6 +4203,7 @@ async def _run_forced_ref_order(order_id, bot_user, start_p, channels, quantity,
             "SELECT id,phone_number,session_string FROM number_stock"
             " WHERE session_string IS NOT NULL AND BTRIM(session_string) <> ''"
             " AND deleted_at IS NULL"
+            " AND forced_ref_excluded IS NOT TRUE"
             " ORDER BY id"
         ).fetchall()
         # جلب القنوات الإجبارية العامة للبوت — الحسابات تنضم إليها أولاً قبل الضغط على الرابط
@@ -14028,6 +14055,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _text = "\n".join(_lines)
         _cur_delay = get_setting("referral_task_delay") or "30"
         _kb = [
+            [InlineKeyboardButton("🔎 البحث عن حسابات تحتوي جلسة", callback_data="os:bot_ref_find_sessions")],
             [InlineKeyboardButton("➕ إضافة رقم للإحالة", callback_data="os:bot_ref_add")],
             [InlineKeyboardButton("📁 استيراد جلسات حصرية للإحالة", callback_data="os:bot_ref_only_import")],
             [InlineKeyboardButton("🗑 مسح/استثناء أرقام", callback_data="os:bot_ref_del_menu")],
@@ -14038,6 +14066,31 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text(_text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(_kb))
         except Exception:
             await q.message.reply_text(_text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(_kb))
+        return
+
+    if data == "os:bot_ref_find_sessions" and is_own:
+        try:
+            _result = find_and_enable_referral_sessions()
+            _total = _result["total"]
+            _added = _result["added"]
+            _already_active = _result["already_active"]
+            _active_now = get_forced_ref_account_count()
+            await q.answer("✅ اكتمل البحث.", show_alert=False)
+            await q.edit_message_text(
+                "🔎 *نتيجة البحث عن الحسابات التي تحتوي جلسة*\n\n"
+                f"📦 إجمالي الحسابات التي عُثر عليها: *{_total}*\n"
+                f"➕ تمت إضافتها/إعادة تفعيلها للإحالة: *{_added}*\n"
+                f"✅ كانت مفعّلة مسبقاً: *{_already_active}*\n"
+                f"📊 إجمالي الجاهز للإحالة الآن: *{_active_now}*\n\n"
+                "تم تجاهل السجلات المحذوفة، ولم يتم إنشاء أي رقم مكرر.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 أرقام إحالة بوت إجباري", callback_data="os:bot_ref_numbers")
+                ]])
+            )
+        except Exception as _find_err:
+            logger.error(f"❌ os:bot_ref_find_sessions error: {_find_err}")
+            await q.answer("⚠️ تعذّر تنفيذ البحث.", show_alert=True)
         return
 
     if data == "os:bot_ref_add" and is_own:
