@@ -479,6 +479,11 @@ def init_db():
               UNIQUE (kind, stock_id)
           )""")
           c.execute("""
+          CREATE UNIQUE INDEX IF NOT EXISTS account_media_assignments_kind_phone_uq
+          ON account_media_assignments (kind, phone_number)
+          WHERE phone_number IS NOT NULL AND BTRIM(phone_number) <> ''
+          """)
+          c.execute("""
           CREATE TABLE IF NOT EXISTS daily_gifts (
               user_id    BIGINT PRIMARY KEY,
               last_claim TEXT
@@ -7090,7 +7095,13 @@ def _load_unused_media_accounts(kind: str) -> list[dict]:
                   SELECT 1
                   FROM account_media_assignments ama
                   WHERE ama.kind = %s
-                    AND ama.stock_id = ns.id
+                    AND (
+                        ama.stock_id = ns.id
+                        OR (
+                            ama.phone_number IS NOT NULL
+                            AND ama.phone_number = ns.phone_number
+                        )
+                    )
               )
             ORDER BY ns.id
             """,
