@@ -1,1 +1,2 @@
-- [تقارير وسائط الحسابات](media-result-reports.md) — نتائج الستوري والأفتار تُحفظ في إعدادات قاعدة البيانات وتُعرض من قائمة معلومات الحسابات.
+- [GitHub push authentication](github-push.md) — use Git credential prompting for PATs and merge remote commits before a normal push.- [Verification completion flow](verification-flow.md) — persist request context when completion requires a later member message.
+- [Telegram media batches](telegram-media-batches.md) — media groups arrive as separate updates and need a short debounce before batch processing.

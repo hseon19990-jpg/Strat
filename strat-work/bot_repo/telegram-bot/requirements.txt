@@ -1,0 +1,9 @@
+python-telegram-bot[job-queue]==21.9
+requests==2.32.3
+psycopg2-binary==2.9.9
+telethon==1.36.0
+qrcode[pil]==7.4.2
+pyotp==2.9.0
+aiohttp>=3.9.0
+openai>=1.30.0
+anthropic>=0.28.0
