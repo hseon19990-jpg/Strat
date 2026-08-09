@@ -7213,6 +7213,12 @@ def story_upload_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("❌ إلغاء", callback_data="os:story_cancel")],
     ])
 
+_STORY_VIDEO_EXTENSIONS = {
+    ".3g2", ".3gp", ".avi", ".flv", ".m2ts", ".m4v",
+    ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".mts",
+    ".ts", ".webm", ".wmv",
+}
+
 def _clear_story_upload_state(context: ContextTypes.DEFAULT_TYPE) -> None:
     for key in (
         "story_accounts",
@@ -7448,7 +7454,7 @@ async def handle_story_photo(update: Update, context: ContextTypes.DEFAULT_TYPE)
         file_name = document.file_name or "story.mp4"
         extension = os.path.splitext(file_name)[1].lower()
         mime_type = (document.mime_type or "").lower()
-        if mime_type.startswith("video/") or extension in {".mp4", ".mov", ".m4v"}:
+        if mime_type.startswith("video/") or extension in _STORY_VIDEO_EXTENSIONS:
             item = {
                 "file_id": document.file_id,
                 "file_name": file_name,
@@ -13326,6 +13332,12 @@ async def handle_unsupported_message(update: Update, context: ContextTypes.DEFAU
     user_id = update.effective_user.id if update.effective_user else None
     is_own = (user_id == OWNER_ID)
 
+    # بعض تطبيقات تيليجرام ترسل الفيديو كملف بمحرر MIME أو امتداد غير قياسي،
+    # لذلك نعيده لمسار الستوريات حتى لا يرفضه معالج الوسائط العام.
+    if is_own and state == "os_story_upload" and update.message.document:
+        await handle_story_photo(update, context)
+        return
+
     # ── استقبال فيديو رفض الإيميل (للمالك فقط) ──
     _video_states = {"os_await_reject_pass_video", "os_await_reject_verify_video"}
     if is_own and state in _video_states:
@@ -15749,8 +15761,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(
             "📖 *نشر الستوريات*\n\n"
             f"وجدت *{len(accounts):,}* حساباً لديه جلسة.\n"
-            "أرسل الصور على دفعات، مثلاً ٥٠ صورة معاً.\n"
-            "سيتم نشر كل صورة كستوري على حساب مختار عشوائياً، "
+            "أرسل الصور أو الفيديوهات على دفعات، مثلاً ٥٠ وسائط معاً.\n"
+            "سيتم نشر كل وسيط كستوري على حساب مختار عشوائياً، "
             "والدفعة التالية ستكمل من حسابات جديدة بدون تكرار.\n\n"
             "بعد الانتهاء اضغط «إنهاء النشر».",
             parse_mode=ParseMode.MARKDOWN,
