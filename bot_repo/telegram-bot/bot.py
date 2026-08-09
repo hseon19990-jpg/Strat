@@ -7581,6 +7581,10 @@ _STORY_VIDEO_EXTENSIONS = {
     ".ts", ".webm", ".wmv",
 }
 
+def _public_story_privacy_rules() -> list[InputPrivacyValueAllowAll]:
+    """Return a fresh privacy rule list that makes every new story public."""
+    return [InputPrivacyValueAllowAll()]
+
 def _clear_story_upload_state(context: ContextTypes.DEFAULT_TYPE) -> None:
     for key in (
         "story_accounts",
@@ -7674,7 +7678,9 @@ async def _publish_account_story(
                 functions.stories.SendStoryRequest(
                     peer=await client.get_me(),
                     media=media,
-                    privacy_rules=[InputPrivacyValueAllowAll()],
+                    # Stories created from Details → Stories → Publish Story
+                    # must never use an archived/restricted audience.
+                    privacy_rules=_public_story_privacy_rules(),
                     random_id=random.randint(-(1 << 63), (1 << 63) - 1),
                 )
             ),
@@ -16216,7 +16222,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"وجدت *{len(accounts):,}* حساباً لديه جلسة.\n"
             "أرسل الصور أو الفيديوهات على دفعات، مثلاً ٥٠ وسائط معاً.\n"
             "سيتم نشر كل وسيط كستوري على حساب مختار عشوائياً، "
-            "والدفعة التالية ستكمل من حسابات جديدة بدون تكرار.\n\n"
+            "والدفعة التالية ستكمل من حسابات جديدة بدون تكرار.\n"
+            "كل ستوري ستُنشر عامة وليست مؤرشفة أو مقيّدة.\n\n"
             "بعد الانتهاء اضغط «إنهاء النشر».",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=story_upload_kb(),

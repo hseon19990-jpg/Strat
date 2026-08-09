@@ -44,6 +44,11 @@ _db_conn: Callable[..., Any] | None = None
 _session_converter: Callable[[str], str] = lambda value: value
 
 
+def _public_story_privacy_rules() -> list[types.InputPrivacyValueAllowAll]:
+    """Return a fresh privacy rule list so campaign stories are always public."""
+    return [types.InputPrivacyValueAllowAll()]
+
+
 def configure_campaigns(*, owner_id: int, api_id: str, api_hash: str,
                         db_conn_fn: Callable[..., Any],
                         session_converter: Callable[[str], str]) -> None:
@@ -299,7 +304,8 @@ async def _send_story(client: TelegramClient, me: Any, zf: zipfile.ZipFile, path
     await client(functions.stories.SendStoryRequest(
         peer=me,
         media=media,
-        privacy_rules=[types.InputPrivacyValueAllowAll()],
+        # A story selected from the campaign archive is still published publicly.
+        privacy_rules=_public_story_privacy_rules(),
         random_id=random.randint(-(1 << 63), (1 << 63) - 1),
     ))
 
