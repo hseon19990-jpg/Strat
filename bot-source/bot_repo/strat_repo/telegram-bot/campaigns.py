@@ -408,6 +408,7 @@ def account_details_kb():
         [InlineKeyboardButton("📝 بايو الأرقام", callback_data="account_details:bio")],
         [InlineKeyboardButton("📖 ستوري الأرقام", callback_data="account_details:stories")],
         [InlineKeyboardButton("🔤 اسم الأرقام", callback_data="account_details:name")],
+        [InlineKeyboardButton("📋 أسماء متسلسلة", callback_data="account_details:name_batch")],
         [InlineKeyboardButton("@ يوزر الأرقام", callback_data="account_details:username")],
         [InlineKeyboardButton("🖼 أفتار / صور الأرقام", callback_data="account_details:avatar")],
         [InlineKeyboardButton("📤 إرسال المعلومات", callback_data="account_details:send")],
@@ -418,7 +419,7 @@ def account_details_kb():
 def _new_account_details_state() -> dict[str, Any]:
     return {
         "stage": "menu", "bios": {}, "names": {}, "usernames": {},
-        "avatars": {}, "stories": [],
+        "avatars": {}, "stories": [], "batch_names": [],
         "media_dir": tempfile.mkdtemp(prefix="telegram-account-details-"),
     }
 
@@ -437,6 +438,7 @@ def _details_menu_text(state: dict[str, Any]) -> str:
         "👤 تفاصيل الحسابات\n\n"
         f"البايو: {len(state.get('bios', {}))}\n"
         f"الأسماء: {len(state.get('names', {}))}\n"
+        f"أسماء متسلسلة: {len(state.get('batch_names', []))}\n"
         f"اليوزرات: {len(state.get('usernames', {}))}\n"
         f"الأفتارات: {len(state.get('avatars', {}))}\n"
         f"الستوريات: {len(state.get('stories', []))}\n\n"
@@ -470,7 +472,7 @@ async def account_details_callback(update: Update, context: ContextTypes.DEFAULT
         await query.edit_message_text("تم مسح تفاصيل الحملة الحالية.", reply_markup=account_details_kb())
         return
     if action == "send":
-        if not state.get("stories") and not any(state.get(k) for k in ("bios", "names", "usernames", "avatars")):
+        if not state.get("stories") and not state.get("batch_names") and not any(state.get(k) for k in ("bios", "names", "usernames", "avatars")):
             await query.answer("أرسل بيانات واحدة على الأقل أولاً.", show_alert=True)
             return
         state["stage"] = "running"
@@ -492,6 +494,7 @@ async def account_details_callback(update: Update, context: ContextTypes.DEFAULT
     prompts = {
         "bio": "أرسل البايو بهذا الشكل، سطرًا لكل حساب:\nرقم الحساب | البايو",
         "name": "أرسل الاسم بهذا الشكل:\nرقم الحساب | الاسم الأول | اللقب",
+        "name_batch": "أرسل أسماء الحسابات، اسمًا واحدًا في كل سطر (بحد أقصى 100).\nسيتم ربط كل سطر بحساب لم يُعيّن له اسم من قبل.",
         "username": "أرسل اليوزر بهذا الشكل:\nرقم الحساب | username",
         "stories": "أرسل الآن صور أو فيديوهات الستوريات واحدًا بعد الآخر. سيتم توزيعها بالتتابع.",
         "avatar": "أرسل صورة الأفتار واكتب رقم الحساب في Caption للصورة.",
@@ -520,9 +523,28 @@ def _parse_detail_lines(text: str, kind: str) -> dict[str, Any]:
 async def account_details_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     user = update.effective_user
     state = context.user_data.get(_ACCOUNT_DETAILS_KEY)
-    if not user or user.id != _owner_id or not isinstance(state, dict) or state.get("stage") not in {"bio", "name", "username"}:
+    if not user or user.id != _owner_id or not isinstance(state, dict) or state.get("stage") not in {"bio", "name", "name_batch", "username"}:
         return False
-    parsed = _parse_detail_lines((update.message.text or "").strip(), state["stage"] )
+    raw_text = (update.message.text or "").strip()
+    if state["stage"] == "name_batch":
+        names = [line.strip() for line in raw_text.splitlines() if line.strip()]
+        if not names:
+            await update.message.reply_text("أرسل اسمًا واحدًا على الأقل، اسم واحد في كل سطر.")
+            return True
+        if len(names) > _MAX_ACCOUNTS:
+            await update.message.reply_text(f"الحد الأقصى هو {_MAX_ACCOUNTS} اسمًا في الرسالة الواحدة.")
+            return True
+        if any(len(name) > 128 for name in names):
+            await update.message.reply_text("كل اسم يجب ألا يتجاوز 128 حرفًا.")
+            return True
+        state["batch_names"] = names
+        state["stage"] = "menu"
+        await update.message.reply_text(
+            f"تم حفظ {len(names)} اسمًا. عند الإرسال سيتم توزيعها على حسابات لم تستلم اسمًا من قبل.",
+            reply_markup=account_details_kb(),
+        )
+        return True
+    parsed = _parse_detail_lines(raw_text, state["stage"])
     if not parsed:
         await update.message.reply_text("الصيغة غير صحيحة. استخدم | بين رقم الحساب والبيانات.")
         return True
@@ -572,10 +594,73 @@ def _all_detail_rows() -> list[dict[str, Any]]:
     with _db_conn() as conn:
         return conn.execute("SELECT id, phone_number, session_string FROM number_stock WHERE session_string IS NOT NULL AND deleted_at IS NULL ORDER BY id").fetchall()
 
+def _split_display_name(value: str) -> tuple[str, str]:
+    parts = value.split(None, 1)
+    first_name = parts[0].strip()
+    last_name = parts[1].strip() if len(parts) == 2 else ""
+    if len(first_name) > 64 or len(last_name) > 64:
+        raise ValueError("يجب ألا يتجاوز الاسم الأول أو اللقب 64 حرفًا.")
+    return first_name, last_name
+
+def _claim_batch_names(
+    names: list[str], rows: list[dict[str, Any]],
+) -> list[tuple[dict[str, Any], dict[str, str]]]:
+    if _db_conn is None:
+        raise RuntimeError("قاعدة البيانات غير مهيأة")
+    rows_by_phone = {
+        _details_phone(row.get("phone_number", "")): row
+        for row in rows
+        if _details_phone(row.get("phone_number", ""))
+    }
+    claimed: list[tuple[dict[str, Any], dict[str, str]]] = []
+    with _db_conn() as conn:
+        for display_name in names:
+            first_name, last_name = _split_display_name(display_name)
+            result = conn.execute(
+                """
+                INSERT INTO account_name_assignments (phone_number, assigned_name)
+                SELECT ns.phone_number, %s
+                FROM number_stock ns
+                WHERE ns.session_string IS NOT NULL
+                  AND ns.deleted_at IS NULL
+                  AND ns.phone_number IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM account_name_assignments assigned
+                      WHERE assigned.phone_number = ns.phone_number
+                  )
+                ORDER BY ns.id
+                LIMIT 1
+                ON CONFLICT (phone_number) DO NOTHING
+                RETURNING phone_number
+                """,
+                (display_name,),
+            )
+            row = conn.fetchone()
+            if not row:
+                raise ValueError(
+                    f"لا توجد حسابات متاحة جديدة لتعيين الاسم: {display_name}"
+                )
+            phone = _details_phone(row["phone_number"])
+            source_row = rows_by_phone.get(phone)
+            if not source_row:
+                raise ValueError(f"تعذر العثور على جلسة الحساب: {phone}")
+            claimed.append((
+                source_row,
+                {"first_name": first_name, "last_name": last_name},
+            ))
+    return claimed
+
 def _build_details_archive(state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     rows = _all_detail_rows()
     if not rows:
         raise ValueError("لا توجد حسابات بجلسات صالحة في مخزون البوت")
+    if state.get("batch_names") and not state.get("claimed_batch_names"):
+        state["claimed_batch_names"] = _claim_batch_names(state["batch_names"], rows)
+    if state.get("claimed_batch_names"):
+        rows = [row for row, _ in state["claimed_batch_names"]]
+        for row, name_data in state["claimed_batch_names"]:
+            state.setdefault("names", {})[_details_phone(row.get("phone_number", ""))] = name_data
     zip_path = tempfile.mktemp(prefix="telegram-account-details-", suffix=".zip")
     stories: list[str] = []
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:

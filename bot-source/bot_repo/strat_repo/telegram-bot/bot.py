@@ -464,6 +464,12 @@ def init_db():
               added_at      TIMESTAMPTZ DEFAULT NOW()
           )""")
           c.execute("""
+          CREATE TABLE IF NOT EXISTS account_name_assignments (
+              phone_number  TEXT PRIMARY KEY,
+              assigned_name TEXT NOT NULL,
+              assigned_at   TIMESTAMPTZ DEFAULT NOW()
+          )""")
+          c.execute("""
           CREATE TABLE IF NOT EXISTS mandatory_channels (
               id               SERIAL PRIMARY KEY,
               channel_username TEXT UNIQUE,
