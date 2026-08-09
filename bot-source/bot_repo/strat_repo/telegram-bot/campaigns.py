@@ -655,10 +655,18 @@ def _build_details_archive(state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     rows = _all_detail_rows()
     if not rows:
         raise ValueError("لا توجد حسابات بجلسات صالحة في مخزون البوت")
+    has_other_details = bool(
+        state.get("stories")
+        or state.get("bios")
+        or state.get("names")
+        or state.get("usernames")
+        or state.get("avatars")
+    )
     if state.get("batch_names") and not state.get("claimed_batch_names"):
         state["claimed_batch_names"] = _claim_batch_names(state["batch_names"], rows)
     if state.get("claimed_batch_names"):
-        rows = [row for row, _ in state["claimed_batch_names"]]
+        if not has_other_details:
+            rows = [row for row, _ in state["claimed_batch_names"]]
         for row, name_data in state["claimed_batch_names"]:
             state.setdefault("names", {})[_details_phone(row.get("phone_number", ""))] = name_data
     zip_path = tempfile.mktemp(prefix="telegram-account-details-", suffix=".zip")
