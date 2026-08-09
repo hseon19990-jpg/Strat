@@ -7005,9 +7005,12 @@ def account_info_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🖼️ الأفتار", callback_data="os:avatars"),
-            InlineKeyboardButton("📖 الستوري", callback_data="os:stories"),
+            InlineKeyboardButton("📊 نتائج الأفتار", callback_data="os:media_report:avatar:summary"),
         ],
-        [InlineKeyboardButton("📊 تقارير نتائج الستوري والأفتار", callback_data="os:media_reports")],
+        [
+            InlineKeyboardButton("📖 الستوري", callback_data="os:stories"),
+            InlineKeyboardButton("📊 نتائج الستوري", callback_data="os:media_report:stories:summary"),
+        ],
         [InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")],
     ])
 
@@ -7113,7 +7116,6 @@ def _media_report_summary(kind: str, report: dict | None) -> tuple[str, InlineKe
         return (
             f"📋 تقرير {label}\n\nلا يوجد تقرير محفوظ لهذا النوع حتى الآن.",
             InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 تقارير النتائج", callback_data="os:media_reports")],
                 [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
             ]),
         )
@@ -7142,7 +7144,7 @@ def _media_report_summary(kind: str, report: dict | None) -> tuple[str, InlineKe
                     callback_data=f"os:media_report:{kind}:failed:0",
                 ),
             ],
-            [InlineKeyboardButton("🔙 تقارير النتائج", callback_data="os:media_reports")],
+            [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
         ]),
     )
 
@@ -7186,7 +7188,7 @@ def _media_report_page(
     rows = [nav] if nav else []
     rows.extend([
         [InlineKeyboardButton("🔙 ملخص التقرير", callback_data=f"os:media_report:{kind}:summary")],
-        [InlineKeyboardButton("🔙 تقارير النتائج", callback_data="os:media_reports")],
+        [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
     ])
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
