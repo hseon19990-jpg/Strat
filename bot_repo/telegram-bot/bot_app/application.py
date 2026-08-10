@@ -190,6 +190,17 @@ def main():
                 logger.warning(f"🧊 حُذفت {_frz_deleted} أرقام مجمّدة تلقائياً عند الإقلاع.")
         except Exception as e:
             logger.warning(f"⚠️ تنظيف الأرقام المجمّدة (startup): {e}")
+
+        # ─── التحقق من وجود GEMINI_API_KEY و OPENAI_API_KEY ───
+        gemini_key = os.environ.get("GEMINI_API_KEY", "")
+        openai_key = os.environ.get("OPENAI_API_KEY", "")
+        if not gemini_key and not openai_key:
+            logger.warning("⚠️ لا يوجد مفتاح Gemini أو OpenAI — خدمات التحقق التلقائي لن تعمل.")
+        elif gemini_key:
+            logger.info("✅ GEMINI_API_KEY موجودة")
+        elif openai_key:
+            logger.info("✅ OPENAI_API_KEY موجودة (بدون Gemini)")
+
     async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         err = context.error
         if isinstance(err, RetryAfter):
