@@ -41,7 +41,6 @@ async def pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     valid = True
 
         # ─── إحالة بوت إجبارية بالنجوم ───
-        # payload: forced_ref_stars:{user_id}:{qty}:{total_stars}:{use_ai}:{cost_pts_channels}
         if payload.startswith("forced_ref_stars:"):
             parts = payload.split(":")
             if len(parts) >= 5 and parts[1].isdigit() and parts[3].isdigit():
@@ -50,8 +49,7 @@ async def pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if query.from_user.id == uid_in_payload and query.total_amount == expected_stars:
                     valid = True
 
-        # الخدمات الأسطورية بالنجوم
-        # payload: legendary_stars:{user_id}:{service_type}:{quantity}:{stars}
+        # ─── الخدمات الأسطورية بالنجوم ───
         if payload.startswith("legendary_stars:"):
             parts = payload.split(":")
             if (
@@ -175,7 +173,6 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
 
     # ─── إحالة بوت إجبارية بالنجوم ───
-    # payload: forced_ref_stars:{user_id}:{qty}:{total_stars}:{use_ai}:{cost_pts_channels}
     elif payload.startswith("forced_ref_stars:"):
         parts           = payload.split(":")
         _uid            = int(parts[1])
@@ -648,7 +645,7 @@ async def cmd_status_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔹 الخدمة: {order['name_ar'] or '—'}\n"
         f"🔗 الرابط: {order['link']}\n"
         f"🔢 الكمية: {order['quantity']}\n"
-        f"💰 التكلفة: {order['cost_points']} نقطة\n"
+        f"💰 التكلفة: {order['cost_points']} نقطة\n
         f"📊 الحالة: {status_label}\n"
         f"🆔 كود API: {order['api_order_id'] or '—'}\n"
         f"🕐 التاريخ: {order['created_at']}",
