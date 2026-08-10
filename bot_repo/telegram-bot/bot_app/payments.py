@@ -645,7 +645,7 @@ async def cmd_status_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔹 الخدمة: {order['name_ar'] or '—'}\n"
         f"🔗 الرابط: {order['link']}\n"
         f"🔢 الكمية: {order['quantity']}\n"
-        f"💰 التكلفة: {order['cost_points']} نقطة\n
+        f"💰 التكلفة: {order['cost_points']} نقطة\n"
         f"📊 الحالة: {status_label}\n"
         f"🆔 كود API: {order['api_order_id'] or '—'}\n"
         f"🕐 التاريخ: {order['created_at']}",
