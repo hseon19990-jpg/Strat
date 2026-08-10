@@ -355,20 +355,148 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
         except Exception:
             return None
 
+    # ════════════════════════════════════════════════════════════
+    # 🔥 _solve_text: يستخدم Groq أولاً، ثم DeepSeek، ثم Gemini، ثم OpenAI
+    # ════════════════════════════════════════════════════════════
     async def _solve_text(prompt: str) -> str | None:
-        # Try Gemini first
-        if GEMINI_URL:
-            result = await _gemini_text(prompt)
+        """
+        يحل النصوص باستخدام Groq API أولاً (أسرع وأكثر استقراراً).
+        في حال فشل Groq، يستخدم DeepSeek كاحتياطي.
+        """
+        
+        GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+        DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+        
+        # ── المحاولة 1: Groq (الأسرع والأفضل) ──
+        if GROQ_API_KEY:
+            def _groq_request():
+                try:
+                    r = requests.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {GROQ_API_KEY}",
+                            "Content-Type": "application/json"
+                        },
+                        json={
+                            "model": "llama3-70b-8192",
+                            "messages": [{"role": "user", "content": prompt}],
+                            "max_tokens": 20,
+                            "temperature": 0
+                        },
+                        timeout=15
+                    )
+                    if r.status_code == 200:
+                        data = r.json()
+                        if data.get("choices"):
+                            return data["choices"][0]["message"]["content"].strip()
+                    else:
+                        logger.warning(f"⚠️ Groq error: {r.status_code} - {r.text[:200]}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Groq exception: {e}")
+                return None
+            
+            result = await asyncio.to_thread(_groq_request)
             if result:
+                logger.info(f"🤖 Groq → '{result[:30]}...'")
                 return result
-        # Try OpenAI as fallback
+            logger.warning("⚠️ Groq فشل، جارٍ الانتقال إلى DeepSeek...")
+        
+        # ── المحاولة 2: DeepSeek (احتياطي) ──
+        if DEEPSEEK_API_KEY:
+            def _deepseek_request():
+                try:
+                    r = requests.post(
+                        "https://api.deepseek.com/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                            "Content-Type": "application/json"
+                        },
+                        json={
+                            "model": "deepseek-chat",
+                            "messages": [{"role": "user", "content": prompt}],
+                            "max_tokens": 20,
+                            "temperature": 0
+                        },
+                        timeout=15
+                    )
+                    if r.status_code == 200:
+                        data = r.json()
+                        if data.get("choices"):
+                            return data["choices"][0]["message"]["content"].strip()
+                    else:
+                        logger.warning(f"⚠️ DeepSeek error: {r.status_code} - {r.text[:200]}")
+                except Exception as e:
+                    logger.warning(f"⚠️ DeepSeek exception: {e}")
+                return None
+            
+            result = await asyncio.to_thread(_deepseek_request)
+            if result:
+                logger.info(f"🤖 DeepSeek → '{result[:30]}...'")
+                return result
+            logger.warning("⚠️ DeepSeek فشل أيضاً!")
+        
+        # ── المحاولة 3: Gemini (آخر خيار) ──
+        if GEMINI_URL:
+            return await _gemini_text(prompt)
+        
+        # ── المحاولة 4: OpenAI (آخر خيار) ──
         if OPENAI_API_KEY:
             return await _openai_text(prompt)
+        
         return None
 
+    # ════════════════════════════════════════════════════════════
+    # 🔥 _solve_image: يستخدم Groq Vision أولاً، ثم Gemini
+    # ════════════════════════════════════════════════════════════
     async def _solve_image(prompt: str, img_bytes: bytes) -> str | None:
+        """يحل صور الكابتشا باستخدام Groq (يدعم الرؤية) أو Gemini."""
+        
+        GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+        
+        # Groq يدعم الرؤية عبر llama-3.2-90b-vision
+        if GROQ_API_KEY:
+            def _groq_vision_request():
+                try:
+                    import base64
+                    img_b64 = base64.b64encode(img_bytes).decode()
+                    r = requests.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {GROQ_API_KEY}",
+                            "Content-Type": "application/json"
+                        },
+                        json={
+                            "model": "llama-3.2-90b-vision-preview",
+                            "messages": [{
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": prompt},
+                                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
+                                ]
+                            }],
+                            "max_tokens": 20,
+                            "temperature": 0
+                        },
+                        timeout=35
+                    )
+                    if r.status_code == 200:
+                        data = r.json()
+                        if data.get("choices"):
+                            return data["choices"][0]["message"]["content"].strip()
+                    else:
+                        logger.warning(f"⚠️ Groq Vision error: {r.status_code}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Groq Vision exception: {e}")
+                return None
+            
+            result = await asyncio.to_thread(_groq_vision_request)
+            if result:
+                return result
+        
+        # Fallback إلى Gemini
         if GEMINI_URL:
             return await _gemini_image(prompt, img_bytes)
+        
         return None
 
     def _is_success(text: str) -> bool:
@@ -605,9 +733,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                                     if btn_emojis and btn_emojis[0] == target_emoji:
                                         direct_chosen = btn
                                         logger.info(f"🎯 كشف إيموجي بمطابقة الكود '{target_emoji}' ({phone})")
-                                        break
-
-                    if direct_chosen:
+                                        break                    if direct_chosen:
                         processed_ids.add(msg_id)
                         await direct_chosen.click()
                         result, msgs = await _wait_and_check()
