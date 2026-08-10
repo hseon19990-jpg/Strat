@@ -41,7 +41,6 @@ async def pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     valid = True
 
         # ─── إحالة بوت إجبارية بالنجوم ───
-        # payload: forced_ref_stars:{user_id}:{qty}:{total_stars}:{use_ai}:{cost_pts_channels}
         if payload.startswith("forced_ref_stars:"):
             parts = payload.split(":")
             if len(parts) >= 5 and parts[1].isdigit() and parts[3].isdigit():
@@ -51,7 +50,6 @@ async def pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     valid = True
 
         # الخدمات الأسطورية بالنجوم
-        # payload: legendary_stars:{user_id}:{service_type}:{quantity}:{stars}
         if payload.startswith("legendary_stars:"):
             parts = payload.split(":")
             if (
@@ -107,6 +105,8 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     # ─── الخدمات الأسطورية بالنجوم ───
     elif payload.startswith("legendary_stars:"):
+        from .legendary_comment import execute_legendary_order, get_service_display_name
+
         parts = payload.split(":")
         if (
             len(parts) != 5
@@ -161,21 +161,33 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
             return
 
         context.user_data["legendary_stars_cost"] = expected_stars
-        # رسالة الدفع الناجح رسالة خدمة واردة ولا يمكن الاعتماد على تعديلها.
-        # أنشئ رسالة يملكها البوت لتحديث التقدم والنتيجة عليها.
+
+        # Create progress message
         progress_message = await update.message.reply_text(
-            "⏳ تم تأكيد الدفع بالنجوم، وجاري بدء تنفيذ الخدمة..."
+            f"⏳ تم تأكيد الدفع بالنجوم، جاري بدء تنفيذ خدمة {get_service_display_name(service_type)}..."
         )
+
+        # We need to create a dummy callback query object for execute_legendary_order
+        class DummyQ:
+            def __init__(self, msg):
+                self.message = msg
+                self.from_user = update.effective_user
+            async def edit_message_text(self, text, **kwargs):
+                return await progress_message.edit_text(text, **kwargs)
+            async def delete_message(self):
+                return await progress_message.delete()
+
+        dummy_q = DummyQ(progress_message)
+
         await execute_legendary_order(
             update,
             context,
-            progress_message,
+            dummy_q,
             is_own,
             "stars",
         )
 
     # ─── إحالة بوت إجبارية بالنجوم ───
-    # payload: forced_ref_stars:{user_id}:{qty}:{total_stars}:{use_ai}:{cost_pts_channels}
     elif payload.startswith("forced_ref_stars:"):
         parts           = payload.split(":")
         _uid            = int(parts[1])
