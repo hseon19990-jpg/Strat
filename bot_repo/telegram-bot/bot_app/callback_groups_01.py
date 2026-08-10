@@ -188,6 +188,14 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             )
             return
 
+        if data == "legendary_comment:skip_channel":
+            await legendary_comment_skip_channel(update, context, q, is_own)
+            return
+
+        if data == "legendary_comment:confirm":
+            await legendary_comment_confirm(update, context, q, is_own)
+            return
+
         if data in SERVICE_PLATFORM_MENUS:
             context.user_data["state"] = data
             context.user_data["current_platform"] = PLATFORM_MENU_MAP.get(data, "tg")
@@ -221,6 +229,9 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             label = legendary_labels.get(data)
             if not label:
                 await q.answer("⚠️ الخيار غير متاح حالياً.", show_alert=True)
+                return
+            if data == "legendary:comment":
+                await legendary_comment_start(update, context, q, is_own)
                 return
             await q.edit_message_text(
                 f"👑 *{label}*\n\n"

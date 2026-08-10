@@ -158,6 +158,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
+    if await legendary_comment_handle_text(update, context, text):
+        return
+
     if state == "os_await_thank_owner_setting" and is_own:
         key = context.user_data.get("thank_owner_setting_key")
         if key not in THANK_OWNER_SETTINGS:
