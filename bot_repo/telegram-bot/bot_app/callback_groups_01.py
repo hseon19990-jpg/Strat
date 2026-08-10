@@ -944,10 +944,10 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 await q.edit_message_text(
                     "\n".join(_lines), parse_mode=ParseMode.MARKDOWN,
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:bot_ref_numbers")]]))
-                except Exception:
-                    await q.message.reply_text(
-                        "\n".join(_lines), parse_mode=ParseMode.MARKDOWN,
-                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:bot_ref_numbers")]]))
+            except Exception:
+                await q.message.reply_text(
+                    "\n".join(_lines), parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:bot_ref_numbers")]]))
             return
 
         if data.startswith("fref_kick:") and is_own:
