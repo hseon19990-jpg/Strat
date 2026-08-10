@@ -1062,7 +1062,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                     f"⚙️ *إدارة العضو المقيد*\n\n"
                     f"👤 *{_name}*{_un}\n"
                     f"🆔 `{_rm_uid}`\n"
-                    f"💰 رصيده الحالي: *{_pts:,} نقطة*\n
+                    f"💰 رصيده الحالي: *{_pts:,} نقطة*\n"
                     f"📊 إجمالي إحالاته: *{_rm_cnt}* إحالة\n\n"
                 ]
                 if _rm_refs:
