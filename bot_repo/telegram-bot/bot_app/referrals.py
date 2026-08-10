@@ -222,8 +222,17 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
     يستخدم Gemini AI أو OpenAI لكشف وحل جميع أنواع التحقق الشائعة في بوتات تيليغرام.
     يُرجع (solved: bool, detail: str).
     """
+    # ════════════════════════════════════════════════════════════
+    # 🔥 DEBUG: تأكد من أن الدالة تُستدعى والمفاتيح موجودة
+    # ════════════════════════════════════════════════════════════
+    logger.info(f"🔥🔥🔥 solve_captcha_with_ai تم استدعاؤها للرقم {phone} 🔥🔥🔥")
+    
     GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
     OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+    
+    logger.info(f"🔑 GEMINI_API_KEY موجود: {bool(GEMINI_API_KEY)} | طوله: {len(GEMINI_API_KEY)}")
+    logger.info(f"🔑 OPENAI_API_KEY موجود: {bool(OPENAI_API_KEY)} | طوله: {len(OPENAI_API_KEY)}")
+    # ════════════════════════════════════════════════════════════
 
     if not GEMINI_API_KEY and not OPENAI_API_KEY:
         return False, "لا يوجد مفتاح API للتحقق (Gemini أو OpenAI)"
@@ -282,6 +291,9 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                     data = r.json()
                     if data.get("candidates"):
                         return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                else:
+                    # 🔥 تسجيل الرد كاملاً لمعرفة الخطأ
+                    logger.warning(f"⚠️ Gemini API error {phone}: {r.status_code} - {r.text[:300]}")
             except Exception as _e:
                 logger.warning(f"⚠️ Gemini text error ({phone}): {_e}")
             return None
@@ -308,6 +320,8 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                     data = r.json()
                     if data.get("candidates"):
                         return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                else:
+                    logger.warning(f"⚠️ Gemini image error {phone}: {r.status_code} - {r.text[:200]}")
             except Exception as _e:
                 logger.warning(f"⚠️ Gemini image error ({phone}): {_e}")
             return None
@@ -331,6 +345,8 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                     data = r.json()
                     if data.get("choices"):
                         return data["choices"][0]["message"]["content"].strip()
+                else:
+                    logger.warning(f"⚠️ OpenAI error {phone}: {r.status_code} - {r.text[:200]}")
             except Exception as _e:
                 logger.warning(f"⚠️ OpenAI text error ({phone}): {_e}")
             return None
@@ -392,6 +408,8 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
 
     # ── حلقة المحاولات (تدعم تحقق متعدد المراحل) ─────────────
     for _round in range(max_attempts):
+        logger.info(f"🔄 محاولة حل الكابتشا {_round+1}/{max_attempts} للرقم {phone}")
+        
         if _round > 0:
             await asyncio.sleep(4)
             msgs = await client.get_messages(bot_entity, limit=15)
@@ -411,6 +429,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
 
             # اكتشاف نجاح مبكر — إذا وصلنا رسالة ترحيب بعد حل سابق
             if _is_success(msg_text) and all_details:
+                logger.info(f"✅ تم حل الكابتشا للرقم {phone} في المحاولة {_round+1}")
                 return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
 
             # ════════════════════════════════════════════════════
@@ -437,6 +456,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                         detail = f"كابتشا صورة: {answer}"
                         all_details.append(detail)
                         if result == "success":
+                            logger.info(f"✅ تم حل الكابتشا للرقم {phone} في المحاولة {_round+1}")
                             return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
                         elif result == "fail":
                             break  # حاول في الجولة التالية
@@ -473,6 +493,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                     detail = "شارك ملفه الشخصي (Contact)"
                     all_details.append(detail)
                     if result == "success":
+                        logger.info(f"✅ تم حل الكابتشا للرقم {phone} في المحاولة {_round+1}")
                         return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
                     elif result != "fail":
                         return True, f"أُرسل الملف الشخصي | {' | '.join(all_details)}"
@@ -515,6 +536,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                         all_details.append(detail)
                         logger.info(f"🤖 AI Poll → '{answers[chosen_idx]}' ({phone})")
                         if result == "success":
+                            logger.info(f"✅ تم حل الكابتشا للرقم {phone} في المحاولة {_round+1}")
                             return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
                         elif result != "fail":
                             return True, f"أجاب على اختبار | {' | '.join(all_details)}"
@@ -592,6 +614,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                         detail = f"ضغط إيموجي مباشر: {getattr(direct_chosen, 'text', '')}"
                         all_details.append(detail)
                         if result == "success":
+                            logger.info(f"✅ تم حل الكابتشا للرقم {phone} في المحاولة {_round+1}")
                             return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
                         elif result == "fail":
                             break  # حاول مجدداً
@@ -651,6 +674,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             detail = f"ضغط زر: {getattr(chosen, 'text', '')}"
                             all_details.append(detail)
                             if result == "success":
+                                logger.info(f"✅ تم حل الكابتشا للرقم {phone} في المحاولة {_round+1}")
                                 return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
                             elif result == "fail":
                                 break  # حاول مجدداً
@@ -685,6 +709,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                         detail = f"أجاب: {answer}"
                         all_details.append(detail)
                         if result == "success":
+                            logger.info(f"✅ تم حل الكابتشا للرقم {phone} في المحاولة {_round+1}")
                             return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
                         elif result == "fail":
                             break  # حاول مجدداً
@@ -720,6 +745,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                         all_details.append(detail)
                         logger.info(f"🤖 AI Reaction → '{emoji_clean}' ({phone})")
                         if result == "success":
+                            logger.info(f"✅ تم حل الكابتشا للرقم {phone} في المحاولة {_round+1}")
                             return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
                         elif result != "fail":
                             return True, f"أُرسل التفاعل | {' | '.join(all_details)}"
@@ -728,7 +754,10 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
 
     # ── النتيجة النهائية ───────────────────────────────────────
     if all_details:
+        logger.info(f"ℹ️ تم حل الكابتشا جزئياً للرقم {phone}: {all_details}")
         return True, f"حُلّ جزئياً | {' | '.join(all_details)}"
+    
+    logger.warning(f"❌ لم يتم حل الكابتشا للرقم {phone} بعد {max_attempts} محاولات")
     return False, "لم يُكتشف تحقق"
 
 
@@ -817,6 +846,12 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
     — success=True,  reactivated=True  → البوت كان مفعّلاً مسبقاً (لا تعويض)
     — success=False, reactivated=False → فشل حقيقي (تُستردّ نقاطه تلقائياً)
     """
+    # ════════════════════════════════════════════════════════════
+    # 🔥 DEBUG: تأكد من وصول use_ai
+    # ════════════════════════════════════════════════════════════
+    logger.info(f"🚀 do_referral_for_number: {phone} → @{bot_username} | use_ai={use_ai} | start_param={start_param}")
+    # ════════════════════════════════════════════════════════════
+
     # ── تخطي فوري: إذا كان البوت المستهدف هو البوت نفسه (ارشقلي) ──
     _clean_target = bot_username.lower().lstrip("@").strip()
     if _OWN_BOT_USERNAME and _clean_target == _OWN_BOT_USERNAME:
