@@ -226,6 +226,11 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 await legendary_payment_callback(update, context, q, is_own, payment_method)
                 return
             
+            # Handle premium reaction selection
+            if data.startswith("legendary:reaction:"):
+                await legendary_premium_reaction_callback(update, context, q, is_own, data)
+                return
+            
             # Map service type to handler
             service_map = {
                 "legendary:comment": "comment",
@@ -939,10 +944,10 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 await q.edit_message_text(
                     "\n".join(_lines), parse_mode=ParseMode.MARKDOWN,
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:bot_ref_numbers")]]))
-            except Exception:
-                await q.message.reply_text(
-                    "\n".join(_lines), parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:bot_ref_numbers")]]))
+                except Exception:
+                    await q.message.reply_text(
+                        "\n".join(_lines), parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:bot_ref_numbers")]]))
             return
 
         if data.startswith("fref_kick:") and is_own:
@@ -1057,7 +1062,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                     f"⚙️ *إدارة العضو المقيد*\n\n"
                     f"👤 *{_name}*{_un}\n"
                     f"🆔 `{_rm_uid}`\n"
-                    f"💰 رصيده الحالي: *{_pts:,} نقطة*\n"
+                    f"💰 رصيده الحالي: *{_pts:,} نقطة*\n
                     f"📊 إجمالي إحالاته: *{_rm_cnt}* إحالة\n\n"
                 ]
                 if _rm_refs:
