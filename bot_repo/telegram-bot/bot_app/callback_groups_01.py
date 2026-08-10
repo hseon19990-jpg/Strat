@@ -176,7 +176,10 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 await q.answer("⚠️ خدمات أسطورية مخفية حالياً من قبل المالك.", show_alert=True)
                 return
             context.user_data["state"] = "legendary_services"
-            rows = build_kb_rows(get_menu_items("legendary_services"))
+            # Get items and filter out forced_ref options
+            items = get_menu_items("legendary_services")
+            filtered_items = [item for item in items if not item["action_value"].startswith("legendary:forced_ref")]
+            rows = build_kb_rows(filtered_items)
             if is_own:
                 rows.append([InlineKeyboardButton("🧩 إضافة/إزالة خيار", callback_data="mb_menu:legendary_services")])
             rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")])
@@ -227,8 +230,6 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 "legendary:votes": "votes",
                 "legendary:votes_ai": "votes_ai",
                 "legendary:premium_reaction": "premium_reaction",
-                "legendary:forced_ref": "forced_ref",
-                "legendary:forced_ref_ai": "forced_ref_ai",
             }
             
             service_type = service_map.get(data)
