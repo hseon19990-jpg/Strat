@@ -305,13 +305,7 @@ async def legendary_comment_handle_text(update, context, text: str) -> bool:
         return False
 
     state = context.user_data.get("state", "")
-    if state not in {
-        "legendary_comment_channel",
-        "legendary_comment_post",
-        "legendary_comment_text",
-    }:
-        return False
-
+    
     # --- Step 1: Channel Link ---
     if state == "legendary_comment_channel":
         ref, display = _parse_channel_reference(text)
@@ -351,7 +345,7 @@ async def legendary_comment_handle_text(update, context, text: str) -> bool:
         )
         return True
 
-    # --- Step 3: Comment Text ---
+    # --- Step 3: Comment Text (and show confirmation) ---
     if state == "legendary_comment_text":
         if not text or len(text) > 4096:
             await update.message.reply_text("⚠️ أرسل نصاً بين حرف واحد و4096 حرفاً.")
@@ -365,6 +359,9 @@ async def legendary_comment_handle_text(update, context, text: str) -> bool:
         total_cost = (LEGENDARY_COMMENT_COST * available) + channel_cost
         channel_display = "نعم (+30)" if channel_cost else "لا"
 
+        # IMPORTANT: Set state to confirm so the callback works
+        context.user_data["state"] = "legendary_comment_confirm"
+
         await update.message.reply_text(
             f"📋 *مراجعة الطلب:*\n\n"
             f"📺 القناة: {channel_display}\n"
@@ -374,7 +371,9 @@ async def legendary_comment_handle_text(update, context, text: str) -> bool:
             f"💰 رسوم القناة: {channel_cost} نقطة\n"
             f"💎 *الإجمالي الكلي:* {total_cost} نقطة\n\n"
             f"🕒 سيغادر البوت القناة تلقائياً بعد {LEGENDARY_STAY_HOURS} ساعة.\n\n"
+            f"📝 *نص التعليق:*\n`{text[:200]}{'...' if len(text) > 200 else ''}`\n\n"
             "اضغط تأكيد للتنفيذ:",
+            parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(
                 [
                     [InlineKeyboardButton("✅ تأكيد التنفيذ", callback_data="legendary_comment:confirm")],
@@ -382,7 +381,6 @@ async def legendary_comment_handle_text(update, context, text: str) -> bool:
                 ]
             ),
         )
-        context.user_data["state"] = "legendary_comment_quantity"  # Keep state for confirmation
         return True
 
     return False
@@ -397,7 +395,9 @@ async def legendary_comment_confirm(update, context, q, is_own: bool) -> None:
         await q.answer("⛔ هذه الخدمة متاحة للمالك فقط.", show_alert=True)
         return
 
-    if context.user_data.get("state") != "legendary_comment_quantity":
+    # Check state - allow both states for flexibility
+    current_state = context.user_data.get("state", "")
+    if current_state not in ("legendary_comment_confirm", "legendary_comment_quantity"):
         await q.answer("⚠️ انتهت صلاحية الطلب، ابدأ من جديد.", show_alert=True)
         return
 
