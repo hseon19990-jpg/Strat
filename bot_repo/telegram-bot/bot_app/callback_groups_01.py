@@ -37,7 +37,6 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                         )
                         return
         
-                    # قفل المعاملة يمنع ضغطتين متزامنتين من إرسال إشعارين.
                     lock = c.execute(
                         "SELECT pg_try_advisory_xact_lock(%s) AS acquired",
                         (sub_id,)
@@ -107,7 +106,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             return
 
         if data.startswith("owner_fwd:") and is_own:
-            parts  = data.split(":", 2)   # ["owner_fwd", "yes/no", "key"]
+            parts  = data.split(":", 2)
             action = parts[1] if len(parts) > 1 else ""
             key    = parts[2] if len(parts) > 2 else ""
             pending = _pending_group_msgs.pop(key, None)
@@ -182,7 +181,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 rows.append([InlineKeyboardButton("🧩 إضافة/إزالة خيار", callback_data="mb_menu:legendary_services")])
             rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")])
             await q.edit_message_text(
-                f"👑 *خدمات أسطورية*\n\n{LEGENDARY_SERVICES_MESSAGE}\n\nاختر نوع الرشق:",
+                f"{LEGENDARY_SERVICES_MESSAGE}",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup(rows)
             )
@@ -194,6 +193,51 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
 
         if data == "legendary_comment:confirm":
             await legendary_comment_confirm(update, context, q, is_own)
+            return
+
+        # ─── الخدمات الأسطورية ──────────────────────────────────────────
+        if data.startswith("legendary:"):
+            if data == "legendary:price_settings" and is_own:
+                await q.edit_message_text(
+                    "💰 *تعديل أسعار الخدمات الأسطورية*\n\nاختر الخدمة لتعديل سعرها:",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=get_price_settings_kb()
+                )
+                return
+            
+            if data.startswith("legendary:edit_price:") and is_own:
+                service_type = data.split(":")[2]
+                await legendary_edit_price(update, context, q, is_own, service_type)
+                return
+            
+            if data == "legendary:skip_channel":
+                await legendary_skip_channel(update, context, q, is_own)
+                return
+            
+            if data.startswith("legendary:pay:"):
+                payment_method = data.split(":")[2]
+                await legendary_payment_callback(update, context, q, is_own, payment_method)
+                return
+            
+            # Map service type to handler
+            service_map = {
+                "legendary:comment": "comment",
+                "legendary:poll": "poll",
+                "legendary:story": "story",
+                "legendary:votes": "votes",
+                "legendary:votes_ai": "votes_ai",
+                "legendary:premium_reaction": "premium_reaction",
+                "legendary:forced_ref": "forced_ref",
+                "legendary:forced_ref_ai": "forced_ref_ai",
+            }
+            
+            service_type = service_map.get(data)
+            if service_type:
+                await legendary_service_start(update, context, q, is_own, service_type)
+                return
+            
+            # Fallback
+            await q.answer("⚠️ الخيار غير متاح حالياً.", show_alert=True)
             return
 
         if data in SERVICE_PLATFORM_MENUS:
@@ -216,34 +260,6 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
         if data.startswith("cat:"):
             cat = data.split(":")[1]
             await show_category_services(update, context, cat)
-            return
-
-        if data.startswith("legendary:"):
-            legendary_labels = {
-                "legendary:poll": "رشق استفتاء",
-                "legendary:story_view_reaction": "رشق مشاهدة وتفاعل ستوري",
-                "legendary:votes": "رشق اصوات",
-                "legendary:comment": "رشق تعليق",
-                "legendary:premium_reaction": "رشق تفاعل مميز",
-            }
-            label = legendary_labels.get(data)
-            if not label:
-                await q.answer("⚠️ الخيار غير متاح حالياً.", show_alert=True)
-                return
-            if data == "legendary:comment":
-                await legendary_comment_start(update, context, q, is_own)
-                return
-            await q.edit_message_text(
-                f"👑 *{label}*\n\n"
-                f"{LEGENDARY_SERVICES_MESSAGE}\n\n"
-                "هذه الخدمة مخصصة للرشق عبر الحسابات الأسطورية المصرّح بها فقط.\n"
-                "سيتم تفعيل الطلب بعد تجهيز الحسابات الحقيقية الخاصة بهذا النوع.",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 رجوع للخدمات الأسطورية", callback_data="legendary_services")],
-                    [InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="main_menu")],
-                ])
-            )
             return
 
         if data.startswith("mi_text:"):
@@ -293,7 +309,6 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             return
 
         if data == 'forced_ref':
-            # تحقق إن كان الزر مفعلاً من إعدادات المالك
             with db_conn() as _c:
                 _fr_row = _c.execute(
                     "SELECT enabled FROM menu_items WHERE menu='main' AND action_value='forced_ref' AND action_type='builtin' LIMIT 1"
@@ -305,7 +320,6 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 await q.answer('⚠️ هذه الخدمة غير متاحة حالياً.', show_alert=True)
                 return
         
-            # ── شاشة الاختيار: تحقق أم بدون تحقق ──
             avail = get_forced_ref_account_count()
             kb_rows = []
         
@@ -763,7 +777,6 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
         if data == "os:bot_ref_numbers" and is_own:
             context.user_data.pop("referral_only_import", None)
             with db_conn() as _c:
-                # الأرقام الجاهزة فعلاً: لها جلسة + can_send_code
                 _rows_ready = _c.execute(
                     "SELECT phone_number, forced_ref_excluded FROM number_stock "
                     "WHERE session_string IS NOT NULL AND deleted_at IS NULL "
@@ -771,7 +784,6 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                     "AND (forced_ref_excluded IS NOT TRUE) "
                     "ORDER BY id ASC"
                 ).fetchall()
-                # الأرقام المفعّلة لكن غير جاهزة (بدون جلسة أو لم يُتحقق منها)
                 _rows_pending = _c.execute(
                     "SELECT phone_number FROM number_stock "
                     "WHERE deleted_at IS NULL "
@@ -779,7 +791,6 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                     "AND (session_string IS NULL OR can_send_code IS NOT TRUE OR last_authorized IS FALSE) "
                     "ORDER BY id ASC"
                 ).fetchall()
-                # الأرقام المستثناة صراحةً
                 _rows_excluded_q = _c.execute(
                     "SELECT phone_number FROM number_stock "
                     "WHERE deleted_at IS NULL AND forced_ref_excluded IS TRUE "
@@ -934,7 +945,6 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             _fk_stock_id = int(_parts[1]) if len(_parts) > 1 else 0
             _fk_phone    = _parts[2]      if len(_parts) > 2 else ""
             await q.answer()
-            # إزالة الحساب من المخزون مباشرةً (بدون محاولة اتصال تيليغرام)
             with db_conn() as _fkc:
                 _fkc.execute(
                     "UPDATE number_stock SET deleted_at=NOW() "
@@ -946,7 +956,6 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 f"✅ تم إزالة الرقم <code>{_fk_phone}</code> من قائمة الإحالة الإجبارية.",
                 parse_mode="HTML"
             )
-            # إزالة الزر من الرسالة
             try:
                 _orig_kb = q.message.reply_markup.inline_keyboard if q.message and q.message.reply_markup else []
                 _new_kb  = [row for row in _orig_kb if not any(btn.callback_data == data for btn in row)]
@@ -956,7 +965,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             return
 
         if data == "os:restricted_members" and is_own:
-            await q.answer()  # إجابة فورية لمنع ظهور "جاري التحميل"
+            await q.answer()
             try:
                 with db_conn() as _c:
                     _rest = _c.execute(
@@ -1017,7 +1026,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             return
 
         if data.startswith("os:restricted_member:") and is_own:
-            await q.answer()  # إجابة فورية لتفادي دوران محدد التحميل
+            await q.answer()
             _parts = data.split(":")
             _rm_uid  = int(_parts[2])
             _rm_cnt  = int(_parts[3]) if len(_parts) > 3 else 0
@@ -1191,7 +1200,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                     header    = f"🏆 *مسابقة رابط الدعوة*\n⏳ *الوقت المتبقي: {remaining}*\n\n"
                 else:
                     header = "🏆 *مسابقة رابط الدعوة — انتهت المسابقة*\n\n"
-            else:  # open — لا يُظهر وقتاً للأعضاء
+            else:
                 header = "🏆 *مسابقة رابط الدعوة*\n\n"
             leaderboard = _format_top_referrers(lb_rows, "المتصدرون")
             lb_lines    = leaderboard.split("\n")
@@ -1279,14 +1288,10 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 context.user_data.pop("gmail_verification_sub_id", None)
         
             context.user_data["state"] = "await_totp_secret"
-            # Telegram لا يسمح بتحويل رسالة فيديو إلى رسالة نصية عبر
-            # edit_message_text؛ لذلك كان زر التحقق يبدو وكأنه لا يستجيب.
-            # نؤكد الضغط أولاً ثم نرسل التعليمات في رسالة جديدة.
             await q.answer("✅ تم فتح خطوة التحقق.")
             try:
                 await q.edit_message_reply_markup(reply_markup=None)
             except Exception:
-                # بعض أنواع الرسائل/الفيديوهات قد لا تسمح بتعديل لوحة الأزرار.
                 pass
             await context.bot.send_message(
                 user.id,
@@ -1302,11 +1307,8 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             return
 
         if data == "my_gmail_history" or data.startswith("my_gmail_history:"):
-            # my_gmail_history              → شاشة الفلتر
-            # my_gmail_history:STATUS:PAGE  → النتائج
             _parts = data.split(":")
             if len(_parts) < 3:
-                # شاشة اختيار الفلتر — نعرض عدد كل فئة
                 with db_conn() as c:
                     _counts = {r["status"]: r["n"] for r in c.execute(
                         "SELECT status, COUNT(*) AS n FROM gmail_submissions WHERE user_id=%s GROUP BY status",
@@ -1326,7 +1328,6 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                     ])
                 )
                 return
-            # عرض النتائج بعد اختيار الفلتر
             _status = _parts[1]
             try: _page = int(_parts[2])
             except Exception: _page = 0
@@ -1749,7 +1750,6 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=InlineKeyboardMarkup(result_kb)
                 )
-                # ─── رسالة التبرئة ───
                 try:
                     await context.bot.send_message(
                         user.id,
@@ -1768,7 +1768,6 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                     )
                 except Exception:
                     pass
-                # ─── إشعار المالك وكروب الطلبات ───
                 if pe:
                     await notify_prize_exchange_owner(
                         context, pe["id"],
@@ -1786,7 +1785,6 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                             f"📌 {code}"
                         ),
                     )
-                # ─── البوت يبقى متصلاً — المراقب سيغادر تلقائياً عند دخول المشتري ───
                 return
         
             add_points(user.id, cost)
@@ -1898,9 +1896,9 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 ).fetchall()
             if not _mn_rows:
                 await q.edit_message_text(
-                    "\U0001f4f1 *\u0627\u0631\u0642\u0627\u0645\u064a*\n\n"
-                    "\u0644\u0645 \u062a\u0642\u0645 \u0628\u0634\u0631\u0627\u0621 \u0623\u064a \u0631\u0642\u0645 \u062d\u062a\u0649 \u0627\u0644\u0622\u0646.\n\n"
-                    "\u0627\u0630\u0647\u0628 \u0625\u0644\u0649 *\u0627\u0633\u062a\u0628\u062f\u0627\u0644 \u0646\u0642\u0627\u0637 \u0628\u062c\u0648\u0627\u0626\u0632* \u0644\u0634\u0631\u0627\u0621 \u0631\u0642\u0645.",
+                    "📱 *ارقامي*\n\n"
+                    "لم تقم بشراء أي رقم حتى الآن.\n\n"
+                    "اذهب إلى *استبدال نقاط بجوائز* لشراء رقم.",
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=back_kb()
                 )
@@ -1914,31 +1912,31 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 if _mn_kicked:
                     _mn_kicked_count += 1
                     _mn_kb.append([InlineKeyboardButton(
-                        "\U0001f6ab " + _mn_clean + " (\u0645\u0637\u0631\u0648\u062f)",
+                        "🚫 " + _mn_clean + " (مطرود)",
                         callback_data="my_numbers:kicked:" + _mn_phone
                     )])
                 else:
                     _mn_kb.append([InlineKeyboardButton(
-                        "\U0001f4f1 " + _mn_clean,
+                        "📱 " + _mn_clean,
                         callback_data="noop"
                     )])
                     _mn_kb.append([
-                        InlineKeyboardButton("\U0001f510 2FA",    callback_data="buyer:show_twofa:"  + _mn_phone),
-                        InlineKeyboardButton("\U0001f511 \u0643\u0648\u062f", callback_data="buyer:request_code:" + _mn_phone),
-                        InlineKeyboardButton("\U0001f4f7 \u0628\u0627\u0631\u0643\u0648\u062f",  callback_data="buyer:barcode:"       + _mn_phone),
+                        InlineKeyboardButton("🔐 2FA",    callback_data="buyer:show_twofa:"  + _mn_phone),
+                        InlineKeyboardButton("🔑 كود", callback_data="buyer:request_code:" + _mn_phone),
+                        InlineKeyboardButton("📷 باركود",  callback_data="buyer:barcode:"       + _mn_phone),
                     ])
                     _mn_kb.append([InlineKeyboardButton(
                         "🚪 مغادرة البوت",
                         callback_data="buyer:leave_account:" + _mn_phone
                     )])
-            _mn_kb.append([InlineKeyboardButton("\U0001f519 \u0631\u062c\u0648\u0639", callback_data="main_menu")])
+            _mn_kb.append([InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")])
             _mn_total  = len(_mn_rows)
             _mn_active = _mn_total - _mn_kicked_count
-            _mn_title  = "\U0001f4f1 *\u0627\u0631\u0642\u0627\u0645\u064a*\n\n"
-            _mn_stats  = ("\U0001f4ca \u0625\u062c\u0645\u0627\u0644\u064a: " + str(_mn_total)
-                          + " | \u2705 " + str(_mn_active)
-                          + " | \U0001f6ab " + str(_mn_kicked_count) + "\n\n")
-            _mn_hint   = "\u0627\u062e\u062a\u0631 \u0631\u0642\u0645\u064b\u0627 \u0644\u0639\u0631\u0636 \u062e\u064a\u0627\u0631\u0627\u062a\u0647:"
+            _mn_title  = "📱 *ارقامي*\n\n"
+            _mn_stats  = ("📊 إجمالي: " + str(_mn_total)
+                          + " | ✅ " + str(_mn_active)
+                          + " | 🚫 " + str(_mn_kicked_count) + "\n\n")
+            _mn_hint   = "اختر رقماً لعرض خياراته:"
             await q.edit_message_text(
                 _mn_title + _mn_stats + _mn_hint,
                 parse_mode=ParseMode.MARKDOWN,
