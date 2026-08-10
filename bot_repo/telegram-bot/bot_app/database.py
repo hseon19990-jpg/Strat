@@ -232,6 +232,12 @@ def init_db():
           WHERE phone_number IS NOT NULL AND BTRIM(phone_number) <> ''
           """)
           c.execute("""
+          CREATE TABLE IF NOT EXISTS account_name_assignments (
+              phone_number  TEXT PRIMARY KEY,
+              assigned_name TEXT NOT NULL,
+              assigned_at   TIMESTAMPTZ DEFAULT NOW()
+          )""")
+          c.execute("""
           CREATE TABLE IF NOT EXISTS daily_gifts (
               user_id    BIGINT PRIMARY KEY,
               last_claim TEXT

@@ -211,15 +211,37 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
 
         if data == "os:account_info" and is_own:
             total_accounts, session_accounts, story_available, avatar_available = _account_info_counts()
+            name_count = _account_name_count()
             await q.edit_message_text(
                 "👤 *معلومات الحسابات*\n\n"
                 f"📦 إجمالي الحسابات: {total_accounts:,}\n"
                 f"🔐 حسابات لديها جلسة: {session_accounts:,}\n"
+                f"🔤 أسماء محفوظة: {name_count:,}\n"
                 f"📖 المتبقي للستوري: {story_available:,}\n"
                 f"🖼️ المتبقي للأفتار: {avatar_available:,}\n\n"
                 "اختر العملية المطلوبة:",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=account_info_kb(),
+            )
+            return
+
+        if data == "os:account_names" and is_own:
+            name_count = _account_name_count()
+            context.user_data["state"] = "os_await_account_names"
+            await q.edit_message_text(
+                "🔤 *أسماء الحسابات*\n\n"
+                f"تم حفظ أسماء {name_count:,} حساباً حتى الآن.\n\n"
+                "أرسل اسماً واحداً في كل سطر، وسيتم توزيعه بالتسلسل "
+                "على الحسابات التي لم تحصل على اسم من قبل.\n\n"
+                "مثال:\n"
+                "`محمد`\n"
+                "`علي`\n"
+                "`حسن`\n\n"
+                "كل حساب يحصل على اسم واحد فقط.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
+                ]),
             )
             return
 

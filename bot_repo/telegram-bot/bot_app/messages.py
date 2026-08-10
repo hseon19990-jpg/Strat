@@ -8,6 +8,86 @@ domain.
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
+def _parse_account_name_lines(raw_text: str) -> list[str]:
+    parsed = []
+    for raw_line in raw_text.splitlines():
+        display_name = raw_line.strip()
+        if not display_name:
+            continue
+        parsed.append(display_name[:64])
+    return parsed
+
+def _load_unassigned_name_accounts() -> list[dict]:
+    with db_conn() as c:
+        return c.execute(
+            """
+            SELECT ns.phone_number, ns.session_string
+            FROM number_stock ns
+            WHERE ns.deleted_at IS NULL
+              AND ns.session_string IS NOT NULL
+              AND BTRIM(ns.session_string) <> ''
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM account_name_assignments ana
+                  WHERE ana.phone_number = ns.phone_number
+              )
+            ORDER BY ns.id
+            """
+        ).fetchall()
+
+async def _apply_account_name(phone: str, display_name: str) -> None:
+    with db_conn() as c:
+        row = c.execute(
+            """
+            SELECT session_string
+            FROM number_stock
+            WHERE phone_number=%s
+              AND deleted_at IS NULL
+              AND session_string IS NOT NULL
+              AND BTRIM(session_string) <> ''
+            """,
+            (phone,),
+        ).fetchone()
+    if not row:
+        raise ValueError("الحساب غير موجود أو لا يملك جلسة صالحة")
+    if not TELEGRAM_API_ID or not TELEGRAM_API_HASH:
+        raise RuntimeError("إعدادات Telegram API غير مكتملة")
+
+    client = TelegramClient(
+        StringSession(row["session_string"]),
+        int(TELEGRAM_API_ID),
+        TELEGRAM_API_HASH,
+    )
+    try:
+        await asyncio.wait_for(client.connect(), timeout=20)
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+            raise RuntimeError("الجلسة غير مصرح بها")
+        await asyncio.wait_for(
+            client(functions.account.UpdateProfileRequest(
+                first_name=display_name,
+                last_name="",
+            )),
+            timeout=30,
+        )
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+    with db_conn() as c:
+        c.execute(
+            """
+            INSERT INTO account_name_assignments
+                (phone_number, assigned_name, assigned_at)
+            VALUES (%s, %s, NOW())
+            ON CONFLICT (phone_number) DO UPDATE SET
+                assigned_name=EXCLUDED.assigned_name,
+                assigned_at=NOW()
+            """,
+            (phone, display_name),
+        )
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user   = update.effective_user
     text   = (update.message.text or update.message.caption or "").strip()
@@ -93,6 +173,64 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"✅ تم تحديث: {THANK_OWNER_SETTINGS[key][0]}",
             reply_markup=thank_owner_settings_kb()
+        )
+        return
+
+    if state == "os_await_account_names" and is_own:
+        context.user_data["state"] = "main_menu"
+        names = _parse_account_name_lines(text)
+        if not names:
+            await update.message.reply_text(
+                "⚠️ لم أجد أسماء صالحة.\n"
+                "أرسل اسماً واحداً في كل سطر، مثل:\n"
+                "محمد\n"
+                "علي\n"
+                "حسن",
+                reply_markup=account_info_kb(),
+            )
+            return
+
+        available_accounts = _load_unassigned_name_accounts()
+        progress = await update.message.reply_text(
+            f"⏳ جارٍ توزيع {len(names):,} اسماً على الحسابات بالتسلسل..."
+        )
+        success = []
+        failed = []
+        for account, display_name in zip(available_accounts, names):
+            phone = account["phone_number"]
+            try:
+                await _apply_account_name(phone, display_name)
+                success.append(f"{display_name} → {phone}")
+            except Exception as exc:
+                logger.warning(f"⚠️ فشل تحديث اسم الحساب {phone}: {exc}")
+                failed.append(f"{display_name} → {phone} — {str(exc)[:120]}")
+
+        unassigned_names = names[len(available_accounts):]
+        if unassigned_names:
+            failed.extend(
+                f"{display_name} — لا يوجد حساب متاح"
+                for display_name in unassigned_names
+            )
+
+        result_lines = [
+            f"🔤 *تقرير تحديث الأسماء*",
+            f"✅ تم تعيينه: {len(success):,}",
+            f"❌ لم يتم تعيينه: {len(failed):,}",
+        ]
+        if success:
+            result_lines.append("\n✅ الحسابات الناجحة:\n" + "\n".join(f"• {item}" for item in success[:30]))
+            if len(success) > 30:
+                result_lines.append(f"• ... و{len(success) - 30:,} حساباً آخر")
+        if failed:
+            result_lines.append("\n❌ الحسابات الفاشلة:\n" + "\n".join(f"• {item}" for item in failed[:30]))
+            if len(failed) > 30:
+                result_lines.append(f"• ... و{len(failed) - 30:,} حساباً آخر")
+        await progress.edit_text(
+            "\n".join(result_lines),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
+            ]),
         )
         return
 

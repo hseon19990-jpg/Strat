@@ -472,6 +472,9 @@ def _account_info_counts() -> tuple[int, int, int, int]:
 def account_info_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
+            InlineKeyboardButton("🔤 الاسم", callback_data="os:account_names"),
+        ],
+        [
             InlineKeyboardButton("🖼️ الأفتار", callback_data="os:avatars"),
             InlineKeyboardButton("📊 نتائج الأفتار", callback_data="os:media_report:avatar:summary"),
         ],
@@ -484,6 +487,17 @@ def account_info_kb() -> InlineKeyboardMarkup:
         ],
         [InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")],
     ])
+
+def _account_name_count() -> int:
+    try:
+        with db_conn() as c:
+            row = c.execute(
+                "SELECT COUNT(*) AS total FROM account_name_assignments"
+            ).fetchone()
+        return int(row["total"] or 0)
+    except Exception as exc:
+        logger.warning(f"⚠️ تعذر قراءة عدد أسماء الحسابات: {exc}")
+        return 0
 
 def _seed_historical_media_assignments(kind: str) -> None:
     """ينقل الحسابات الناجحة في التقارير القديمة إلى سجل الاستخدام الدائم."""
