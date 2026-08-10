@@ -65,10 +65,25 @@ PLATFORM_LABEL_MAP = {
 MENU_LABELS = {"main": "القائمة الرئيسية", "owner_settings": "قائمة إعدادات المالك", "collect_points": "تجميع نقاط", "contact_support": "تواصل مع الدعم", "services_menu": "قائمة الخدمات"}
 MENU_LABELS.update({v: f"خدمات: {lbl.split(' ', 1)[1]}" for lbl, v in SERVICE_PLATFORMS})
 MENU_LABELS.update({f"cat:{k}": f"قائمة فئة: {v}" for k, v in CATEGORY_MAP.items()})
+MENU_LABELS["legendary_services"] = "الخدمات الأسطورية"
 
 SERVICES_MENU_CATEGORIES = ["followers", "views", "interactions", "story_views", "start_bot", "boost", "post_stars", "other"]
 
-MANAGEABLE_MENUS = ["main", "owner_settings", "services_menu"] + [v for _, v in SERVICE_PLATFORMS] + [f"cat:{k}" for k in CATEGORY_MAP]
+MANAGEABLE_MENUS = ["main", "owner_settings", "services_menu", "legendary_services"] + [v for _, v in SERVICE_PLATFORMS] + [f"cat:{k}" for k in CATEGORY_MAP]
+
+LEGENDARY_SERVICES_MESSAGE = (
+    "هذا قسم الرشق الأسطوري\n\n"
+    "جميع الحسابات التي تقوم بالرشق هن حسابات حقيقة\n"
+    "لديها ستوري وبايو وصورة وافتار واسم عربي"
+)
+
+LEGENDARY_SERVICE_OPTIONS = [
+    ("📊 رشق استفتاء", "legendary:poll", 1),
+    ("👁 رشق مشاهدة وتفاعل ستوري", "legendary:story_view_reaction", 1),
+    ("🗳 رشق اصوات", "legendary:votes", 1),
+    ("💬 رشق تعليق", "legendary:comment", 1),
+    ("✨ رشق تفاعل مميز", "legendary:premium_reaction", 1),
+]
 
 BUILTIN_DEFAULTS = {
     "main": [
@@ -88,6 +103,7 @@ BUILTIN_DEFAULTS = {
         ("🔑 إحالة بوت اجباري", "forced_ref", 2),
     ],
     "services_menu": [(label, value, 2) for label, value in SERVICE_PLATFORMS],
+    "legendary_services": LEGENDARY_SERVICE_OPTIONS,
     "services_menu_tg": [
         ("👥 رشق متابعين", "cat:followers", 2), ("👁 رشق مشاهدات", "cat:views", 2),
         ("💬 رشق تفاعلات", "cat:interactions", 2), ("📖 رشق مشاهدات ستوري", "cat:story_views", 2),
