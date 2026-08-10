@@ -939,23 +939,6 @@ async def legendary_handle_text(update, context, text: str) -> bool:
             points_cost += channel_cost
         channel_display = f"+{channel_cost} نقطة" if has_channel and channel_cost > 0 else "مجانية"
         
-        if user.id == OWNER_ID:
-            context.user_data["state"] = "legendary_delay_input"
-            await update.message.reply_text(
-                f"📋 *مراجعة الطلب*\n\n"
-                f"📊 الخدمة: {service_name}\n"
-                f"🔢 العدد: {quantity}\n"
-                f"📺 القناة: {channel_display}\n"
-                f"⭐ بالنجوم: {stars_cost} نجمة\n"
-                f"💰 بالنقاط: {points_cost} نقطة\n\n"
-                f"⏱️ *المالك:* حدد الفاصل الزمني بين الحسابات:\n"
-                f"• أرسل رقماً (ثوانٍ) مثل: `5`\n"
-                f"• أو نطاق مثل: `30-60`\n"
-                f"• أو اكتب `تخطي` للفاصل التلقائي (1-8 دقائق)",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            return True
-        
         await show_payment_options(update, context, service_type, quantity, stars_cost, points_cost, has_channel)
         return True
     
@@ -994,6 +977,20 @@ async def legendary_handle_text(update, context, text: str) -> bool:
 
 async def show_payment_options(update, context, service_type, quantity, stars_cost, points_cost, has_channel):
     """Show payment options to user."""
+    actor = getattr(update, "effective_user", None)
+    if actor is None and getattr(update, "callback_query", None):
+        actor = update.callback_query.from_user
+    is_owner = bool(actor and actor.id == OWNER_ID)
+    payment_rows = [
+        [InlineKeyboardButton(f"⭐ دفع بالنجوم ({stars_cost} نجمة)", callback_data="legendary:pay:stars")],
+        [InlineKeyboardButton(f"💰 دفع بالنقاط ({points_cost} نقطة)", callback_data="legendary:pay:points")],
+    ]
+    if is_owner:
+        payment_rows.append([
+            InlineKeyboardButton("⏱️ تخصيص الفاصل (اختياري)", callback_data="legendary:set_delay")
+        ])
+    payment_rows.append([InlineKeyboardButton("❌ إلغاء", callback_data="main_menu")])
+
     await update.message.reply_text(
         f"💎 *اختر طريقة الدفع:*\n\n"
         f"🔢 العدد: {quantity}\n"
@@ -1002,15 +999,29 @@ async def show_payment_options(update, context, service_type, quantity, stars_co
         f"💰 *بالنقاط:* {points_cost} نقطة\n\n"
         f"اختر طريقة الدفع:",
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"⭐ دفع بالنجوم ({stars_cost} نجمة)", callback_data=f"legendary:pay:stars")],
-            [InlineKeyboardButton(f"💰 دفع بالنقاط ({points_cost} نقطة)", callback_data=f"legendary:pay:points")],
-            [InlineKeyboardButton("❌ إلغاء", callback_data="main_menu")],
-        ])
+        reply_markup=InlineKeyboardMarkup(payment_rows)
     )
     context.user_data["legendary_stars_cost"] = stars_cost
     context.user_data["legendary_points_cost"] = points_cost
     context.user_data["state"] = "legendary_payment_confirm"
+
+
+async def legendary_set_delay(update, context, q, is_own: bool):
+    """Open the optional owner-only delay editor without blocking payment choice."""
+    if not is_own:
+        await q.answer("⛔ هذا الخيار للمالك فقط.", show_alert=True)
+        return
+    if context.user_data.get("state") != "legendary_payment_confirm":
+        await q.answer("⚠️ انتهت صلاحية الطلب، ابدأ من جديد.", show_alert=True)
+        return
+    context.user_data["state"] = "legendary_delay_input"
+    await q.edit_message_text(
+        "⏱️ *تخصيص الفاصل بين الحسابات*\n\n"
+        "أرسل رقماً بالثواني مثل `5`، أو نطاقاً مثل `30-60`.\n"
+        "اكتب `تخطي` للعودة للفاصل التلقائي (1-8 دقائق).",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=legendary_services_back_kb(),
+    )
 
 
 # ==================== PAYMENT HANDLER ====================

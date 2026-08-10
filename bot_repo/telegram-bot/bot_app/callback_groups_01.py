@@ -216,6 +216,10 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             if data == "legendary:skip_channel":
                 await legendary_skip_channel(update, context, q, is_own)
                 return
+
+            if data == "legendary:set_delay":
+                await legendary_set_delay(update, context, q, is_own)
+                return
             
             if data.startswith("legendary:pay:"):
                 payment_method = data.split(":")[2]
