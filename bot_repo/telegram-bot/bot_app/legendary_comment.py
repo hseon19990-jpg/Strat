@@ -1089,10 +1089,15 @@ async def execute_legendary_order(update, context, q, is_own: bool, payment_meth
         or getattr(update.effective_user, "id", None)
         or OWNER_ID
     )
+
+    async def edit_order_message(text, **kwargs):
+        if hasattr(q, "edit_message_text"):
+            return await q.edit_message_text(text, **kwargs)
+        return await q.edit_text(text, **kwargs)
     
     if payment_method == "points":
         if not deduct_points(requester_id, points_cost):
-            await q.edit_message_text("❌ لم يعد رصيدك كافياً.")
+            await edit_order_message("❌ لم يعد رصيدك كافياً.")
             context.user_data["state"] = "main_menu"
             return
     
@@ -1100,7 +1105,10 @@ async def execute_legendary_order(update, context, q, is_own: bool, payment_meth
     if not sessions:
         if payment_method == "points":
             add_points(requester_id, points_cost)
-        await q.edit_message_text("❌ لا توجد حسابات متاحة.", reply_markup=legendary_services_back_kb())
+        await edit_order_message(
+            "❌ لا توجد حسابات متاحة.",
+            reply_markup=legendary_services_back_kb(),
+        )
         context.user_data["state"] = "main_menu"
         return
     
@@ -1126,16 +1134,10 @@ async def execute_legendary_order(update, context, q, is_own: bool, payment_meth
         params["post_id"] = context.user_data.get("legendary_post_id")
         params["reaction_text"] = context.user_data.get("legendary_reaction_text", "❤️")
     
-    if hasattr(q, "edit_message_text"):
-        progress_msg = await q.edit_message_text(
-            f"⏳ *جاري التنفيذ...*\n\n📊 0/{quantity}",
-            parse_mode=ParseMode.MARKDOWN
-        )
-    else:
-        progress_msg = await q.edit_text(
-            f"⏳ *جاري التنفيذ...*\n\n📊 0/{quantity}",
-            parse_mode=ParseMode.MARKDOWN
-        )
+    progress_msg = await edit_order_message(
+        f"⏳ *جاري التنفيذ...*\n\n📊 0/{quantity}",
+        parse_mode=ParseMode.MARKDOWN,
+    )
     
     async def update_progress(current, total, success, failed):
         try:
@@ -1202,10 +1204,11 @@ async def execute_legendary_order(update, context, q, is_own: bool, payment_meth
         if len(failed_details) > 3:
             result += f"\n... و{len(failed_details) - 3} أخرى"
     
-    if hasattr(q, "edit_message_text"):
-        await q.edit_message_text(result, parse_mode=ParseMode.MARKDOWN, reply_markup=main_menu_kb(is_own))
-    else:
-        await q.edit_text(result, parse_mode=ParseMode.MARKDOWN, reply_markup=main_menu_kb(is_own))
+    await edit_order_message(
+        result,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=main_menu_kb(is_own),
+    )
     context.user_data["state"] = "main_menu"
 
 
