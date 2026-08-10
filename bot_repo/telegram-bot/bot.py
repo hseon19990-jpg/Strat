@@ -3117,8 +3117,10 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
             )),
             timeout=20,
         )
-        await asyncio.sleep(3)
-        msgs = await asyncio.wait_for(client.get_messages(bot_entity, limit=8), timeout=10)
+        # بعض البوتات ترسل رسالة الترحيب أولاً ثم ترسل التحقق بعد عدة ثوانٍ.
+        # جلب عدد أكبر من الرسائل هنا مهم لأن رسالة التحقق قد لا تكون الأخيرة.
+        await asyncio.sleep(5)
+        msgs = await asyncio.wait_for(client.get_messages(bot_entity, limit=15), timeout=10)
 
         # ── الخطوة 4: التعامل مع اشتراط البوت الانضمام لقنواته (حلقة متكررة) ──
         # يكرر: انضم للقنوات من ردود البوت → تحقق من الاشتراك → رسائل جديدة
@@ -3137,7 +3139,7 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
                 steps.append(f"ضغط زر التحقق من الاشتراك (جولة {_sub_round + 1})")
             await asyncio.sleep(4)
             # احصل على رسائل جديدة — قد تحتوي على قنوات إضافية تطلبها
-            msgs = await asyncio.wait_for(client.get_messages(bot_entity, limit=8), timeout=10)
+            msgs = await asyncio.wait_for(client.get_messages(bot_entity, limit=15), timeout=10)
         if _total_joined_from_bot > 0:
             logger.info(f"🔗 {phone}: انضم إجمالاً لـ {_total_joined_from_bot} قناة من ردود البوت")
 
@@ -3145,9 +3147,46 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
         # "بتحقق" (use_ai=True)  → يحاول حل أي تحقق يطلبه البوت بالذكاء الاصطناعي
         # "بدون تحقق" (use_ai=False) → يتجاوز التحقق تماماً ويُسجَّل كنجاح
         if use_ai:
-            _ai_solved, _ai_detail = await solve_captcha_with_ai(client, bot_entity, msgs, phone)
+            _ai_solved = False
+            _ai_detail = "لم يتم حل الكابتشا"
+
+            # لا تعتمد على قائمة الرسائل القديمة التي وصلت بعد /start أو بعد
+            # الاشتراك بالقنوات. بعض البوتات تحتاج وقتاً إضافياً قبل إرسال
+            # التحقق، لذلك نعيد الجلب قبل كل محاولة.
+            for _ai_attempt in range(3):
+                if _ai_attempt > 0:
+                    await asyncio.sleep(3)
+                msgs = await asyncio.wait_for(
+                    client.get_messages(bot_entity, limit=15), timeout=10
+                )
+                logger.info(
+                    f"🤖 محاولة حل الكابتشا للرقم {phone} "
+                    f"(المحاولة {_ai_attempt + 1}/3)"
+                )
+                _ai_solved, _ai_detail = await solve_captcha_with_ai(
+                    client, bot_entity, msgs, phone
+                )
+                if _ai_solved:
+                    logger.info(
+                        f"✅ تم حل الكابتشا للرقم {phone} "
+                        f"في المحاولة {_ai_attempt + 1}"
+                    )
+                    break
+                logger.warning(
+                    f"⚠️ لم تُحل كابتشا {phone} في المحاولة "
+                    f"{_ai_attempt + 1}/3: {_ai_detail}"
+                )
+
             if _ai_solved:
                 steps.append(f"🤖 AI: {_ai_detail}")
+            elif _ai_detail != "لم يُكتشف تحقق":
+                # فشل حقيقي مثل غياب مفتاح Gemini أو تعذر الإجابة؛ لا نسجل
+                # الحساب ناجحاً قبل اجتياز التحقق المطلوب.
+                return False, False, f"فشل حل الكابتشا بعد 3 محاولات: {_ai_detail}"
+            else:
+                # عدم وجود تحدٍ ليس فشلاً: بعض البوتات لا تعرض تحققاً لكل
+                # إحالة، لكننا تأكدنا من أحدث الرسائل عدة مرات قبل المتابعة.
+                logger.info(f"ℹ️ لم يطلب البوت تحققاً للرقم {phone}")
 
         # سجّل أول رسالة وصلت من البوت للتشخيص
         if msgs:
