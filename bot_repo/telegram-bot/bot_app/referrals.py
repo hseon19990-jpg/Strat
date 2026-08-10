@@ -494,7 +494,6 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                         continue
 
                     # ── كشف مباشر: نمط "select the correct emoji: X" ──────
-                    # يستخرج الإيموجي المستهدف مباشرةً من النص بدون الحاجة لـ AI
                     direct_chosen = None
                     # نمط: "correct emoji: X" أو "اختر الإيموجي: X" أو "select emoji X"
                     is_emoji_select = (
