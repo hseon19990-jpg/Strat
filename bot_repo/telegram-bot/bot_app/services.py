@@ -27,8 +27,6 @@ CATEGORY_MAP = {
     "other":        "خدمات أخرى",
 }
 
-# ────────────────────────────────────────────────────────────
-# ────────────────────────────────────────────────────────────
 SERVICE_PLATFORMS = [
     ("📱 تيلجرام", "services_menu_tg"),
     ("📸 انستغرام", "services_menu_ig"),
@@ -73,21 +71,30 @@ MANAGEABLE_MENUS = ["main", "owner_settings", "services_menu", "legendary_servic
 
 LEGENDARY_SERVICES_MESSAGE = (
     "👑 *الخدمات الأسطورية*\n\n"
-    "جميع الحسابات التي تقوم بالرشق هن حسابات حقيقية\n"
-    "لديها ستوري وبايو وصورة وافتار واسم عربي\n\n"
-    "💰 سعر التعليق الواحد: 30 نقطة\n"
-    "💰 سعر القناة الإضافية: 30 نقطة\n"
-    "📊 عدد التعليقات = عدد الحسابات المتاحة (كل حساب يعلق مرة واحدة)\n"
-    "🕒 البقاء في القناة: 24 ساعة ثم مغادرة تلقائية\n\n"
-    "اختر نوع الرشق:"
+    "جميع الحسابات حقيقية ولديها ستوري وبايو وصورة وافتار\n\n"
+    "💰 *أسعار الخدمات (نقاط + نجوم):*\n"
+    "• 💬 تعليق: 30 نقطة/وحدة + 30 قناة | ⭐ 1 نجمة لكل 5\n"
+    "• 📊 استفتاء: 30 نقطة/وحدة + 30 قناة | ⭐ 1 نجمة لكل 5\n"
+    "• 👁 ستوري: 30 نقطة/وحدة + 30 قناة | ⭐ 1 نجمة لكل 10\n"
+    "• 🗳 أصوات: 20 نقطة/وحدة + 25 قناة | ⭐ 1 نجمة لكل 10\n"
+    "• 🤖 تصويت بتحقق: 50 نقطة/وحدة + 25 قناة | ⭐ 1 نجمة لكل 4\n"
+    "• ✨ تفاعل مميز: 10 نقاط/وحدة + 0 قناة | ⭐ 1 نجمة لكل 25\n"
+    "• 🔑 إحالة بوت: 30 نقطة/وحدة | ⭐ 1 نجمة لكل 5\n"
+    "• 🤖 إحالة بتحقق: 50 نقطة/وحدة | ⭐ 1 نجمة لكل 5\n\n"
+    "⏱️ الفاصل بين الحسابات: 1-8 دقائق (تلقائي)\n"
+    "🔹 المالك يمكنه تحديد فاصل زمني مخصص\n\n"
+    "اختر الخدمة:"
 )
 
 LEGENDARY_SERVICE_OPTIONS = [
-    ("📊 رشق استفتاء", "legendary:poll", 1),
-    ("👁 رشق مشاهدة وتفاعل ستوري", "legendary:story_view_reaction", 1),
-    ("🗳 رشق اصوات", "legendary:votes", 1),
     ("💬 رشق تعليق", "legendary:comment", 1),
+    ("📊 رشق استفتاء", "legendary:poll", 1),
+    ("👁 رشق مشاهدة وتفاعل ستوري", "legendary:story", 1),
+    ("🗳 رشق أصوات", "legendary:votes", 1),
+    ("🤖 رشق تصويت بتحقق", "legendary:votes_ai", 1),
     ("✨ رشق تفاعل مميز", "legendary:premium_reaction", 1),
+    ("🔑 إحالة بوت إجباري", "legendary:forced_ref", 1),
+    ("🤖 إحالة بوت إجباري بتحقق", "legendary:forced_ref_ai", 1),
 ]
 
 BUILTIN_DEFAULTS = {
@@ -102,7 +109,7 @@ BUILTIN_DEFAULTS = {
         ("📱 ارقامي", "my_numbers", 1),
         ("🎁 الأكثر دعوةً اليوم", "top_ref_today", 2),
         ("✅ تواصل مع الدعم", "contact_support", 2),
-         ("💌 شكر المالك", "thank_owner", 2),
+        ("💌 شكر المالك", "thank_owner", 2),
         ("🏆 مسابقة الدعوة", "referral_contest_view", 2),
         ("📧 احصل على نقاط مقابل إيميل جيميل", "gmail_points", 1),
         ("🔑 إحالة بوت اجباري", "forced_ref", 2),
@@ -189,7 +196,7 @@ BUILTIN_DEFAULTS = {
         ("🔍 من استخدم الكود", "os:search_code", 2),
         ("💰 منح/خصم نقاط", "os:manage_points", 2),
         ("💬 رابط تواصل المالك", "os:edit_contact", 2), ("✏️ نص زر التواصل", "os:edit_contact_label", 2),
-         ("💌 إعدادات شكر المالك", "os:thank_owner_settings", 1),
+        ("💌 إعدادات شكر المالك", "os:thank_owner_settings", 1),
         ("📲 تعديل نص اسيا سيل", "os:edit_asiacell", 2),
         ("✏️ نص زر الدعم بالقائمة", "os:edit_support_label", 2), ("📢 رسالة جماعية", "os:broadcast", 2),
         ("🔐 تفعيل/تعطيل التحقق", "os:toggle_captcha", 2), ("📊 إحصائيات", "os:stats", 2),
@@ -204,6 +211,7 @@ BUILTIN_DEFAULTS = {
         ("⚠️ تعويض المظلومين", "os:failed_deliveries", 1),
         ("📱 أرقام إحالة بوت إجباري", "os:bot_ref_numbers", 1),
         ("👥 الأعضاء المقيدين", "os:restricted_members", 1),
+        ("💰 تعديل أسعار الخدمات الأسطورية", "legendary:price_settings", 1),
     ],
 }
 
@@ -302,7 +310,6 @@ def get_menu_items(menu: str, only_enabled: bool = True):
         return c.execute(q, (menu,)).fetchall()
 
 def render_mb_menu_screen(menu: str):
-    """يبني نص وأزرار شاشة إدارة أزرار قائمة معيّنة (مستخدم من عدة أماكن)."""
     items = get_menu_items(menu, only_enabled=False)
     rows = []
     for it in items:
@@ -322,7 +329,6 @@ def render_mb_menu_screen(menu: str):
     return text, InlineKeyboardMarkup(rows)
 
 def build_kb_rows(items):
-    """يبني صفوف الأزرار مع مراعاة عرض كل زر (1=يملأ السطر لحاله، 2=زران بجانب بعض)."""
     rows = []
     pending = None
     for it in items:
@@ -333,7 +339,7 @@ def build_kb_rows(items):
             btn = InlineKeyboardButton(label, url=it["action_value"])
         elif it["action_type"] == "text":
             btn = InlineKeyboardButton(label, callback_data=f"mi_text:{it['id']}")
-        else:  # builtin أو goto - يستخدم callback_data مباشرة
+        else:
             btn = InlineKeyboardButton(label, callback_data=it["action_value"])
         if it["width"] == 1:
             if pending:
@@ -351,9 +357,6 @@ def build_kb_rows(items):
     return rows
 
 def md_escape(text: str) -> str:
-    """يُهرّب رموز Markdown (النمط القديم) داخل نص متغيّر (اسم مستخدم/اسم كامل)
-    قبل إدراجه في رسالة parse_mode=MARKDOWN، لتفادي فشل الإرسال بصمت عند وجود
-    عدد فردي من _ أو * أو ` أو [ في اسم المستخدم (شائع جداً في يوزرات تيليجرام)."""
     if not text:
         return text
     for ch in ("_", "*", "`", "["):
@@ -366,7 +369,6 @@ async def notify_gmail_verification_owner(
     user_id: int,
     note: str = "",
 ) -> str:
-    """يُرسل إشعار إكمال التحقق للمالك مع ملاحظة العضو."""
     note = (note or "").strip()[:2000]
     if not note:
         return "note_required"
