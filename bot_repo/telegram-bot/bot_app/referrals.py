@@ -733,7 +733,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                                     if btn_emojis and btn_emojis[0] == target_emoji:
                                         direct_chosen = btn
                                         logger.info(f"🎯 كشف إيموجي بمطابقة الكود '{target_emoji}' ({phone})")
-                                        break                    if direct_chosen:
+                                        if direct_chosen: break
                         processed_ids.add(msg_id)
                         await direct_chosen.click()
                         result, msgs = await _wait_and_check()
