@@ -72,9 +72,14 @@ SERVICES_MENU_CATEGORIES = ["followers", "views", "interactions", "story_views",
 MANAGEABLE_MENUS = ["main", "owner_settings", "services_menu", "legendary_services"] + [v for _, v in SERVICE_PLATFORMS] + [f"cat:{k}" for k in CATEGORY_MAP]
 
 LEGENDARY_SERVICES_MESSAGE = (
-    "هذا قسم الرشق الأسطوري\n\n"
-    "جميع الحسابات التي تقوم بالرشق هن حسابات حقيقة\n"
-    "لديها ستوري وبايو وصورة وافتار واسم عربي"
+    "👑 *الخدمات الأسطورية*\n\n"
+    "جميع الحسابات التي تقوم بالرشق هن حسابات حقيقية\n"
+    "لديها ستوري وبايو وصورة وافتار واسم عربي\n\n"
+    "💰 سعر التعليق الواحد: 30 نقطة\n"
+    "💰 سعر القناة الإضافية: 30 نقطة\n"
+    "📊 عدد التعليقات = عدد الحسابات المتاحة (كل حساب يعلق مرة واحدة)\n"
+    "🕒 البقاء في القناة: 24 ساعة ثم مغادرة تلقائية\n\n"
+    "اختر نوع الرشق:"
 )
 
 LEGENDARY_SERVICE_OPTIONS = [
