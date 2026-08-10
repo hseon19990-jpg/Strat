@@ -75,6 +75,7 @@ def _single_active_session() -> dict | None:
             "FROM number_stock "
             "WHERE session_string IS NOT NULL AND BTRIM(session_string) <> '' "
             "AND deleted_at IS NULL AND last_authorized IS NOT FALSE "
+            "AND forced_ref_excluded IS NOT TRUE "
             "ORDER BY id ASC LIMIT 1"
         ).fetchone()
     return dict(row) if row else None
@@ -93,6 +94,34 @@ async def _join_optional_channel(client, channel_ref: str) -> None:
         if "USER_ALREADY_PARTICIPANT" not in str(exc).upper():
             raise
         await client.get_entity(channel_ref)
+
+
+async def _join_discussion_group(client, discussion) -> None:
+    """Join the linked discussion group before replying to a channel post."""
+    messages = getattr(discussion, "messages", None) or []
+    if not messages:
+        raise RuntimeError("المنشور لا يملك نقاشاً متاحاً للتعليق.")
+
+    discussion_message = messages[0]
+    peer = getattr(discussion_message, "peer_id", None)
+    channel_id = getattr(peer, "channel_id", None)
+    chats = getattr(discussion, "chats", None) or []
+
+    # GetDiscussionMessage returns the linked discussion chat in `chats`.
+    # Match by the peer ID so we do not accidentally join the source channel.
+    discussion_chat = next(
+        (chat for chat in chats if getattr(chat, "id", None) == channel_id),
+        None,
+    )
+    if discussion_chat is None:
+        raise RuntimeError("تعذر تحديد مجموعة النقاش المرتبطة بالمنشور.")
+
+    try:
+        await client(functions.channels.JoinChannelRequest(discussion_chat))
+    except Exception as exc:
+        # Telegram raises this when the session is already a participant.
+        if "USER_ALREADY_PARTICIPANT" not in str(exc).upper():
+            raise
 
 
 async def _send_single_comment(post_ref: str | int, post_id: int, comment_text: str) -> None:
@@ -126,6 +155,7 @@ async def _send_single_comment(post_ref: str | int, post_id: int, comment_text: 
         discussion_peer = getattr(discussion_message, "peer_id", None)
         if discussion_peer is None:
             raise RuntimeError("تعذر تحديد مساحة التعليقات للمنشور.")
+        await _join_discussion_group(client, discussion)
 
         await client.send_message(
             discussion_peer,
@@ -327,6 +357,7 @@ async def legendary_comment_confirm(update, context, q, is_own: bool) -> None:
                 discussion_peer = getattr(discussion_message, "peer_id", None)
                 if discussion_peer is None:
                     raise RuntimeError("تعذر تحديد مساحة التعليقات.")
+                await _join_discussion_group(client, discussion)
                 await client.send_message(
                     discussion_peer,
                     comment_text,
