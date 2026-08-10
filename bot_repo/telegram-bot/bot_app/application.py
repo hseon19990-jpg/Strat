@@ -58,6 +58,13 @@ def main():
     app.add_handler(CommandHandler("import_hex",          cmd_import_hex))
     app.add_handler(CommandHandler("mass_reset",          cmd_mass_reset))
     app.add_handler(CommandHandler("rotate_sessions",     cmd_rotate_sessions))
+    
+    # ════════════════════════════════════════════════════════════════
+    # 🔥 أمر اختبار AI (للمالك فقط)
+    # ════════════════════════════════════════════════════════════════
+    app.add_handler(CommandHandler("testai", cmd_test_ai))
+    # ════════════════════════════════════════════════════════════════
+    
     app.add_handler(MessageHandler(
         filters.ChatType.PRIVATE & (
             filters.PHOTO
@@ -144,11 +151,24 @@ def main():
                         BotCommand("status",             "🔍 فحص حالة طلب"),
                         BotCommand("compensate_partial", "💰 تعويض أصحاب الطلبات الجزئية"),
                         BotCommand("refund_mandatory", "🔁 استرجاع تمويلات الاشتراك الإجباري"),
+                        BotCommand("testai",             "🧪 اختبار مفاتيح AI"),
                     ],
                     scope=BotCommandScopeChat(chat_id=OWNER_ID)
                 )
             except Exception as e:
                 logger.warning(f"⚠️ تعذّر تعيين أوامر المالك الخاصة (ربما لم يبدأ المالك محادثة مع البوت بعد): {e}")
+        
+        # ════════════════════════════════════════════════════════════════
+        # 🔥 سجل حالة مفاتيح AI عند بدء التشغيل
+        # ════════════════════════════════════════════════════════════════
+        gemini_key = os.environ.get("GEMINI_API_KEY", "")
+        openai_key = os.environ.get("OPENAI_API_KEY", "")
+        logger.info(f"🔑 GEMINI_API_KEY موجود: {bool(gemini_key)} | طوله: {len(gemini_key)}")
+        logger.info(f"🔑 OPENAI_API_KEY موجود: {bool(openai_key)} | طوله: {len(openai_key)}")
+        if not gemini_key and not openai_key:
+            logger.warning("⚠️ لا يوجد مفتاح Gemini أو OpenAI — خدمات التحقق التلقائي لن تعمل.")
+        # ════════════════════════════════════════════════════════════════
+        
         logger.info("✅ Bot commands set")
         # حفظ اسم المستخدم الخاص بهذا البوت لاستخدامه في تخطي الإحالة الذاتية
         global _OWN_BOT_USERNAME
@@ -246,3 +266,56 @@ def main():
         pool_timeout=45,
         allowed_updates=["message", "callback_query", "pre_checkout_query", "successful_payment", "chat_member", "my_chat_member"],
     )
+
+# ════════════════════════════════════════════════════════════════
+# 🔥 أمر اختبار AI (للمالك فقط)
+# ════════════════════════════════════════════════════════════════
+async def cmd_test_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user.id != OWNER_ID:
+        await update.message.reply_text("⛔ هذا الأمر للمالك فقط.")
+        return
+    
+    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+    OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+    
+    msg = f"🔑 GEMINI_API_KEY: {'✅ موجود' if GEMINI_API_KEY else '❌ مفقود'}\n"
+    msg += f"🔑 OPENAI_API_KEY: {'✅ موجود' if OPENAI_API_KEY else '❌ مفقود'}\n\n"
+    
+    if GEMINI_API_KEY:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+            r = requests.post(url, json={"contents": [{"parts": [{"text": "قل مرحباً"}]}]}, timeout=10)
+            if r.status_code == 200:
+                msg += f"✅ Gemini يعمل بشكل صحيح! (200 OK)\n"
+            else:
+                msg += f"❌ Gemini error: {r.status_code} - {r.text[:200]}\n"
+        except Exception as e:
+            msg += f"❌ Gemini exception: {e}\n"
+    else:
+        msg += "❌ Gemini غير مضبوط في البيئة\n"
+    
+    if OPENAI_API_KEY:
+        try:
+            r = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+                json={"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "قل مرحباً"}], "max_tokens": 5},
+                timeout=10
+            )
+            if r.status_code == 200:
+                msg += f"✅ OpenAI يعمل بشكل صحيح! (200 OK)\n"
+            else:
+                msg += f"❌ OpenAI error: {r.status_code} - {r.text[:200]}\n"
+        except Exception as e:
+            msg += f"❌ OpenAI exception: {e}\n"
+    else:
+        msg += "❌ OpenAI غير مضبوط في البيئة\n"
+    
+    msg += "\n📌 الآن جرّب طلب 'إحالة بتحقق' وانظر الـ Logs."
+    
+    await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+# ════════════════════════════════════════════════════════════════
+
+if __name__ == "__main__":
+    main()
