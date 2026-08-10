@@ -1,4 +1,3 @@
-
 async def _remove_2fa_from_session(session_string: str) -> tuple[bool, str, str | None]:
     """
     يزيل التحقق بخطوتين (2FA) من حساب باستخدام جلسة تيلثون.
@@ -10,7 +9,6 @@ async def _remove_2fa_from_session(session_string: str) -> tuple[bool, str, str 
     """
     if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
         return False, "TELEGRAM_API_ID/HASH غير مضبوط", None
-
     client = TelegramClient(StringSession(session_string), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     phone = None
     try:
@@ -18,15 +16,12 @@ async def _remove_2fa_from_session(session_string: str) -> tuple[bool, str, str 
         if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
             await client.disconnect()
             return False, "الجلسة منتهية أو غير صالحة", None
-
         me = await client.get_me()
         phone = f"+{me.phone}" if me and me.phone and not str(me.phone).startswith("+") else (me.phone if me else None)
-
         pwd_state = await client(GetPasswordRequest())
         if not pwd_state.has_password:
             await client.disconnect()
             return True, "✅ لا يوجد تحقق ثنائي على هذا الحساب أصلاً", phone
-
         candidates: list[str] = []
         if phone:
             with db_conn() as _dc:
@@ -38,7 +33,6 @@ async def _remove_2fa_from_session(session_string: str) -> tuple[bool, str, str 
                 candidates.append(_row["twofa_password"])
         if OWNER_FIXED_2FA_PASSWORD and OWNER_FIXED_2FA_PASSWORD not in candidates:
             candidates.append(OWNER_FIXED_2FA_PASSWORD)
-
         removed = False
         for pw in candidates:
             try:
@@ -58,20 +52,17 @@ async def _remove_2fa_from_session(session_string: str) -> tuple[bool, str, str 
                     continue  # كلمة المرور خاطئة، جرّب التالية
                 await client.disconnect()
                 return False, f"❌ خطأ أثناء الإزالة: {_pe}", phone
-
         await client.disconnect()
         if removed:
             return True, "✅ تم إزالة التحقق الثنائي بنجاح", phone
         else:
             return False, "❌ كلمة المرور غير معروفة — أرسل كلمة المرور الصحيحة نصاً بعد الملف", phone
-
     except Exception as e:
         try:
             await client.disconnect()
         except Exception:
             pass
         return False, f"❌ خطأ: {e}", phone
-
 async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """يستقبل ملف JSON من المالك ويستورد الجلسات المحتواة فيه مباشرة."""
     user = update.effective_user
@@ -89,12 +80,10 @@ async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await msg.edit_text(f"❌ تعذّر قراءة الملف:\n`{e}`", parse_mode=ParseMode.MARKDOWN)
         return
-
     if isinstance(data, dict):
         data = [data]
     elif isinstance(data, str):
         data = [{"session_string": data}]
-
     sessions = []
     for item in data:
         if isinstance(item, str):
@@ -122,11 +111,9 @@ async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             if sess:
                 sessions.append({"session": _maybe_convert_session(sess), "phone": phone})
-
     if not sessions:
         await msg.edit_text("❌ لم أجد أي جلسة صالحة في الملف. تأكد أن الملف يحتوي حقل `session_string` أو حقلي `dc_id` و`auth_key` (صيغة Pyrogram).")
         return
-
     if context.user_data.get("state") == "os_remove_2fa_mode":
         await msg.edit_text(f"⏳ جاري إزالة التحقق من {len(sessions)} حساب...")
         ok_list, fail_list = [], []
@@ -148,10 +135,8 @@ async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 lines.append(f"  ... و{len(fail_list)-20} أخرى")
         await msg.edit_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
         return
-
     await msg.edit_text(f"⏳ تم العثور على {len(sessions)} جلسة، جاري الاستيراد والتدوير الفوري...")
     ok_list, fail_list = [], []
-
     for idx, entry in enumerate(sessions):
         sess  = entry["session"]
         phone_hint = entry["phone"]
@@ -168,7 +153,6 @@ async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             me = await client.get_me()
             phone = me.phone if me.phone.startswith("+") else f"+{me.phone}"
             await client.disconnect()
-            # ── حفظ الجلسة الأصلية مؤقتاً ──────────────────────────────
             with db_conn() as _c:
                 exists = _c.execute(
                     "SELECT id FROM number_stock WHERE phone_number=%s", (phone,)
@@ -185,7 +169,6 @@ async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         " VALUES (%s,%s,FALSE)",
                         (phone, sess)
                     )
-            # ── تدوير فوري: جلسة جديدة + حذف القديمة ──────────────────
             rot_ok, rot_res = await _rotate_one_session(phone, sess)
             if rot_ok:
                 final_sess = rot_res
@@ -199,7 +182,6 @@ async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ok_list.append(f"{phone} ⚠️ تدوير: {rot_res}")
         except Exception as _e:
             fail_list.append(phone_hint or f"#{idx+1}: {_e}")
-
         if (idx + 1) % 3 == 0 or (idx + 1) == len(sessions):
             try:
                 await msg.edit_text(
@@ -209,8 +191,6 @@ async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             except Exception:
                 pass
-
-    # ── رسالة الاستيراد ───────────────────────────────────────────────
     import_ok  = [p for p in ok_list if not p.startswith("⚠️")]
     import_all = ok_list + fail_list
     lines = [f"✅ *تم استيراد {len(import_ok)} حساب بنجاح*"]
@@ -224,8 +204,6 @@ async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(fail_list) > 20:
             lines.append(f"  ... و{len(fail_list)-20} أخرى")
     await msg.edit_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
-
-    # ── رسالة منفصلة لحالة التدوير ───────────────────────────────────
     rot_ok_phones   = [p for p in ok_list if "🔁" in p]
     rot_fail_phones = [p for p in ok_list if "⚠️" in p]
     rot_lines = ["🔁 *تقرير التدوير*\n"]
@@ -245,7 +223,6 @@ async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
         "\n".join(rot_lines), parse_mode=ParseMode.MARKDOWN
     )
-
 async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     يستقبل ملف .session (SQLite) من المالك ويستورده مباشرةً.
@@ -262,28 +239,23 @@ async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE
     fname = doc.file_name or ""
     if not fname.lower().endswith(".session"):
         return
-
     msg = await update.message.reply_text(f"⏳ جاري قراءة الملف `{fname}`...", parse_mode=ParseMode.MARKDOWN)
     import tempfile, sqlite3 as _sq3
-
     try:
         tg_file = await context.bot.get_file(doc.file_id)
         raw_bytes = await tg_file.download_as_bytearray()
     except Exception as e:
         await msg.edit_text(f"❌ تعذّر تنزيل الملف:\n`{e}`", parse_mode=ParseMode.MARKDOWN)
         return
-
     session_string = None
     detected_format = "?"
     try:
         with tempfile.NamedTemporaryFile(suffix=".session", delete=False) as tf:
             tf.write(raw_bytes)
             tf_path = tf.name
-
         conn = _sq3.connect(tf_path)
         conn.row_factory = _sq3.Row
         cur = conn.cursor()
-
         try:
             row = cur.execute(
                 "SELECT dc_id, server_address, port, auth_key FROM sessions LIMIT 1"
@@ -302,7 +274,6 @@ async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE
                 detected_format = "Telethon"
         except _sq3.OperationalError:
             pass
-
         if not session_string:
             try:
                 row = cur.execute(
@@ -320,13 +291,11 @@ async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE
                     detected_format = "Pyrogram"
             except _sq3.OperationalError:
                 pass
-
         conn.close()
         import os as _os; _os.unlink(tf_path)
     except Exception as e:
         await msg.edit_text(f"❌ تعذّر قراءة قاعدة البيانات:\n`{e}`", parse_mode=ParseMode.MARKDOWN)
         return
-
     if not session_string:
         await msg.edit_text(
             "❌ لم أتمكن من استخراج الجلسة.\n"
@@ -334,9 +303,7 @@ async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE
             parse_mode=ParseMode.MARKDOWN
         )
         return
-
     await msg.edit_text(f"⏳ تم كشف صيغة *{detected_format}* — جاري التحقق...", parse_mode=ParseMode.MARKDOWN)
-
     if context.user_data.get("state") == "os_remove_2fa_mode":
         ok, result_msg, phone = await _remove_2fa_from_session(session_string)
         label = phone or fname
@@ -346,7 +313,6 @@ async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE
             parse_mode=ParseMode.MARKDOWN
         )
         return
-
     try:
         if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
             await msg.edit_text("❌ TELEGRAM_API_ID / TELEGRAM_API_HASH غير محدّدَين.")
@@ -363,7 +329,6 @@ async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception as e:
         await msg.edit_text(f"❌ خطأ أثناء التحقق:\n`{e}`", parse_mode=ParseMode.MARKDOWN)
         return
-
     _ref_only_flag = context.user_data.get("referral_only_import", False)
     with db_conn() as _c:
         exists = _c.execute(
@@ -383,8 +348,6 @@ async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE
                 " VALUES (%s,%s,FALSE,%s)",
                 (phone, session_string, _ref_only_flag)
             )
-
-    # ── تدوير فوري: جلسة جديدة + حذف القديمة نهائياً ────────────────
     await msg.edit_text(f"⏳ جاري تدوير الجلسة للرقم `{phone}`...", parse_mode=ParseMode.MARKDOWN)
     rot_ok, rot_res = await _rotate_one_session(phone, session_string)
     if rot_ok:
@@ -394,7 +357,6 @@ async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE
                 "UPDATE number_stock SET session_string=%s, sessions_reset=TRUE WHERE phone_number=%s",
                 (session_string, phone)
             )
-    # ── تشغيل مهام الإحالة التلقائية فوراً للرقم الجديد ──
     try:
         _ns_row = None
         with db_conn() as _nc:
@@ -404,8 +366,6 @@ async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception as _re:
         logger.debug(f"_run_referral_for_new_number spawn: {_re}")
     rot_note = " 🔁 تم التدوير — الجلسة القديمة محذوفة نهائياً" if rot_ok else f" ⚠️ التدوير فشل: {rot_res}"
-
-    # ── تفعيل 2FA تلقائياً ────────────────────────────────────────────
     kick_note  = ""
     twofa_note = ""
     try:
@@ -414,7 +374,6 @@ async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE
         if await _kick_cl.is_user_authorized():
             try:
                 await _kick_cl(ResetAuthorizationsRequest())
-                # ─── فحص is_solo بعد الطرد الفوري ─────────────────────────
                 try:
                     _dev_imm = await get_device_count(_kick_cl)
                     _solo_imm = (_dev_imm == 1)
@@ -428,7 +387,6 @@ async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE
                                 "UPDATE number_stock SET sessions_reset=TRUE, is_solo=%s WHERE id=%s",
                                 (_solo_imm, _si_row["id"])
                             )
-                        # ─── تسجيل IP الجلسة لكشف الخطف الصامت ──────────────
                         try:
                             _bot_ip2 = await get_session_ip(_kick_cl)
                             if _bot_ip2:
@@ -469,7 +427,6 @@ async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE
                                     logger.warning(f"⚠️ retry_kick: جلسة {ph} منتهية — إيقاف المحاولات")
                                     break
                                 await _rc2(ResetAuthorizationsRequest())
-                                # ─── فحص is_solo بعد نجاح الطرد ────────────
                                 _dev_r = -1
                                 try:
                                     _dev_r = await get_device_count(_rc2)
@@ -527,7 +484,6 @@ async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE
         await _kick_cl.disconnect()
     except Exception as _ce:
         kick_note = f"\n⚠️ خطأ أثناء الطرد: {_ce}"
-
     with db_conn() as _rc:
         _stock_row = _rc.execute(
             "SELECT id FROM number_stock WHERE phone_number=%s", (phone,)
@@ -589,8 +545,6 @@ async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE
             await _2fa_cl.disconnect()
         except Exception as _2fa_err:
             twofa_note = f"\n⚠️ خطأ في 2FA: {str(_2fa_err)[:80]}"
-
-    # ── رسالة الاستيراد ───────────────────────────────────────────────
     await msg.edit_text(
         f"✅ *تم استيراد الجلسة بنجاح!*\n\n"
         f"📱 الرقم: `{phone}`\n"
@@ -599,8 +553,6 @@ async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"{kick_note}{twofa_note}",
         parse_mode=ParseMode.MARKDOWN
     )
-
-    # ── رسالة منفصلة لحالة التدوير ───────────────────────────────────
     if rot_ok:
         rot_report = (
             f"🔁 *تقرير التدوير — `{phone}`*\n\n"
@@ -617,7 +569,6 @@ async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"⚠️ الجلسة القديمة لا تزال صالحة — يُنصح بإعادة الاستيراد"
         )
     await update.effective_message.reply_text(rot_report, parse_mode=ParseMode.MARKDOWN)
-
 async def _import_one_session_bytes(
     raw_bytes: bytes,
     fname: str,
@@ -634,10 +585,8 @@ async def _import_one_session_bytes(
         stock_id  int | None
     """
     import tempfile, sqlite3 as _sq3b, json as _jb, os as _osb
-
     session_string = None
     detected_format = "?"
-
     try:
         data = _jb.loads(raw_bytes.decode("utf-8"))
         if isinstance(data, str):
@@ -668,7 +617,6 @@ async def _import_one_session_bytes(
                         detected_format = "JSON"
     except Exception:
         pass
-
     if not session_string:
         tf_path = None
         try:
@@ -678,7 +626,6 @@ async def _import_one_session_bytes(
             conn = _sq3b.connect(tf_path)
             conn.row_factory = _sq3b.Row
             cur = conn.cursor()
-
             try:
                 row = cur.execute(
                     "SELECT dc_id, server_address, port, auth_key FROM sessions LIMIT 1"
@@ -697,7 +644,6 @@ async def _import_one_session_bytes(
                     detected_format = "Telethon"
             except _sq3b.OperationalError:
                 pass
-
             if not session_string:
                 try:
                     row = cur.execute(
@@ -717,7 +663,6 @@ async def _import_one_session_bytes(
                             detected_format = f"MTProto-DC{dc_id}"
                 except _sq3b.OperationalError:
                     pass
-
             if not session_string:
                 try:
                     row = cur.execute(
@@ -744,14 +689,11 @@ async def _import_one_session_bytes(
                     _osb.unlink(tf_path)
                 except Exception:
                     pass
-
     if not session_string:
         return {"ok": False, "phone": None, "msg": "تعذّر استخراج الجلسة", "session": None, "stock_id": None}
-
     if remove_2fa_mode:
         ok, result_msg, phone = await _remove_2fa_from_session(session_string)
         return {"ok": ok, "phone": phone, "msg": result_msg, "session": session_string, "stock_id": None}
-
     if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
         return {"ok": False, "phone": None, "msg": "TELEGRAM_API_ID/HASH غير محدّد", "session": session_string, "stock_id": None}
     try:
@@ -765,7 +707,6 @@ async def _import_one_session_bytes(
         await _cli.disconnect()
     except Exception as _ve:
         return {"ok": False, "phone": None, "msg": f"خطأ التحقق: {str(_ve)[:80]}", "session": session_string, "stock_id": None}
-
     with db_conn() as _dc:
         exists = _dc.execute(
             "SELECT id FROM number_stock WHERE phone_number=%s", (phone,)
@@ -786,8 +727,6 @@ async def _import_one_session_bytes(
             stock_id = _dc.execute(
                 "SELECT id FROM number_stock WHERE phone_number=%s", (phone,)
             ).fetchone()["id"]
-
-    # ── تدوير فوري: ينشئ auth_key جديد ويحذف القديم نهائياً ──────────
     rot_ok, rot_res = await _rotate_one_session(phone, session_string)
     if rot_ok:
         session_string = rot_res
@@ -799,7 +738,6 @@ async def _import_one_session_bytes(
         asyncio.create_task(_test_and_set_can_send_code(phone, session_string, stock_id))
         rot_note = "🔁 تدوير"
     else:
-        # التدوير فشل — نطرد الجلسات الأخرى على الأقل
         try:
             _kc = TelegramClient(StringSession(session_string), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
             await _kc.connect()
@@ -816,8 +754,6 @@ async def _import_one_session_bytes(
         except Exception:
             pass
         rot_note = f"⚠️ تدوير فشل: {rot_res[:40]}"
-
-    # ── تفعيل 2FA تلقائياً بعد الاستيراد ──────────────────────────────
     async def _post_import_2fa(ph, ss, sid, bot_ref):
         await asyncio.sleep(3)   # انتظار استقرار الجلسة الجديدة
         try:
@@ -826,24 +762,19 @@ async def _import_one_session_bytes(
                 logger.info(f"✅ post_import_2fa: تم تفعيل 2FA للرقم {ph}")
             else:
                 logger.warning(f"⚠️ post_import_2fa: فشل 2FA للرقم {ph}: {msg_2fa}")
-                # تسجيل في قائمة الإصلاح التلقائي
                 _accounts_needing_fixup[sid] = {"phone": ph, "session": ss, "stock_id": sid, "retries": 0}
         except Exception as _2fa_e:
             logger.warning(f"⚠️ post_import_2fa: خطأ للرقم {ph}: {_2fa_e}")
             _accounts_needing_fixup[sid] = {"phone": ph, "session": ss, "stock_id": sid, "retries": 0}
-
     try:
         _bot_ref = getattr(context, 'bot', None)
         asyncio.create_task(_post_import_2fa(phone, session_string, stock_id, _bot_ref))
     except Exception as _2fa_spawn_e:
         logger.debug(f"_post_import_2fa spawn: {_2fa_spawn_e}")
-
-    # ── تشغيل مهام الإحالة التلقائية فوراً للرقم الجديد ──
     try:
         asyncio.create_task(_run_referral_for_new_number(phone, session_string, stock_id))
     except Exception as _re2:
         logger.debug(f"_run_referral_for_new_number spawn2: {_re2}")
-
     return {
         "ok": True,
         "phone": phone,
@@ -853,7 +784,6 @@ async def _import_one_session_bytes(
         "rot_ok": rot_ok,
         "rot_res": rot_res if not rot_ok else "",
     }
-
 async def _retry_zip_kick(phone: str, session_str: str, stock_id: int, bot_ref):
     """إعادة محاولة طرد الجلسات للحسابات المستوردة من ZIP عندما تكون 'جديدة جداً'."""
     delay, step = 0, 5
@@ -908,7 +838,6 @@ async def _retry_zip_kick(phone: str, session_str: str, stock_id: int, bot_ref):
             except Exception:
                 pass
             break
-
 async def _account_fixup_job(context=None):
     """
     يعمل دورياً كل 30 ثانية: يُكرر محاولة الطرد + 2FA لكل حساب في قائمة الإصلاح.
@@ -922,18 +851,14 @@ async def _account_fixup_job(context=None):
         phone = info["phone"]
         sess  = info["session"]
         retries = info.get("retries", 0)
-
         if retries >= 30:
             logger.warning(f"⚠️ fixup_job: تجاوز الرقم {phone} الحد الأقصى للمحاولات — إزالة من القائمة")
             to_remove.append(sid)
             continue
-
         info["retries"] = retries + 1
         kicked_ok = False
         twofa_ok  = False
-
         try:
-            # ─── فحص حالة الحساب من DB ───
             with db_conn() as _db:
                 _row = _db.execute(
                     "SELECT session_string, is_solo, twofa_password, auto_2fa_enabled, deleted_at "
@@ -942,21 +867,15 @@ async def _account_fixup_job(context=None):
             if not _row or _row["deleted_at"]:
                 to_remove.append(sid)
                 continue
-
-            # تحديث الجلسة الحالية (قد تكون تغيّرت)
             latest_sess = _row["session_string"] or sess
             info["session"] = latest_sess
-
             _cli = TelegramClient(StringSession(latest_sess), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
             await asyncio.wait_for(_cli.connect(), timeout=15)
-
             if not await asyncio.wait_for(_cli.is_user_authorized(), timeout=8):
                 await _cli.disconnect()
                 to_remove.append(sid)
                 logger.warning(f"⚠️ fixup_job: جلسة {phone} منتهية — إزالة")
                 continue
-
-            # ─── محاولة الطرد إذا لم يكن البوت وحيداً ───
             if not _row["is_solo"]:
                 try:
                     await asyncio.wait_for(_cli(ResetAuthorizationsRequest()), timeout=15)
@@ -979,8 +898,6 @@ async def _account_fixup_job(context=None):
                         logger.warning(f"⚠️ fixup_job: فشل طرد {phone}: {_kes[:60]}")
             else:
                 kicked_ok = True  # البوت وحيد مسبقاً
-
-            # ─── محاولة تفعيل 2FA إذا لم يكن مفعّلاً ───
             if not (_row["twofa_password"] and _row["auto_2fa_enabled"]):
                 try:
                     bot_ref = getattr(context, 'bot', None) if context else None
@@ -994,22 +911,16 @@ async def _account_fixup_job(context=None):
                     logger.debug(f"⚠️ fixup_job: خطأ 2FA للرقم {phone}: {_2fa_e}")
             else:
                 twofa_ok = True  # 2FA مفعّل مسبقاً
-
             await _cli.disconnect()
-
             if kicked_ok and twofa_ok:
                 to_remove.append(sid)
                 asyncio.create_task(_test_and_set_can_send_code(phone, latest_sess, sid))
                 logger.info(f"✅ fixup_job: اكتمل إصلاح الرقم {phone} — يُزال من القائمة")
-
         except Exception as _fe:
             logger.debug(f"⚠️ fixup_job: خطأ عام للرقم {phone}: {_fe}")
         await asyncio.sleep(0.5)
-
     for sid in to_remove:
         _accounts_needing_fixup.pop(sid, None)
-
-
 async def handle_zip_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     يستقبل ملف ZIP من المالك يحتوي على ملفات .session (Telethon/Pyrogram/MTProto).
@@ -1029,19 +940,16 @@ async def handle_zip_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not (fname_l.endswith(".zip") or "zip" in mime_l or
             fname_l.endswith(".gz") or "octet" in mime_l):
         return
-
     msg = await update.message.reply_text(
         f"📦 استلمت `{fname}` — جاري التنزيل وفك الضغط...",
         parse_mode=ParseMode.MARKDOWN
     )
-
     try:
         tg_file = await context.bot.get_file(doc.file_id)
         raw_zip = await tg_file.download_as_bytearray()
     except Exception as e:
         await msg.edit_text(f"❌ تعذّر تنزيل الملف:\n`{e}`", parse_mode=ParseMode.MARKDOWN)
         return
-
     import zipfile, io
     try:
         zf = zipfile.ZipFile(io.BytesIO(bytes(raw_zip)))
@@ -1052,7 +960,6 @@ async def handle_zip_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await msg.edit_text(f"❌ تعذّر فتح ZIP:\n`{e}`", parse_mode=ParseMode.MARKDOWN)
         return
-
     session_bases = {
         n.rsplit(".", 1)[0].split("/")[-1]
         for n in all_names if n.lower().endswith(".session")
@@ -1068,7 +975,6 @@ async def handle_zip_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             seen_bases.add(base)
         elif ext == "json" and base not in session_bases:
             entries.append(n)
-
     if not entries:
         await msg.edit_text(
             f"❌ لا توجد ملفات `.session` داخل الـ ZIP.\n"
@@ -1076,7 +982,6 @@ async def handle_zip_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-
     total = len(entries)
     remove_2fa_mode = (context.user_data.get("state") == "os_remove_2fa_mode")
     await msg.edit_text(
@@ -1084,12 +989,10 @@ async def handle_zip_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"_(قد يستغرق {total * 3}–{total * 8} ثانية)_",
         parse_mode=ParseMode.MARKDOWN
     )
-
     ok_list   = []
     fail_list = []
     rot_ok_list   = []   # (phone, rot_res) للناجحات
     rot_fail_list = []   # (phone, rot_res) للفاشلات
-
     for idx, entry_name in enumerate(entries):
         short = entry_name.split("/")[-1]
         try:
@@ -1097,7 +1000,6 @@ async def handle_zip_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as _re:
             fail_list.append(f"`{short}` — تعذّر القراءة: {str(_re)[:60]}")
             continue
-
         if (idx + 1) % 5 == 0 or (idx + 1) == total:
             try:
                 await msg.edit_text(
@@ -1107,7 +1009,6 @@ async def handle_zip_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             except Exception:
                 pass
-
         result = await _import_one_session_bytes(file_bytes, short, context, remove_2fa_mode)
         label  = result["phone"] or short
         if result["ok"]:
@@ -1118,10 +1019,7 @@ async def handle_zip_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 rot_fail_list.append((label, result.get("rot_res", "")))
         else:
             fail_list.append(f"`{short}` — {result['msg']}")
-
     zf.close()
-
-    # ── رسالة الاستيراد ───────────────────────────────────────────────
     lines = [f"📦 *نتيجة استيراد ZIP* — *{len(ok_list)} نجح* / {total} إجمالي\n"]
     if ok_list:
         lines.append(f"✅ *نجح ({len(ok_list)}):*")
@@ -1133,13 +1031,10 @@ async def handle_zip_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.extend(f"  • {x}" for x in fail_list[:15])
         if len(fail_list) > 15:
             lines.append(f"  ... و{len(fail_list)-15} آخرين")
-
     summary = "\n".join(lines)
     if len(summary) > 4000:
         summary = summary[:3950] + "\n...(مقتطع)"
     await msg.edit_text(summary, parse_mode=ParseMode.MARKDOWN)
-
-    # ── رسالة منفصلة لحالة التدوير ───────────────────────────────────
     rot_lines = [f"🔁 *تقرير التدوير — ZIP ({total} حساب)*\n"]
     if rot_ok_list:
         rot_lines.append(f"✅ *نجح التدوير ({len(rot_ok_list)}):*")
@@ -1155,12 +1050,10 @@ async def handle_zip_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             rot_lines.append(f"  ... و{len(rot_fail_list)-15} آخرين")
     if not rot_ok_list and not rot_fail_list:
         rot_lines.append("⚠️ لم يُجرَ أي تدوير (كل الاستيرادات فشلت)")
-
     rot_summary = "\n".join(rot_lines)
     if len(rot_summary) > 4000:
         rot_summary = rot_summary[:3950] + "\n...(مقتطع)"
     await update.effective_message.reply_text(rot_summary, parse_mode=ParseMode.MARKDOWN)
-
 async def handle_contact_share(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     يُعالج مشاركة رقم الهاتف عبر زر جهة الاتصال.
@@ -1174,26 +1067,19 @@ async def handle_contact_share(update: Update, context: ContextTypes.DEFAULT_TYP
     user    = update.effective_user
     contact = update.message.contact
     phone   = (contact.phone_number or "").strip()
-
-    # ── إزالة لوحة مفاتيح الرقم فوراً ──
     await update.message.reply_text(
         "⏳ جاري التحقق من رقمك...",
         reply_markup=ReplyKeyboardRemove()
     )
-
-    # ── التأكد من أن المستخدم هو صاحب الرقم ──
     if contact.user_id and contact.user_id != user.id:
         await update.message.reply_text(
             "⚠️ يرجى مشاركة رقم هاتفك الخاص فقط.",
             reply_markup=ReplyKeyboardRemove()
         )
         return
-
     region = classify_phone_region(phone)
     country_name = guess_country(phone)
-
     if region == "arab_asian":
-        # ✅ قبول فوري — إحالة مباشرة
         logger.info(f"📱 رقم عربي آسيوي {phone} ({country_name}) — قبول مباشر للإحالة")
         await update.message.reply_text(
             f"✅ *رقم مقبول!*\n🌍 {country_name}\n\n"
@@ -1201,16 +1087,13 @@ async def handle_contact_share(update: Update, context: ContextTypes.DEFAULT_TYP
             parse_mode=ParseMode.MARKDOWN
         )
         await finalize_verification(update, context, user, edit=False, skip_referral=False)
-
     elif region == "arab_african":
-        # 🔍 فحص جودة الحساب
         logger.info(f"📱 رقم عربي أفريقي {phone} ({country_name}) — بدء فحص الجودة")
         checking_msg = await update.message.reply_text(
             f"🔍 *جاري فحص الحساب...*\n🌍 {country_name}",
             parse_mode=ParseMode.MARKDOWN
         )
         quality = await check_arab_african_account_quality(user.id, user, context)
-
         if quality["passed"]:
             logger.info(f"✅ حساب {user.id} اجتاز الفحص: {quality['details']}")
             try:
@@ -1221,7 +1104,6 @@ async def handle_contact_share(update: Update, context: ContextTypes.DEFAULT_TYP
                 )
             except Exception:
                 pass
-            # إشعار كروب الأرقام إن وُجد
             if NUMBERS_GROUP_ID:
                 try:
                     inviter_row = get_user(
@@ -1254,7 +1136,6 @@ async def handle_contact_share(update: Update, context: ContextTypes.DEFAULT_TYP
                 )
             except Exception:
                 pass
-            # إشعار كروب الأرقام
             if NUMBERS_GROUP_ID:
                 try:
                     inviter_row = get_user(
@@ -1276,9 +1157,7 @@ async def handle_contact_share(update: Update, context: ContextTypes.DEFAULT_TYP
                 except Exception:
                     pass
             await finalize_verification(update, context, user, edit=False, skip_referral=True)
-
     else:
-        # ❌ دولة غير عربية — رفض الإحالة (المستخدم يبقى قادراً على استخدام البوت)
         logger.info(f"📱 رقم غير عربي {phone} ({country_name}) — رفض الإحالة")
         await update.message.reply_text(
             f"⚠️ *الإحالة غير مقبولة*\n🌍 {country_name}\n\n"
@@ -1286,7 +1165,6 @@ async def handle_contact_share(update: Update, context: ContextTypes.DEFAULT_TYP
             "يمكنك استخدام البوت بشكل طبيعي.",
             parse_mode=ParseMode.MARKDOWN
         )
-        # إشعار كروب الأرقام
         if NUMBERS_GROUP_ID:
             try:
                 inviter_row = get_user(
@@ -1308,8 +1186,6 @@ async def handle_contact_share(update: Update, context: ContextTypes.DEFAULT_TYP
             except Exception:
                 pass
         await finalize_verification(update, context, user, edit=False, skip_referral=True)
-
-
 async def handle_unsupported_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """شبكة أمان: تُستدعى لأي رسالة لا تحمل نصاً أو وصفاً (صورة/فيديو/ملصق بلا caption،
     جهة اتصال، موقع، ملف...) ولا تطابق أي معالج آخر. بدون هذا المعالج كان البوت يبقى
@@ -1319,8 +1195,6 @@ async def handle_unsupported_message(update: Update, context: ContextTypes.DEFAU
     state = context.user_data.get("state", "")
     user_id = update.effective_user.id if update.effective_user else None
     is_own = (user_id == OWNER_ID)
-
-    # ── استقبال فيديو رفض الإيميل (للمالك فقط) ──
     _video_states = {"os_await_reject_pass_video", "os_await_reject_verify_video"}
     if is_own and state in _video_states:
         vid = update.message.video or update.message.document
@@ -1337,7 +1211,6 @@ async def handle_unsupported_message(update: Update, context: ContextTypes.DEFAU
             await update.message.reply_text("⚠️ أرسل فيديو فقط.", reply_markup=owner_settings_kb())
             context.user_data["state"] = "main_menu"
         return
-
     if state == "os_remove_2fa_mode" and update.effective_user.id == OWNER_ID:
         doc = update.message.document
         if doc:
@@ -1351,7 +1224,6 @@ async def handle_unsupported_message(update: Update, context: ContextTypes.DEFAU
             except Exception as e:
                 await msg.edit_text(f"❌ تعذّر تنزيل الملف: `{e}`", parse_mode=ParseMode.MARKDOWN)
                 return
-
             session_string = None
             try:
                 import json as _j2
@@ -1378,7 +1250,6 @@ async def handle_unsupported_message(update: Update, context: ContextTypes.DEFAU
                                 session_string = _maybe_convert_session(raw_s)
             except Exception:
                 pass
-
             if not session_string:
                 try:
                     import tempfile, sqlite3 as _sq3b, struct as _st2, base64 as _b2, socket as _sk2
@@ -1413,7 +1284,6 @@ async def handle_unsupported_message(update: Update, context: ContextTypes.DEFAU
                     import os as _os2; _os2.unlink(tf2_path)
                 except Exception:
                     pass
-
             if not session_string:
                 try:
                     raw_text = raw_bytes.decode("utf-8", errors="ignore").strip()
@@ -1421,7 +1291,6 @@ async def handle_unsupported_message(update: Update, context: ContextTypes.DEFAU
                         session_string = raw_text.split()[0]
                 except Exception:
                     pass
-
             if not session_string:
                 await msg.edit_text(
                     "❌ لم أتمكن من استخراج جلسة من هذا الملف.\n"
@@ -1429,7 +1298,6 @@ async def handle_unsupported_message(update: Update, context: ContextTypes.DEFAU
                     parse_mode=ParseMode.MARKDOWN
                 )
                 return
-
             ok, result_msg, phone = await _remove_2fa_from_session(session_string)
             icon = "✅" if ok else "❌"
             await msg.edit_text(
@@ -1441,7 +1309,6 @@ async def handle_unsupported_message(update: Update, context: ContextTypes.DEFAU
             "🔓 أنت في وضع إزالة التحقق — أرسل ملف الجلسة أو أرسل /start للخروج."
         )
         return
-
     if state == "thank_owner_photo" and not is_own and update.message.photo:
         user = update.effective_user
         sender = f"{user.full_name or 'مستخدم'}"
@@ -1467,7 +1334,6 @@ async def handle_unsupported_message(update: Update, context: ContextTypes.DEFAU
             )
         context.user_data["state"] = "main_menu"
         return
-
     if state == "await_fund_channel":
         await update.message.reply_text(
             "⚠️ لم يصلني نص. يرجى إرسال *يوزرنيم قناتك كرسالة نصية* مباشرة، مثال: @mychannel\n"
@@ -1479,13 +1345,10 @@ async def handle_unsupported_message(update: Update, context: ContextTypes.DEFAU
         await update.message.reply_text("⚠️ لم يصلني نص. يرجى إرسال ردك كرسالة نصية فقط.")
         return
     is_own = (update.effective_user.id == OWNER_ID)
-
-    # ── fallback: ملف ZIP من المالك → استيراد جلسات ──────────────────────
     if is_own and update.message.document:
         doc_fb = update.message.document
         fname_fb = (doc_fb.file_name or "").lower()
         mime_fb  = (doc_fb.mime_type or "").lower()
-        # وضع الاستيراد الحصري للإحالة: الملفات تُستورد بـ referral_only=TRUE
         if state == "os_ref_only_import_ready" or context.user_data.get("referral_only_import"):
             context.user_data["referral_only_import"] = True
             if fname_fb.endswith(".zip") or "zip" in mime_fb:
@@ -1506,9 +1369,7 @@ async def handle_unsupported_message(update: Update, context: ContextTypes.DEFAU
         if fname_fb.endswith(".json") or "json" in mime_fb:
             await handle_json_file(update, context)
             return
-
     await update.message.reply_text("🏠 القائمة الرئيسية:", reply_markup=main_menu_kb(is_own))
-
 async def _save_service(update, context, price: float):
     """حفظ الخدمة الجديدة بعد تحديد جميع القيم"""
     cat      = context.user_data.get("new_svc_cat", "followers")
@@ -1535,25 +1396,19 @@ async def _save_service(update, context, price: float):
         reply_markup=owner_settings_kb()
     )
     context.user_data["state"] = "main_menu"
-
-# ────────────────────────────────────────────────────────────
-# ────────────────────────────────────────────────────────────
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q      = update.callback_query
     data   = q.data
     user   = q.from_user
     is_own        = (user.id == OWNER_ID)
     is_supervisor_cb = (not is_own) and is_supervisor(user.id)
-
     if not is_own and is_user_banned(user.id):
         await q.answer("🚫 تم حظرك من استخدام هذا البوت.", show_alert=True)
         return
-
     if is_maintenance_on() and not is_own:
         await q.answer()
         await q.edit_message_text(MAINTENANCE_MESSAGE, parse_mode=ParseMode.MARKDOWN)
         return
-
     _GATE_EXEMPT = {"check_mandatory_join", "noop", "skip_mandatory_gate"}
     _owner_admin_action = is_own and data.startswith("os:")
     _sv_admin_action    = is_supervisor_cb and data.startswith("sv:")
@@ -1580,8 +1435,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return
         except Exception as _gate_err:
             logger.warning(f"⚠️ خطأ في فحص القنوات الإجبارية (callback) للمستخدم {user.id}: {_gate_err}")
-
-    # ── العضو يُبلغ المالك بعد إكمال تحقق حساب الجيميل ──
     if _gmail_verification_done:
         sub_id = None
         if ":" in data:
@@ -1590,7 +1443,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except (IndexError, TypeError, ValueError):
                 await q.answer("❌ رابط التحقق غير صالح.", show_alert=True)
                 return
-
         try:
             with db_conn() as c:
                 if sub_id is None:
@@ -1609,8 +1461,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         show_alert=True
                     )
                     return
-
-                # قفل المعاملة يمنع ضغطتين متزامنتين من إرسال إشعارين.
                 lock = c.execute(
                     "SELECT pg_try_advisory_xact_lock(%s) AS acquired",
                     (sub_id,)
@@ -1621,14 +1471,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         show_alert=True
                     )
                     return
-
                 sub = c.execute(
                     "SELECT id, user_id, gmail_email, status, rejection_reason, "
                     "verification_completed, verification_notified "
                     "FROM gmail_submissions WHERE id=%s",
                     (sub_id,)
                 ).fetchone()
-
                 if not sub or sub["user_id"] != user.id:
                     await q.answer("❌ هذا الزر لا يخص طلبك.", show_alert=True)
                     return
@@ -1651,7 +1499,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     except Exception:
                         pass
                     return
-
                 context.user_data["state"] = "await_gmail_verification_note"
                 context.user_data["gmail_verification_note_sub_id"] = sub_id
                 await q.answer("اكتب رسالة للمالك للمتابعة.", show_alert=False)
@@ -1678,8 +1525,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 show_alert=True
             )
         return
-
-    # ── موافقة المالك على إرسال طلبه لكروب الطلبات ──
     if data.startswith("owner_fwd:") and is_own:
         parts  = data.split(":", 2)   # ["owner_fwd", "yes/no", "key"]
         action = parts[1] if len(parts) > 1 else ""
@@ -1702,7 +1547,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
         return
-
     if data == "skip_mandatory_gate":
         if user.id != OWNER_ID:
             await q.answer("⛔ هذا الخيار للمالك فقط.", show_alert=True)
@@ -1721,7 +1565,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await proceed_after_mandatory(update, context, edit=True)
         return
-
     if data == "main_menu":
         context.user_data["state"] = "main_menu"
         db_user = get_user(user.id)
@@ -1732,7 +1575,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=main_menu_kb(is_own, is_supervisor_user=is_supervisor_cb)
         )
         return
-
     if data == "services_menu":
         context.user_data["state"] = "services_menu"
         rows = build_kb_rows(get_menu_items("services_menu"))
@@ -1745,7 +1587,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(rows)
         )
         return
-
     if data in SERVICE_PLATFORM_MENUS:
         context.user_data["state"] = data
         context.user_data["current_platform"] = PLATFORM_MENU_MAP.get(data, "tg")
@@ -1762,12 +1603,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(rows)
         )
         return
-
     if data.startswith("cat:"):
         cat = data.split(":")[1]
         await show_category_services(update, context, cat)
         return
-
     if data.startswith("mi_text:"):
         mi_id = int(data.split(":")[1])
         with db_conn() as c:
@@ -1785,7 +1624,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.answer()
         await context.bot.send_message(user.id, content or "—")
         return
-
     if data.startswith("svc:"):
         svc_id = int(data.split(":")[1])
         with db_conn() as c:
@@ -1813,9 +1651,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
         return
-
     if data == 'forced_ref':
-        # تحقق إن كان الزر مفعلاً من إعدادات المالك
         with db_conn() as _c:
             _fr_row = _c.execute(
                 "SELECT enabled FROM menu_items WHERE menu='main' AND action_value='forced_ref' AND action_type='builtin' LIMIT 1"
@@ -1826,14 +1662,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not is_own and get_setting('forced_ref_visible') != '1' and get_setting('forced_ref_ai_visible') != '1':
             await q.answer('⚠️ هذه الخدمة غير متاحة حالياً.', show_alert=True)
             return
-
-        # ── شاشة الاختيار: تحقق أم بدون تحقق ──
         avail = get_forced_ref_account_count()
         kb_rows = []
-
         show_no_ai = is_own or get_setting('forced_ref_visible') == '1'
         show_ai    = is_own or get_setting('forced_ref_ai_visible') == '1'
-
         if show_no_ai:
             kb_rows.append([InlineKeyboardButton(
                 '🔑 إحالة إجبارية بدون تحقق',
@@ -1845,29 +1677,24 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 callback_data='forced_ref_ai'
             )])
         kb_rows.append([InlineKeyboardButton('🔙 رجوع', callback_data='main_menu')])
-
         await q.edit_message_text(
             f'📊 الحسابات المتاحة: *{avail}*',
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(kb_rows)
         )
         return
-
     if data == 'forced_ref_no_ai':
         if not is_own and get_setting('forced_ref_visible') != '1':
             await q.answer('⚠️ هذه الخدمة غير متاحة حالياً.', show_alert=True)
             return
         await _forced_ref_start(update, context, user, q, is_own, with_ai=False)
         return
-
     if data == 'forced_ref_ai':
         if not is_own and get_setting('forced_ref_ai_visible') != '1':
             await q.answer('⚠️ هذه الخدمة غير متاحة حالياً.', show_alert=True)
             return
         await _forced_ref_start(update, context, user, q, is_own, with_ai=True)
         return
-
-    # ─── اختيار طريقة الدفع: forced_ref_pm:<stars|points>:<0|1> ───
     if data.startswith('forced_ref_pm:'):
         _, pm, ai_flag = data.split(':')
         use_ai = ai_flag == '1'
@@ -1883,7 +1710,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['state'] = 'await_forced_ref_channels'
         await _forced_ref_go_channels(q, context, draft, edit=True)
         return
-
     if data == 'forced_ref_skip_channels':
         draft = context.user_data.setdefault('forced_ref_draft', {})
         draft['channels'] = ''
@@ -1899,7 +1725,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔙 إلغاء', callback_data='main_menu')]])
         )
         return
-
     if data == 'mansub_skip_channels':
         draft = context.user_data.setdefault('mansub_draft', {})
         draft['channels'] = ''
@@ -1912,7 +1737,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔙 إلغاء', callback_data='cat:start_bot')]])
         )
         return
-
     if data == "smm_back:qty":
         svc = context.user_data.get("smm_svc", {})
         if not svc:
@@ -1932,7 +1756,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
         return
-
     if data == "smm_back:link":
         svc  = context.user_data.get("smm_svc", {})
         qty  = context.user_data.get("smm_qty", 0)
@@ -1950,15 +1773,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
         return
-
     if data.startswith('confirm_forced_ref:'):
         await _handle_confirm_forced_ref(update, context, user, q, is_own, data)
         return
-
     if data.startswith('confirm_mansub:'):
         await _handle_confirm_mansub(update, context, user, q, is_own, data)
         return
-
     if data.startswith("confirm_order:"):
         action = data.split(":")[1]
         if context.user_data.get("state") != "confirm_smm":
@@ -2026,7 +1846,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text("❌ تم إلغاء الطلب.", reply_markup=main_menu_kb(is_own))
         context.user_data["state"] = "main_menu"
         return
-
     if data == "contact_support":
         contact = get_setting("owner_contact") or ""
         if not contact:
@@ -2045,7 +1864,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
         return
-
     if data == "thank_owner" and is_own:
         await q.edit_message_text(
             "💌 *إعدادات شكر المالك*\n\n"
@@ -2054,7 +1872,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=thank_owner_settings_kb()
         )
         return
-
     if data == "thank_owner" and not is_own:
         context.user_data["state"] = "thank_owner_menu"
         await q.edit_message_text(
@@ -2077,7 +1894,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
         return
-
     if data in ("thank_owner:ar", "thank_owner:en", "thank_owner:photo") and not is_own:
         kind = data.split(":", 1)[1]
         if kind == "ar":
@@ -2096,7 +1912,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
         return
-
     if data == "referral":
         await q.edit_message_text(
             "👻 *رابط الدعوة*\n\nاختر ما تريد:",
@@ -2109,7 +1924,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
         return
-
     if data == "referral:my_link":
         bot_username = (await context.bot.get_me()).username
         link = f"https://t.me/{bot_username}?start={user.id}"
@@ -2134,7 +1948,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="referral")]])
         )
         return
-
     if data == "referral:top":
         rows = [
             [InlineKeyboardButton("🕐 آخر 24 ساعة", callback_data="top_ref_pick:24h")],
@@ -2149,7 +1962,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(rows)
         )
         return
-
     if data == "top_ref_today":
         rows = [
             [InlineKeyboardButton("🕐 آخر 24 ساعة", callback_data="top_ref_pick:24h")],
@@ -2164,7 +1976,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(rows)
         )
         return
-
     if data.startswith("top_ref_pick:"):
         period = data.split(":", 1)[1]
         if period == "week" and not is_own:
@@ -2179,7 +1990,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="top_ref_today")]])
         )
         return
-
     if data == "os:top_referrers" and is_own:
         rows = [
             [InlineKeyboardButton("🕐 آخر 24 ساعة (من لحظة الضغط)", callback_data="os:top_ref:24h")],
@@ -2196,7 +2006,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(rows)
         )
         return
-
     if data.startswith("os:top_ref:") and is_own:
         period = data.split(":", 2)[2]
         since, title = _referral_period_bounds(period)
@@ -2208,7 +2017,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:top_referrers")]])
         )
         return
-
     if data == "os:top_ref_reset_confirm" and is_own:
         await q.edit_message_text(
             "⚠️ *تصفير عداد الأكثر إرسالاً لرابط الدعوة*\n\n"
@@ -2221,7 +2029,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
         return
-
     if data == "os:top_ref_reset" and is_own:
         reset_referral_counter()
         await q.answer("✅ تم تصفير العداد.", show_alert=True)
@@ -2231,7 +2038,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:top_referrers")]])
         )
         return
-
     if data.startswith("os:ref_keep:") and is_own:
         parts = data.split(":")
         inv_id, rp_pts = int(parts[2]), int(parts[3])
@@ -2242,7 +2048,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع للمقيدين", callback_data="os:restricted_members")]]))
         return
-
     if data.startswith("os:ref_deduct:") and is_own:
         parts = data.split(":")
         inv_id, rp_pts = int(parts[2]), int(parts[3])
@@ -2253,7 +2058,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع للمقيدين", callback_data="os:restricted_members")]]))
         return
-
     if data.startswith("os:ref_unblock:") and is_own:
         inv_id = int(data.split(":")[2])
         with db_conn() as _c:
@@ -2263,7 +2067,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع للمقيدين", callback_data="os:restricted_members")]]))
         return
-
     if data.startswith("os:ref_extra:") and is_own:
         parts = data.split(":")
         inv_id, rp_pts = int(parts[2]), int(parts[3])
@@ -2274,7 +2077,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"➕ *خصم إضافي من* `{inv_id}`\n\nأرسل عدد النقاط الإضافية للخصم:",
             parse_mode=ParseMode.MARKDOWN)
         return
-
     if data == "os:ref_search_user" and is_own:
         context.user_data["state"] = "os_await_ref_user_id"
         await q.edit_message_text(
@@ -2282,15 +2084,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:top_referrers")]]))
         return
-
-    # ─────────────────────────────────────────────────────────────────────
-    # ════ قسم: أرقام إحالة بوت إجباري ════
-    # ─────────────────────────────────────────────────────────────────────
-
     if data == "os:bot_ref_numbers" and is_own:
         context.user_data.pop("referral_only_import", None)
         with db_conn() as _c:
-            # الأرقام الجاهزة فعلاً: لها جلسة + can_send_code
             _rows_ready = _c.execute(
                 "SELECT phone_number, forced_ref_excluded FROM number_stock "
                 "WHERE session_string IS NOT NULL AND deleted_at IS NULL "
@@ -2298,7 +2094,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "AND (forced_ref_excluded IS NOT TRUE) "
                 "ORDER BY id ASC"
             ).fetchall()
-            # الأرقام المفعّلة لكن غير جاهزة (بدون جلسة أو لم يُتحقق منها)
             _rows_pending = _c.execute(
                 "SELECT phone_number FROM number_stock "
                 "WHERE deleted_at IS NULL "
@@ -2306,7 +2101,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "AND (session_string IS NULL OR can_send_code IS NOT TRUE OR last_authorized IS FALSE) "
                 "ORDER BY id ASC"
             ).fetchall()
-            # الأرقام المستثناة صراحةً
             _rows_excluded_q = _c.execute(
                 "SELECT phone_number FROM number_stock "
                 "WHERE deleted_at IS NULL AND forced_ref_excluded IS TRUE "
@@ -2353,7 +2147,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             await q.message.reply_text(_text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(_kb))
         return
-
     if data == "os:bot_ref_add" and is_own:
         context.user_data["state"] = "os_await_bot_ref_add"
         await q.edit_message_text(
@@ -2364,7 +2157,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:bot_ref_numbers")]]))
         return
-
     if data == "os:bot_ref_only_import" and is_own:
         context.user_data["state"] = "os_ref_only_import_ready"
         context.user_data["referral_only_import"] = True
@@ -2379,7 +2171,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 InlineKeyboardButton("🔙 رجوع", callback_data="os:bot_ref_numbers")
             ]]))
         return
-
     if data == "os:bot_ref_delay" and is_own:
         context.user_data["state"] = "os_await_bot_ref_delay"
         _cur = get_setting("referral_task_delay") or "30"
@@ -2395,7 +2186,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 InlineKeyboardButton("🔙 إلغاء", callback_data="os:bot_ref_numbers")
             ]]))
         return
-
     if data == "os:fr_order_delay" and is_own:
         context.user_data["state"] = "os_await_fr_order_delay"
         _cur_od = get_setting("forced_ref_order_delay") or "60"
@@ -2414,7 +2204,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 InlineKeyboardButton("🔙 إلغاء", callback_data="main_menu")
             ]]))
         return
-
     if data == "os:bot_ref_del_menu" and is_own:
         with db_conn() as _c:
             _rows = _c.execute(
@@ -2448,16 +2237,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "\n".join(_lines), parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:bot_ref_numbers")]]))
         return
-
-    # ─────────────────────────────────────────────────────────────────────
-    # ════ إزالة حساب من قائمة الإحالة الإجبارية ════
-    # ─────────────────────────────────────────────────────────────────────
     if data.startswith("fref_kick:") and is_own:
         _parts = data.split(":")
         _fk_stock_id = int(_parts[1]) if len(_parts) > 1 else 0
         _fk_phone    = _parts[2]      if len(_parts) > 2 else ""
         await q.answer()
-        # إزالة الحساب من المخزون مباشرةً (بدون محاولة اتصال تيليغرام)
         with db_conn() as _fkc:
             _fkc.execute(
                 "UPDATE number_stock SET deleted_at=NOW() "
@@ -2469,7 +2253,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ تم إزالة الرقم <code>{_fk_phone}</code> من قائمة الإحالة الإجبارية.",
             parse_mode="HTML"
         )
-        # إزالة الزر من الرسالة
         try:
             _orig_kb = q.message.reply_markup.inline_keyboard if q.message and q.message.reply_markup else []
             _new_kb  = [row for row in _orig_kb if not any(btn.callback_data == data for btn in row)]
@@ -2477,11 +2260,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
         return
-
-    # ─────────────────────────────────────────────────────────────────────
-    # ════ قسم: الأعضاء المقيدين ════
-    # ─────────────────────────────────────────────────────────────────────
-
     if data == "os:restricted_members" and is_own:
         await q.answer()  # إجابة فورية لمنع ظهور "جاري التحميل"
         try:
@@ -2531,8 +2309,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"❌ os:restricted_members error: {_err}")
             await q.message.reply_text(f"❌ خطأ في قاعدة البيانات: {_err}")
         return
-
-    # ─── تقييد عضو يدوياً ───────────────────────────────────────────
     if data == "os:manual_restrict" and is_own:
         context.user_data["state"] = "os_await_restrict_target"
         await q.edit_message_text(
@@ -2543,7 +2319,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:restricted_members")]]),
         )
         return
-
     if data.startswith("os:restricted_member:") and is_own:
         await q.answer()  # إجابة فورية لتفادي دوران محدد التحميل
         _parts = data.split(":")
@@ -2601,7 +2376,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"❌ os:restricted_member error: {_rm_err}")
             await q.message.reply_text(f"❌ خطأ في قاعدة البيانات: {_rm_err}")
         return
-
     if data == "os:edit_mpoints_price" and is_own:
         cur = get_setting("mandatory_points_price") or "5"
         context.user_data["state"] = "os_await_mpoints_price"
@@ -2609,7 +2383,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💰 *سعر تمويل الإجباري بالنقاط (لكل عضو)*\n\nالحالي: {cur} نقطة\nأرسل السعر الجديد:",
             parse_mode=ParseMode.MARKDOWN)
         return
-
     if data == "os:edit_mpoints_min" and is_own:
         cur = get_setting("mandatory_points_min") or "50"
         context.user_data["state"] = "os_await_mpoints_min"
@@ -2617,7 +2390,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💰 *الحد الأدنى للأعضاء (إجباري-نقاط)*\n\nالحالي: {cur} عضو\nأرسل الحد الجديد:",
             parse_mode=ParseMode.MARKDOWN)
         return
-
     if data == "os:referral_contest" and is_own:
         contest   = get_referral_contest()
         ctype     = contest["type"]
@@ -2648,7 +2420,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(kb_rows)
         )
         return
-
     if data == "os:contest:open" and is_own:
         now_utc = datetime.now(timezone.utc)
         set_setting("referral_contest_type",  "open")
@@ -2662,7 +2433,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:referral_contest")]])
         )
         return
-
     if data == "os:contest:limited" and is_own:
         context.user_data["state"] = "os_await_contest_duration"
         await q.edit_message_text(
@@ -2676,7 +2446,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-
     if data == "os:contest:stop" and is_own:
         set_setting("referral_contest_type", "none")
         await q.edit_message_text(
@@ -2685,7 +2454,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:referral_contest")]])
         )
         return
-
     if data == "os:contest:set_start" and is_own:
         context.user_data["state"] = "os_await_contest_start"
         await q.edit_message_text(
@@ -2697,7 +2465,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-
     if data == "referral_contest_view":
         contest  = get_referral_contest()
         ctype    = contest["type"]
@@ -2730,7 +2497,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=back_to_referral
         )
         return
-
     if data in ("collect_points", "daily_gift", "join_channels_menu"):
         db_user = get_user(user.id)
         rows = [
@@ -2749,7 +2515,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(rows)
         )
         return
-
     if data == "gmail_points":
         intro_msg = get_setting("gmail_intro_message") or "للحصول على النقاط قدّم حساب جيميل لا تستخدمه."
         gmail_reward = int(get_setting("gmail_points_reward") or "10000")
@@ -2763,7 +2528,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
         return
-
     if data == "gmail_next":
         context.user_data["state"] = "await_gmail_email"
         email_prompt = get_setting("gmail_email_prompt") or "📧 *أرسل الإيميل*\n\nأرسل عنوان البريد الإلكتروني فقط بدون أي شيء آخر:"
@@ -2775,8 +2539,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
         return
-
-    # ── توليد كود المصادقة الثنائية (TOTP) ──
     if data == "totp_generator" or data.startswith("totp_generator:"):
         verification_sub_id = None
         if data.startswith("totp_generator:"):
@@ -2785,7 +2547,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except (IndexError, TypeError, ValueError):
                 await q.answer("❌ رابط التحقق غير صالح.", show_alert=True)
                 return
-
             with db_conn() as c:
                 verification_sub = c.execute(
                     "SELECT user_id, status, rejection_reason "
@@ -2806,16 +2567,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["gmail_verification_sub_id"] = verification_sub_id
         else:
             context.user_data.pop("gmail_verification_sub_id", None)
-
         context.user_data["state"] = "await_totp_secret"
-        # Telegram لا يسمح بتحويل رسالة فيديو إلى رسالة نصية عبر
-        # edit_message_text؛ لذلك كان زر التحقق يبدو وكأنه لا يستجيب.
-        # نؤكد الضغط أولاً ثم نرسل التعليمات في رسالة جديدة.
         await q.answer("✅ تم فتح خطوة التحقق.")
         try:
             await q.edit_message_reply_markup(reply_markup=None)
         except Exception:
-            # بعض أنواع الرسائل/الفيديوهات قد لا تسمح بتعديل لوحة الأزرار.
             pass
         await context.bot.send_message(
             user.id,
@@ -2829,14 +2585,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
         return
-
-    # ── إيميلات المستخدم مع فلتر ──
     if data == "my_gmail_history" or data.startswith("my_gmail_history:"):
-        # my_gmail_history              → شاشة الفلتر
-        # my_gmail_history:STATUS:PAGE  → النتائج
         _parts = data.split(":")
         if len(_parts) < 3:
-            # شاشة اختيار الفلتر — نعرض عدد كل فئة
             with db_conn() as c:
                 _counts = {r["status"]: r["n"] for r in c.execute(
                     "SELECT status, COUNT(*) AS n FROM gmail_submissions WHERE user_id=%s GROUP BY status",
@@ -2856,7 +2607,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ])
             )
             return
-        # عرض النتائج بعد اختيار الفلتر
         _status = _parts[1]
         try: _page = int(_parts[2])
         except Exception: _page = 0
@@ -2894,7 +2644,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(_rows)
         )
         return
-
     if data == "daily_gift_screen":
         today = str(date.today())
         gift = int(get_setting("daily_gift_points") or "50")
@@ -2918,7 +2667,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(rows)
         )
         return
-
     if data == "daily_gift_collect":
         today = str(date.today())
         with db_conn() as c:
@@ -2947,7 +2695,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(rows)
         )
         return
-
     if data == "check_mandatory_join":
         unjoined = await get_unjoined_mandatory_channels(context, user.id)
         if unjoined:
@@ -2969,7 +2716,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await proceed_after_mandatory(update, context, edit=True)
         return
-
     if data == "join_channels":
         with db_conn() as c:
             channels = c.execute(
@@ -3012,7 +2758,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(rows)
         )
         return
-
     if data.startswith("join_verify:"):
         ch_id = int(data.split(":")[1])
         with db_conn() as c:
@@ -3084,7 +2829,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(rows)
         )
         return
-
     if data == "charge_points":
         try:
             await q.edit_message_text("💎 *اختر طريقة الشحن:*", parse_mode=ParseMode.MARKDOWN,
@@ -3094,7 +2838,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if is_own:
                 await q.answer(f"❌ خطأ: {_e}", show_alert=True)
         return
-
     if data == "charge:stars":
         rate = get_setting("star_to_points") or "250"
         await q.edit_message_text(
@@ -3103,11 +2846,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=charge_stars_kb()
         )
         return
-
     if data == "charge:info":
         await q.answer("هذا مجرد عرض للسعر.", show_alert=False)
         return
-
     if data.startswith("charge:quick:"):
         stars = int(data.split(":")[2])
         rate  = int(get_setting("star_to_points") or "250")
@@ -3126,7 +2867,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             prices=[LabeledPrice("نجوم", stars)],
         )
         return
-
     if data == "charge:by_points":
         rate = get_setting("star_to_points") or "250"
         context.user_data["state"] = "await_charge_points_amount"
@@ -3135,7 +2875,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-
     if data == "charge:by_stars":
         rate = get_setting("star_to_points") or "250"
         context.user_data["state"] = "await_charge_stars_amount"
@@ -3144,18 +2883,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-
     if data == "charge:asiacell":
         asiacell_txt = get_setting("asiacell_text") or "⚠️ الشحن التلقائي عبر اسيا سيل غير متاح حالياً.\nيرجى التواصل مع المالك."
         kb_rows = contact_owner_row() + [[InlineKeyboardButton("🔙 رجوع", callback_data="charge_points")]]
         await q.edit_message_text(asiacell_txt, reply_markup=InlineKeyboardMarkup(kb_rows))
         return
-
     if data == "exchange_points":
         await q.edit_message_text("🏆 *استبدال النقاط بجوائز:*",
                                    parse_mode=ParseMode.MARKDOWN, reply_markup=exchange_kb())
         return
-
     if data == "exchange:stars":
         rate = int(get_setting("exchange_star_rate") or "2000")
         with db_conn() as c:
@@ -3182,7 +2918,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(rows)
         )
         return
-
     if data.startswith("exchange:pkg:"):
         stars = int(data.split(":")[2])
         rate = int(get_setting("exchange_star_rate") or "2000")
@@ -3233,7 +2968,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📌 {code}"
         )
         return
-
     if data == "exchange:number":
         if not is_number_exchange_on():
             await q.answer("🔒 استبدال الأرقام مغلق حالياً. تواصل مع المالك.", show_alert=True)
@@ -3251,7 +2985,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text("❌ حدث خطأ في خصم النقاط.", reply_markup=back_kb("exchange_points"))
             return
         code = next_order_code(user.id)
-
         auto = await assign_verified_number(user.id, bot=context.bot)
         if auto:
             auto_number = auto["phone_number"]
@@ -3278,7 +3011,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup(result_kb)
             )
-            # ─── رسالة التبرئة ───
             try:
                 await context.bot.send_message(
                     user.id,
@@ -3297,7 +3029,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             except Exception:
                 pass
-            # ─── إشعار المالك وكروب الطلبات ───
             if pe:
                 await notify_prize_exchange_owner(
                     context, pe["id"],
@@ -3315,9 +3046,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"📌 {code}"
                     ),
                 )
-            # ─── البوت يبقى متصلاً — المراقب سيغادر تلقائياً عند دخول المشتري ───
             return
-
         add_points(user.id, cost)
         await q.edit_message_text(
             "😔 *نأسف، لم تتم العملية*\n\n"
@@ -3330,7 +3059,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]])
         )
         return
-
     if data == "exchange:num_code":
         if not is_number_exchange_on():
             await q.answer("🔒 شراء الأرقام مغلق حالياً. تواصل مع المالك.", show_alert=True)
@@ -3343,7 +3071,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=back_kb("exchange_points")
         )
         return
-
     if data == "use_promo":
         context.user_data["state"] = "await_promo_code"
         await q.edit_message_text(
@@ -3352,12 +3079,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=back_kb()
         )
         return
-
     if data == "transfer_points":
         context.user_data["state"] = "await_transfer_id"
         await q.edit_message_text("↔️ *تحويل النقاط*\n\nأرسل ايدي المستلم (رقمي):", parse_mode=ParseMode.MARKDOWN)
         return
-
     if data == "my_info":
         db_user = get_user(user.id)
         if not db_user:
@@ -3387,7 +3112,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=back_kb()
         )
         return
-
     if data == "my_numbers":
         with db_conn() as _mn_db:
             _mn_rows = _mn_db.execute(
@@ -3445,19 +3169,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(_mn_kb)
         )
         return
-
     if data.startswith("my_numbers:kicked:"):
         _kicked_ph = data[len("my_numbers:kicked:"):].lstrip("+")
         _kicked_msg = ("\u26a0\ufe0f \u0639\u0630\u0631\u064b\u0627\u060c \u0644\u0642\u062f \u0642\u0645\u062a \u0628\u0637\u0631\u062f \u0627\u0644\u0628\u0648\u062a \u0645\u0646 \u0627\u0644\u0631\u0642\u0645 "
                        + _kicked_ph + "\n\u0644\u0627 \u064a\u0645\u0643\u0646\u0646\u064a \u0627\u0644\u0645\u0633\u0627\u0639\u062f\u0629 \u0628\u0639\u062f \u0627\u0644\u0622\u0646.")
         await q.answer(_kicked_msg, show_alert=True)
         return
-
     if data == "fund_channel":
         await q.edit_message_text("📺 *تمويل قناتك حقيقي:*", parse_mode=ParseMode.MARKDOWN,
                                    reply_markup=fund_channel_kb())
         return
-
     if data == "fund:mandatory":
         _stars_min    = int(get_setting("mandatory_stars_min_members")    or "50")
         _stars_t1_max = int(get_setting("mandatory_stars_tier1_max")      or "120")
@@ -3478,7 +3199,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
         return
-
     if data == "fund:mandatory:stars":
         _stars_min    = int(get_setting("mandatory_stars_min_members")    or "50")
         _stars_t1_max = int(get_setting("mandatory_stars_tier1_max")      or "120")
@@ -3496,7 +3216,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-
     if data == "fund:mandatory:points":
         _pts_price = int(get_setting("mandatory_points_price") or "5")
         _pts_min   = int(get_setting("mandatory_points_min")   or "50")
@@ -3510,7 +3229,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-        # ─── تمويل إجباري بالنجوم (Stars) ───
         _stars_min    = int(get_setting("mandatory_stars_min_members")    or "50")
         _stars_t1_max = int(get_setting("mandatory_stars_tier1_max")      or "120")
         _t1_x100      = int(get_setting("mandatory_stars_tier1_price_x100") or "50")
@@ -3528,7 +3246,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-
     if data == "fund:internal":
         cost_per = get_setting("internal_channel_cost") or "100"
         min_members = get_setting("internal_channel_min_members") or "0"
@@ -3545,7 +3262,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-
     if data == "fund_confirm:yes":
         fund_type    = context.user_data.get("fund_type", "mandatory")
         channel      = context.user_data.get("fund_channel_username", "")
@@ -3564,11 +3280,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["state"] = "main_menu"
             return
         code = next_order_code(user.id)
-
         is_queued = False
         if fund_type in ("mandatory", "mandatory_points") and count_active_mandatory_channels() >= MANDATORY_MAX_ACTIVE:
             is_queued = True
-
         with db_conn() as c:
             c.execute(
                 "INSERT INTO channel_funding (user_id,channel_username,funding_type,cost_points,target_members,current_members,status) "
@@ -3587,7 +3301,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("fund_channel_username", None)
         context.user_data.pop("fund_member_count", None)
         context.user_data.pop("fund_total_cost", None)
-
         if is_queued:
             await q.edit_message_text(
                 f"⏳ *تم استلام تمويل قناتك وسُحبت النقاط بنجاح، لكنها في قائمة الانتظار حالياً.*\n\n"
@@ -3614,7 +3327,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📌 *كود عمليتك:* `{code}`\nاحفظه قد تحتاجه لاحقاً.",
             parse_mode=ParseMode.MARKDOWN
         )
-
         _queue_note = "\n⏳ <b>ملاحظة:</b> دخلت قائمة الانتظار (الحد الأقصى ممتلئ) وستُفعَّل تلقائياً عند توفر مكان." if is_queued else ""
         _terms = mandatory_terms_text_html() if fund_type in ("mandatory", "mandatory_points") else ""
         await notify_group(
@@ -3629,14 +3341,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{_terms}"
         )
         return
-
     if data == "fund_confirm:no":
         context.user_data["state"] = "main_menu"
         context.user_data.pop("fund_channel_username", None)
         context.user_data.pop("fund_member_count", None)
         await q.edit_message_text("❌ تم إلغاء طلب التمويل.", reply_markup=main_menu_kb(is_own))
         return
-
     if data == "owner_settings" and is_own:
         if context.user_data.get("state", "").startswith("await_mb_"):
             context.user_data["state"] = "main_menu"
@@ -3645,9 +3355,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("⚙️ *إعدادات المالك:*", parse_mode=ParseMode.MARKDOWN,
                                    reply_markup=owner_settings_kb())
         return
-
-    # ────────────────────────────────────────────────────────
-    # ────────────────────────────────────────────────────────
     if data == "os:manage_buttons" and is_own:
         if context.user_data.get("state", "").startswith("await_mb_"):
             context.user_data["state"] = "main_menu"
@@ -3659,7 +3366,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("🧩 *إدارة الأزرار:*\nاختر القائمة التي تريد التحكم بها:",
                                    parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(rows))
         return
-
     if data.startswith("mb_menu:") and is_own:
         menu = data.split(":", 1)[1]
         context.user_data.pop("mb_menu", None)
@@ -3670,7 +3376,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text, kb = render_mb_menu_screen(menu)
         await q.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
         return
-
     if (data.startswith("mb_up:") or data.startswith("mb_down:")) and is_own:
         direction, rest = data.split(":", 1)
         menu, mid = rest.rsplit(":", 1)
@@ -3688,7 +3393,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text, kb = render_mb_menu_screen(menu)
         await q.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
         return
-
     if data.startswith("mb_width:") and is_own:
         _, rest = data.split(":", 1)
         menu, mid = rest.rsplit(":", 1)
@@ -3702,7 +3406,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text, kb = render_mb_menu_screen(menu)
         await q.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
         return
-
     if data.startswith("mb_toggle:") and is_own:
         _, rest = data.split(":", 1)
         menu, mid = rest.rsplit(":", 1)
@@ -3716,7 +3419,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text, kb = render_mb_menu_screen(menu)
         await q.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
         return
-
     if data.startswith("mb_add:") and is_own:
         menu = data.split(":", 1)[1]
         context.user_data["mb_menu"] = menu
@@ -3729,14 +3431,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         await q.edit_message_text("اختر نوع الزر الجديد:", reply_markup=InlineKeyboardMarkup(rows))
         return
-
     if data.startswith("mb_type:") and is_own:
         mb_type = data.split(":", 1)[1]
         context.user_data["mb_type"] = mb_type
         context.user_data["state"] = "await_mb_label"
         await q.edit_message_text("✏️ أرسل *اسم الزر* الذي سيظهر للمستخدمين:", parse_mode=ParseMode.MARKDOWN)
         return
-
     if data.startswith("mb_goto_pick:") and is_own:
         target = data.split(":", 1)[1]
         menu = context.user_data.get("mb_menu")
@@ -3754,7 +3454,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(f"✅ تمت إضافة الزر '{label}'.",
                                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع للإدارة", callback_data=f"mb_menu:{menu}")]]))
         return
-
     if data == "os:add_service" and is_own:
         plat_rows = [[InlineKeyboardButton(lbl, callback_data=f"os_plat:{PLATFORM_MENU_MAP[val]}")] for lbl, val in SERVICE_PLATFORMS]
         plat_rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
@@ -3764,7 +3463,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(plat_rows)
         )
         return
-
     if data.startswith("os_plat:") and is_own:
         platform = data.split(":")[1]
         context.user_data["new_svc_platform"] = platform
@@ -3778,7 +3476,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(rows)
         )
         return
-
     if data.startswith("os_cat:") and is_own:
         cat = data.split(":")[1]
         context.user_data["new_svc_cat"] = cat
@@ -3796,7 +3493,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(panel_rows)
         )
         return
-
     if data.startswith("os_panel:") and is_own:
         panel = int(data.split(":")[1])
         context.user_data["new_svc_panel"] = panel
@@ -3807,7 +3503,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-
     if data.startswith("os_use_min:") and is_own:
         mn = int(data.split(":")[1])
         context.user_data["new_svc_min"] = mn
@@ -3824,7 +3519,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         context.user_data["state"] = "os_await_max"
         return
-
     if data.startswith("os_use_max:") and is_own:
         mx = int(data.split(":")[1])
         context.user_data["new_svc_max"] = mx
@@ -3844,7 +3538,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         context.user_data["state"] = "os_await_price"
         return
-
     if data.startswith("os_use_price:") and is_own:
         price    = float(data.split(":")[1])
         context.user_data["state"] = "main_menu"
@@ -3874,7 +3567,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=owner_settings_kb()
         )
         return
-
     if data == "os:view_services" and is_own:
         rows = []
         for lbl, val in SERVICE_PLATFORMS:
@@ -3893,7 +3585,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(rows)
         )
         return
-
     if data.startswith("os_view_plat:") and is_own:
         platform = data.split(":", 1)[1]   # "tg" / "ig" / ... / "ALL"
         rows = []
@@ -3916,7 +3607,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(rows)
         )
         return
-
     if data.startswith("os_view_cat:") and is_own:
         rest = data[len("os_view_cat:"):]
         if ":" in rest:
@@ -3987,21 +3677,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                                     InlineKeyboardButton("⚙️ الإعدادات", callback_data="owner_settings")]])
             )
         return
-
     if data == "os:orders_section" and is_own:
         await show_orders_section(update, context, offset=0)
         return
-
     if data.startswith("os:orders_page:") and is_own:
         offset = int(data.split(":")[2])
         await show_orders_section(update, context, offset=offset)
         return
-
     if data == "os:order_lookup" and is_own:
         context.user_data["state"] = "os_await_order_lookup"
         await q.edit_message_text("🔍 أرسل كود الطلب الذي تريد عرض تفاصيله:")
         return
-
     if data == "os:list_services" and is_own:
         text_, rows = _render_service_list()
         if rows is None:
@@ -4010,7 +3696,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(text_, parse_mode=ParseMode.MARKDOWN,
                                    reply_markup=InlineKeyboardMarkup(rows))
         return
-
     if data.startswith("os_tog_svc:") and is_own:
         _, sid, val = data.split(":")
         with db_conn() as c:
@@ -4023,7 +3708,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(text_, parse_mode=ParseMode.MARKDOWN,
                                    reply_markup=InlineKeyboardMarkup(rows))
         return
-
     if data.startswith("os_edit_svc:") and is_own:
         sid = int(data.split(":")[1])
         with db_conn() as c:
@@ -4053,7 +3737,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(rows)
         )
         return
-
     if data.startswith("os_edit_field:") and is_own:
         _, sid, field = data.split(":")
         context.user_data["edit_svc_id"] = int(sid)
@@ -4080,7 +3763,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = state_name
         await q.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN)
         return
-
     if data.startswith("os_edit_panel:") and is_own:
         _, sid, panel = data.split(":")
         context.user_data["edit_svc_id"] = int(sid)
@@ -4092,7 +3774,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-
     if data.startswith("os_del_svc:") and is_own:
         sid = int(data.split(":")[1])
         with db_conn() as c:
@@ -4112,7 +3793,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
         return
-
     if data.startswith("os_confirm_del:") and is_own:
         sid = int(data.split(":")[1])
         with db_conn() as c:
@@ -4125,31 +3805,26 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=owner_settings_kb()
         )
         return
-
     if data == "os:edit_gift" and is_own:
         context.user_data["state"] = "os_await_gift_val"
         cur = get_setting("daily_gift_points") or "50"
         await q.edit_message_text(f"🎁 الهدية الحالية: {cur} نقطة\n\nأرسل القيمة الجديدة:")
         return
-
     if data == "os:edit_referral" and is_own:
         context.user_data["state"] = "os_await_referral_val"
         cur = get_setting("referral_points") or "30"
         await q.edit_message_text(f"🔗 نقاط الدعوة الحالية: {cur} نقطة\n\nأرسل القيمة الجديدة:")
         return
-
     if data == "os:edit_star_rate" and is_own:
         context.user_data["state"] = "os_await_star_rate"
         cur = get_setting("star_to_points") or "250"
         await q.edit_message_text(f"⭐ سعر النجمة (شحن) الحالي: {cur} نقطة\n\nأرسل القيمة الجديدة:")
         return
-
     if data == "os:edit_exchange_rate" and is_own:
         context.user_data["state"] = "os_await_exchange_rate"
         cur = get_setting("exchange_star_rate") or "2000"
         await q.edit_message_text(f"🏆 سعر نجمة الجوائز الحالي: {cur} نقطة\n\nأرسل القيمة الجديدة:")
         return
-
     if data == "os:edit_exchange_msg" and is_own:
         context.user_data["state"] = "os_await_exchange_msg"
         cur = get_setting("exchange_success_msg") or "(لا توجد رسالة مضافة حالياً)"
@@ -4158,7 +3833,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"أرسل الرسالة الجديدة (ستظهر لكل مستخدم قبل كود عمليته تلقائياً):"
         )
         return
-
     if data == "os:manage_numbers" and is_own:
         avail = get_available_number_count()
         await q.edit_message_text(
@@ -4190,8 +3864,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
         return
-
-    # ─── إدارة أرقام الإحالة الإجبارية ───
     if data == "os:check_readiness" and is_own:
         with db_conn() as c:
             rows = c.execute(
@@ -4211,7 +3883,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 session_only.append(r["phone_number"])
             else:
                 no_session.append(r["phone_number"])
-
         lines = [f"🔍 *فحص جاهزية الأرقام ({total} رقم)*\n"]
         lines.append(
             f"✅ *جاهز بالكامل (كود + 2FA): {len(full_ready)}*\n"
@@ -4241,22 +3912,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
         return
-
     if data == "os:delete_manual_numbers" and is_own:
         with db_conn() as c:
             manual_rows = c.execute(
                 "SELECT id, phone_number, assigned_to FROM number_stock "
                 "WHERE session_string IS NULL AND deleted_at IS NULL"
             ).fetchall()
-
             if not manual_rows:
                 await q.answer("✅ لا توجد أرقام يدوية في المخزون.", show_alert=True)
                 return
-
             deleted_count  = 0
             compensated    = 0
             buyers_notified = []
-
             for row in manual_rows:
                 phone = row["phone_number"]
                 pe = c.execute(
@@ -4265,13 +3932,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "AND status='completed' ORDER BY id DESC LIMIT 1",
                     (phone,)
                 ).fetchone()
-
                 c.execute(
                     "UPDATE number_stock SET deleted_at=NOW(), assigned_to=NULL, assigned_at=NULL WHERE id=%s",
                     (row["id"],)
                 )
                 deleted_count += 1
-
                 if pe and pe["points_cost"]:
                     if pe["compensated_at"]:
                         logger.info(f"⏭ delete_manual_numbers: {phone} عُوِّض مسبقاً، تخطّي.")
@@ -4290,7 +3955,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     add_points(uid, pts)
                     compensated += 1
                     buyers_notified.append((uid, phone, pts))
-
         for uid, phone, pts in buyers_notified:
             try:
                 await context.bot.send_message(
@@ -4309,14 +3973,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             except Exception:
                 pass
-
         summary = (
             f"🗑️ *تم حذف {deleted_count} رقم يدوي*\n\n"
             f"💰 *عُوِّض {compensated} مشترٍ* وأُعيدت لهم نقاطهم كاملةً.\n"
         )
         if deleted_count - compensated > 0:
             summary += f"📦 *{deleted_count - compensated}* رقم لم يُباع (لا يحتاج تعويض)."
-
         await q.edit_message_text(
             summary,
             parse_mode=ParseMode.MARKDOWN,
@@ -4325,7 +3987,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
         return
-
     if data.startswith("os:allow_5min:") and is_own:
         _phone_allow = data[len("os:allow_5min:"):]
         _allow_5min_phones[_phone_allow] = {"until": time.time() + 300, "used": False}
@@ -4344,7 +4005,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _allow_5min_phones.pop(ph, None)
         asyncio.create_task(_expire_allow(_phone_allow))
         return
-
     if data.startswith("os:account_info:") and is_own:
         _phone_info = data[len("os:account_info:"):]
         await q.answer()
@@ -4381,7 +4041,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as _ei:
             await q.edit_message_text(f"❌ خطأ أثناء جلب المعلومات: {_ei}", parse_mode=ParseMode.MARKDOWN)
         return
-
     if data.startswith("os:leave_account:") and is_own:
         _phone_leave = data[len("os:leave_account:"):]
         await q.answer()
@@ -4398,7 +4057,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as _el:
             await q.edit_message_text(f"❌ فشل حذف الحساب: {_el}", parse_mode=ParseMode.MARKDOWN)
         return
-
     if data == "os:rotate_sessions" and is_own:
         if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
             await q.answer("❌ API_ID / API_HASH غير مضبوطة.", show_alert=True)
@@ -4465,7 +4123,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]])
         )
         return
-
     if data == "os:remove_2fa_mode" and is_own:
         context.user_data["state"] = "os_remove_2fa_mode"
         await q.edit_message_text(
@@ -4480,8 +4137,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]])
         )
         return
-
-    # ─── التأكد من الحسابات التي تحققها محمد ───────────────────────────
     if data == "os:verify_muhammed_accounts" and is_own:
         with db_conn() as _c:
             _rows = _c.execute(
@@ -4499,7 +4154,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 InlineKeyboardButton("🔙 رجوع للمخزون", callback_data="os:manage_numbers")
             ]])
         )
-
         async def _verify_muhammed_bg():
             verified_ok, verified_saved, wrong_pw, failed = [], [], [], []
             for rec in _rows:
@@ -4516,7 +4170,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         continue
                     pwd_state = await asyncio.wait_for(cli_v(GetPasswordRequest()), timeout=10)
                     if not pwd_state.has_password:
-                        # 2FA غير مفعّل — نفعّله بكلمة "محمد"
                         _expected_2fa_change[ph] = time.time()
                         await asyncio.wait_for(
                             cli_v.edit_2fa(new_password=OWNER_FIXED_2FA_PASSWORD, hint="Auto"),
@@ -4529,7 +4182,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             )
                         verified_saved.append(ph)
                     else:
-                        # تحقق من الكلمة الثابتة
                         ok_v = await asyncio.wait_for(
                             verify_current_2fa_password(cli_v, OWNER_FIXED_2FA_PASSWORD, phone=ph),
                             timeout=12
@@ -4543,7 +4195,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             verified_ok.append(ph)
                         else:
                             wrong_pw.append(ph)
-                            # أُضف لقائمة الإصلاح
                             _accounts_needing_fixup[sid] = {"phone": ph, "session": ss, "stock_id": sid, "retries": 0}
                 except Exception as _ve:
                     failed.append(f"`{ph}`: {str(_ve)[:60]}")
@@ -4553,7 +4204,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     except Exception:
                         pass
                 await asyncio.sleep(0.8)
-
             lines = [f"✅ *تقرير التحقق من كلمة المرور '{OWNER_FIXED_2FA_PASSWORD}':*\n"]
             lines.append(f"✅ تحققت مسبقاً: *{len(verified_ok)}* | 🆕 فُعِّلت الآن: *{len(verified_saved)}* | ❌ كلمة مختلفة: *{len(wrong_pw)}* | ⚠️ أخطاء: *{len(failed)}*")
             if wrong_pw:
@@ -4566,11 +4216,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(OWNER_ID, "\n".join(lines), parse_mode=ParseMode.MARKDOWN)
             except Exception:
                 pass
-
         asyncio.create_task(_verify_muhammed_bg())
         return
-
-    # ─── محاولة طرد جميع الأجهزة ─────────────────────────────────────
     if data == "os:kick_all_devices" and is_own:
         with db_conn() as _c:
             _rows_k = _c.execute(
@@ -4589,7 +4236,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 InlineKeyboardButton("🔙 رجوع للمخزون", callback_data="os:manage_numbers")
             ]])
         )
-
         async def _kick_all_bg():
             kicked_ok, still_multi, failed_kick = [], [], []
             for rec in _rows_k:
@@ -4617,12 +4263,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             asyncio.create_task(_test_and_set_can_send_code(ph, ss, sid))
                         else:
                             still_multi.append(f"`{ph}` ({dev_cnt_k} أجهزة)")
-                            # يُضاف لقائمة الإصلاح للمحاولة لاحقاً
                             _accounts_needing_fixup[sid] = {"phone": ph, "session": ss, "stock_id": sid, "retries": 0}
                     except Exception as _ke:
                         _kes = str(_ke)
                         if "too new" in _kes or "cannot be used to reset" in _kes:
-                            # جلسة جديدة جداً — يُضاف للإصلاح التلقائي
                             _accounts_needing_fixup[sid] = {"phone": ph, "session": ss, "stock_id": sid, "retries": 0}
                             failed_kick.append(f"`{ph}`: جديد — سيُعاد تلقائياً")
                         else:
@@ -4635,7 +4279,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     except Exception:
                         pass
                 await asyncio.sleep(0.5)
-
             lines = [f"💥 *تقرير طرد الأجهزة:*\n"]
             lines.append(f"✅ طُرد بنجاح (بوت وحيد): *{len(kicked_ok)}* | ⚠️ ما زال متعدد: *{len(still_multi)}* | ❌ فشل: *{len(failed_kick)}*")
             if still_multi:
@@ -4648,10 +4291,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(OWNER_ID, "\n".join(lines), parse_mode=ParseMode.MARKDOWN)
             except Exception:
                 pass
-
         asyncio.create_task(_kick_all_bg())
         return
-
     if data == "os:set_all_2fa_muhammed" and is_own:
         target_pw = OWNER_FIXED_2FA_PASSWORD or "محمد"
         if not target_pw:
@@ -4673,7 +4314,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 InlineKeyboardButton("🔙 رجوع للمخزون", callback_data="os:manage_numbers")
             ]])
         )
-
         async def _set_all_2fa_bg():
             done, skipped, failed = [], [], []
             for rec in rows:
@@ -4681,11 +4321,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 sess    = rec["session_string"]
                 old_pw  = rec["twofa_password"] or ""
                 stock_id = rec["id"]
-
                 if old_pw == target_pw:
                     skipped.append(phone)
                     continue
-
                 cli = None
                 try:
                     cli = TelegramClient(StringSession(sess), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
@@ -4693,10 +4331,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if not await asyncio.wait_for(cli.is_user_authorized(), timeout=10):
                         failed.append(f"{phone}: جلسة منتهية")
                         continue
-
                     pwd_state = await cli(GetPasswordRequest())
                     _expected_2fa_change[phone] = time.time()
-
                     if not pwd_state.has_password:
                         await cli.edit_2fa(new_password=target_pw, hint="Auto")
                     else:
@@ -4718,7 +4354,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         if not changed:
                             failed.append(f"{phone}: كلمة المرور غير معروفة")
                             continue
-
                     with db_conn() as _uc:
                         _uc.execute(
                             "UPDATE number_stock SET twofa_password=%s, auto_2fa_enabled=TRUE WHERE id=%s",
@@ -4733,7 +4368,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     except Exception:
                         pass
                 await asyncio.sleep(1)  # لتجنب flood
-
             lines = [f"🔑 *نتيجة تعيين كلمة المرور '{target_pw}':*\n"]
             lines.append(f"✅ تم ({len(done)}) / ⏭ مخطّى ({len(skipped)}) / ❌ فشل ({len(failed)})")
             if done:
@@ -4749,10 +4383,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             except Exception:
                 pass
-
         asyncio.create_task(_set_all_2fa_bg())
         return
-
     if data == "os:release_all_numbers" and is_own:
         with db_conn() as c:
             rows = c.execute(
@@ -4776,7 +4408,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
         return
-
     if data == "os:scan_all_numbers" and is_own:
         await q.edit_message_text(
             "🔍 *بدأ فحص جميع الحسابات...*\n\n"
@@ -4784,7 +4415,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:manage_numbers")]])
         )
-
         async def _scan_one(rec) -> dict:
             """يفحص رقماً واحداً ويُرجع نتيجة مختصرة. محاط بـ timeout=25ث."""
             phone_r  = rec["phone_number"]
@@ -4795,7 +4425,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 cli = TelegramClient(StringSession(sess_r), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
                 await asyncio.wait_for(cli.connect(), timeout=15)
-
                 if not await asyncio.wait_for(cli.is_user_authorized(), timeout=10):
                     result["status"] = "kicked"
                     result["note"] = "جلسة منتهية/مطرودة — حُذف تلقائياً"
@@ -4811,14 +4440,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         else:
                             _c.execute("UPDATE number_stock SET last_authorized=FALSE WHERE id=%s", (rec["id"],))
                     return result
-
                 is_frz, frz_status, _ = await asyncio.wait_for(
                     check_account_frozen(cli, rec["id"]), timeout=10
                 )
                 if is_frz:
                     result["status"] = "frozen"
                     result["note"] = frz_status
-                    # ── حذف المجمّد تلقائياً إذا لم يُباع مسبقاً ──────────
                     with db_conn() as _fc:
                         _fe = _fc.execute(
                             "SELECT ever_sold FROM number_stock WHERE id=%s", (rec["id"],)
@@ -4828,8 +4455,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             result["note"] += " — حُذف تلقائياً"
                             logger.info(f"🗑️ حذف تلقائي (مجمّد): الرقم {rec['phone_number']}")
                     return result
-
-                # ✅ الحساب متاح ونشط — ضبط can_send_code=TRUE حتى يظهر في عداد الإحالة الإجبارية
                 try:
                     _me_scan = await asyncio.wait_for(cli.get_me(), timeout=8)
                     if _me_scan:
@@ -4840,10 +4465,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             )
                 except Exception:
                     pass
-
                 devs = await asyncio.wait_for(get_device_count(cli), timeout=10)
                 result["devs"] = devs
-
                 pwd_state = await asyncio.wait_for(cli(GetPasswordRequest()), timeout=10)
                 if pwd_state.has_password:
                     if saved_pw:
@@ -4867,11 +4490,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     result["status"] = "no_2fa"
                     result["note"] = "2FA غير مفعّل"
-
             except asyncio.TimeoutError:
                 result["status"] = "timeout"
                 result["note"] = "انتهت مهلة الاتصال (25ث) — حُذف تلقائياً"
-                # البوت لا يستطيع فتحه → حذف نهائي
                 with db_conn() as _c:
                     _es = _c.execute(
                         "SELECT ever_sold FROM number_stock WHERE id=%s", (rec["id"],)
@@ -4881,7 +4502,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         logger.info(f"🗑️ حذف تلقائي (timeout): الرقم {rec['phone_number']}")
             except Exception as e:
                 err_txt = str(e)
-                # AuthKeyUnregistered / SessionRevoked / UserDeactivated = فقدان سيطرة نهائي → حذف
                 unrecoverable = any(k in err_txt for k in (
                     "AuthKeyUnregistered", "SessionRevoked", "AuthKeyDuplicated",
                     "UserDeactivated", "AccountBanned", "PhoneNumberBanned",
@@ -4904,7 +4524,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception:
                     pass
             return result
-
         async def _run_full_scan():
             if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
                 await context.bot.send_message(OWNER_ID, "❌ TELEGRAM_API_ID/HASH غير مضبوط — تعذّر الفحص.")
@@ -4917,18 +4536,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not rows:
                 await context.bot.send_message(OWNER_ID, "📭 لا توجد أرقام مضافة بجلسة للفحص.")
                 return
-
             total = len(rows)
             ok_cnt = frz_cnt = kick_cnt = no_2fa_cnt = timeout_cnt = err_cnt = multi_dev_cnt = 0
             deleted_cnt = 0
             problem_lines = []
             needs_2fa_fix = []   # أرقام تحتاج تفعيل/تصحيح 2FA
-
-            # ─── فحص واحد بالواحد لتجنب حظر Telegram من الاتصالات المتزامنة الكثيرة ───
             for rec in rows:
                 res = await asyncio.wait_for(_scan_one(dict(rec)), timeout=35)
                 st = res["status"]
-
                 if st == "ok":
                     ok_cnt += 1
                     if res["devs"] > 1:
@@ -4958,10 +4573,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if was_deleted:
                         deleted_cnt += 1
                     problem_lines.append(f"{'🗑️' if was_deleted else '❓'} `{res['phone']}` — {res['note']}")
-
                 await asyncio.sleep(0.4)   # فترة قصيرة بين الأرقام
-
-            # ─── تفعيل 2FA للأرقام التي تحتاجه (في الخلفية بعد التقرير) ───
             async def _fix_2fa_later():
                 for item in needs_2fa_fix:
                     with db_conn() as _c2:
@@ -4975,11 +4587,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         if not ok2:
                             await request_manual_2fa_password(context.bot, item["phone"], item["id"])
                     await asyncio.sleep(1)
-
             if needs_2fa_fix:
                 asyncio.create_task(_fix_2fa_later())
-
-            # ─── إرسال التقرير ───
             icons = []
             if ok_cnt:        icons.append(f"✅ سليمة: *{ok_cnt}*")
             if frz_cnt:       icons.append(f"🗑️ مجمّدة (حُذفت): *{frz_cnt}*")
@@ -4988,7 +4597,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if deleted_cnt:   icons.append(f"🗑️ حُذفت تلقائياً: *{deleted_cnt}* (جلسة منتهية/لا تستجيب)")
             if err_cnt - (deleted_cnt - kick_cnt - timeout_cnt) > 0:
                 icons.append(f"❓ أخطاء أخرى: *{err_cnt}*")
-
             summary = (
                 f"📊 *تقرير فحص جميع الحسابات*\n"
                 f"الإجمالي المفحوص: *{total}*\n\n"
@@ -5001,7 +4609,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 summary += f"\n\n*التفاصيل:*\n{detail}"
             if needs_2fa_fix:
                 summary += f"\n\n_⏳ جاري تفعيل/إصلاح 2FA على {len(needs_2fa_fix)} رقم في الخلفية..._"
-
             await context.bot.send_message(
                 OWNER_ID, summary,
                 parse_mode=ParseMode.MARKDOWN,
@@ -5009,11 +4616,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     InlineKeyboardButton("📋 قائمة الأرقام", callback_data="os:list_numbers")
                 ]])
             )
-
         asyncio.create_task(_run_full_scan())
         return
-
-    # ─── فحص الحسابات جميعاً: إحصاء شامل + نقل الميتة إلى سلة المهملات ───
     if data == "os:full_audit" and is_own:
         await q.edit_message_text(
             "📊 *بدأ فحص الحسابات جميعاً...*\n\n"
@@ -5022,7 +4626,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:manage_numbers")]])
         )
-
         async def _run_full_audit():
             if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
                 await context.bot.send_message(OWNER_ID, "❌ TELEGRAM_API_ID/HASH غير مضبوط — تعذّر الفحص.")
@@ -5035,7 +4638,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not rows:
                 await context.bot.send_message(OWNER_ID, "📭 لا توجد أرقام مضافة بجلسة للفحص.")
                 return
-
             total = len(rows)
             ok_cnt = frz_cnt = kick_cnt = timeout_cnt = err_cnt = trashed_cnt = multi_dev_cnt = 0
             banned_list   = []   # محظور / معلّق
@@ -5043,7 +4645,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             dup_sess_list = []   # جلسة مستعملة في موقعين
             multi_dev_list = []  # أجهزة متعددة
             problem_lines = []
-
             for rec in rows:
                 rec = dict(rec)
                 phone_r  = rec["phone_number"]
@@ -5052,7 +4653,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 try:
                     cli2 = TelegramClient(StringSession(sess_r), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
                     await asyncio.wait_for(cli2.connect(), timeout=15)
-
                     authorized = await asyncio.wait_for(cli2.is_user_authorized(), timeout=10)
                     if not authorized:
                         kick_cnt += 1
@@ -5061,7 +4661,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         soft_delete_number(rec["id"])
                         problem_lines.append(f"🗑 `{phone_r}` — جلسة منتهية/مطرودة ← نُقل للمهملات")
                         continue
-
                     is_frz, frz_status, _ = await asyncio.wait_for(
                         check_account_frozen(cli2, rec["id"]), timeout=10
                     )
@@ -5072,15 +4671,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         soft_delete_number(rec["id"])
                         problem_lines.append(f"🗑 `{phone_r}` — محظور/مجمّد ({frz_status}) ← نُقل للمهملات")
                         continue
-
                     devs = await asyncio.wait_for(get_device_count(cli2), timeout=10)
                     if devs > 1:
                         multi_dev_cnt += 1
                         multi_dev_list.append(f"`{phone_r}` ({devs} أجهزة)")
                         problem_lines.append(f"📲 `{phone_r}` — {devs} أجهزة (الجلسة مستعملة في أكثر من موقع)")
-
                     ok_cnt += 1
-
                 except asyncio.TimeoutError:
                     timeout_cnt += 1
                     trashed_cnt += 1
@@ -5113,7 +4709,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     except Exception:
                         pass
                 await asyncio.sleep(0.4)
-
             icons = [f"📊 *تقرير فحص الحسابات جميعاً*\nالإجمالي المفحوص: *{total}*\n"]
             if ok_cnt:         icons.append(f"✅ سليمة: *{ok_cnt}*")
             if multi_dev_cnt:  icons.append(f"📲 أجهزة متعددة: *{multi_dev_cnt}* (جلسة في موقعين أو أكثر)")
@@ -5123,14 +4718,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if timeout_cnt:    icons.append(f"⏳ لا تستجيب: *{timeout_cnt}* — نُقلت للمهملات")
             if err_cnt:        icons.append(f"❓ أخطاء أخرى: *{err_cnt}*")
             icons.append(f"\n🗑 إجمالي ما نُقل للمهملات: *{trashed_cnt}*")
-
             summary = "\n".join(icons)
             if problem_lines:
                 detail = "\n".join(problem_lines[:30])
                 if len(problem_lines) > 30:
                     detail += f"\n... و{len(problem_lines)-30} أخرى"
                 summary += f"\n\n*التفاصيل:*\n{detail}"
-
             await context.bot.send_message(
                 OWNER_ID, summary,
                 parse_mode=ParseMode.MARKDOWN,
@@ -5139,18 +4732,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     [InlineKeyboardButton("📋 قائمة الأرقام", callback_data="os:list_numbers")],
                 ])
             )
-
         asyncio.create_task(_run_full_audit())
         return
-
-    # ─── إعادة تعيين 2FA لحساب واحد بدون 2FA (من قائمة no_2fa_accessible) ───
     if data.startswith("os:reset_2fa_single:") and is_own:
         stock_id = int(data.split(":")[-1])
         rec = get_stock_number(stock_id)
         if not rec or not rec.get("session_string"):
             await q.answer("⚠️ الحساب غير موجود أو بلا جلسة.", show_alert=True)
             return
-        # إذا كان إجراء الإعادة جارياً مسبقاً، أخبر المالك بالوقت المتبقي
         with db_conn() as _rc:
             _rr = _rc.execute(
                 "SELECT twofa_reset_date FROM number_stock WHERE id=%s", (stock_id,)
@@ -5170,7 +4759,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     show_alert=True
                 )
                 return
-        # بدء إجراء إعادة التعيين
         ok, msg_r, _ = await enable_2fa_for_number(
             rec["phone_number"], rec["session_string"], stock_id, bot=context.bot
         )
@@ -5179,8 +4767,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await q.answer(f"ℹ️ {msg_r[:100]}", show_alert=True)
         return
-
-    # ─── إعادة تعيين 2FA لجميع الحسابات بدون 2FA ─── 
     if data == "os:reset_2fa_all_no2fa" and is_own:
         await q.edit_message_text(
             "🔄 *جاري بدء إعادة تعيين 2FA لجميع الحسابات بدون تحقق...*\n\n"
@@ -5224,8 +4810,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         asyncio.create_task(_reset_all_no2fa())
         return
-
-    # ─── فحص ذكي شامل: تنظيف + إعادة 2FA + ترتيب للبيع ───
     if data == "os:smart_audit" and is_own:
         if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
             await q.answer("⚠️ TELEGRAM_API_ID/HASH غير مضبوط.", show_alert=True)
@@ -5264,14 +4848,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         trashed += 1
                         detail_lines.append(f"🗑 `{_phone}` — جلسة منتهية ← مهملات")
                         continue
-                    # فحص التجميد
                     _frz, _frz_s, _ = await asyncio.wait_for(check_account_frozen(_cli, _rec["id"]), timeout=10)
                     if _frz:
                         soft_delete_number(_rec["id"])
                         trashed += 1
                         detail_lines.append(f"🗑 `{_phone}` — مجمّد/محظور ← مهملات")
                         continue
-                    # تحديث can_send_code
                     try:
                         _me = await asyncio.wait_for(_cli.get_me(), timeout=8)
                         if _me:
@@ -5279,12 +4861,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 _uc.execute("UPDATE number_stock SET can_send_code=TRUE WHERE id=%s AND ever_sold IS NOT TRUE", (_rec["id"],))
                     except Exception:
                         pass
-                    # عدد الأجهزة
                     _devs = await get_device_count(_cli)
                     if _devs > 1:
                         multi_dev += 1
                         detail_lines.append(f"📲 `{_phone}` — {_devs} أجهزة (يحتاج طرد)")
-                    # إذا لا 2FA → بدء إجراء الإعادة
                     _has_2fa = bool((_rec.get("twofa_password") or "").strip())
                     if not _has_2fa:
                         _ok_2fa, _msg_2fa, _ = await enable_2fa_for_number(_phone, _sess, _rec["id"], bot=context.bot)
@@ -5294,7 +4874,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         else:
                             ok_no_2fa += 1
                     else:
-                        # فحص مؤهلية البيع
                         _solo = _rec.get("is_solo")
                         _can  = _rec.get("can_send_code")
                         if _solo and _can and _has_2fa:
@@ -5319,7 +4898,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     except Exception:
                         pass
                 await asyncio.sleep(0.5)
-
             summary_lines = [
                 f"🧹 *تقرير الفحص الذكي الشامل*\n📊 إجمالي مفحوص: *{total}*\n",
                 f"✅ مؤهّلة للبيع: *{ready_sell}*",
@@ -5347,8 +4925,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         asyncio.create_task(_run_smart_audit())
         return
-
-    # ─── فحص حسابات المهملات: اكتشاف القابلة للاسترداد وإضافتها للإحالة ───
     if data == "os:check_trash_accounts" and is_own:
         await q.edit_message_text(
             "🔍 *جاري فحص حسابات سلة المهملات...*\n\n"
@@ -5356,7 +4932,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:nums:trash")]])
         )
-
         async def _check_trash():
             if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
                 await context.bot.send_message(OWNER_ID, "❌ TELEGRAM_API_ID/HASH غير مضبوط.")
@@ -5369,11 +4944,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not rows:
                 await context.bot.send_message(OWNER_ID, "📭 لا توجد حسابات في المهملات لها جلسة للفحص.")
                 return
-
             total   = len(rows)
             ok_list = []
             dead_list = []
-
             for rec in rows:
                 rec = dict(rec)
                 cli3 = None
@@ -5390,7 +4963,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             check_account_frozen(cli3, rec["id"]), timeout=10
                         )
                         if not is_frz3:
-                            # ✅ مكتشف — أعِد وضعه في المخزون وفعّل can_send_code
                             restore_deleted_number(rec["id"])
                             with db_conn() as _rc:
                                 _rc.execute(
@@ -5415,7 +4987,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     except Exception:
                         pass
                 await asyncio.sleep(0.4)
-
             lines = [f"🔍 *نتائج فحص سلة المهملات*\nإجمالي المفحوص: *{total}*\n"]
             if ok_list:
                 lines.append(f"✅ *تمت استعادتها ({len(ok_list)}) وأُضيفت لحسابات الإحالة:*")
@@ -5429,7 +5000,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 lines.extend(f"  • {x}" for x in dead_list[:15])
                 if len(dead_list) > 15:
                     lines.append(f"  ... و{len(dead_list)-15} أخرى")
-
             summary3 = "\n".join(lines)
             await context.bot.send_message(
                 OWNER_ID, summary3,
@@ -5439,10 +5009,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     [InlineKeyboardButton("📋 قائمة الأرقام", callback_data="os:list_numbers")],
                 ])
             )
-
         asyncio.create_task(_check_trash())
         return
-
     if data == "os:purge_frozen" and is_own:
         try:
             with db_conn() as _pfc:
@@ -5463,7 +5031,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as _pfe:
             await q.edit_message_text(f"❌ خطأ: {_pfe}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")]]))
         return
-
     if data == "os:list_numbers" and is_own:
         counts = get_number_counts()
         await q.edit_message_text(
@@ -5490,13 +5057,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
         return
-
     if data == "os:send_all_nums_text" and is_own:
         all_nums = list_stock_numbers("all")
         if not all_nums:
             await q.answer("لا توجد أرقام في المخزون حالياً.", show_alert=True)
             return
-        # رقم واحد في كل سطر بدون أي إضافات
         text_block = "\n".join(n["phone_number"] for n in all_nums)
         await q.answer()
         chunk_size = 4000
@@ -5506,14 +5071,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text=text_block[i:i + chunk_size],
             )
         return
-
-
     if data.startswith("os:nums:") and is_own:
         _parts = data.split(":")
         filter_type = _parts[2]
         _page = int(_parts[3]) if len(_parts) > 3 else 0
         _PAGE_SIZE = 30
-
         titles = {
             "all":               "📦 جميع الأرقام",
             "listed":            "🚀 الأرقام المعروضة",
@@ -5533,7 +5095,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         title   = titles.get(filter_type, "الأرقام")
         numbers = list_stock_numbers(filter_type)
         total   = len(numbers)
-
         if not total:
             empty_note = "لا توجد أرقام حالياً ضمن هذا التصنيف."
             if filter_type == "trash":
@@ -5563,20 +5124,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")]])
             )
             return
-
         total_pages = (total + _PAGE_SIZE - 1) // _PAGE_SIZE
         _page       = max(0, min(_page, total_pages - 1))   # تثبيت في الحدود
         _start      = _page * _PAGE_SIZE
         _end        = _start + _PAGE_SIZE
         page_nums   = numbers[_start:_end]
-
         def _fmt_dt_pg(val):
             if val is None:
                 return "غير مسجّل"
             if hasattr(val, "strftime"):
                 return val.strftime("%Y-%m-%d %H:%M")
             return str(val)[:16]
-
         def _nav_row():
             nav = []
             if _page > 0:
@@ -5586,9 +5144,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if _page < total_pages - 1:
                 nav.append(InlineKeyboardButton("التالي ➡️", callback_data=f"os:nums:{filter_type}:{_page + 1}"))
             return nav
-
-        # ══════════════════════════════════════════════════════
-        # ══════════════════════════════════════════════════════
         if filter_type == "frozen":
             lines_frz = [
                 f"🧊 *{title} ({total})* — صفحة {_page + 1}/{total_pages}\n"
@@ -5614,9 +5169,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text(text_frz, parse_mode=ParseMode.MARKDOWN,
                                       reply_markup=InlineKeyboardMarkup(btn_rows_frz))
             return
-
-        # ══════════════════════════════════════════════════════
-        # ══════════════════════════════════════════════════════
         if filter_type == "auto_2fa":
             lines_2fa = [
                 f"🔐 *{title} ({total})* — صفحة {_page + 1}/{total_pages}\n"
@@ -5642,9 +5194,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text(text_2fa, parse_mode=ParseMode.MARKDOWN,
                                       reply_markup=InlineKeyboardMarkup(btn_rows_2fa))
             return
-
-        # ══════════════════════════════════════════════════════
-        # ══════════════════════════════════════════════════════
         if filter_type == "kicked":
             lines_kk = [f"🚫 *{title} ({total})* — صفحة {_page + 1}/{total_pages}\n"]
             for n in page_nums:
@@ -5666,10 +5215,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text(text_kk, parse_mode=ParseMode.MARKDOWN,
                                       reply_markup=InlineKeyboardMarkup(btn_rows_kk))
             return
-
-        # ══════════════════════════════════════════════════════
-        # ✅ حسابات مفتوحة بالكامل — وصول + رسائل + تحكم
-        # ══════════════════════════════════════════════════════
         if filter_type == "accessible_full":
             import datetime as _dt_af
             lines_af = [
@@ -5699,10 +5244,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text(text_af, parse_mode=ParseMode.MARKDOWN,
                                       reply_markup=InlineKeyboardMarkup(btn_rows_af))
             return
-
-        # ══════════════════════════════════════════════════════
-        # 📲 أجهزة متعددة — يمكن الوصول
-        # ══════════════════════════════════════════════════════
         if filter_type == "multi_device_access":
             lines_mda = [
                 f"📲 *{title} ({total})* — صفحة {_page + 1}/{total_pages}\n"
@@ -5733,10 +5274,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text(text_mda, parse_mode=ParseMode.MARKDOWN,
                                       reply_markup=InlineKeyboardMarkup(btn_rows_mda))
             return
-
-        # ══════════════════════════════════════════════════════
-        # 📨 أرقام بدون 2FA — مع أزرار إعادة تعيين وعرض الوقت المتبقي
-        # ══════════════════════════════════════════════════════
         if filter_type == "no_2fa_accessible":
             import datetime as _dt_no2fa
             _now_utc = _dt_no2fa.datetime.now(_dt_no2fa.timezone.utc)
@@ -5791,9 +5328,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text(text_no2, parse_mode=ParseMode.MARKDOWN,
                                       reply_markup=InlineKeyboardMarkup(btn_rows_no2))
             return
-
-        # ══════════════════════════════════════════════════════
-        # ══════════════════════════════════════════════════════
         def _is_sellable(n) -> bool:
             """نفس شروط _sellable_filter_sql() لكن على كائن Python."""
             return (
@@ -5802,7 +5336,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 and bool((n.get("twofa_password") or "").strip())
                 and not n.get("frozen_at")
             )
-
         rows = []
         for n in page_nums:
             country = guess_country(n['phone_number'])
@@ -5822,12 +5355,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _nr = _nav_row()
         if _nr:
             rows.append(_nr)
-        # ─── زر فحص حسابات المهملات (يظهر فقط في سلة المهملات) ───
         if filter_type == "trash":
             rows.append([InlineKeyboardButton("🔍 فحص حسابات المهملات (اكتشاف القابلة للاسترداد)", callback_data="os:check_trash_accounts")])
         rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")])
-
-        # ─── تفسير الرموز ───
         if filter_type == "all":
             legend = "\n✅ جاهز للبيع  |  ⏳ غير جاهز  |  🚫 مطرود  |  🧊 مجمّد  |  ⚠️ بدون جلسة"
         elif filter_type == "listed":
@@ -5850,7 +5380,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             legend = "\n📲 أكثر من جهاز — البوت لديه وصول. يُنصح بطرد الجلسات الأخرى."
         else:
             legend = ""
-
         await q.edit_message_text(
             f"*{title} ({total})* — صفحة {_page + 1}/{total_pages}"
             f"{legend}",
@@ -5858,7 +5387,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(rows)
         )
         return
-
     if data.startswith("os:number_info:") and is_own:
         stock_id = int(data.split(":")[-1])
         rec = get_stock_number(stock_id)
@@ -5869,7 +5397,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         if rec.get("deleted_at"):
-            # ─── الرقم في سلة المهملات: عرض مبسّط بدون فحص مباشر من تيليجرام + خيارات الاستعادة/الحذف النهائي ───
             del_str = rec["deleted_at"].strftime("%Y-%m-%d %H:%M UTC") if hasattr(rec["deleted_at"], "strftime") else str(rec["deleted_at"])
             await q.edit_message_text(
                 f"🗑 *{rec['phone_number']}* — في سلة المهملات\n\n"
@@ -5893,7 +5420,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(f"⏳ يتم جلب معلومات {rec['phone_number']}... قد يستغرق ذلك بضع ثوانٍ.")
         client = TelegramClient(StringSession(rec["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
         try:
-            # ─── اتصال بـ timeout صريح حتى لا يعلّق البوت على جلسات ملغية ───
             try:
                 await asyncio.wait_for(client.connect(), timeout=15)
             except asyncio.TimeoutError:
@@ -5908,13 +5434,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     ])
                 )
                 return
-
-            # ─── تحقق من صلاحية الجلسة قبل أي طلب ───
             try:
                 _authorized = await asyncio.wait_for(client.is_user_authorized(), timeout=8)
             except asyncio.TimeoutError:
                 _authorized = False
-
             if not _authorized:
                 await q.edit_message_text(
                     f"🔒 *الجلسة منتهية أو ملغية — {rec['phone_number']}*\n\n"
@@ -5927,8 +5450,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     ])
                 )
                 return
-
-            # ─── فحص التجميد أولاً ───
             is_frozen, frozen_status, frozen_at_str = await check_account_frozen(client, stock_id)
             me = None
             age = "غير معروف"
@@ -5940,21 +5461,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     pass
             devices = await get_device_count(client)
             spam_detail = await check_spam_status_detailed(client)
-            # ─── حالة التجميد المحفوظة في DB ───
             db_frozen_at = rec.get("frozen_at")
             if db_frozen_at and not frozen_at_str:
                 if hasattr(db_frozen_at, "strftime"):
                     frozen_at_str = db_frozen_at.strftime("%Y-%m-%d %H:%M UTC")
                 else:
                     frozen_at_str = str(db_frozen_at)
-            # ─── حالة البيع ───
             if rec["force_listed"]:
                 sale_status = "🚀 معروض مباشرة للبيع (تجاوز انتظار طرد الجلسات)"
             elif rec["sessions_reset"]:
                 sale_status = "✅ جاهز للبيع (البوت وحده بالحساب)"
             else:
                 sale_status = "⏳ بانتظار طرد الجلسات الأخرى — غير معروض للبيع بعد"
-            # ─── اسم المستخدم ───
             display_name = ""
             if me:
                 display_name = (
@@ -5962,14 +5480,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 if me.username:
                     display_name += f" (@{me.username})"
-            # ─── معلومات التجميد/الحظر الكامل ───
             frozen_line = (
                 f"\n🧊 جامد: {'✅ نعم' if is_frozen else '❌ لا'}"
                 f"\n⛔ محظور بالكامل: {'✅ نعم' if is_frozen else '❌ لا'}"
             )
             if is_frozen and frozen_at_str:
                 frozen_line += f"\n📅 تاريخ التجميد: {frozen_at_str}"
-            # ─── حالة التقييد المؤقت من الإرسال ───
             restricted = spam_detail.get("restricted")
             if restricted is True:
                 until_txt = spam_detail.get("until")
@@ -5978,7 +5494,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 spam_line = f"\n📵 مقيّد من الإرسال: ❌ لا"
             else:
                 spam_line = f"\n📵 مقيّد من الإرسال: ⚠️ تعذّر التأكد الآن"
-            # ─── حالة 2FA ───
             saved_pwd = rec.get("twofa_password") or ""
             if saved_pwd:
                 twofa_line = "\n🔐 التحقق بخطوتين: ✅ مفعّل (انظر زر كلمة المرور)"
@@ -6014,7 +5529,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             _err_str = str(e)
             logger.error(f"❌ خطأ في جلب معلومات الرقم {rec['phone_number']}: {_err_str}")
-            # ─── رسائل خطأ واضحة حسب نوع الخطأ ───
             if any(k in _err_str.lower() for k in ("auth_key_unregistered", "session_revoked", "user_deactivated", "deactivated_ban")):
                 _err_msg = "🔒 الجلسة ألغيت أو الحساب محظور نهائياً من تيليجرام."
             elif "flood" in _err_str.lower():
@@ -6038,7 +5552,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
         return
-
     if data.startswith("os:force_list:") and is_own:
         stock_id = int(data.split(":")[-1])
         rec = get_stock_number(stock_id)
@@ -6059,8 +5572,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")]])
         )
         return
-
-    # ─── تسجيل خروج البوت من حساب محدد ───
     if data.startswith("os:number_logout:") and is_own:
         stock_id = int(data.split(":")[-1])
         rec = get_stock_number(stock_id)
@@ -6070,7 +5581,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")]])
             )
             return
-        # ─── خطوة تأكيد قبل التنفيذ ───
         await q.edit_message_text(
             f"🚪 *تسجيل خروج البوت من:* `{rec['phone_number']}`\n\n"
             "⚠️ هذا سيُلغي جلسة البوت الحالية على هذا الحساب نهائياً.\n"
@@ -6083,7 +5593,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
         return
-
     if data.startswith("os:number_logout_confirm:") and is_own:
         stock_id = int(data.split(":")[-1])
         rec = get_stock_number(stock_id)
@@ -6095,7 +5604,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         phone = rec["phone_number"]
         await q.edit_message_text(f"⏳ يتم تسجيل الخروج من {phone}...")
-        # ─── سجّل خروج عبر Telethon ───
         _logout_ok   = False
         _logout_note = ""
         client_lo = TelegramClient(StringSession(rec["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
@@ -6118,7 +5626,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await client_lo.disconnect()
             except Exception:
                 pass
-        # ─── امسح الجلسة من DB في جميع الحالات ───
         try:
             with db_conn() as _lc:
                 _lc.execute(
@@ -6140,7 +5647,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
         return
-
     if data.startswith("os:number_delete:") and is_own:
         stock_id = int(data.split(":")[-1])
         rec = get_stock_number(stock_id)
@@ -6158,7 +5664,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع لقائمة الأرقام", callback_data="os:list_numbers")]])
         )
         return
-
     if data.startswith("os:number_restore:") and is_own:
         stock_id = int(data.split(":")[-1])
         rec = get_stock_number(stock_id)
@@ -6175,7 +5680,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع لقائمة الأرقام", callback_data="os:list_numbers")]])
         )
         return
-
     if data.startswith("os:number_purge:") and is_own:
         stock_id = int(data.split(":")[-1])
         rec = get_stock_number(stock_id)
@@ -6193,8 +5697,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع لسلة المهملات", callback_data="os:nums:trash")]])
         )
         return
-
-    # ─── تفاصيل الأجهزة مع تواريخ التسجيل ───
     if data.startswith("os:number_devices:") and is_own:
         stock_id = int(data.split(":")[-1])
         rec = get_stock_number(stock_id)
@@ -6251,8 +5753,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
         return
-
-    # ─── طرد جهاز محدد بالـ hash ───
     if data.startswith("os:kick_device:") and is_own:
         parts = data.split(":")
         stock_id    = int(parts[2])
@@ -6297,7 +5797,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
         return
-
     if data.startswith("os:number_code:") and is_own:
         stock_id = int(data.split(":")[-1])
         rec = get_stock_number(stock_id)
@@ -6352,7 +5851,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
         return
-
     if data.startswith("os:number_2fa:") and is_own:
         stock_id = int(data.split(":")[-1])
         rec = get_stock_number(stock_id)
@@ -6387,7 +5885,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ])
             )
         return
-
     if data.startswith("os:set_2fa_manual:") and is_own:
         stock_id = int(data.split(":")[-1])
         rec = get_stock_number(stock_id)
@@ -6401,7 +5898,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-
     if data.startswith("os:number_2fa_enable:") and is_own:
         stock_id = int(data.split(":")[-1])
         rec = get_stock_number(stock_id)
@@ -6431,7 +5927,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data=f"os:number_info:{stock_id}")]])
             )
         return
-
     if data.startswith("os:number_2fa_reset:") and is_own:
         stock_id = int(data.split(":")[-1])
         rec = get_stock_number(stock_id)
@@ -6485,11 +5980,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data=f"os:number_2fa:{stock_id}")]])
             )
         return
-
-    # ═══════════════════════════════════════════════════════════
-    # ══ لوحة المشرف ══
-    # ═══════════════════════════════════════════════════════════
-
     if data == "sv:panel" and is_supervisor_cb:
         await q.answer()
         await q.edit_message_text(
@@ -6499,7 +5989,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=supervisor_panel_kb()
         )
         return
-
     if data == "sv:login_number" and is_supervisor_cb:
         if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
             await q.edit_message_text(
@@ -6518,9 +6007,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="sv:panel")]])
         )
         return
-
-    # ── قسم حسابات المشرف ──────────────────────────────────────────────────
-
     if data == "sv:my_accounts" and is_supervisor_cb:
         await q.answer()
         sv_id = user.id
@@ -6553,7 +6039,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(kb_rows)
         )
         return
-
     if data.startswith("sv:del_account:") and is_supervisor_cb:
         await q.answer()
         phone_to_del = data[len("sv:del_account:"):]
@@ -6568,7 +6053,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
         return
-
     if data.startswith("sv:confirm_del:") and is_supervisor_cb:
         await q.answer()
         phone_to_del = data[len("sv:confirm_del:"):]
@@ -6601,11 +6085,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup(kb_rows)
             )
         return
-
-    # ═══════════════════════════════════════════════════════════
-    # ══ إحالة إجبارية المشرف ══
-    # ═══════════════════════════════════════════════════════════
-
     if data == "sv:forced_ref" and is_supervisor_cb:
         await q.answer()
         sv_accounts = get_supervisor_available_accounts(user.id)
@@ -6629,17 +6108,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
         return
-
     if data == "sv:forced_ref_no_ai" and is_supervisor_cb:
         await q.answer()
         await _sv_forced_ref_start(update, context, user, q, with_ai=False)
         return
-
     if data == "sv:forced_ref_ai" and is_supervisor_cb:
         await q.answer()
         await _sv_forced_ref_start(update, context, user, q, with_ai=True)
         return
-
     if data == "sv_forced_ref_skip_channels" and is_supervisor_cb:
         await q.answer()
         draft = context.user_data.setdefault('sv_forced_ref_draft', {})
@@ -6659,7 +6135,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔙 إلغاء', callback_data='sv:panel')]])
         )
         return
-
     if data.startswith("sv_forced_ref_confirm:") and is_supervisor_cb:
         await q.answer()
         action = data.split(':')[1]
@@ -6671,7 +6146,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=supervisor_panel_kb()
             )
             return
-        # تأكيد التشغيل
         draft    = context.user_data.get('sv_forced_ref_draft', {})
         bot_user = draft.get('bot_user', '')
         start_p  = draft.get('start_p', '')
@@ -6702,11 +6176,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _run_sv_forced_ref_order(bot_user, start_p, channels, qty, user.id, context, use_ai=use_ai)
         )
         return
-
-    # ═══════════════════════════════════════════════════════════
-    # ══ إدارة المشرفين (للمالك) ══
-    # ═══════════════════════════════════════════════════════════
-
     if data == "os:add_supervisor" and is_own:
         await q.answer()
         context.user_data["state"] = "os_await_supervisor_id"
@@ -6717,7 +6186,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="owner_settings")]])
         )
         return
-
     if data == "os:list_supervisors" and is_own:
         await q.answer()
         svs = get_supervisors()
@@ -6748,7 +6216,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(kb_rows)
         )
         return
-
     if data.startswith("os:remove_supervisor:") and is_own:
         await q.answer()
         try:
@@ -6786,8 +6253,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup(kb_rows)
             )
         return
-
-    # ══ حسابات المشرفين — عرض المالك ══
     if data == "os:sv_accounts" and is_own:
         await q.answer()
         grouped = get_all_supervisor_accounts_grouped()
@@ -6814,7 +6279,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(kb_rows)
         )
         return
-
     if data.startswith("os:sv_accs:") and is_own:
         await q.answer()
         try:
@@ -6847,11 +6311,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(kb_rows)
         )
         return
-
     if data.startswith("os:del_sv_acc:") and is_own:
         await q.answer()
         parts = data.split(":", 3)
-        # os:del_sv_acc:{sv_id}:{phone}
         if len(parts) < 4:
             return
         try:
@@ -6887,7 +6349,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup(kb_rows)
             )
         return
-
     if data == "os:login_number" and is_own:
         if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
             await q.edit_message_text(
@@ -6907,7 +6368,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:manage_numbers")]])
         )
         return
-
     if data == "os:add_numbers" and is_own:
         context.user_data["state"] = "os_await_add_numbers"
         await q.edit_message_text(
@@ -6919,31 +6379,24 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:manage_numbers")]])
         )
         return
-
-    # ═══════════════════════════════════════════════════════════
-    # ═══════════════════════════════════════════════════════════
-
     if data == 'os:toggle_mansub_visible' and is_own:
         nv = '0' if get_setting('mansub_visible') == '1' else '1'
         set_setting('mansub_visible', nv)
         lbl = 'مرئية للأعضاء ✅' if nv == '1' else 'مخفية (مالك فقط) 🔒'
         await q.answer(f'خدمة الاشتراك الإجباري أصبحت {lbl}', show_alert=True)
         return
-
     if data == 'os:toggle_forced_ref_visible' and is_own:
         nv = '0' if get_setting('forced_ref_visible') == '1' else '1'
         set_setting('forced_ref_visible', nv)
         lbl = 'مرئية للأعضاء ✅' if nv == '1' else 'مخفية (مالك فقط) 🔒'
         await q.answer(f'خدمة "إحالة بوت فقط" أصبحت {lbl}', show_alert=True)
         return
-
     if data == 'os:toggle_forced_ref_ai_visible' and is_own:
         nv = '0' if get_setting('forced_ref_ai_visible') == '1' else '1'
         set_setting('forced_ref_ai_visible', nv)
         lbl = 'مرئية للأعضاء ✅' if nv == '1' else 'مخفية (مالك فقط) 🔒'
         await q.answer(f'خدمة "إحالة بميزة تحقق" أصبحت {lbl}', show_alert=True)
         return
-
     if data == "os:ref_tasks" and is_own:
         await q.answer()
         try:
@@ -6988,7 +6441,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"❌ os:ref_tasks error: {_ref_err}")
             await q.answer(f"⚠️ خطأ تقني: {str(_ref_err)[:120]}", show_alert=True)
         return
-
     if data == "os:ref_task_add" and is_own:
         context.user_data["state"] = "os_await_ref_task_channels"
         context.user_data["ref_task_draft"] = {}
@@ -7005,7 +6457,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:ref_tasks")]])
         )
         return
-
     if data.startswith("os:ref_task:") and is_own:
         await q.answer()
         task_id = int(data.split(":")[-1])
@@ -7055,14 +6506,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"❌ os:ref_task:{task_id} error: {_err}")
             await q.answer(f"⚠️ خطأ تقني: {str(_err)[:120]}", show_alert=True)
         return
-
     if data.startswith("os:ref_resub:") and is_own:
         task_id = int(data.split(":")[-1])
         task = get_referral_task(task_id)
         if not task:
             await q.answer("⚠️ مهمة غير موجودة.", show_alert=True)
             return
-        # إعادة ضبط جميع السجلات لتُعيد كل الأرقام الاشتراك من جديد
         with db_conn() as c:
             c.execute("DELETE FROM referral_completions WHERE task_id=%s", (task_id,))
         stats_new = get_referral_task_stats(task_id)
@@ -7079,7 +6528,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
         return
-
     if data.startswith("os:ref_toggle:") and is_own:
         task_id = int(data.split(":")[-1])
         new_active = toggle_referral_task(task_id)
@@ -7123,7 +6571,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if "Message is not modified" not in str(_tg_e):
                 raise _tg_e
         return
-
     if data == "os:ref_run_all" and is_own:
         await q.answer("⏳ جاري تشغيل كل المهام النشطة...", show_alert=True)
         tasks = get_referral_tasks(only_active=True)
@@ -7148,7 +6595,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     import random as _rnd; await asyncio.sleep(_rnd.uniform(10, 25))
         asyncio.ensure_future(_run_all_tasks_bg())
         return
-
     if data.startswith("os:ref_run:") and is_own:
         task_id = int(data.split(":")[-1])
         task = get_referral_task(task_id)
@@ -7175,7 +6621,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             import random as _rnd_bg
             done = failed = skipped = reactivated_bg = 0
             for num in pending:
-                # تخطي الأرقام التي لم تحصل على جلسة بعد
                 if not num.get("session_string"):
                     skipped += 1
                     continue
@@ -7201,7 +6646,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     done += 1
                 else:
                     failed += 1
-                # تأخير كافٍ بين الحسابات لتجنّب قيود تيليجرام
                 await asyncio.sleep(_rnd_bg.uniform(15, 30))
             try:
                 await context.bot.send_message(
@@ -7219,7 +6663,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
         asyncio.create_task(_run_task_bg())
         return
-
     if data.startswith("os:ref_delete:") and is_own:
         task_id = int(data.split(":")[-1])
         task = get_referral_task(task_id)
@@ -7231,14 +6674,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:ref_tasks")]])
         )
         return
-
     if data == "os:edit_number_cost" and is_own:
         context.user_data["state"] = "os_await_number_cost"
         cur = get_setting("telegram_number_cost") or "5000"
         await q.edit_message_text(f"📱 سعر رقم تيلغرام الحالي: {cur} نقطة\n\nأرسل القيمة الجديدة:")
         return
-
-    # ─── إعدادات النجوم للاشتراك الإجباري ───
     if data == "os:edit_mstars_min" and is_own:
         cur = get_setting("mandatory_stars_min_members") or "50"
         context.user_data["state"] = "os_await_mstars_min"
@@ -7248,7 +6688,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-
     if data == "os:edit_mstars_t1max" and is_own:
         cur = get_setting("mandatory_stars_tier1_max") or "120"
         context.user_data["state"] = "os_await_mstars_t1max"
@@ -7259,7 +6698,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-
     if data == "os:edit_mstars_t1p" and is_own:
         cur = int(get_setting("mandatory_stars_tier1_price_x100") or "50")
         context.user_data["state"] = "os_await_mstars_t1p"
@@ -7270,7 +6708,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-
     if data == "os:edit_mstars_t2p" and is_own:
         cur = int(get_setting("mandatory_stars_tier2_price_x100") or "33")
         context.user_data["state"] = "os_await_mstars_t2p"
@@ -7281,7 +6718,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-
     if data == "os:edit_leave_grace" and is_own:
         cur = get_setting("internal_leave_grace_hours") or "24"
         context.user_data["state"] = "os_await_leave_grace"
@@ -7292,7 +6728,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-
     if data == "os:sold_search" and is_own:
         context.user_data["state"] = "os_await_sold_search"
         await q.edit_message_text(
@@ -7300,7 +6735,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-
     if data == "os:phone_search" and is_own:
         context.user_data["state"] = "os_await_phone_search"
         await q.edit_message_text(
@@ -7310,7 +6744,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:manage_numbers")]]))
         return
-
     if data == "os:sold_code_search" and is_own:
         context.user_data["state"] = "os_await_sold_code_search"
         await q.edit_message_text(
@@ -7318,7 +6751,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-
     if data == "os:edit_contact" and is_own:
         context.user_data["state"] = "os_await_contact"
         cur = get_setting("owner_contact") or "غير مضبوط"
@@ -7333,7 +6765,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-
     if data == "os:thank_owner_settings" and is_own:
         context.user_data["state"] = "main_menu"
         await q.edit_message_text(
@@ -7343,7 +6774,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=thank_owner_settings_kb()
         )
         return
-
     if data.startswith("os:thank_owner_edit:") and is_own:
         key = data.split(":", 2)[2]
         if key not in THANK_OWNER_SETTINGS:
@@ -7363,7 +6793,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
         return
-
     if data == "os:edit_contact_label" and is_own:
         context.user_data["state"] = "os_await_contact_label"
         cur_label = get_setting("owner_contact_label") or "💬 تواصل مع المالك"
@@ -7375,7 +6804,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-
     if data == "os:edit_support_label" and is_own:
         context.user_data["state"] = "os_await_support_label"
         cur_label = get_setting("support_contact_label") or "🛎 تواصل مع الدعم"
@@ -7387,19 +6815,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-
     if data == "os:edit_welcome" and is_own:
         context.user_data["state"] = "os_await_welcome"
         cur = get_setting("welcome_message") or ""
         await q.edit_message_text(f"💌 رسالة الترحيب الحالية:\n{cur}\n\nأرسل الرسالة الجديدة:")
         return
-
     if data == "os:edit_asiacell" and is_own:
         context.user_data["state"] = "os_await_asiacell_text"
         cur = get_setting("asiacell_text") or ""
         await q.edit_message_text(f"📲 النص الحالي لاسيا سيل:\n\n{cur}\n\nأرسل النص الجديد:")
         return
-
     if data == "os:edit_join_reward" and is_own:
         cur = get_setting("join_channel_reward") or "45"
         context.user_data["state"] = "os_await_join_reward"
@@ -7410,7 +6835,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-
     if data == "os:edit_leave_penalty" and is_own:
         cur = get_setting("channel_leave_penalty") or "75"
         context.user_data["state"] = "os_await_leave_penalty"
@@ -7422,7 +6846,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-
     if data == "os:edit_mandatory_min" and is_own:
         cur = get_setting("mandatory_channel_min_members") or "0"
         context.user_data["state"] = "os_await_mandatory_min"
@@ -7434,7 +6857,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-
     if data == "os:edit_internal_min" and is_own:
         cur = get_setting("internal_channel_min_members") or "0"
         context.user_data["state"] = "os_await_internal_min"
@@ -7446,7 +6868,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-
     if data == "os:edit_mandatory_cost" and is_own:
         cur = get_setting("mandatory_channel_cost") or "200"
         context.user_data["state"] = "os_await_mandatory_cost"
@@ -7457,7 +6878,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-
     if data == "os:edit_internal_cost" and is_own:
         cur = get_setting("internal_channel_cost") or "100"
         context.user_data["state"] = "os_await_internal_cost"
@@ -7468,17 +6888,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-
     if data == "os:cancel_order" and is_own:
         context.user_data["state"] = "os_await_cancel_order"
         await q.edit_message_text("❌ *إلغاء طلب:*\n\nأرسل كود الطلب المراد إلغاؤه:", parse_mode=ParseMode.MARKDOWN)
         return
-
     if data == "os:complete_order" and is_own:
         context.user_data["state"] = "os_await_complete_order"
         await q.edit_message_text("✅ *إكمال طلب:*\n\nأرسل كود الطلب الذي تم تنفيذه بالكامل:", parse_mode=ParseMode.MARKDOWN)
         return
-
     if data == "os:manage_channels" and is_own:
         context.user_data["state"] = "os_await_channel"
         with db_conn() as c:
@@ -7514,7 +6931,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN,
                                    reply_markup=InlineKeyboardMarkup(rows))
         return
-
     if data.startswith("os_del_ch:") and is_own:
         ch_id = int(data.split(":")[1])
         with db_conn() as c:
@@ -7524,12 +6940,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await promote_queued_mandatory_channel(context, app=context.application)
         await q.answer("🗑 تم حذف القناة")
         return
-
     if data == "os_add_ch" and is_own:
         context.user_data["state"] = "os_await_channel"
         await q.edit_message_text("📡 أرسل يوزرنيم القناة (مثال: @channel):")
         return
-
     if data == "os:ban_menu" and is_own:
         with db_conn() as c:
             banned_count = c.execute("SELECT COUNT(*) as cnt FROM users WHERE banned=1").fetchone()["cnt"]
@@ -7545,7 +6959,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]),
         )
         return
-
     if data == "os:ban_member" and is_own:
         context.user_data["state"] = "os_await_ban_target"
         await q.edit_message_text(
@@ -7554,7 +6967,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:ban_menu")]]),
         )
         return
-
     if data == "os:unban_member" and is_own:
         context.user_data["state"] = "os_await_unban_target"
         await q.edit_message_text(
@@ -7563,7 +6975,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:ban_menu")]]),
         )
         return
-
     if data.startswith("os:unban_confirm:") and is_own:
         target_id = int(data.split(":")[-1])
         found = unban_user_db(target_id)
@@ -7578,7 +6989,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await q.answer("⚠️ لم يُوجد المستخدم.", show_alert=True)
         return
-
     if data == "os:list_banned" and is_own:
         try:
             with db_conn() as c:
@@ -7618,7 +7028,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"❌ os:list_banned error: {_e}")
             await q.answer(f"❌ خطأ: {_e}", show_alert=True)
         return
-
     if data == "os:create_promo" and is_own:
         context.user_data["state"] = "os_await_promo_code_text"
         await q.edit_message_text(
@@ -7626,7 +7035,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-
     if data == "os:list_promos" and is_own:
         with db_conn() as c:
             promos = c.execute("SELECT * FROM promo_codes ORDER BY created_at DESC").fetchall()
@@ -7651,7 +7059,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN,
                                    reply_markup=InlineKeyboardMarkup(rows))
         return
-
     if data == "os:search_code" and is_own:
         context.user_data["state"] = "os_await_code_search"
         await q.edit_message_text(
@@ -7661,7 +7068,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="owner_settings")]]),
         )
         return
-
     if data.startswith("os:promo_users:") and is_own:
         code = data[len("os:promo_users:"):]
         try:
@@ -7721,7 +7127,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"❌ os:promo_users error: {_e}")
             await q.answer(f"❌ خطأ: {_e}", show_alert=True)
         return
-
     if data.startswith("os_tog_promo:") and is_own:
         parts = data.split(":")
         code  = parts[1]
@@ -7730,14 +7135,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             c.execute("UPDATE promo_codes SET active=? WHERE code=?", (val, code))
         await q.answer("✅ تم التحديث")
         return
-
     if data.startswith("os_del_promo:") and is_own:
         code = data.split(":")[1]
         with db_conn() as c:
             c.execute("DELETE FROM promo_codes WHERE code=?", (code,))
         await q.answer("🗑 تم الحذف")
         return
-
     if data == "os:manage_points" and is_own:
         await q.edit_message_text(
             "💰 *منح / خصم نقاط*\n\nاختر العملية:",
@@ -7749,7 +7152,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
         return
-
     if data == "os:give_points" and is_own:
         context.user_data["state"]       = "os_await_points_target"
         context.user_data["points_mode"] = "give"
@@ -7759,7 +7161,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:manage_points")]])
         )
         return
-
     if data == "os:deduct_points" and is_own:
         context.user_data["state"]       = "os_await_points_target"
         context.user_data["points_mode"] = "deduct"
@@ -7769,7 +7170,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:manage_points")]])
         )
         return
-
     if data == "os:broadcast" and is_own:
         context.user_data["state"] = "os_await_broadcast"
         with db_conn() as c:
@@ -7781,7 +7181,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-
     if data == "os:toggle_captcha" and is_own:
         current = int(get_setting("captcha_enabled") or "0")
         new_val = "0" if current else "1"
@@ -7794,7 +7193,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=owner_settings_kb()
         )
         return
-
     if data == "os:toggle_maintenance" and is_own:
         current = int(get_setting("maintenance_mode") or "0")
         new_val = "0" if current else "1"
@@ -7807,7 +7205,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=owner_settings_kb()
         )
         return
-
     if data == "os:manage_num_codes" and is_own:
         with db_conn() as c:
             ncodes = c.execute(
@@ -7831,7 +7228,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(rows)
         )
         return
-
     if data == "os:create_num_code" and is_own:
         context.user_data["state"] = "os_await_num_code_text"
         await q.edit_message_text(
@@ -7839,7 +7235,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-
     if data.startswith("os:num_code_info:") and is_own:
         nc_code = data[len("os:num_code_info:"):]
         with db_conn() as c:
@@ -7865,7 +7260,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(rows)
         )
         return
-
     if data.startswith("os:num_code_users:") and is_own:
         nc_code = data[len("os:num_code_users:"):]
         try:
@@ -7924,7 +7318,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"❌ os:num_code_users error: {_e}")
             await q.answer(f"❌ خطأ: {_e}", show_alert=True)
         return
-
     if data.startswith("os:toggle_num_code:") and is_own:
         nc_code = data[len("os:toggle_num_code:"):]
         with db_conn() as c:
@@ -7953,7 +7346,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(rows)
         )
         return
-
     if data.startswith("os:del_num_code:") and is_own:
         nc_code = data[len("os:del_num_code:"):]
         with db_conn() as c:
@@ -7965,7 +7357,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=back_kb("os:manage_num_codes")
         )
         return
-
     if data == "os:toggle_number_exchange" and is_own:
         current = int(get_setting("number_exchange_enabled") or "0")
         new_val = "0" if current else "1"
@@ -7978,7 +7369,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=owner_settings_kb()
         )
         return
-
     if data == "os:stats" and is_own:
         with db_conn() as c:
             total_users     = c.execute("SELECT COUNT(*) as cnt FROM users").fetchone()["cnt"]
@@ -8003,7 +7393,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "WHERE invited_by IS NOT NULL AND invited_by != 0 AND referral_credited=1 "
                 "GROUP BY invited_by ORDER BY cnt DESC LIMIT 5"
             ).fetchall()
-
         lines = [
             "📊 *إحصائيات البوت:*\n",
             f"👥 إجمالي المستخدمين: {total_users}",
@@ -8017,7 +7406,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📡 قنوات إجبارية نشطة: {active_mandatory} (⏳ بانتظار الدور: {queued_mandatory})",
             f"💸 تمويلات قنوات نشطة حالياً: {active_fundings}\n",
         ]
-
         if top_referrers:
             lines.append("🏆 *الأكثر دعوةً للأصدقاء:*")
             for i, r in enumerate(top_referrers, start=1):
@@ -8031,14 +7419,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 lines.append(f"{i}. {name} — {r['cnt']} دعوة")
         else:
             lines.append("🏆 لا توجد دعوات مكتملة بعد.")
-
         await q.edit_message_text(
             "\n".join(lines),
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=owner_settings_kb()
         )
         return
-
     if data == "os:site_balance" and is_own:
         await q.edit_message_text("⏳ جارٍ الاستعلام عن رصيدك في المواقع...")
         lines = ["💵 *رصيد حساباتك في مواقع الرشق:*\n"]
@@ -8056,7 +7442,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=back_kb("owner_settings")
         )
         return
-
     if data == "os:manage_star_packages" and is_own:
         with db_conn() as c:
             packages = c.execute("SELECT * FROM exchange_star_packages ORDER BY stars").fetchall()
@@ -8080,13 +7465,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN,
                                    reply_markup=InlineKeyboardMarkup(rows))
         return
-
     if data == "os_add_pkg" and is_own:
         context.user_data["state"] = "os_await_pkg_stars"
         await q.edit_message_text("⭐ *إضافة باقة جديدة*\n\nأرسل عدد النجوم (مثال: 15):",
                                    parse_mode=ParseMode.MARKDOWN)
         return
-
     if data.startswith("os_tog_pkg:") and is_own:
         parts = data.split(":")
         pkg_id = int(parts[1])
@@ -8115,14 +7498,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN,
                                    reply_markup=InlineKeyboardMarkup(rows))
         return
-
     if data.startswith("os_del_pkg:") and is_own:
         pkg_id = int(data.split(":")[1])
         with db_conn() as c:
             c.execute("DELETE FROM exchange_star_packages WHERE id=?", (pkg_id,))
         await q.answer("🗑 تم الحذف")
         return
-
     if data.startswith("exchange:custom:"):
         parts = data.split(":")
         prize_id = int(parts[2])
@@ -8138,7 +7519,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db_user = get_user(user.id)
         pts = db_user["points"] if db_user else 0
         qty_txt = f" × {prize['quantity']}" if prize["quantity"] and prize["quantity"] > 1 else ""
-
         if not confirmed:
             can_afford = pts >= cost
             confirm_kb = [
@@ -8158,7 +7538,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup(confirm_kb)
             )
             return
-
         if pts < cost:
             await q.edit_message_text("❌ رصيدك غير كافٍ!", reply_markup=back_kb("exchange_points"))
             return
@@ -8197,7 +7576,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📌 {code}"
         )
         return
-
     if data.startswith("pe_complete:") and is_own:
         pe_id = int(data.split(":")[1])
         with db_conn() as c:
@@ -8228,7 +7606,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
         return
-
     if data.startswith("pe_ack:") and is_own:
         pe_id = int(data.split(":")[1])
         with db_conn() as c:
@@ -8250,7 +7627,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _c_ack.execute("UPDATE prize_exchanges SET owner_seen=TRUE WHERE id=%s", (pe_id,))
         await q.answer("✅ تم إعلام الطالب بالانتظار.", show_alert=True)
         return
-
     if data.startswith("pe_seen:") and is_own:
         pe_id = int(data.split(":")[1])
         with db_conn() as c:
@@ -8261,7 +7637,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
         return
-
     if (data == "os:list_gmail" or data.startswith("os:list_gmail:")) and is_own:
         _gmail_page = 0
         if data.startswith("os:list_gmail:"):
@@ -8289,7 +7664,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"{status_icon} #{s['id']} — {s['gmail_email']}",
                 callback_data=f"gmail_detail:{s['id']}"
             )])
-        # أزرار التنقل
         _nav = []
         if _gmail_page > 0:
             _nav.append(InlineKeyboardButton("◀️ السابق", callback_data=f"os:list_gmail:{_gmail_page - 1}"))
@@ -8306,7 +7680,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(rows)
         )
         return
-
     if data.startswith("gmail_detail:") and is_own:
         context.user_data.pop("gmail_verification_note_edit_sub_id", None)
         sub_id = int(data.split(":")[1])
@@ -8332,7 +7705,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         detail_rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="os:list_gmail")])
         await q.edit_message_text(text_html, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(detail_rows))
         return
-
     if data.startswith("gmail_edit_verification_note:") and is_own:
         sub_id = int(data.split(":")[1])
         with db_conn() as c:
@@ -8358,7 +7730,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]]),
         )
         return
-
     if data == "os:edit_gmail_reward" and is_own:
         cur = get_setting("gmail_points_reward") or "10000"
         context.user_data["state"] = "os_await_gmail_reward"
@@ -8366,7 +7737,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"⚙️ نقاط طلب الجيميل الحالية: {cur}\n\nأرسل القيمة الجديدة:"
         )
         return
-
     if data == "os:edit_gmail_msg" and is_own:
         cur = get_setting("gmail_intro_message") or ""
         context.user_data["state"] = "os_await_gmail_msg"
@@ -8374,7 +7744,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✏️ نص رسالة الجيميل الحالية:\n{cur}\n\nأرسل النص الجديد:"
         )
         return
-
     if data == "os:edit_gmail_btn_label" and is_own:
         cur = get_setting("gmail_button_label") or "📧 احصل على نقاط مقابل إيميل جيميل"
         context.user_data["state"] = "os_await_gmail_btn_label"
@@ -8382,7 +7751,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🏷 اسم زر الإيميل الحالي:\n{cur}\n\nأرسل الاسم الجديد للزر:"
         )
         return
-
     if data == "os:edit_gmail_email_prompt" and is_own:
         cur = get_setting("gmail_email_prompt") or "📧 *أرسل الإيميل*"
         context.user_data["state"] = "os_await_gmail_email_prompt"
@@ -8390,7 +7758,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📨 رسالة طلب الإيميل الحالية:\n{cur}\n\nأرسل الرسالة الجديدة:"
         )
         return
-
     if data == "os:edit_gmail_pass_prompt" and is_own:
         cur = get_setting("gmail_password_prompt") or "🔐 *أرسل الباسورد*"
         context.user_data["state"] = "os_await_gmail_pass_prompt"
@@ -8398,7 +7765,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔑 رسالة طلب الباسورد الحالية:\n{cur}\n\nأرسل الرسالة الجديدة:"
         )
         return
-
     if data == "os:edit_gmail_verification_note_prompt" and is_own:
         cur = get_setting("gmail_verification_note_prompt") or (
             "💬 <b>اكتب رسالتك للمالك</b>\n\n"
@@ -8410,8 +7776,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML,
         )
         return
-
-    # ── فيديو رفض: باسورد خطأ ──
     if data == "os:edit_reject_pass_video" and is_own:
         cur_vid = get_setting("gmail_reject_wrong_pass_video") or "غير محدد"
         has_vid = "✅ محدد" if (cur_vid and cur_vid != "غير محدد") else "❌ لم يُحدد بعد"
@@ -8421,8 +7785,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML
         )
         return
-
-    # ── نص رفض: باسورد خطأ ──
     if data == "os:edit_reject_pass_caption" and is_own:
         cur = get_setting("gmail_reject_wrong_pass_caption") or ""
         context.user_data["state"] = "os_await_reject_pass_caption"
@@ -8431,8 +7793,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML
         )
         return
-
-    # ── فيديو رفض: يحتاج تحقق ──
     if data == "os:edit_reject_verify_video" and is_own:
         cur_vid = get_setting("gmail_reject_need_verify_video") or "غير محدد"
         has_vid = "✅ محدد" if (cur_vid and cur_vid != "غير محدد") else "❌ لم يُحدد بعد"
@@ -8442,8 +7802,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML
         )
         return
-
-    # ── نص رفض: يحتاج تحقق ──
     if data == "os:edit_reject_verify_caption" and is_own:
         cur = get_setting("gmail_reject_need_verify_caption") or ""
         context.user_data["state"] = "os_await_reject_verify_caption"
@@ -8452,8 +7810,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML
         )
         return
-
-    # ── رسالة رفض: إيميل خطأ ──
     if data == "os:edit_reject_email_msg" and is_own:
         cur = get_setting("gmail_reject_wrong_email_msg") or ""
         context.user_data["state"] = "os_await_reject_email_msg"
@@ -8462,7 +7818,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML
         )
         return
-
     if data.startswith("gmail_approve:") and is_own:
         sub_id = int(data.split(":")[1])
         with db_conn() as c:
@@ -8496,7 +7851,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
         return
-
     if data.startswith("gmail_undo_approve:") and is_own:
         sub_id = int(data.split(":")[1])
         with db_conn() as c:
@@ -8531,7 +7885,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
         return
-
     if data.startswith("gmail_reject:") and is_own:
         sub_id = int(data.split(":")[1])
         with db_conn() as c:
@@ -8554,7 +7907,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
         return
-
     if data.startswith("gmail_reject_reason:") and is_own:
         parts = data.split(":")
         reason = parts[1]   # wrong_email / wrong_pass / need_verify
@@ -8581,7 +7933,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         }
         reason_label = reason_labels.get(reason, reason)
         user_link = f"tg://user?id={sub['user_id']}"
-        # ── إخطار العضو حسب السبب ──
         try:
             if reason == "wrong_email":
                 msg_text = get_setting("gmail_reject_wrong_email_msg") or "❌ تم رفض طلبك بسبب أن الإيميل خاطئ."
@@ -8651,7 +8002,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
         return
-
     if data.startswith("gmail_undo_reject:") and is_own:
         sub_id = int(data.split(":")[1])
         with db_conn() as c:
@@ -8689,14 +8039,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
         return
-
-    # ── كل الإيميلات للمالك مع فلتر ──
     if (data == "os:all_gmail_history" or data.startswith("os:all_gmail_history:")) and is_own:
-        # os:all_gmail_history              → شاشة الفلتر
-        # os:all_gmail_history:STATUS:PAGE  → النتائج
         _parts = data.split(":")
         if len(_parts) < 4:
-            # شاشة اختيار الفلتر — نعرض عدد كل فئة
             with db_conn() as c:
                 _counts = {r["status"]: r["n"] for r in c.execute(
                     "SELECT status, COUNT(*) AS n FROM gmail_submissions GROUP BY status"
@@ -8715,7 +8060,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ])
             )
             return
-        # عرض النتائج بعد اختيار الفلتر
         _status = _parts[2]
         try: _page = int(_parts[3])
         except Exception: _page = 0
@@ -8760,7 +8104,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(_rows)
         )
         return
-
     if data == "os:manage_prizes" and is_own:
         with db_conn() as c:
             prizes = c.execute("SELECT * FROM custom_prizes ORDER BY id").fetchall()
@@ -8779,7 +8122,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         txt = "🎀 *الجوائز المخصصة:*\n\nاضغط على الجائزة لتفعيل/تعطيل · 🗑 للحذف" if prizes else "🎀 لا توجد جوائز مخصصة بعد."
         await q.edit_message_text(txt, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(rows))
         return
-
     if data == "os:add_prize" and is_own:
         context.user_data["state"] = "os_await_prize_name"
         await q.edit_message_text(
@@ -8789,7 +8131,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-
     if data == "os:skip_prize_qty" and is_own:
         context.user_data["prize_qty"] = 1
         context.user_data["state"] = "os_await_prize_cost"
@@ -8801,7 +8142,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-
     if data.startswith("os:toggle_prize:") and is_own:
         pid = int(data.split(":")[2])
         with db_conn() as c:
@@ -8823,7 +8163,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
         await q.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(rows))
         return
-
     if data.startswith("os:del_prize:") and is_own:
         pid = int(data.split(":")[2])
         with db_conn() as c:
@@ -8846,12 +8185,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         txt = "🎀 *الجوائز المخصصة:*\n\nاضغط على الجائزة لتفعيل/تعطيل · 🗑 للحذف" if prizes else "🎀 لا توجد جوائز مخصصة بعد."
         await q.edit_message_text(txt, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(rows))
         return
-
-    # ─── زر المشتري: طلب كود الدخول ───
     if data.startswith("buyer:request_code:"):
         number_for_code = data[len("buyer:request_code:"):]
         import datetime as _dt_rc
-
         _purchase_time = None
         _session_str_rc = None
         try:
@@ -8874,7 +8210,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     _purchase_time = None
         except Exception:
             pass
-
         if not _session_str_rc:
             _demo_entry = _demo_purchases.get(user.id)
             if _demo_entry and _demo_entry.get("phone") == number_for_code:
@@ -8883,7 +8218,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await q.answer("❌ لا يوجد رقم مشترى باسمك بهذا الرقم.", show_alert=True)
                 return
-
         async def _send_code_msg(code_val: str):
             """يرسل كود الدخول فقط — رمز 2FA يُطلب بزر منفصل."""
             await q.answer("✅ تم إرسال الكود أدناه", show_alert=False)
@@ -8897,7 +8231,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ),
                 parse_mode=ParseMode.MARKDOWN,
             )
-
         entry = _buyer_received_codes.get(user.id)
         if entry and entry.get("phone") == number_for_code:
             code_time = entry.get("time", 0)
@@ -8905,7 +8238,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if code_time >= purchase_ts:
                 await _send_code_msg(entry["code"])
                 return
-
         fetched_code = None
         try:
             if TELEGRAM_API_ID and TELEGRAM_API_HASH:
@@ -8930,7 +8262,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         pass
         except Exception as _fe:
             logger.warning(f"⚠️ تعذّر جلب كود الدخول للرقم {number_for_code}: {_fe}")
-
         if fetched_code:
             _buyer_received_codes[user.id] = {
                 "code": fetched_code, "time": time.time(), "phone": number_for_code
@@ -8943,7 +8274,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 show_alert=True
             )
         return
-
     if data.startswith("buyer:show_twofa:"):
         twofa_phone = data[len("buyer:show_twofa:"):]
         try:
@@ -8982,11 +8312,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning(f"⚠️ خطأ في جلب رمز التحقق: {_twe}")
             await q.answer("❌ حدث خطأ. حاول مجدداً.", show_alert=True)
         return
-
     if data == "buyer:stay_account":
         await q.answer("✅ البوت سيبقى متصلاً بالحساب.", show_alert=True)
         return
-
     if data.startswith("buyer:leave_account:"):
         leave_phone = data[len("buyer:leave_account:"):]
         with db_conn() as c_lv:
@@ -9037,9 +8365,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await q.edit_message_text(_msg_lv, parse_mode=ParseMode.MARKDOWN)
         return
-
-
-    # ─── زر المشتري: باركود الرقم ───
     if data.startswith("buyer:barcode:"):
         barcode_phone = data[len("buyer:barcode:"):]
         _is_buyer_bc = False
@@ -9087,12 +8412,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning(f"⚠️ خطأ في توليد باركود الرقم {barcode_phone}: {_bc_err}")
             await q.answer("❌ حدث خطأ في توليد الباركود. حاول مجددًا.", show_alert=True)
         return
-
     if data == "noop":
         return
-
-    # ══════════════════════════════════════════════════════════
-    # ══════════════════════════════════════════════════════════
     if data == "os:sold_accounts" and is_own:
         with db_conn() as c:
             active_sold = c.execute(
@@ -9107,7 +8428,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "WHERE ns.assigned_to IS NOT NULL AND ns.deleted_at IS NULL "
                 "ORDER BY ns.assigned_at DESC LIMIT 50"
             ).fetchall()
-
             past_sold = c.execute(
                 "SELECT ns.id, ns.phone_number, ns.ever_sold, "
                 "       pe.order_code, pe.created_at AS sale_date, pe.user_id AS buyer_id, "
@@ -9120,7 +8440,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "WHERE ns.ever_sold IS TRUE AND ns.assigned_to IS NULL AND ns.deleted_at IS NULL "
                 "ORDER BY pe.created_at DESC NULLS LAST LIMIT 30"
             ).fetchall()
-
             dupes_check = c.execute(
                 "SELECT prize_value, COUNT(*) AS cnt "
                 "FROM prize_exchanges "
@@ -9129,14 +8448,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "  AND status IN ('completed','duplicate_compensated') "
                 "GROUP BY prize_value HAVING COUNT(*) > 1"
             ).fetchall()
-
         def _fmt_dt(v):
             if v is None: return "—"
             if hasattr(v, "strftime"): return v.strftime("%Y-%m-%d %H:%M")
             return str(v)[:16]
-
         lines = ["🛒 *الحسابات المبيوعة*\n"]
-
         if active_sold:
             lines.append(f"🟢 *نشطة الآن ({len(active_sold)})*")
             for r in active_sold:
@@ -9149,9 +8465,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
         else:
             lines.append("🟢 *نشطة الآن:* لا يوجد حالياً")
-
         lines.append("")
-
         if past_sold:
             lines.append(f"⬜ *مبيوعة سابقاً — البوت غادرها ({len(past_sold)})*")
             for r in past_sold:
@@ -9164,24 +8478,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
         else:
             lines.append("⬜ *مبيوعة سابقاً:* لا يوجد")
-
         if dupes_check:
             lines.append("")
             lines.append(f"⚠️ *حسابات بيعت أكثر من مرة ({len(dupes_check)}):*")
             for d in dupes_check:
                 lines.append(f"📱 `{d['prize_value']}` — بيعت {d['cnt']} مرة")
-
         text = "\n".join(lines)
         if len(text) > 4000:
             text = text[:3950] + "\n\n_(قُطع لطول القائمة)_"
-
         detail_rows = []
         for r in active_sold:
             detail_rows.append([InlineKeyboardButton(
                 f"📋 {r['phone_number']}",
                 callback_data=f"os:sold_detail:{r['id']}"
             )])
-
         await q.edit_message_text(
             text,
             parse_mode=ParseMode.MARKDOWN,
@@ -9195,9 +8505,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         )
         return
-
-    # ══════════════════════════════════════════════════════════
-    # ══════════════════════════════════════════════════════════
     if data.startswith("os:sold_detail:") and is_own:
         stock_id = int(data.split(":")[-1])
         with db_conn() as _c:
@@ -9245,7 +8552,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(info, parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(action_btns))
         return
-
     if data.startswith("os:sold_code:") and is_own:
         stock_id = int(data.split(":")[-1])
         rec = get_stock_number(stock_id)
@@ -9294,7 +8600,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try: await _cli.disconnect()
             except Exception: pass
         return
-
     if data.startswith("os:sold_kick:") and is_own:
         stock_id = int(data.split(":")[-1])
         rec = get_stock_number(stock_id)
@@ -9329,7 +8634,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try: await _cli.disconnect()
             except Exception: pass
         return
-
     if data.startswith("os:sold_2fa:") and is_own:
         stock_id = int(data.split(":")[-1])
         rec = get_stock_number(stock_id)
@@ -9357,7 +8661,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     [InlineKeyboardButton("🔙 رجوع للتفاصيل", callback_data=f"os:sold_detail:{stock_id}")],
                 ]))
         return
-
     if data.startswith("os:sold_2fa_reset:") and is_own:
         stock_id = int(data.split(":")[-1])
         rec = get_stock_number(stock_id)
@@ -9402,7 +8705,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await q.edit_message_text(f"❌ فشل تفعيل 2FA: {_msg}",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data=f"os:sold_detail:{stock_id}")]]))
         return
-
     if data.startswith("os:sold_logout:") and is_own:
         stock_id = int(data.split(":")[-1])
         rec = get_stock_number(stock_id)
@@ -9421,7 +8723,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("🔙 إلغاء", callback_data=f"os:sold_detail:{stock_id}")],
             ]))
         return
-
     if data.startswith("os:sold_logout_confirm:") and is_own:
         stock_id = int(data.split(":")[-1])
         rec = get_stock_number(stock_id)
@@ -9463,13 +8764,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع للمبيوعات", callback_data="os:sold_accounts")]]))
         return
-
     if data == "os:failed_deliveries" and is_own:
         def _fmt_dt(v):
             if v is None: return "—"
             if hasattr(v, "strftime"): return v.strftime("%Y-%m-%d %H:%M")
             return str(v)[:16]
-
         with db_conn() as c:
             old_pending = c.execute(
                 "SELECT pe.id, pe.user_id, pe.prize_type, pe.prize_value, pe.points_cost, "
@@ -9483,7 +8782,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "  AND pe.created_at < NOW() - INTERVAL '2 hours' "
                 "ORDER BY pe.created_at ASC LIMIT 30"
             ).fetchall()
-
             already_compensated = c.execute(
                 "SELECT pe.id, pe.user_id, pe.prize_value, pe.points_cost, "
                 "       pe.compensated_at, pe.compensated_pts, pe.compensated_reason, u.full_name "
@@ -9493,12 +8791,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "  AND pe.prize_type IN ('telegram_number','telegram_number_code') "
                 "ORDER BY pe.compensated_at DESC LIMIT 10"
             ).fetchall()
-
         needs_comp  = [r for r in old_pending if not r["compensated_at"]]
         done_comp   = [r for r in old_pending if r["compensated_at"]]
-
         lines = ["⚠️ <b>تعويض المظلومين</b>\n"]
-
         if needs_comp:
             lines.append(f"🔴 <b>ينتظرون التعويض ({len(needs_comp)}):</b>")
             for r in needs_comp:
@@ -9513,9 +8808,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
         else:
             lines.append("🔴 <b>ينتظرون التعويض:</b> لا يوجد ✅")
-
         lines.append("")
-
         if done_comp:
             lines.append(f"✅ <b>عُوِّضوا مسبقاً من هذه القائمة ({len(done_comp)}):</b>")
             for r in done_comp:
@@ -9526,9 +8819,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"   👤 <a href='tg://user?id={uid}'>{name}</a> — "
                     f"{r['compensated_pts'] or 0:,} نقطة — {comp_ts}"
                 )
-
         lines.append("")
-
         if already_compensated:
             lines.append(f"📋 <b>آخر التعويضات المنفّذة ({len(already_compensated)}):</b>")
             for r in already_compensated:
@@ -9546,11 +8837,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"   ✅ <a href='tg://user?id={uid}'>{name}</a> — "
                     f"{r['compensated_pts'] or 0:,} نقطة — {reason_label} — {comp_ts}"
                 )
-
         text = "\n".join(lines)
         if len(text) > 4000:
             text = text[:3950] + "\n\n<i>(قُطع لطول القائمة)</i>"
-
         action_rows = []
         if needs_comp:
             total_pts = sum(r["points_cost"] or 0 for r in needs_comp)
@@ -9569,14 +8858,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )])
         action_rows.append([InlineKeyboardButton("🔄 تحديث", callback_data="os:failed_deliveries")])
         action_rows.append([InlineKeyboardButton("🔙 رجوع للمخزون", callback_data="os:manage_numbers")])
-
         await q.edit_message_text(
             text,
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(action_rows)
         )
         return
-
     if data == "admin:auto_compensate_all" and is_own:
         with db_conn() as c:
             pending_cases = c.execute(
@@ -9588,15 +8875,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "  AND compensated_at IS NULL "
                 "  AND created_at < NOW() - INTERVAL '2 hours'"
             ).fetchall()
-
         if not pending_cases:
             await q.answer("✅ لا يوجد أحد يحتاج تعويضاً الآن.", show_alert=True)
             return
-
         compensated = 0
         skipped     = 0
         total_pts   = 0
-
         for pe in pending_cases:
             pe_id = pe["id"]
             uid   = pe["user_id"]
@@ -9629,7 +8913,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             except Exception:
                 pass
-
         await q.edit_message_text(
             f"✅ <b>تم تعويض المظلومين</b>\n\n"
             f"👤 عدد المعوَّضين: <b>{compensated}</b>\n"
@@ -9642,7 +8925,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
         return
-
     if data.startswith("admin:refund_pe:") and is_own:
         pe_id = int(data.split(":")[-1])
         with db_conn() as c:
@@ -9654,7 +8936,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not pe:
             await q.answer("⚠️ العملية غير موجودة.", show_alert=True)
             return
-        # ─── حماية من التعويض المزدوج ───
         if pe["compensated_at"]:
             _comp_ts = pe["compensated_at"]
             _comp_ts_str = _comp_ts.strftime("%Y-%m-%d %H:%M") if hasattr(_comp_ts, "strftime") else str(_comp_ts)[:16]
@@ -9695,8 +8976,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         await q.answer(f"✅ تمت إعادة {pts:,} نقطة للمستخدم {uid}.", show_alert=True)
         return
-
-    # ── Fallback: إجابة صامتة لأي callback لم يُعالَج (يمنع "جاري التحميل" المستمر) ──
     try:
         await q.answer()
     except Exception:
