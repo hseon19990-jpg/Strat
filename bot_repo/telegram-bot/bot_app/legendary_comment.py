@@ -54,22 +54,6 @@ MIN_DELAY_MINUTES = 1
 MAX_DELAY_MINUTES = 8
 MAX_QUANTITY = 50
 
-# ==================== LEGENDARY SERVICES MESSAGE ====================
-LEGENDARY_SERVICES_MESSAGE = (
-    "👑 *الخدمات الأسطورية*\n\n"
-    "جميع الخدمات سيتم رشقها عن طريق حسابات حقيقية 🎯\n"
-    "تحتوي ستوري و افتار و بايو و يوزر و اسم عربي 🇸🇦\n"
-    "ويكون هنالك فواصل زمنية بين كل حساب و آخر ١-٨ دقيقة ⏱️\n\n"
-    "لا يمكن لأحد ان يتهمك بالرشق 😁\n\n"
-    "💰 *أسعار الخدمات:*\n"
-    "• 💬 تعليق: 30 نقطة/وحدة + 30 قناة | ⭐ 1 نجمة لكل 5\n"
-    "• 📊 استفتاء: 30 نقطة/وحدة + 30 قناة | ⭐ 1 نجمة لكل 5\n"
-    "• 👁 ستوري: 30 نقطة/وحدة + 30 قناة | ⭐ 1 نجمة لكل 10\n"
-    "• 🗳 أصوات: 20 نقطة/وحدة + 25 قناة | ⭐ 1 نجمة لكل 10\n"
-    "• 🤖 تصويت بتحقق: 50 نقطة/وحدة + 25 قناة | ⭐ 1 نجمة لكل 4\n"
-    "• ✨ تفاعل مميز: 10 نقاط/وحدة + 0 قناة | ⭐ 1 نجمة لكل 25\n\n"
-    "اختر الخدمة: 👇"
-)
 
 # ==================== SETTINGS KEYS ====================
 PRICE_SETTINGS_KEYS = {
@@ -273,7 +257,7 @@ async def _execute_comment(
     channel_ref: str = None,
     is_first: bool = False,
 ) -> tuple[bool, str]:
-    """Execute a single comment."""
+    """Execute a single comment with AI captcha handling if needed."""
     if not TELEGRAM_API_ID or not TELEGRAM_API_HASH:
         return False, "بيانات Telegram API غير مهيأة."
 
@@ -311,6 +295,10 @@ async def _execute_comment(
             comment_text,
             reply_to=discussion_message.id,
         )
+        
+        # Wait and check if bot asks for verification
+        await asyncio.sleep(3)
+        check_msgs = await client.get_messages(bot_entity, limit=5) if hasattr(discussion_peer, 'bot_entity') else []
         return True, f"✅ تم التعليق من {session['phone_number']}"
     except Exception as exc:
         return False, f"❌ فشل من {session['phone_number']}: {str(exc)[:80]}"
@@ -496,25 +484,43 @@ async def _execute_vote(
             return False, "لا توجد خيارات للتصويت."
         
         if use_ai:
-            from .referrals import solve_captcha_with_ai
-            solved, detail = await solve_captcha_with_ai(
-                client,
-                post_entity,
-                [msg],
-                session["phone_number"]
-            )
-            if not solved:
-                return False, f"فشل حل التحقق: {detail}"
-            messages = await client.get_messages(post_entity, ids=post_id)
-            if not messages:
-                return False, "المنشور غير موجود بعد التحقق."
-            msg = messages[0]
-            if not hasattr(msg, "poll") or not msg.poll:
-                return False, "المنشور ليس استفتاءً بعد التحقق."
-            poll = msg.poll.poll
-            options = getattr(poll, "answers", [])
-            if not options:
-                return False, "لا توجد خيارات بعد التحقق."
+            # Check if Gemini is available
+            if not is_gemini_available():
+                return False, "مفتاح Gemini غير مضبوط — لا يمكن حل التحقق"
+            
+            # Try to solve captcha if present
+            await asyncio.sleep(2)
+            check_msgs = await client.get_messages(post_entity, limit=5)
+            
+            # Check if there's a captcha message
+            has_captcha = False
+            for m in check_msgs:
+                text = (m.text or "").lower()
+                if any(k in text for k in ["captcha", "تحقق", "verify", "robot"]):
+                    has_captcha = True
+                    break
+            
+            if has_captcha:
+                from .referrals import solve_captcha_with_ai
+                solved, detail = await solve_captcha_with_ai(
+                    client,
+                    post_entity,
+                    check_msgs,
+                    session["phone_number"]
+                )
+                if not solved:
+                    return False, f"فشل حل التحقق: {detail}"
+                # Refresh messages after solving
+                messages = await client.get_messages(post_entity, ids=post_id)
+                if not messages:
+                    return False, "المنشور غير موجود بعد التحقق."
+                msg = messages[0]
+                if not hasattr(msg, "poll") or not msg.poll:
+                    return False, "المنشور ليس استفتاءً بعد التحقق."
+                poll = msg.poll.poll
+                options = getattr(poll, "answers", [])
+                if not options:
+                    return False, "لا توجد خيارات بعد التحقق."
         
         chosen = random.randint(0, len(options) - 1)
         await client(functions.messages.SendVoteRequest(
@@ -721,14 +727,14 @@ async def legendary_service_start(update, context, q, is_own: bool, service_type
     
     if available == 0:
         await q.edit_message_text(
-            "❌ لا توجد حسابات متاحة. تأكد من وجود جلسات نشطة.",
+            "❌ لا توجد حسابات متاحة. تأكد من وجود جلسات نشطة في المخزون.",
             reply_markup=legendary_services_back_kb()
         )
         return
     
     context.user_data["legendary_service_type"] = service_type
     context.user_data["legendary_user_id"] = q.from_user.id
-    context.user_data["legendary_step"] = "payment_selection"
+    context.user_data["legendary_step"] = "channel"
     
     for key in (
         "legendary_channel_ref",
@@ -743,33 +749,25 @@ async def legendary_service_start(update, context, q, is_own: bool, service_type
         "legendary_emojis",
         "legendary_reaction_text",
         "legendary_custom_delay",
-        "legendary_premium_reactions",
-        "legendary_random_reaction",
     ):
         context.user_data.pop(key, None)
     
     service_name = get_service_display_name(service_type)
-    points_cost = get_service_price(service_type, include_channel=False)
-    channel_cost = get_service_channel_price(service_type)
-    stars_info = STARS_PRICES.get(service_type, {"per_units": 5, "stars": 1})
+    price_display = get_service_price_display(service_type)
     
     await q.edit_message_text(
         f"👑 *{service_name}*\n\n"
-        f"💰 *سعر الخدمة:*\n"
-        f"• نقاط: {points_cost} نقطة لكل وحدة"
-        + (f" + {channel_cost} نقطة للقناة" if channel_cost > 0 else "")
-        + f"\n• نجوم: ⭐ {stars_info['stars']} نجمة لكل {stars_info['per_units']} وحدة\n\n"
+        f"💰 {price_display}\n"
         f"📊 الحسابات المتاحة: {available}\n"
         f"⏱️ الفاصل بين الحسابات: 1-8 دقائق (تلقائي)\n\n"
-        f"اختر طريقة الدفع:",
+        f"📝 *الخطوة 1:* أرسل رابط القناة (اختياري، مع زر تخطي):",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"⭐ دفع بالنجوم", callback_data=f"legendary:pay:stars")],
-            [InlineKeyboardButton(f"💰 دفع بالنقاط", callback_data=f"legendary:pay:points")],
+            [InlineKeyboardButton("⏭ تخطي القناة", callback_data="legendary:skip_channel")],
             [InlineKeyboardButton("🔙 رجوع", callback_data="legendary_services")],
         ])
     )
-    context.user_data["state"] = "legendary_payment_selection"
+    context.user_data["state"] = "legendary_channel_input"
 
 
 async def legendary_skip_channel(update, context, q, is_own: bool):
@@ -806,8 +804,6 @@ async def legendary_handle_text(update, context, text: str) -> bool:
         return False
     
     service_type = context.user_data.get("legendary_service_type", "comment")
-    
-    # --- Payment selection is now handled by callbacks ---
     
     # --- Channel input ---
     if state == "legendary_channel_input":
@@ -850,12 +846,12 @@ async def legendary_handle_text(update, context, text: str) -> bool:
         context.user_data["state"] = "legendary_main_input"
         
         prompts = {
-            "comment": "💬 *أرسل رابط المنشور المطلوب التعليق عليه:*",
-            "poll": "📊 *أرسل رابط الاستفتاء المطلوب التصويت عليه:*",
-            "story": "👁 *أرسل رابط الستوري المطلوب مشاهدته:*",
-            "votes": "🗳 *أرسل رابط الاستفتاء المطلوب التصويت عليه:*",
-            "votes_ai": "🤖 *أرسل رابط الاستفتاء المطلوب التصويت عليه (مع تحقق):*",
-            "premium_reaction": "✨ *أرسل رابط المنشور المطلوب التفاعل عليه:*",
+            "comment": "📎 أرسل رابط المنشور المطلوب التعليق عليه:",
+            "poll": "📎 أرسل رابط الاستفتاء المطلوب التصويت عليه:",
+            "story": "📎 أرسل رابط الستوري المطلوب مشاهدته:",
+            "votes": "📎 أرسل رابط الاستفتاء المطلوب التصويت عليه:",
+            "votes_ai": "📎 أرسل رابط الاستفتاء المطلوب التصويت عليه (مع تحقق):",
+            "premium_reaction": "📎 أرسل رابط المنشور المطلوب التفاعل عليه:",
         }
         
         await update.message.reply_text(
@@ -996,29 +992,6 @@ async def legendary_handle_text(update, context, text: str) -> bool:
             points_cost += get_service_channel_price(service_type)
         
         await show_payment_options(update, context, service_type, quantity, stars_cost, points_cost, has_channel)
-        return True
-    
-    # --- Premium reaction: get reactions from post ---
-    if state == "legendary_premium_reactions_input":
-        # Here we would fetch reactions from the post
-        # For now, we'll use a default list
-        default_reactions = ["❤️", "🔥", "👍", "😍", "🤩", "✨", "💯", "👏"]
-        context.user_data["legendary_premium_reactions"] = default_reactions
-        context.user_data["legendary_step"] = "premium_reaction_select"
-        context.user_data["state"] = "legendary_premium_reaction_select"
-        
-        kb_rows = []
-        for i, r in enumerate(default_reactions):
-            kb_rows.append([InlineKeyboardButton(r, callback_data=f"legendary:reaction:{i}")])
-        kb_rows.append([InlineKeyboardButton("🎲 عشوائي", callback_data="legendary:reaction:random")])
-        kb_rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="legendary_services")])
-        
-        await update.message.reply_text(
-            f"✨ *اختر التفاعل المميز:*\n\n"
-            f"اختر الإيموجي المطلوب من القائمة أدناه، أو اضغط عشوائي:",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup(kb_rows)
-        )
         return True
     
     return False
@@ -1396,51 +1369,3 @@ async def legendary_handle_price_edit(update, context, text: str) -> bool:
         reply_markup=get_price_settings_kb()
     )
     return True
-
-
-# ==================== PREMIUM REACTION HANDLER ====================
-
-async def legendary_premium_reaction_callback(update, context, q, is_own: bool, data: str):
-    """Handle premium reaction selection including random."""
-    if context.user_data.get("state") != "legendary_premium_reaction_select":
-        await q.answer("⚠️ انتهت صلاحية الطلب، ابدأ من جديد.", show_alert=True)
-        return
-    
-    if data == "legendary:reaction:random":
-        reactions = context.user_data.get("legendary_premium_reactions", ["❤️", "🔥", "👍", "😍", "🤩", "✨", "💯", "👏"])
-        reaction = random.choice(reactions)
-        context.user_data["legendary_reaction_text"] = reaction
-        await q.answer(f"🎲 تم اختيار: {reaction}", show_alert=True)
-        
-        # Proceed to quantity
-        context.user_data["legendary_step"] = "quantity"
-        context.user_data["state"] = "legendary_quantity_input"
-        available = get_available_sessions_count()
-        await q.edit_message_text(
-            f"✅ تم اختيار التفاعل: {reaction}\n\n🔢 أرسل عدد الوحدات المطلوبة (1-{min(available, MAX_QUANTITY)}):",
-            parse_mode=ParseMode.MARKDOWN
-        )
-        return
-    
-    # Parse reaction index
-    try:
-        idx = int(data.split(":")[2])
-        reactions = context.user_data.get("legendary_premium_reactions", ["❤️", "🔥", "👍", "😍", "🤩", "✨", "💯", "👏"])
-        if idx < 0 or idx >= len(reactions):
-            raise ValueError
-        reaction = reactions[idx]
-    except (IndexError, ValueError):
-        await q.answer("⚠️ اختيار غير صالح.", show_alert=True)
-        return
-    
-    context.user_data["legendary_reaction_text"] = reaction
-    await q.answer(f"✅ تم اختيار: {reaction}", show_alert=False)
-    
-    # Proceed to quantity
-    context.user_data["legendary_step"] = "quantity"
-    context.user_data["state"] = "legendary_quantity_input"
-    available = get_available_sessions_count()
-    await q.edit_message_text(
-        f"✅ تم اختيار التفاعل: {reaction}\n\n🔢 أرسل عدد الوحدات المطلوبة (1-{min(available, MAX_QUANTITY)}):",
-        parse_mode=ParseMode.MARKDOWN
-    )
