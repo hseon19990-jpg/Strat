@@ -2,13 +2,11 @@
 
 Services included:
 1. Comment - Multi-comment with channel option
-2. Poll - Vote on polls with AI option
+2. Poll - Vote on polls
 3. Story Views + Reactions - View stories and react with emojis
 4. Votes - Regular voting
 5. Votes with AI - Voting with captcha solving
 6. Premium Reaction - Special reactions on posts
-7. Forced Referral - Bot referral without AI
-8. Forced Referral with AI - Bot referral with captcha solving
 
 All services support:
 - Payment by points or stars
@@ -38,8 +36,6 @@ PRICES = {
     "votes": {"per_unit": 20, "channel": 25},
     "votes_ai": {"per_unit": 50, "channel": 25},
     "premium_reaction": {"per_unit": 10, "channel": 0},
-    "forced_ref": {"per_unit": 30, "channel": 0},
-    "forced_ref_ai": {"per_unit": 50, "channel": 0},
 }
 
 # ==================== PRICES (Stars) ====================
@@ -50,8 +46,6 @@ STARS_PRICES = {
     "votes": {"per_units": 10, "stars": 1},
     "votes_ai": {"per_units": 4, "stars": 1},
     "premium_reaction": {"per_units": 25, "stars": 1},
-    "forced_ref": {"per_units": 5, "stars": 1},
-    "forced_ref_ai": {"per_units": 5, "stars": 1},
 }
 
 # ==================== CONSTANTS ====================
@@ -69,8 +63,6 @@ PRICE_SETTINGS_KEYS = {
     "votes": "legendary_price_votes",
     "votes_ai": "legendary_price_votes_ai",
     "premium_reaction": "legendary_price_premium_reaction",
-    "forced_ref": "legendary_price_forced_ref",
-    "forced_ref_ai": "legendary_price_forced_ref_ai",
 }
 
 
@@ -117,6 +109,9 @@ def _parse_channel_reference(value: str) -> tuple[str | None, str | None]:
 
     parsed = urlparse(value if "://" in value else f"https://{value}")
     if parsed.netloc.lower() not in {"t.me", "telegram.me", "www.t.me", "www.telegram.me"}:
+        # Try to extract username from raw text
+        if value.startswith("@"):
+            return value, value
         return None, None
     path = parsed.path.strip("/")
     if not path:
@@ -550,33 +545,6 @@ async def _execute_premium_reaction(
         await client.disconnect()
 
 
-async def _execute_forced_ref(
-    session: dict,
-    bot_username: str,
-    start_param: str,
-    channel_ref: str = None,
-    is_first: bool = False,
-    use_ai: bool = False,
-) -> tuple[bool, str]:
-    """Execute a single forced referral."""
-    from .referrals import do_referral_for_number
-    
-    ok, reactiv, detail = await do_referral_for_number(
-        session["phone_number"],
-        session["session_string"],
-        bot_username,
-        start_param,
-        mandatory_channels=channel_ref or "",
-        use_ai=use_ai,
-        leave_channels_after=True,
-        stock_id=session.get("id", 0)
-    )
-    if ok:
-        return True, f"✅ إحالة من {session['phone_number']}"
-    else:
-        return False, f"❌ فشل من {session['phone_number']}: {detail[:80]}"
-
-
 # ==================== BATCH EXECUTOR ====================
 
 async def execute_batch(
@@ -591,7 +559,7 @@ async def execute_batch(
     """
     Execute a batch of operations across sessions.
     
-    service_type: 'comment', 'poll', 'story', 'votes', 'votes_ai', 'premium_reaction', 'forced_ref', 'forced_ref_ai'
+    service_type: 'comment', 'poll', 'story', 'votes', 'votes_ai', 'premium_reaction'
     params: dict with service-specific parameters
     Returns: (success_count, success_phones, failed_details)
     """
@@ -614,8 +582,6 @@ async def execute_batch(
         "votes": _execute_vote,
         "votes_ai": _execute_vote,
         "premium_reaction": _execute_premium_reaction,
-        "forced_ref": _execute_forced_ref,
-        "forced_ref_ai": _execute_forced_ref,
     }
     
     executor = executors.get(service_type)
@@ -659,10 +625,6 @@ async def execute_batch(
             exec_params["post_ref"] = params["post_ref"]
             exec_params["post_id"] = params["post_id"]
             exec_params["reaction_text"] = params["reaction_text"]
-        elif service_type in ["forced_ref", "forced_ref_ai"]:
-            exec_params["bot_username"] = params["bot_username"]
-            exec_params["start_param"] = params.get("start_param", "")
-            exec_params["use_ai"] = (service_type == "forced_ref_ai")
         
         try:
             ok, msg = await executor(**exec_params)
@@ -703,8 +665,6 @@ def get_service_display_name(service_type: str) -> str:
         "votes": "رشق أصوات",
         "votes_ai": "رشق تصويت بتحقق",
         "premium_reaction": "رشق تفاعل مميز",
-        "forced_ref": "إحالة بوت إجباري",
-        "forced_ref_ai": "إحالة بوت إجباري بتحقق",
     }
     return names.get(service_type, service_type)
 
@@ -759,8 +719,6 @@ async def legendary_service_start(update, context, q, is_own: bool, service_type
         "legendary_story_link",
         "legendary_emojis",
         "legendary_reaction_text",
-        "legendary_bot_username",
-        "legendary_start_param",
         "legendary_custom_delay",
     ):
         context.user_data.pop(key, None)
@@ -802,8 +760,6 @@ async def legendary_skip_channel(update, context, q, is_own: bool):
         "votes": "📎 أرسل رابط الاستفتاء المطلوب التصويت عليه:",
         "votes_ai": "📎 أرسل رابط الاستفتاء المطلوب التصويت عليه (مع تحقق):",
         "premium_reaction": "📎 أرسل رابط المنشور المطلوب التفاعل عليه:",
-        "forced_ref": "📎 أرسل رابط إحالة البوت (t.me/Bot?start=code):",
-        "forced_ref_ai": "📎 أرسل رابط إحالة البوت (t.me/Bot?start=code):",
     }
     
     await q.edit_message_text(
@@ -822,16 +778,47 @@ async def legendary_handle_text(update, context, text: str) -> bool:
         return False
     
     state = context.user_data.get("state", "")
+    if not state:
+        return False
+    
     service_type = context.user_data.get("legendary_service_type", "comment")
-    step = context.user_data.get("legendary_step", "channel")
     
     # --- Channel input ---
     if state == "legendary_channel_input":
+        # Try to parse the channel link
         ref, display = _parse_channel_reference(text)
+        
+        # If parsing fails, treat it as a skip or invalid
+        if not ref:
+            # Check if it's a valid Telegram channel format
+            if text.startswith("@") or "t.me/" in text or "telegram.me/" in text:
+                # It looks like a channel link but couldn't parse - try to extract username
+                clean = text.strip()
+                if clean.startswith("@"):
+                    ref = clean
+                    display = clean
+                elif "t.me/" in clean:
+                    parts = clean.split("/")
+                    if len(parts) >= 3:
+                        username = parts[-1].split("?")[0]
+                        if username:
+                            ref = f"@{username}"
+                            display = f"@{username}"
+                elif "telegram.me/" in clean:
+                    parts = clean.split("/")
+                    if len(parts) >= 3:
+                        username = parts[-1].split("?")[0]
+                        if username:
+                            ref = f"@{username}"
+                            display = f"@{username}"
+        
+        # Store or skip
         if ref:
             context.user_data["legendary_channel_ref"] = ref
+            channel_status = "حفظ"
         else:
             context.user_data.pop("legendary_channel_ref", None)
+            channel_status = "تخطي"
         
         context.user_data["legendary_step"] = "main_input"
         context.user_data["state"] = "legendary_main_input"
@@ -843,12 +830,10 @@ async def legendary_handle_text(update, context, text: str) -> bool:
             "votes": "📎 أرسل رابط الاستفتاء المطلوب التصويت عليه:",
             "votes_ai": "📎 أرسل رابط الاستفتاء المطلوب التصويت عليه (مع تحقق):",
             "premium_reaction": "📎 أرسل رابط المنشور المطلوب التفاعل عليه:",
-            "forced_ref": "📎 أرسل رابط إحالة البوت (t.me/Bot?start=code):",
-            "forced_ref_ai": "📎 أرسل رابط إحالة البوت (t.me/Bot?start=code):",
         }
         
         await update.message.reply_text(
-            f"✅ تم {'حفظ' if ref else 'تخطي'} القناة.\n\n{prompts.get(service_type, 'أرسل الرابط المطلوب:')}",
+            f"✅ تم {channel_status} القناة.\n\n{prompts.get(service_type, 'أرسل الرابط المطلوب:')}",
             reply_markup=legendary_services_back_kb()
         )
         return True
@@ -891,39 +876,6 @@ async def legendary_handle_text(update, context, text: str) -> bool:
             
             await update.message.reply_text(
                 "✅ تم حفظ رابط الستوري.\n\n😊 أرسل الإيموجيات المطلوبة للتفاعل (كل إيموجي في سطر):\nمثال:\n😁\n😝\n😂"
-            )
-            return True
-        
-        elif service_type in ["forced_ref", "forced_ref_ai"]:
-            bot_user = ""
-            start_param = ""
-            if "t.me/" in text:
-                parts = text.split("?start=")
-                if len(parts) == 2:
-                    bot_user = parts[0].split("/")[-1].lstrip("@")
-                    start_param = parts[1]
-                else:
-                    bot_user = text.split("/")[-1].lstrip("@")
-            else:
-                parts = text.split()
-                if len(parts) >= 1:
-                    bot_user = parts[0].lstrip("@")
-                    if len(parts) >= 2:
-                        start_param = parts[1]
-            
-            if not bot_user:
-                await update.message.reply_text("⚠️ لم أتمكن من قراءة رابط البوت. أعد المحاولة.")
-                return True
-            
-            context.user_data["legendary_bot_username"] = bot_user
-            context.user_data["legendary_start_param"] = start_param
-            context.user_data["legendary_step"] = "quantity"
-            context.user_data["state"] = "legendary_quantity_input"
-            
-            available = get_available_sessions_count()
-            await update.message.reply_text(
-                f"✅ البوت: @{bot_user}\n\n🔢 أرسل عدد الإحالات المطلوبة (1-{min(available, MAX_QUANTITY)}):",
-                parse_mode=ParseMode.MARKDOWN
             )
             return True
     
@@ -1155,9 +1107,6 @@ async def execute_legendary_order(update, context, q, is_own: bool, payment_meth
         params["post_ref"] = context.user_data.get("legendary_post_ref")
         params["post_id"] = context.user_data.get("legendary_post_id")
         params["reaction_text"] = context.user_data.get("legendary_reaction_text", "❤️")
-    elif service_type in ["forced_ref", "forced_ref_ai"]:
-        params["bot_username"] = context.user_data.get("legendary_bot_username")
-        params["start_param"] = context.user_data.get("legendary_start_param", "")
     
     progress_msg = await q.edit_message_text(
         f"⏳ *جاري التنفيذ...*\n\n📊 0/{quantity}",
@@ -1299,8 +1248,6 @@ def get_price_settings_kb() -> InlineKeyboardMarkup:
         ("votes", "🗳 أصوات"),
         ("votes_ai", "🤖 تصويت بتحقق"),
         ("premium_reaction", "✨ تفاعل مميز"),
-        ("forced_ref", "🔑 إحالة بوت"),
-        ("forced_ref_ai", "🤖 إحالة بتحقق"),
     ]:
         current = get_service_price(key, include_channel=False)
         channel = get_service_channel_price(key)
