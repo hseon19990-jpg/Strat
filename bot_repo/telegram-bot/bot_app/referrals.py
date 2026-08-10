@@ -99,6 +99,18 @@ def is_gemini_available() -> bool:
     """يتحقق من وجود مفتاح Gemini في البيئة."""
     return bool(os.environ.get("GEMINI_API_KEY"))
 
+def is_openai_available() -> bool:
+    """يتحقق من وجود مفتاح OpenAI في البيئة."""
+    return bool(os.environ.get("OPENAI_API_KEY"))
+
+def is_ai_available() -> bool:
+    """يتحقق من وجود أي مفتاح AI (Gemini أو OpenAI)."""
+    return is_gemini_available() or is_openai_available()
+
+def is_telegram_api_configured() -> bool:
+    """يتحقق من وجود بيانات Telegram API."""
+    return bool(TELEGRAM_API_ID and TELEGRAM_API_HASH)
+
 # ─── دوال مساعدة للإحالة التلقائية ───
 
 def _parse_channel_tokens(raw: str) -> list:
@@ -112,7 +124,7 @@ def _parse_channel_tokens(raw: str) -> list:
         if not tok:
             continue
         if 't.me/' in tok or 'telegram.me/' in tok:
-            from urllib.parse import urlparse as _up, parse_qs as _pq
+            from urllib.parse import urlparse as _up
             parsed = _up(tok if tok.startswith('http') else 'https://' + tok)
             path = parsed.path.strip('/')
             if path.startswith('+'):
@@ -205,22 +217,21 @@ async def _join_folder_link(client, folder_url: str) -> str:
         logger.warning(f"⚠️ تعذّر الانضمام للمجلد: {e}")
         return f"فشل المجلد: {str(e)[:60]}"
 
-async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "", max_rounds: int = 4) -> tuple:
+async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "", max_attempts: int = 3) -> tuple:
     """
-    يستخدم Gemini AI لكشف وحل جميع أنواع التحقق الشائعة في بوتات تيليغرام:
-    ① كابتشا صورة   ② أزرار / إيموجي   ③ سؤال نصي / رياضي
-    ④ مشاركة ملف شخصي / Contact   ⑤ Poll / Quiz   ⑥ ردود فعل Reactions
-    ⑦ إيموجي كرسالة   ⑧ إعادة المحاولة تلقائياً عند الإجابة الخاطئة
+    يستخدم Gemini AI أو OpenAI لكشف وحل جميع أنواع التحقق الشائعة في بوتات تيليغرام.
     يُرجع (solved: bool, detail: str).
     """
     GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-    if not GEMINI_API_KEY:
-        return False, "GEMINI_API_KEY غير مضبوط"
+    OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+
+    if not GEMINI_API_KEY and not OPENAI_API_KEY:
+        return False, "لا يوجد مفتاح API للتحقق (Gemini أو OpenAI)"
 
     GEMINI_URL = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
         f"gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-    )
+    ) if GEMINI_API_KEY else None
 
     # ── كلمات دلالية ──────────────────────────────────────────
     SUCCESS_KW = [
@@ -258,39 +269,90 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
 
     # ── دوال مساعدة ───────────────────────────────────────────
     async def _gemini_text(prompt: str) -> str | None:
+        if not GEMINI_URL:
+            return None
         def _do_request():
-            r = requests.post(
-                GEMINI_URL,
-                json={"contents": [{"parts": [{"text": prompt}]}]},
-                timeout=25,
-            )
-            if r.status_code == 200:
-                return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            try:
+                r = requests.post(
+                    GEMINI_URL,
+                    json={"contents": [{"parts": [{"text": prompt}]}]},
+                    timeout=30,
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    if data.get("candidates"):
+                        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            except Exception as _e:
+                logger.warning(f"⚠️ Gemini text error ({phone}): {_e}")
             return None
         try:
             return await asyncio.to_thread(_do_request)
-        except Exception as _e:
-            logger.warning(f"⚠️ Gemini text error ({phone}): {_e}")
-        return None
+        except Exception:
+            return None
 
     async def _gemini_image(prompt: str, img_bytes: bytes) -> str | None:
+        if not GEMINI_URL:
+            return None
         def _do_request():
-            img_b64 = base64.b64encode(img_bytes).decode()
-            r = requests.post(
-                GEMINI_URL,
-                json={"contents": [{"parts": [
-                    {"text": prompt},
-                    {"inlineData": {"mimeType": "image/jpeg", "data": img_b64}},
-                ]}]},
-                timeout=30,
-            )
-            if r.status_code == 200:
-                return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            try:
+                img_b64 = base64.b64encode(img_bytes).decode()
+                r = requests.post(
+                    GEMINI_URL,
+                    json={"contents": [{"parts": [
+                        {"text": prompt},
+                        {"inlineData": {"mimeType": "image/jpeg", "data": img_b64}},
+                    ]}]},
+                    timeout=35,
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    if data.get("candidates"):
+                        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            except Exception as _e:
+                logger.warning(f"⚠️ Gemini image error ({phone}): {_e}")
             return None
         try:
             return await asyncio.to_thread(_do_request)
-        except Exception as _e:
-            logger.warning(f"⚠️ Gemini image error ({phone}): {_e}")
+        except Exception:
+            return None
+
+    async def _openai_text(prompt: str) -> str | None:
+        if not OPENAI_API_KEY:
+            return None
+        def _do_request():
+            try:
+                r = requests.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+                    json={"model": "gpt-4o-mini", "messages": [{"role": "user", "content": prompt}], "max_tokens": 50},
+                    timeout=30,
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    if data.get("choices"):
+                        return data["choices"][0]["message"]["content"].strip()
+            except Exception as _e:
+                logger.warning(f"⚠️ OpenAI text error ({phone}): {_e}")
+            return None
+        try:
+            return await asyncio.to_thread(_do_request)
+        except Exception:
+            return None
+
+    async def _solve_text(prompt: str) -> str | None:
+        # Try Gemini first
+        if GEMINI_URL:
+            result = await _gemini_text(prompt)
+            if result:
+                return result
+        # Try OpenAI as fallback
+        if OPENAI_API_KEY:
+            return await _openai_text(prompt)
+        return None
+
+    async def _solve_image(prompt: str, img_bytes: bytes) -> str | None:
+        if GEMINI_URL:
+            return await _gemini_image(prompt, img_bytes)
         return None
 
     def _is_success(text: str) -> bool:
@@ -313,7 +375,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                 result.append(ch)
         return result
 
-    async def _wait_and_check(limit: int = 3) -> tuple:
+    async def _wait_and_check(limit: int = 5) -> tuple:
         """ينتظر رد البوت ويُرجع ('success'|'fail'|'unknown', new_msgs)."""
         await asyncio.sleep(3)
         new_msgs = await client.get_messages(bot_entity, limit=limit)
@@ -329,10 +391,10 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
     processed_ids: set[int] = set()
 
     # ── حلقة المحاولات (تدعم تحقق متعدد المراحل) ─────────────
-    for _round in range(max_rounds):
+    for _round in range(max_attempts):
         if _round > 0:
-            await asyncio.sleep(3)
-            msgs = await client.get_messages(bot_entity, limit=10)
+            await asyncio.sleep(4)
+            msgs = await client.get_messages(bot_entity, limit=15)
 
         for msg in msgs:
             msg_id = getattr(msg, "id", 0)
@@ -365,7 +427,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                         "اقرأ بدقة النص أو الأرقام الظاهرة في الصورة وأجب بها فقط "
                         "بدون أي شرح أو مسافات إضافية."
                     )
-                    answer = await _gemini_image(prompt, img_bytes)
+                    answer = await _solve_image(prompt, img_bytes)
                     if answer:
                         logger.info(f"🤖 AI كابتشا صورة → '{answer}' ({phone})")
                         processed_ids.add(msg_id)
@@ -432,7 +494,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             "الخيارات:\n" + "\n".join(f"{i+1}. {a}" for i, a in enumerate(answers)) + "\n\n"
                             "أي خيار هو الصحيح؟ أجب برقم الخيار فقط (1، 2، 3...)."
                         )
-                        ai_ans = await _gemini_text(prompt)
+                        ai_ans = await _solve_text(prompt)
                         chosen_idx = 0
                         if ai_ans:
                             # حاول استخراج رقم
@@ -556,7 +618,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                                 + "\n".join(f"- {b}" for b in btn_labels)
                                 + "\n\nأي زر يجب الضغط عليه؟ أجب بنص الزر فقط كما هو بالضبط."
                             )
-                        answer = await _gemini_text(prompt)
+                        answer = await _solve_text(prompt)
                         if answer:
                             logger.info(f"🤖 AI اختار زر → '{answer}' ({phone})")
                             chosen = None
@@ -613,7 +675,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                         "أجب بالرقم أو النص أو الإيموجي المطلوب فقط "
                         "بدون أي شرح أو رموز إضافية. إذا كان السؤال رياضياً أجب بالرقم فقط."
                     )
-                    answer = await _gemini_text(prompt)
+                    answer = await _solve_text(prompt)
                     if answer:
                         logger.info(f"🤖 AI سؤال نصي → '{answer}' ({phone})")
                         processed_ids.add(msg_id)
@@ -643,7 +705,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                         "ما هو الإيموجي أو التفاعل المطلوب؟ "
                         "أجب بالإيموجي فقط (مثال: 👍 أو ❤️ أو 🔥)."
                     )
-                    emoji_answer = await _gemini_text(prompt)
+                    emoji_answer = await _solve_text(prompt)
                     if emoji_answer:
                         # خذ أول إيموجي فقط
                         emoji_clean = emoji_answer.strip().split()[0]
@@ -783,6 +845,9 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
         if auto_delete and stock_id:
             _auto_delete_number(stock_id, phone, reason or "حساب محذوف أو مجمّد")
 
+    if not is_telegram_api_configured():
+        return False, False, "TELEGRAM_API_ID/HASH غير مضبوط"
+
     client = TelegramClient(
         StringSession(session_str),
         int(TELEGRAM_API_ID),
@@ -868,8 +933,8 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
         # "بتحقق" (use_ai=True)  → يحاول حل أي تحقق يطلبه البوت بالذكاء الاصطناعي
         # "بدون تحقق" (use_ai=False) → يتجاوز التحقق تماماً ويُسجَّل كنجاح
         if use_ai:
-            if not is_gemini_available():
-                return False, False, "مفتاح Gemini غير مضبوط — لا يمكن حل التحقق"
+            if not is_ai_available():
+                return False, False, "لا يوجد مفتاح AI (Gemini أو OpenAI) — لا يمكن حل التحقق"
 
             _ai_solved = False
             _ai_detail = "لم يتم حل الكابتشا"
@@ -879,7 +944,7 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
             # التحقق، لذلك نعيد الجلب قبل كل محاولة.
             for _ai_attempt in range(3):
                 if _ai_attempt > 0:
-                    await asyncio.sleep(3)
+                    await asyncio.sleep(4)
                 msgs = await asyncio.wait_for(
                     client.get_messages(bot_entity, limit=15), timeout=10
                 )
@@ -888,7 +953,7 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
                     f"(المحاولة {_ai_attempt + 1}/3)"
                 )
                 _ai_solved, _ai_detail = await solve_captcha_with_ai(
-                    client, bot_entity, msgs, phone
+                    client, bot_entity, msgs, phone, max_attempts=3
                 )
                 if _ai_solved:
                     logger.info(
@@ -2322,8 +2387,6 @@ async def _run_referral_for_new_number(phone: str, session_str: str, stock_id: i
     if not tasks:
         return
     # ── تأخير عشوائي عند البداية لتفريق الأرقام المُضافة دفعةً واحدة ──
-    # عند إضافة ١٠ أرقام في آنٍ واحد، كل رقم ينتظر وقتاً مختلفاً (١-٨ دقائق)
-    # فتصبح الأرقام موزّعة على ~٨ دقائق بدلاً من الانطلاق في نفس الثانية
     import random as _rand_rfn
     _jitter = _rand_rfn.uniform(60, 480)
     logger.info(f"🤝 الرقم الجديد {phone}: انتظار {_jitter:.0f}ث قبل بدء الإحالة التلقائية")
