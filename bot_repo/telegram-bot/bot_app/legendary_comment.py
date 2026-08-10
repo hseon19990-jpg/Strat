@@ -1,12 +1,21 @@
-"""Owner-only, multi-account comment service for Legendary Services.
+"""Legendary Services - Complete module for all legendary services.
 
-This flow is designed for the owner:
-* Only the owner can open it.
-* Uses ALL available active sessions for batch commenting.
-* Optional channel link costs 30 points.
-* The bot stays in the channel for 24 hours then leaves automatically.
-* Points are refunded pro-rata for failed comments.
-* Maximum comments = number of available sessions.
+Services included:
+1. Comment - Multi-comment with channel option
+2. Poll - Vote on polls with AI option
+3. Story Views + Reactions - View stories and react with emojis
+4. Votes - Regular voting
+5. Votes with AI - Voting with captcha solving
+6. Premium Reaction - Special reactions on posts
+7. Forced Referral - Bot referral without AI
+8. Forced Referral with AI - Bot referral with captcha solving
+
+All services support:
+- Payment by points or stars
+- Channel join (optional, with skip)
+- Random delay between accounts (1-8 min default, owner can customize)
+- Fallback accounts on failure
+- No duplicate accounts
 """
 
 from . import shared as _shared
@@ -16,13 +25,84 @@ globals().update({key: value for key, value in vars(_shared).items() if not key.
 from urllib.parse import urlparse
 import asyncio
 import time
+import random
+import re
+import json
 
 
-LEGENDARY_COMMENT_COST = 30
-LEGENDARY_CHANNEL_COST = 30
-LEGENDARY_STAY_HOURS = 24  # Stay in channel for 24 hours before leaving
+# ==================== PRICES (Points) ====================
+PRICES = {
+    "comment": {"per_unit": 30, "channel": 30},
+    "poll": {"per_unit": 30, "channel": 30},
+    "story": {"per_unit": 30, "channel": 30},
+    "votes": {"per_unit": 20, "channel": 25},
+    "votes_ai": {"per_unit": 50, "channel": 25},
+    "premium_reaction": {"per_unit": 10, "channel": 0},
+    "forced_ref": {"per_unit": 30, "channel": 0},
+    "forced_ref_ai": {"per_unit": 50, "channel": 0},
+}
+
+# ==================== PRICES (Stars) ====================
+STARS_PRICES = {
+    "comment": {"per_units": 5, "stars": 1},
+    "poll": {"per_units": 5, "stars": 1},
+    "story": {"per_units": 10, "stars": 1},
+    "votes": {"per_units": 10, "stars": 1},
+    "votes_ai": {"per_units": 4, "stars": 1},
+    "premium_reaction": {"per_units": 25, "stars": 1},
+    "forced_ref": {"per_units": 5, "stars": 1},
+    "forced_ref_ai": {"per_units": 5, "stars": 1},
+}
+
+# ==================== CONSTANTS ====================
+LEGENDARY_STAY_HOURS = 24
+MIN_DELAY_MINUTES = 1
+MAX_DELAY_MINUTES = 8
+MAX_QUANTITY = 50
 
 
+# ==================== SETTINGS KEYS ====================
+PRICE_SETTINGS_KEYS = {
+    "comment": "legendary_price_comment",
+    "poll": "legendary_price_poll",
+    "story": "legendary_price_story",
+    "votes": "legendary_price_votes",
+    "votes_ai": "legendary_price_votes_ai",
+    "premium_reaction": "legendary_price_premium_reaction",
+    "forced_ref": "legendary_price_forced_ref",
+    "forced_ref_ai": "legendary_price_forced_ref_ai",
+}
+
+
+def get_service_price(service_type: str, include_channel: bool = True) -> int:
+    """Get current price for a service (points)."""
+    key = PRICE_SETTINGS_KEYS.get(service_type)
+    if key:
+        saved = get_setting(key)
+        if saved:
+            try:
+                return int(saved)
+            except ValueError:
+                pass
+    base = PRICES.get(service_type, {}).get("per_unit", 30)
+    channel = PRICES.get(service_type, {}).get("channel", 0)
+    return base + (channel if include_channel else 0)
+
+
+def get_service_channel_price(service_type: str) -> int:
+    """Get channel price for a service (points)."""
+    return PRICES.get(service_type, {}).get("channel", 0)
+
+
+def get_stars_price(service_type: str, quantity: int) -> int:
+    """Calculate stars needed for a given quantity."""
+    stars_info = STARS_PRICES.get(service_type, {"per_units": 5, "stars": 1})
+    per_units = stars_info["per_units"]
+    stars_per = stars_info["stars"]
+    return ((quantity + per_units - 1) // per_units) * stars_per
+
+
+# ==================== HELPERS ====================
 def _clean_link(value: str) -> str:
     return (value or "").strip().strip("<>")
 
@@ -83,34 +163,58 @@ def _get_all_active_sessions() -> list[dict]:
     return [dict(row) for row in rows]
 
 
-def get_available_comments_count() -> int:
-    """Return the number of available sessions (maximum comments)."""
+def get_available_sessions_count() -> int:
+    """Return the number of available sessions."""
     return len(_get_all_active_sessions())
 
 
-async def _join_optional_channel(client, channel_ref: str) -> None:
-    """Join a channel using either username or invite link."""
+def get_delay_seconds(is_owner: bool, custom_delay: str = None) -> int:
+    """
+    Get delay between accounts.
+    - Owner: can set custom delay (e.g., "5", "30-60")
+    - Non-owner: 1-8 minutes random
+    """
+    if is_owner and custom_delay:
+        try:
+            if "-" in custom_delay:
+                parts = custom_delay.split("-")
+                min_d = int(parts[0].strip())
+                max_d = int(parts[1].strip())
+                return random.randint(min_d, max_d)
+            else:
+                return int(custom_delay.strip())
+        except (ValueError, TypeError):
+            pass
+    
+    # Default: 1-8 minutes
+    return random.randint(MIN_DELAY_MINUTES * 60, MAX_DELAY_MINUTES * 60)
+
+
+# ==================== CHANNEL & DISCUSSION HELPERS ====================
+
+async def _join_channel_and_schedule_leave(client, channel_ref: str, delay_hours: int = LEGENDARY_STAY_HOURS):
+    """Join channel and schedule leaving after specified hours."""
     if channel_ref.startswith("invite:"):
         await client(functions.messages.ImportChatInviteRequest(channel_ref.split(":", 1)[1]))
-        return
-    entity = await client.get_entity(channel_ref)
-    try:
-        await client(functions.channels.JoinChannelRequest(entity))
-    except Exception as exc:
-        if "USER_ALREADY_PARTICIPANT" not in str(exc).upper():
-            raise
-        await client.get_entity(channel_ref)
-
-
-async def _leave_channel_after_delay(client, channel_ref: str, delay_hours: int = 24):
-    """Leave the channel after a specified delay (default: 24 hours)."""
-    await asyncio.sleep(delay_hours * 3600)
-    try:
+    else:
         entity = await client.get_entity(channel_ref)
-        await client(functions.channels.LeaveChannelRequest(entity))
-        logger.info(f"✅ Left channel {channel_ref} after {delay_hours} hours.")
-    except Exception as exc:
-        logger.warning(f"⚠️ Failed to leave channel {channel_ref}: {exc}")
+        try:
+            await client(functions.channels.JoinChannelRequest(entity))
+        except Exception as exc:
+            if "USER_ALREADY_PARTICIPANT" not in str(exc).upper():
+                raise
+    
+    # Schedule leave
+    async def _leave():
+        await asyncio.sleep(delay_hours * 3600)
+        try:
+            entity = await client.get_entity(channel_ref)
+            await client(functions.channels.LeaveChannelRequest(entity))
+            logger.info(f"✅ Left channel {channel_ref} after {delay_hours} hours.")
+        except Exception as exc:
+            logger.warning(f"⚠️ Failed to leave channel {channel_ref}: {exc}")
+    
+    asyncio.create_task(_leave())
 
 
 async def _join_discussion_group(client, discussion) -> None:
@@ -138,33 +242,32 @@ async def _join_discussion_group(client, discussion) -> None:
             raise
 
 
-async def _send_comment_with_session(
-    session_string: str,
-    phone: str,
-    post_ref: str | int,
+# ==================== SERVICE EXECUTORS ====================
+
+async def _execute_comment(
+    session: dict,
+    post_ref: str,
     post_id: int,
     comment_text: str,
-    channel_ref: str | None = None,
+    channel_ref: str = None,
+    is_first: bool = False,
 ) -> tuple[bool, str]:
-    """Send a comment using a specific session."""
+    """Execute a single comment."""
     if not TELEGRAM_API_ID or not TELEGRAM_API_HASH:
-        raise RuntimeError("بيانات Telegram API غير مهيأة.")
+        return False, "بيانات Telegram API غير مهيأة."
 
     client = TelegramClient(
-        StringSession(session_string),
+        StringSession(session["session_string"]),
         int(TELEGRAM_API_ID),
         TELEGRAM_API_HASH,
     )
     await asyncio.wait_for(client.connect(), timeout=20)
     try:
         if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
-            raise RuntimeError("الجلسة لم تعد مصرحاً بها.")
+            return False, "الجلسة غير مصرح بها."
 
-        # Join channel if provided (only for the first session that needs it)
-        if channel_ref:
-            await _join_optional_channel(client, channel_ref)
-            # Schedule leaving after 24 hours
-            asyncio.create_task(_leave_channel_after_delay(client, channel_ref, LEGENDARY_STAY_HOURS))
+        if is_first and channel_ref:
+            await _join_channel_and_schedule_leave(client, channel_ref)
 
         post_entity = await client.get_entity(post_ref)
         discussion = await client(
@@ -174,346 +277,1096 @@ async def _send_comment_with_session(
             )
         )
         if not getattr(discussion, "messages", None):
-            raise RuntimeError("المنشور لا يملك نقاشاً متاحاً للتعليق.")
-
+            return False, "المنشور لا يملك نقاشاً."
+        
         discussion_message = discussion.messages[0]
         discussion_peer = getattr(discussion_message, "peer_id", None)
         if discussion_peer is None:
-            raise RuntimeError("تعذر تحديد مساحة التعليقات للمنشور.")
+            return False, "تعذر تحديد مساحة التعليقات."
+        
         await _join_discussion_group(client, discussion)
-
         await client.send_message(
             discussion_peer,
             comment_text,
             reply_to=discussion_message.id,
         )
-        return True, f"✅ تم التعليق بنجاح من الرقم {phone}"
+        return True, f"✅ تم التعليق من {session['phone_number']}"
     except Exception as exc:
-        return False, f"❌ فشل التعليق من الرقم {phone}: {str(exc)[:100]}"
+        return False, f"❌ فشل من {session['phone_number']}: {str(exc)[:80]}"
     finally:
         await client.disconnect()
 
 
-async def _send_batch_comments(
-    sessions: list[dict],
-    post_ref: str | int,
+async def _execute_poll_vote(
+    session: dict,
+    poll_link: str,
+    poll_option: str,
+    channel_ref: str = None,
+    is_first: bool = False,
+) -> tuple[bool, str]:
+    """Execute a single poll vote."""
+    if not TELEGRAM_API_ID or not TELEGRAM_API_HASH:
+        return False, "بيانات Telegram API غير مهيأة."
+
+    client = TelegramClient(
+        StringSession(session["session_string"]),
+        int(TELEGRAM_API_ID),
+        TELEGRAM_API_HASH,
+    )
+    await asyncio.wait_for(client.connect(), timeout=20)
+    try:
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+            return False, "الجلسة غير مصرح بها."
+
+        if is_first and channel_ref:
+            await _join_channel_and_schedule_leave(client, channel_ref)
+
+        parts = poll_link.split("/")
+        if len(parts) < 3:
+            return False, "رابط الاستفتاء غير صحيح."
+        
+        entity_str = parts[-2] if parts[-2].startswith("@") else parts[-2]
+        msg_id = int(parts[-1].split("?")[0])
+        
+        try:
+            entity = await client.get_entity(entity_str)
+        except Exception:
+            return False, f"تعذر العثور على {entity_str}"
+        
+        messages = await client.get_messages(entity, ids=msg_id)
+        if not messages:
+            return False, "المنشور غير موجود."
+        msg = messages[0]
+        
+        if not hasattr(msg, "poll") or not msg.poll:
+            return False, "هذا المنشور ليس استفتاءً."
+        
+        poll = msg.poll.poll
+        options = getattr(poll, "answers", [])
+        chosen_index = -1
+        
+        try:
+            chosen_index = int(poll_option) - 1
+        except ValueError:
+            for i, opt in enumerate(options):
+                if opt.text.lower() == poll_option.lower():
+                    chosen_index = i
+                    break
+        
+        if chosen_index < 0 or chosen_index >= len(options):
+            return False, "الخيار المطلوب غير موجود."
+        
+        await client(functions.messages.SendVoteRequest(
+            peer=entity,
+            msg_id=msg_id,
+            options=[options[chosen_index].option]
+        ))
+        
+        return True, f"✅ تم التصويت من {session['phone_number']}"
+    except Exception as exc:
+        return False, f"❌ فشل من {session['phone_number']}: {str(exc)[:80]}"
+    finally:
+        await client.disconnect()
+
+
+async def _execute_story_reaction(
+    session: dict,
+    story_link: str,
+    emojis: list[str],
+    channel_ref: str = None,
+    is_first: bool = False,
+) -> tuple[bool, str]:
+    """Execute a single story view + reaction."""
+    if not TELEGRAM_API_ID or not TELEGRAM_API_HASH:
+        return False, "بيانات Telegram API غير مهيأة."
+
+    client = TelegramClient(
+        StringSession(session["session_string"]),
+        int(TELEGRAM_API_ID),
+        TELEGRAM_API_HASH,
+    )
+    await asyncio.wait_for(client.connect(), timeout=20)
+    try:
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+            return False, "الجلسة غير مصرح بها."
+
+        if is_first and channel_ref:
+            await _join_channel_and_schedule_leave(client, channel_ref)
+
+        parts = story_link.split("/")
+        if len(parts) < 3:
+            return False, "رابط الستوري غير صحيح."
+        
+        story_id = None
+        for i, part in enumerate(parts):
+            if part == "story" and i + 1 < len(parts):
+                story_id = int(parts[i + 1])
+                break
+        
+        if story_id is None:
+            return False, "تعذر العثور على معرف الستوري."
+        
+        entity_str = parts[-3] if len(parts) >= 3 else parts[-2]
+        if entity_str.startswith("@"):
+            entity_str = entity_str[1:]
+        if entity_str.isdigit():
+            entity_str = int(entity_str)
+        
+        entity = await client.get_entity(entity_str)
+        
+        await client(functions.stories.IncrementStoryViewsRequest(
+            peer=entity,
+            id=story_id
+        ))
+        
+        if emojis:
+            from telethon.tl.types import ReactionEmoji
+            reaction_emoji = random.choice(emojis)
+            await client(functions.stories.SendReactionRequest(
+                peer=entity,
+                story_id=story_id,
+                reaction=ReactionEmoji(emoticon=reaction_emoji)
+            ))
+        
+        return True, f"✅ تمت مشاهدة وتفاعل الستوري من {session['phone_number']}"
+    except Exception as exc:
+        return False, f"❌ فشل من {session['phone_number']}: {str(exc)[:80]}"
+    finally:
+        await client.disconnect()
+
+
+async def _execute_vote(
+    session: dict,
+    post_ref: str,
     post_id: int,
-    comment_text: str,
-    channel_ref: str | None = None,
-) -> tuple[int, list[str]]:
-    """Send comments using ALL available sessions."""
+    channel_ref: str = None,
+    is_first: bool = False,
+    use_ai: bool = False,
+) -> tuple[bool, str]:
+    """Execute a single vote (with or without AI captcha)."""
+    if not TELEGRAM_API_ID or not TELEGRAM_API_HASH:
+        return False, "بيانات Telegram API غير مهيأة."
+
+    client = TelegramClient(
+        StringSession(session["session_string"]),
+        int(TELEGRAM_API_ID),
+        TELEGRAM_API_HASH,
+    )
+    await asyncio.wait_for(client.connect(), timeout=20)
+    try:
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+            return False, "الجلسة غير مصرح بها."
+
+        if is_first and channel_ref:
+            await _join_channel_and_schedule_leave(client, channel_ref)
+
+        post_entity = await client.get_entity(post_ref)
+        messages = await client.get_messages(post_entity, ids=post_id)
+        if not messages:
+            return False, "المنشور غير موجود."
+        msg = messages[0]
+        
+        if not hasattr(msg, "poll") or not msg.poll:
+            return False, "هذا المنشور ليس استفتاءً."
+        
+        poll = msg.poll.poll
+        options = getattr(poll, "answers", [])
+        if not options:
+            return False, "لا توجد خيارات للتصويت."
+        
+        if use_ai:
+            from .referrals import solve_captcha_with_ai
+            solved, detail = await solve_captcha_with_ai(
+                client,
+                post_entity,
+                [msg],
+                session["phone_number"]
+            )
+            if not solved:
+                return False, f"فشل حل التحقق: {detail}"
+            messages = await client.get_messages(post_entity, ids=post_id)
+            if not messages:
+                return False, "المنشور غير موجود بعد التحقق."
+            msg = messages[0]
+            if not hasattr(msg, "poll") or not msg.poll:
+                return False, "المنشور ليس استفتاءً بعد التحقق."
+            poll = msg.poll.poll
+            options = getattr(poll, "answers", [])
+            if not options:
+                return False, "لا توجد خيارات بعد التحقق."
+        
+        chosen = random.randint(0, len(options) - 1)
+        await client(functions.messages.SendVoteRequest(
+            peer=post_entity,
+            msg_id=post_id,
+            options=[options[chosen].option]
+        ))
+        
+        return True, f"✅ تم التصويت من {session['phone_number']}"
+    except Exception as exc:
+        return False, f"❌ فشل من {session['phone_number']}: {str(exc)[:80]}"
+    finally:
+        await client.disconnect()
+
+
+async def _execute_premium_reaction(
+    session: dict,
+    post_ref: str,
+    post_id: int,
+    reaction_text: str,
+    channel_ref: str = None,
+    is_first: bool = False,
+) -> tuple[bool, str]:
+    """Execute a single premium reaction."""
+    if not TELEGRAM_API_ID or not TELEGRAM_API_HASH:
+        return False, "بيانات Telegram API غير مهيأة."
+
+    client = TelegramClient(
+        StringSession(session["session_string"]),
+        int(TELEGRAM_API_ID),
+        TELEGRAM_API_HASH,
+    )
+    await asyncio.wait_for(client.connect(), timeout=20)
+    try:
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+            return False, "الجلسة غير مصرح بها."
+
+        if is_first and channel_ref:
+            await _join_channel_and_schedule_leave(client, channel_ref)
+
+        post_entity = await client.get_entity(post_ref)
+        
+        from telethon.tl.types import ReactionEmoji
+        await client(functions.messages.SendReactionRequest(
+            peer=post_entity,
+            msg_id=post_id,
+            reaction=[ReactionEmoji(emoticon=reaction_text)]
+        ))
+        
+        return True, f"✅ تم التفاعل من {session['phone_number']}"
+    except Exception as exc:
+        return False, f"❌ فشل من {session['phone_number']}: {str(exc)[:80]}"
+    finally:
+        await client.disconnect()
+
+
+async def _execute_forced_ref(
+    session: dict,
+    bot_username: str,
+    start_param: str,
+    channel_ref: str = None,
+    is_first: bool = False,
+    use_ai: bool = False,
+) -> tuple[bool, str]:
+    """Execute a single forced referral."""
+    from .referrals import do_referral_for_number
+    
+    ok, reactiv, detail = await do_referral_for_number(
+        session["phone_number"],
+        session["session_string"],
+        bot_username,
+        start_param,
+        mandatory_channels=channel_ref or "",
+        use_ai=use_ai,
+        leave_channels_after=True,
+        stock_id=session.get("id", 0)
+    )
+    if ok:
+        return True, f"✅ إحالة من {session['phone_number']}"
+    else:
+        return False, f"❌ فشل من {session['phone_number']}: {detail[:80]}"
+
+
+# ==================== BATCH EXECUTOR ====================
+
+async def execute_batch(
+    service_type: str,
+    quantity: int,
+    sessions: list,
+    params: dict,
+    is_owner: bool = False,
+    custom_delay: str = None,
+    progress_callback=None,
+) -> tuple[int, list[str], list[str]]:
+    """
+    Execute a batch of operations across sessions.
+    
+    service_type: 'comment', 'poll', 'story', 'votes', 'votes_ai', 'premium_reaction', 'forced_ref', 'forced_ref_ai'
+    params: dict with service-specific parameters
+    Returns: (success_count, success_phones, failed_details)
+    """
     if not sessions:
         raise RuntimeError("لا توجد جلسات نشطة متاحة.")
-
+    
+    shuffled = sessions.copy()
+    random.shuffle(shuffled)
+    
     success_count = 0
+    success_phones = []
     failed_details = []
-
-    # Only the first session joins the channel (if provided)
-    # Other sessions just comment without joining (they may already be members)
-    for i, session in enumerate(sessions):
+    used_phones = set()
+    fallback_pool = shuffled.copy()
+    
+    executors = {
+        "comment": _execute_comment,
+        "poll": _execute_poll_vote,
+        "story": _execute_story_reaction,
+        "votes": _execute_vote,
+        "votes_ai": _execute_vote,
+        "premium_reaction": _execute_premium_reaction,
+        "forced_ref": _execute_forced_ref,
+        "forced_ref_ai": _execute_forced_ref,
+    }
+    
+    executor = executors.get(service_type)
+    if not executor:
+        raise RuntimeError(f"خدمة غير معروفة: {service_type}")
+    
+    for i in range(quantity):
+        if not fallback_pool:
+            break
+        
+        session = fallback_pool.pop(0)
+        phone = session["phone_number"]
+        
+        if phone in used_phones:
+            continue
+        used_phones.add(phone)
+        
+        is_first = (i == 0)
+        
+        exec_params = {
+            "session": session,
+            "channel_ref": params.get("channel_ref"),
+            "is_first": is_first,
+        }
+        
+        if service_type == "comment":
+            exec_params["post_ref"] = params["post_ref"]
+            exec_params["post_id"] = params["post_id"]
+            exec_params["comment_text"] = params["comment_text"]
+        elif service_type == "poll":
+            exec_params["poll_link"] = params["poll_link"]
+            exec_params["poll_option"] = params["poll_option"]
+        elif service_type == "story":
+            exec_params["story_link"] = params["story_link"]
+            exec_params["emojis"] = params["emojis"]
+        elif service_type in ["votes", "votes_ai"]:
+            exec_params["post_ref"] = params["post_ref"]
+            exec_params["post_id"] = params["post_id"]
+            exec_params["use_ai"] = (service_type == "votes_ai")
+        elif service_type == "premium_reaction":
+            exec_params["post_ref"] = params["post_ref"]
+            exec_params["post_id"] = params["post_id"]
+            exec_params["reaction_text"] = params["reaction_text"]
+        elif service_type in ["forced_ref", "forced_ref_ai"]:
+            exec_params["bot_username"] = params["bot_username"]
+            exec_params["start_param"] = params.get("start_param", "")
+            exec_params["use_ai"] = (service_type == "forced_ref_ai")
+        
         try:
-            ch_ref = channel_ref if i == 0 else None
-            ok, msg = await _send_comment_with_session(
-                session["session_string"],
-                session["phone_number"],
-                post_ref,
-                post_id,
-                comment_text,
-                ch_ref,
-            )
+            ok, msg = await executor(**exec_params)
             if ok:
                 success_count += 1
+                success_phones.append(phone)
             else:
                 failed_details.append(msg)
+                if fallback_pool and i < quantity - 1:
+                    fallback = fallback_pool.pop(0) if fallback_pool else None
+                    if fallback and fallback["phone_number"] not in used_phones:
+                        fallback_pool.append(session)
+                        fallback_pool.append(fallback)
+                        continue
         except Exception as exc:
-            failed_details.append(f"❌ خطأ في الجلسة {i+1}: {str(exc)[:80]}")
+            failed_details.append(f"❌ خطأ: {str(exc)[:80]}")
             continue
+        
+        if progress_callback:
+            await progress_callback(i + 1, quantity, success_count, len(failed_details))
+        
+        if i < quantity - 1 and fallback_pool:
+            delay = get_delay_seconds(is_owner, custom_delay)
+            logger.info(f"⏳ انتظار {delay} ثانية قبل التالي...")
+            await asyncio.sleep(delay)
+    
+    return success_count, success_phones, failed_details
 
-    return success_count, failed_details
+
+# ==================== UI HELPERS ====================
+
+def get_service_display_name(service_type: str) -> str:
+    """Get display name for a service type."""
+    names = {
+        "comment": "رشق تعليق",
+        "poll": "رشق استفتاء",
+        "story": "رشق مشاهدة وتفاعل ستوري",
+        "votes": "رشق أصوات",
+        "votes_ai": "رشق تصويت بتحقق",
+        "premium_reaction": "رشق تفاعل مميز",
+        "forced_ref": "إحالة بوت إجباري",
+        "forced_ref_ai": "إحالة بوت إجباري بتحقق",
+    }
+    return names.get(service_type, service_type)
 
 
-def legendary_comment_start_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("🔙 رجوع للخدمات الأسطورية", callback_data="legendary_services")]]
-    )
+def get_service_price_display(service_type: str) -> str:
+    """Get price display for a service."""
+    per_unit = get_service_price(service_type, include_channel=False)
+    channel = get_service_channel_price(service_type)
+    stars_info = STARS_PRICES.get(service_type, {"per_units": 5, "stars": 1})
+    
+    if channel > 0:
+        return f"{per_unit} نقطة/وحدة + {channel} نقطة قناة | ⭐ {stars_info['stars']} نجمة لكل {stars_info['per_units']} وحدة"
+    else:
+        return f"{per_unit} نقطة/وحدة | ⭐ {stars_info['stars']} نجمة لكل {stars_info['per_units']} وحدة"
 
 
-async def legendary_comment_start(update, context, q, is_own: bool) -> None:
-    """Start the legendary comment flow - show pricing and ask for channel link."""
+def legendary_services_back_kb():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 رجوع للخدمات الأسطورية", callback_data="legendary_services")]
+    ])
+
+
+# ==================== LEGENDARY SERVICES START ====================
+
+async def legendary_service_start(update, context, q, is_own: bool, service_type: str):
+    """Start the flow for any legendary service."""
     if not is_own:
         await q.answer("⛔ هذه الخدمة متاحة للمالك فقط.", show_alert=True)
         return
-
-    # Get available sessions count
-    available = get_available_comments_count()
-
-    # Clear any previous data
-    context.user_data["state"] = "legendary_comment_channel"
+    
+    available = get_available_sessions_count()
+    
+    if available == 0:
+        await q.edit_message_text(
+            "❌ لا توجد حسابات متاحة. تأكد من وجود جلسات نشطة.",
+            reply_markup=legendary_services_back_kb()
+        )
+        return
+    
+    context.user_data["legendary_service_type"] = service_type
+    context.user_data["legendary_step"] = "channel"
+    
     for key in (
-        "legendary_comment_channel",
-        "legendary_comment_channel_ref",
-        "legendary_comment_post",
-        "legendary_comment_post_ref",
-        "legendary_comment_post_id",
+        "legendary_channel_ref",
+        "legendary_post_ref",
+        "legendary_post_id",
         "legendary_comment_text",
+        "legendary_quantity",
+        "legendary_payment_method",
+        "legendary_poll_link",
+        "legendary_poll_option",
+        "legendary_story_link",
+        "legendary_emojis",
+        "legendary_reaction_text",
+        "legendary_bot_username",
+        "legendary_start_param",
+        "legendary_custom_delay",
     ):
         context.user_data.pop(key, None)
-
+    
+    service_name = get_service_display_name(service_type)
+    price_display = get_service_price_display(service_type)
+    
     await q.edit_message_text(
-        "💬 *رشق تعليق — خدمة أسطورية*\n\n"
-        f"💰 *سعر التعليق الواحد:* {LEGENDARY_COMMENT_COST} نقطة\n"
-        f"💰 *سعر القناة الإضافية:* {LEGENDARY_CHANNEL_COST} نقطة (إذا أضفت قناة)\n"
-        f"📊 *الحسابات المتاحة للتعليق:* {available} حساب\n"
-        f"📊 *الحد الأقصى للتعليقات:* {available} تعليق (حساب واحد لكل تعليق)\n\n"
-        "📝 *الخطوات:*\n"
-        "1️⃣ أرسل رابط القناة (اختياري، مع زر تخطي)\n"
-        "2️⃣ أرسل رابط المنشور المطلوب التعليق عليه\n"
-        "3️⃣ أرسل نص التعليق\n\n"
-        "🔹 *ملاحظة:* سيظل البوت مشتركاً في القناة لمدة 24 ساعة ثم يغادر تلقائياً.\n"
-        "🔹 *ملاحظة:* عدد التعليقات = عدد الحسابات المتاحة (جميع الحسابات ستعلق).\n\n"
-        "📎 *الخطوة الأولى:* أرسل رابط القناة (أو اضغط تخطي):",
+        f"👑 *{service_name}*\n\n"
+        f"💰 {price_display}\n"
+        f"📊 الحسابات المتاحة: {available}\n"
+        f"⏱️ الفاصل بين الحسابات: 1-8 دقائق (تلقائي)\n\n"
+        f"📝 *الخطوة 1:* أرسل رابط القناة (اختياري، مع زر تخطي):",
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=InlineKeyboardMarkup(
-            [
-                [InlineKeyboardButton("⏭ تخطي القناة (+0 نقطة)", callback_data="legendary_comment:skip_channel")],
-                [InlineKeyboardButton("🔙 رجوع", callback_data="legendary_services")],
-            ]
-        ),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⏭ تخطي القناة", callback_data="legendary:skip_channel")],
+            [InlineKeyboardButton("🔙 رجوع", callback_data="legendary_services")],
+        ])
     )
+    context.user_data["state"] = "legendary_channel_input"
 
 
-async def legendary_comment_skip_channel(update, context, q, is_own: bool) -> None:
-    """Skip the channel step and proceed to post link."""
+async def legendary_skip_channel(update, context, q, is_own: bool):
+    """Skip channel step."""
     if not is_own:
         await q.answer("⛔ هذه الخدمة متاحة للمالك فقط.", show_alert=True)
         return
-
-    context.user_data.pop("legendary_comment_channel", None)
-    context.user_data.pop("legendary_comment_channel_ref", None)
-    context.user_data["state"] = "legendary_comment_post"
-
-    await q.edit_message_text(
-        "⏭ تم تخطي القناة.\n\n"
-        "📎 *الخطوة الثانية:* أرسل رابط المنشور المطلوب التعليق عليه:",
-        reply_markup=legendary_comment_start_keyboard(),
-    )
-
-
-async def legendary_comment_handle_text(update, context, text: str) -> bool:
-    """Handle owner-only text states for the legendary comment flow."""
-    if update.effective_user.id != OWNER_ID:
-        return False
-
-    state = context.user_data.get("state", "")
     
-    # --- Step 1: Channel Link ---
-    if state == "legendary_comment_channel":
+    context.user_data.pop("legendary_channel_ref", None)
+    context.user_data["legendary_step"] = "main_input"
+    
+    service_type = context.user_data.get("legendary_service_type", "comment")
+    service_name = get_service_display_name(service_type)
+    
+    prompts = {
+        "comment": "📎 أرسل رابط المنشور المطلوب التعليق عليه:",
+        "poll": "📎 أرسل رابط الاستفتاء المطلوب التصويت عليه:",
+        "story": "📎 أرسل رابط الستوري المطلوب مشاهدته:",
+        "votes": "📎 أرسل رابط الاستفتاء المطلوب التصويت عليه:",
+        "votes_ai": "📎 أرسل رابط الاستفتاء المطلوب التصويت عليه (مع تحقق):",
+        "premium_reaction": "📎 أرسل رابط المنشور المطلوب التفاعل عليه:",
+        "forced_ref": "📎 أرسل رابط إحالة البوت (t.me/Bot?start=code):",
+        "forced_ref_ai": "📎 أرسل رابط إحالة البوت (t.me/Bot?start=code):",
+    }
+    
+    await q.edit_message_text(
+        f"⏭ تم تخطي القناة.\n\n{prompts.get(service_type, 'أرسل الرابط المطلوب:')}",
+        reply_markup=legendary_services_back_kb()
+    )
+    context.user_data["state"] = "legendary_main_input"
+
+
+# ==================== TEXT HANDLER ====================
+
+async def legendary_handle_text(update, context, text: str) -> bool:
+    """Handle text input for legendary services."""
+    user = update.effective_user
+    if user.id != OWNER_ID:
+        return False
+    
+    state = context.user_data.get("state", "")
+    service_type = context.user_data.get("legendary_service_type", "comment")
+    step = context.user_data.get("legendary_step", "channel")
+    
+    # --- Channel input ---
+    if state == "legendary_channel_input":
         ref, display = _parse_channel_reference(text)
-        if not ref:
-            await update.message.reply_text("⚠️ أرسل رابط قناة صحيحاً أو اضغط زر التخطي.")
-            return True
-
-        context.user_data["legendary_comment_channel"] = display
-        context.user_data["legendary_comment_channel_ref"] = ref
-        context.user_data["state"] = "legendary_comment_post"
-
+        if ref:
+            context.user_data["legendary_channel_ref"] = ref
+        else:
+            context.user_data.pop("legendary_channel_ref", None)
+        
+        context.user_data["legendary_step"] = "main_input"
+        context.user_data["state"] = "legendary_main_input"
+        
+        prompts = {
+            "comment": "📎 أرسل رابط المنشور المطلوب التعليق عليه:",
+            "poll": "📎 أرسل رابط الاستفتاء المطلوب التصويت عليه:",
+            "story": "📎 أرسل رابط الستوري المطلوب مشاهدته:",
+            "votes": "📎 أرسل رابط الاستفتاء المطلوب التصويت عليه:",
+            "votes_ai": "📎 أرسل رابط الاستفتاء المطلوب التصويت عليه (مع تحقق):",
+            "premium_reaction": "📎 أرسل رابط المنشور المطلوب التفاعل عليه:",
+            "forced_ref": "📎 أرسل رابط إحالة البوت (t.me/Bot?start=code):",
+            "forced_ref_ai": "📎 أرسل رابط إحالة البوت (t.me/Bot?start=code):",
+        }
+        
         await update.message.reply_text(
-            f"✅ تم حفظ القناة (+{LEGENDARY_CHANNEL_COST} نقطة).\n\n"
-            "📎 *الخطوة الثانية:* أرسل رابط المنشور المطلوب التعليق عليه:"
+            f"✅ تم {'حفظ' if ref else 'تخطي'} القناة.\n\n{prompts.get(service_type, 'أرسل الرابط المطلوب:')}",
+            reply_markup=legendary_services_back_kb()
         )
         return True
-
-    # --- Step 2: Post Link ---
-    if state == "legendary_comment_post":
-        post_ref, post_id = _parse_post_link_parts(text)
-        if post_ref is None or post_id is None:
+    
+    # --- Main input ---
+    if state == "legendary_main_input":
+        if service_type in ["comment", "votes", "votes_ai", "premium_reaction"]:
+            post_ref, post_id = _parse_post_link_parts(text)
+            if post_ref is None or post_id is None:
+                await update.message.reply_text(
+                    "⚠️ أرسل رابط منشور تيليجرام صحيحاً، مثال:\nhttps://t.me/channel/123"
+                )
+                return True
+            context.user_data["legendary_post_ref"] = post_ref
+            context.user_data["legendary_post_id"] = post_id
+            context.user_data["legendary_step"] = "quantity"
+            context.user_data["state"] = "legendary_quantity_input"
+            
+            available = get_available_sessions_count()
             await update.message.reply_text(
-                "⚠️ أرسل رابط منشور تيليجرام صحيحاً، مثال:\nhttps://t.me/channel/123"
+                f"✅ تم حفظ الرابط.\n\n🔢 أرسل عدد الوحدات المطلوبة (1-{min(available, MAX_QUANTITY)}):",
+                parse_mode=ParseMode.MARKDOWN
             )
             return True
-
-        context.user_data["legendary_comment_post"] = text
-        context.user_data["legendary_comment_post_ref"] = post_ref
-        context.user_data["legendary_comment_post_id"] = post_id
-        context.user_data["state"] = "legendary_comment_text"
-
-        available = get_available_comments_count()
-        await update.message.reply_text(
-            f"💬 *الخطوة الثالثة:* أرسل نص التعليق المطلوب نشره.\n\n"
-            f"📊 سيتم نشر التعليق على جميع الحسابات المتاحة ({available} تعليق).",
-            parse_mode=ParseMode.MARKDOWN,
-        )
-        return True
-
-    # --- Step 3: Comment Text (and show confirmation) ---
-    if state == "legendary_comment_text":
-        if not text or len(text) > 4096:
-            await update.message.reply_text("⚠️ أرسل نصاً بين حرف واحد و4096 حرفاً.")
+        
+        elif service_type == "poll":
+            context.user_data["legendary_poll_link"] = text
+            context.user_data["legendary_step"] = "poll_option"
+            context.user_data["state"] = "legendary_poll_option_input"
+            
+            await update.message.reply_text(
+                "✅ تم حفظ رابط الاستفتاء.\n\n🔢 أرسل رقم الخيار المطلوب (مثال: 1 أو 2 أو 3):"
+            )
             return True
-
-        context.user_data["legendary_comment_text"] = text
-
-        # Get available sessions count
-        available = get_available_comments_count()
-        channel_cost = LEGENDARY_CHANNEL_COST if context.user_data.get("legendary_comment_channel_ref") else 0
-        total_cost = (LEGENDARY_COMMENT_COST * available) + channel_cost
-        channel_display = "نعم (+30)" if channel_cost else "لا"
-
-        # IMPORTANT: Set state to confirm so the callback works
-        context.user_data["state"] = "legendary_comment_confirm"
-
+        
+        elif service_type == "story":
+            context.user_data["legendary_story_link"] = text
+            context.user_data["legendary_step"] = "story_emojis"
+            context.user_data["state"] = "legendary_emojis_input"
+            
+            await update.message.reply_text(
+                "✅ تم حفظ رابط الستوري.\n\n😊 أرسل الإيموجيات المطلوبة للتفاعل (كل إيموجي في سطر):\nمثال:\n😁\n😝\n😂"
+            )
+            return True
+        
+        elif service_type in ["forced_ref", "forced_ref_ai"]:
+            bot_user = ""
+            start_param = ""
+            if "t.me/" in text:
+                parts = text.split("?start=")
+                if len(parts) == 2:
+                    bot_user = parts[0].split("/")[-1].lstrip("@")
+                    start_param = parts[1]
+                else:
+                    bot_user = text.split("/")[-1].lstrip("@")
+            else:
+                parts = text.split()
+                if len(parts) >= 1:
+                    bot_user = parts[0].lstrip("@")
+                    if len(parts) >= 2:
+                        start_param = parts[1]
+            
+            if not bot_user:
+                await update.message.reply_text("⚠️ لم أتمكن من قراءة رابط البوت. أعد المحاولة.")
+                return True
+            
+            context.user_data["legendary_bot_username"] = bot_user
+            context.user_data["legendary_start_param"] = start_param
+            context.user_data["legendary_step"] = "quantity"
+            context.user_data["state"] = "legendary_quantity_input"
+            
+            available = get_available_sessions_count()
+            await update.message.reply_text(
+                f"✅ البوت: @{bot_user}\n\n🔢 أرسل عدد الإحالات المطلوبة (1-{min(available, MAX_QUANTITY)}):",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return True
+    
+    # --- Poll option input ---
+    if state == "legendary_poll_option_input":
+        context.user_data["legendary_poll_option"] = text.strip()
+        context.user_data["legendary_step"] = "quantity"
+        context.user_data["state"] = "legendary_quantity_input"
+        
+        available = get_available_sessions_count()
         await update.message.reply_text(
-            f"📋 *مراجعة الطلب:*\n\n"
-            f"📺 القناة: {channel_display}\n"
-            f"🔢 عدد التعليقات: {available} (جميع الحسابات المتاحة)\n"
-            f"💬 السعر/تعليق: {LEGENDARY_COMMENT_COST} نقطة\n"
-            f"💰 إجمالي التعليقات: {LEGENDARY_COMMENT_COST * available} نقطة\n"
-            f"💰 رسوم القناة: {channel_cost} نقطة\n"
-            f"💎 *الإجمالي الكلي:* {total_cost} نقطة\n\n"
-            f"🕒 سيغادر البوت القناة تلقائياً بعد {LEGENDARY_STAY_HOURS} ساعة.\n\n"
-            f"📝 *نص التعليق:*\n`{text[:200]}{'...' if len(text) > 200 else ''}`\n\n"
-            "اضغط تأكيد للتنفيذ:",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup(
-                [
-                    [InlineKeyboardButton("✅ تأكيد التنفيذ", callback_data="legendary_comment:confirm")],
-                    [InlineKeyboardButton("❌ إلغاء", callback_data="main_menu")],
-                ]
-            ),
+            f"✅ الخيار: {text}\n\n🔢 أرسل عدد التصويتات المطلوبة (1-{min(available, MAX_QUANTITY)}):",
+            parse_mode=ParseMode.MARKDOWN
         )
         return True
-
+    
+    # --- Emojis input ---
+    if state == "legendary_emojis_input":
+        emojis = [line.strip() for line in text.splitlines() if line.strip()]
+        if not emojis:
+            await update.message.reply_text("⚠️ أرسل إيموجي واحد على الأقل.")
+            return True
+        
+        context.user_data["legendary_emojis"] = emojis
+        context.user_data["legendary_step"] = "quantity"
+        context.user_data["state"] = "legendary_quantity_input"
+        
+        available = get_available_sessions_count()
+        await update.message.reply_text(
+            f"✅ تم حفظ {len(emojis)} إيموجي.\n\n🔢 أرسل عدد المشاهدات المطلوبة (1-{min(available, MAX_QUANTITY)}):",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return True
+    
+    # --- Quantity input ---
+    if state == "legendary_quantity_input":
+        qty_text = text.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
+        if not qty_text.isdigit():
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً.")
+            return True
+        
+        quantity = int(qty_text)
+        available = get_available_sessions_count()
+        
+        if quantity < 1 or quantity > min(available, MAX_QUANTITY):
+            await update.message.reply_text(
+                f"⚠️ العدد المسموح بين 1 و {min(available, MAX_QUANTITY)} فقط."
+            )
+            return True
+        
+        context.user_data["legendary_quantity"] = quantity
+        context.user_data["legendary_step"] = "payment"
+        context.user_data["state"] = "legendary_payment_input"
+        
+        service_name = get_service_display_name(service_type)
+        stars_cost = get_stars_price(service_type, quantity)
+        points_cost = get_service_price(service_type, include_channel=False) * quantity
+        channel_cost = get_service_channel_price(service_type)
+        has_channel = bool(context.user_data.get("legendary_channel_ref"))
+        channel_display = f"+{channel_cost} نقطة" if has_channel and channel_cost > 0 else "مجانية"
+        
+        if user.id == OWNER_ID:
+            context.user_data["state"] = "legendary_delay_input"
+            await update.message.reply_text(
+                f"📋 *مراجعة الطلب*\n\n"
+                f"📊 الخدمة: {service_name}\n"
+                f"🔢 العدد: {quantity}\n"
+                f"📺 القناة: {channel_display}\n"
+                f"⭐ بالنجوم: {stars_cost} نجمة\n"
+                f"💰 بالنقاط: {points_cost} نقطة\n\n"
+                f"⏱️ *المالك:* حدد الفاصل الزمني بين الحسابات:\n"
+                f"• أرسل رقماً (ثوانٍ) مثل: `5`\n"
+                f"• أو نطاق مثل: `30-60`\n"
+                f"• أو اكتب `تخطي` للفاصل التلقائي (1-8 دقائق)",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return True
+        
+        await show_payment_options(update, context, service_type, quantity, stars_cost, points_cost, has_channel)
+        return True
+    
+    # --- Delay input (owner only) ---
+    if state == "legendary_delay_input" and user.id == OWNER_ID:
+        custom_delay = None
+        if text.strip().lower() not in ("تخطي", "skip", "-"):
+            custom_delay = text.strip()
+            try:
+                if "-" in custom_delay:
+                    parts = custom_delay.split("-")
+                    int(parts[0].strip())
+                    int(parts[1].strip())
+                else:
+                    int(custom_delay.strip())
+            except ValueError:
+                await update.message.reply_text("⚠️ صيغة غير صحيحة. استخدم رقم مثل `5` أو نطاق مثل `30-60`")
+                return True
+        
+        context.user_data["legendary_custom_delay"] = custom_delay
+        context.user_data["state"] = "legendary_payment_input"
+        
+        service_type = context.user_data.get("legendary_service_type", "comment")
+        quantity = context.user_data.get("legendary_quantity", 1)
+        stars_cost = get_stars_price(service_type, quantity)
+        points_cost = get_service_price(service_type, include_channel=False) * quantity
+        has_channel = bool(context.user_data.get("legendary_channel_ref"))
+        
+        await show_payment_options(update, context, service_type, quantity, stars_cost, points_cost, has_channel)
+        return True
+    
     return False
 
 
-_legendary_comment_lock = asyncio.Lock()
+async def show_payment_options(update, context, service_type, quantity, stars_cost, points_cost, has_channel):
+    """Show payment options to user."""
+    await update.message.reply_text(
+        f"💎 *اختر طريقة الدفع:*\n\n"
+        f"🔢 العدد: {quantity}\n"
+        f"📺 القناة: {'مضافة' if has_channel else 'لا'}\n\n"
+        f"⭐ *بالنجوم:* {stars_cost} نجمة (القناة مجانية!)\n"
+        f"💰 *بالنقاط:* {points_cost} نقطة\n\n"
+        f"اختر طريقة الدفع:",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"⭐ دفع بالنجوم ({stars_cost} نجمة)", callback_data=f"legendary:pay:stars")],
+            [InlineKeyboardButton(f"💰 دفع بالنقاط ({points_cost} نقطة)", callback_data=f"legendary:pay:points")],
+            [InlineKeyboardButton("❌ إلغاء", callback_data="main_menu")],
+        ])
+    )
+    context.user_data["legendary_stars_cost"] = stars_cost
+    context.user_data["legendary_points_cost"] = points_cost
+    context.user_data["state"] = "legendary_payment_confirm"
 
 
-async def legendary_comment_confirm(update, context, q, is_own: bool) -> None:
-    """Confirm and execute the legendary comment batch using all available sessions."""
+# ==================== PAYMENT HANDLER ====================
+
+async def legendary_payment_callback(update, context, q, is_own: bool, payment_method: str):
+    """Handle payment selection."""
     if not is_own:
         await q.answer("⛔ هذه الخدمة متاحة للمالك فقط.", show_alert=True)
         return
-
-    # Check state - allow both states for flexibility
-    current_state = context.user_data.get("state", "")
-    if current_state not in ("legendary_comment_confirm", "legendary_comment_quantity"):
+    
+    if context.user_data.get("state") not in ("legendary_payment_confirm", "legendary_payment_input"):
         await q.answer("⚠️ انتهت صلاحية الطلب، ابدأ من جديد.", show_alert=True)
         return
-
-    # Get all required data
-    channel_ref = context.user_data.get("legendary_comment_channel_ref")
-    post_ref = context.user_data.get("legendary_comment_post_ref")
-    post_id = context.user_data.get("legendary_comment_post_id")
-    comment_text = context.user_data.get("legendary_comment_text")
-
-    if not post_ref or not post_id or not comment_text:
-        await q.edit_message_text(
-            "⚠️ بيانات الطلب غير مكتملة.",
-            reply_markup=legendary_comment_start_keyboard()
-        )
-        context.user_data["state"] = "main_menu"
-        return
-
-    # Get available sessions
-    sessions = _get_all_active_sessions()
-    available = len(sessions)
-
-    if available == 0:
-        await q.edit_message_text(
-            "❌ لا توجد حسابات متاحة للتعليق. تأكد من وجود جلسات نشطة.",
-            reply_markup=legendary_comment_start_keyboard()
-        )
-        context.user_data["state"] = "main_menu"
-        return
-
-    # Calculate costs
-    channel_cost = LEGENDARY_CHANNEL_COST if channel_ref else 0
-    total_cost = (LEGENDARY_COMMENT_COST * available) + channel_cost
-
-    # Check balance
-    db_user = get_user(OWNER_ID)
-    if not db_user or int(db_user.get("points") or 0) < total_cost:
-        await q.edit_message_text(
-            f"❌ رصيدك غير كافٍ. التكلفة الإجمالية: {total_cost} نقطة.\n"
-            f"💰 رصيدك الحالي: {db_user['points'] if db_user else 0} نقطة",
-            reply_markup=legendary_comment_start_keyboard(),
-        )
-        context.user_data["state"] = "main_menu"
-        return
-
-    async with _legendary_comment_lock:
-        # Deduct points
-        if not deduct_points(OWNER_ID, total_cost):
-            await q.edit_message_text("❌ لم يعد رصيدك كافياً لتنفيذ الطلب.")
+    
+    service_type = context.user_data.get("legendary_service_type", "comment")
+    quantity = context.user_data.get("legendary_quantity", 1)
+    channel_ref = context.user_data.get("legendary_channel_ref")
+    custom_delay = context.user_data.get("legendary_custom_delay")
+    
+    stars_cost = context.user_data.get("legendary_stars_cost", 0)
+    points_cost = context.user_data.get("legendary_points_cost", 0)
+    
+    if payment_method == "stars":
+        total_cost = stars_cost
+        payment_label = f"{stars_cost} نجمة"
+    else:
+        total_cost = points_cost
+        payment_label = f"{points_cost} نقطة"
+    
+    if payment_method == "points":
+        db_user = get_user(OWNER_ID)
+        if not db_user or int(db_user.get("points") or 0) < total_cost:
+            await q.edit_message_text(
+                f"❌ رصيدك غير كافٍ. التكلفة: {total_cost} نقطة.\n"
+                f"💰 رصيدك الحالي: {db_user['points'] if db_user else 0} نقطة",
+                reply_markup=legendary_services_back_kb()
+            )
             context.user_data["state"] = "main_menu"
             return
+    
+    if payment_method == "stars":
+        await q.delete_message()
+        await context.bot.send_invoice(
+            chat_id=OWNER_ID,
+            title=f"{get_service_display_name(service_type)}",
+            description=f"{quantity} وحدة | {payment_label}",
+            payload=f"legendary_stars:{service_type}:{quantity}:{stars_cost}",
+            provider_token="",
+            currency="XTR",
+            prices=[LabeledPrice("خدمة أسطورية", stars_cost)],
+        )
+        return
+    
+    await execute_legendary_order(update, context, q, is_own, payment_method)
 
+
+async def execute_legendary_order(update, context, q, is_own: bool, payment_method: str):
+    """Execute the legendary order."""
+    service_type = context.user_data.get("legendary_service_type", "comment")
+    quantity = context.user_data.get("legendary_quantity", 1)
+    channel_ref = context.user_data.get("legendary_channel_ref")
+    custom_delay = context.user_data.get("legendary_custom_delay")
+    stars_cost = context.user_data.get("legendary_stars_cost", 0)
+    points_cost = context.user_data.get("legendary_points_cost", 0)
+    
+    if payment_method == "points":
+        if not deduct_points(OWNER_ID, points_cost):
+            await q.edit_message_text("❌ لم يعد رصيدك كافياً.")
+            context.user_data["state"] = "main_menu"
+            return
+    
+    sessions = _get_all_active_sessions()
+    if not sessions:
+        if payment_method == "points":
+            add_points(OWNER_ID, points_cost)
+        await q.edit_message_text("❌ لا توجد حسابات متاحة.", reply_markup=legendary_services_back_kb())
+        context.user_data["state"] = "main_menu"
+        return
+    
+    await _send_start_message(context.bot, OWNER_ID, quantity, payment_method, service_type)
+    
+    params = {"channel_ref": channel_ref}
+    
+    if service_type == "comment":
+        params["post_ref"] = context.user_data.get("legendary_post_ref")
+        params["post_id"] = context.user_data.get("legendary_post_id")
+        params["comment_text"] = context.user_data.get("legendary_comment_text", "")
+    elif service_type == "poll":
+        params["poll_link"] = context.user_data.get("legendary_poll_link")
+        params["poll_option"] = context.user_data.get("legendary_poll_option", "1")
+    elif service_type == "story":
+        params["story_link"] = context.user_data.get("legendary_story_link")
+        params["emojis"] = context.user_data.get("legendary_emojis", ["❤️"])
+    elif service_type in ["votes", "votes_ai"]:
+        params["post_ref"] = context.user_data.get("legendary_post_ref")
+        params["post_id"] = context.user_data.get("legendary_post_id")
+    elif service_type == "premium_reaction":
+        params["post_ref"] = context.user_data.get("legendary_post_ref")
+        params["post_id"] = context.user_data.get("legendary_post_id")
+        params["reaction_text"] = context.user_data.get("legendary_reaction_text", "❤️")
+    elif service_type in ["forced_ref", "forced_ref_ai"]:
+        params["bot_username"] = context.user_data.get("legendary_bot_username")
+        params["start_param"] = context.user_data.get("legendary_start_param", "")
+    
+    progress_msg = await q.edit_message_text(
+        f"⏳ *جاري التنفيذ...*\n\n📊 0/{quantity}",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    
+    async def update_progress(current, total, success, failed):
         try:
-            # If channel is provided, join it using the first session
-            if channel_ref:
-                first_session = sessions[0]
-                client = TelegramClient(
-                    StringSession(first_session["session_string"]),
-                    int(TELEGRAM_API_ID),
-                    TELEGRAM_API_HASH,
-                )
-                await asyncio.wait_for(client.connect(), timeout=20)
-                try:
-                    if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
-                        raise RuntimeError("الجلسة الأولى غير مصرح بها.")
-
-                    await _join_optional_channel(client, channel_ref)
-                    # Schedule leaving after 24 hours
-                    asyncio.create_task(_leave_channel_after_delay(client, channel_ref, LEGENDARY_STAY_HOURS))
-                finally:
-                    await client.disconnect()
-
-            # Send comments using ALL available sessions
-            success_count, failed_details = await _send_batch_comments(
-                sessions,
-                post_ref,
-                post_id,
-                comment_text,
-                channel_ref=channel_ref,
+            await progress_msg.edit_text(
+                f"⏳ *جاري التنفيذ...*\n\n"
+                f"📊 {current}/{total}\n"
+                f"✅ {success} نجح | ❌ {failed} فشل",
+                parse_mode=ParseMode.MARKDOWN
             )
-
-            # Handle results
-            if success_count == 0:
-                # Refund all points if no comments were sent
-                add_points(OWNER_ID, total_cost)
-                raise RuntimeError("فشل إرسال جميع التعليقات.")
-
-            # Refund points for failed comments (pro-rata)
-            failed_count = available - success_count
-            if failed_count > 0:
-                refund_amount = failed_count * LEGENDARY_COMMENT_COST
-                add_points(OWNER_ID, refund_amount)
-
-            # Build result message
-            result_msg = f"✅ *تم نشر {success_count} من أصل {available} تعليق بنجاح!*\n\n"
-            result_msg += f"💰 تم خصم {(LEGENDARY_COMMENT_COST * success_count) + channel_cost} نقطة.\n"
-
-            if failed_count > 0:
-                result_msg += f"💰 تم إعادة {failed_count * LEGENDARY_COMMENT_COST} نقطة للتعليقات الفاشلة.\n\n"
-
-            if failed_details:
-                result_msg += "❌ *التفاصيل الفاشلة:*\n" + "\n".join(f"• {d}" for d in failed_details[:5])
-                if len(failed_details) > 5:
-                    result_msg += f"\n... و{len(failed_details) - 5} محاولات أخرى."
-
-            await q.edit_message_text(
-                result_msg,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=main_menu_kb(True),
-            )
-
-        except Exception as exc:
-            add_points(OWNER_ID, total_cost)
-            logger.warning("Legendary comment batch failed: %s", exc)
-            await q.edit_message_text(
-                f"❌ فشل الاختبار وتمت إعادة {total_cost} نقطة.\n\nالسبب: {str(exc)[:240]}",
-                reply_markup=legendary_comment_start_keyboard(),
-            )
-
+        except Exception:
+            pass
+    
+    success_count, success_phones, failed_details = await execute_batch(
+        service_type=service_type,
+        quantity=quantity,
+        sessions=sessions,
+        params=params,
+        is_owner=is_own,
+        custom_delay=custom_delay,
+        progress_callback=update_progress,
+    )
+    
+    failed_count = quantity - success_count
+    refund_points = 0
+    
+    if failed_count > 0 and payment_method == "points":
+        refund_points = failed_count * get_service_price(service_type, include_channel=False)
+        if refund_points > 0:
+            add_points(OWNER_ID, refund_points)
+    
+    await _send_group_notification(
+        context.bot,
+        OWNER_ID,
+        quantity,
+        success_count,
+        failed_count,
+        refund_points,
+        "نجوم" if payment_method == "stars" else "نقاط",
+        service_type
+    )
+    
+    await _send_completion_message(
+        context.bot,
+        OWNER_ID,
+        quantity,
+        success_count,
+        failed_count,
+        refund_points,
+        "نجوم" if payment_method == "stars" else "نقاط",
+        service_type
+    )
+    
+    result = f"✅ *اكتمل طلب {get_service_display_name(service_type)}!*\n\n"
+    result += f"📊 المطلوب: {quantity}\n"
+    result += f"✅ المنجز: {success_count}\n"
+    result += f"❌ الفاشل: {failed_count}\n"
+    result += f"💰 طريقة الدفع: {'نجوم' if payment_method == 'stars' else 'نقاط'}\n"
+    
+    if refund_points > 0:
+        result += f"💰 تم تعويضك: {refund_points} نقطة\n"
+    
+    if failed_details:
+        result += "\n❌ *التفاصيل:*\n" + "\n".join(f"• {d}" for d in failed_details[:3])
+        if len(failed_details) > 3:
+            result += f"\n... و{len(failed_details) - 3} أخرى"
+    
+    await q.edit_message_text(result, parse_mode=ParseMode.MARKDOWN, reply_markup=main_menu_kb(True))
     context.user_data["state"] = "main_menu"
+
+
+# ==================== NOTIFICATIONS ====================
+
+async def _send_start_message(bot, user_id, quantity, payment_method, service_type):
+    """Send start message."""
+    try:
+        text = (
+            f"⏳ *بدأ تنفيذ طلب {get_service_display_name(service_type)}!*\n\n"
+            f"📊 المطلوب: {quantity}\n"
+            f"💰 طريقة الدفع: {payment_method}\n\n"
+            f"سيتم إعلامك عند الاكتمال."
+        )
+        await bot.send_message(user_id, text, parse_mode=ParseMode.MARKDOWN)
+    except Exception:
+        pass
+
+
+async def _send_completion_message(bot, user_id, quantity, success_count, failed_count, refund_points, payment_method, service_type):
+    """Send completion message."""
+    try:
+        text = (
+            f"✅ *اكتمل طلب {get_service_display_name(service_type)}!*\n\n"
+            f"📊 المطلوب: {quantity}\n"
+            f"✅ المنجز: {success_count}\n"
+            f"❌ الفاشل: {failed_count}\n"
+            f"💰 طريقة الدفع: {payment_method}\n"
+        )
+        if refund_points > 0:
+            text += f"💰 تم تعويضك: {refund_points} نقطة\n"
+        await bot.send_message(user_id, text, parse_mode=ParseMode.MARKDOWN)
+    except Exception:
+        pass
+
+
+async def _send_group_notification(bot, user_id, quantity, success_count, failed_count, refund_points, payment_method, service_type):
+    """Send group notification."""
+    if not ADMIN_GROUP_ID:
+        return
+    
+    try:
+        text = (
+            f"📢 *تم إنجاز طلب {get_service_display_name(service_type)}!*\n\n"
+            f"👤 المستخدم: <code>{user_id}</code>\n"
+            f"📊 المطلوب: {quantity}\n"
+            f"✅ المنجز: {success_count}\n"
+            f"❌ الفاشل: {failed_count}\n"
+            f"💰 طريقة الدفع: {payment_method}\n"
+        )
+        if refund_points > 0:
+            text += f"💰 تم تعويض: {refund_points} نقطة\n"
+        await bot.send_message(ADMIN_GROUP_ID, text, parse_mode=ParseMode.MARKDOWN)
+    except Exception:
+        pass
+
+
+# ==================== ADMIN PRICE SETTINGS ====================
+
+def get_price_settings_kb() -> InlineKeyboardMarkup:
+    """Generate keyboard for price settings."""
+    buttons = []
+    for key, display in [
+        ("comment", "💬 تعليق"),
+        ("poll", "📊 استفتاء"),
+        ("story", "👁 ستوري"),
+        ("votes", "🗳 أصوات"),
+        ("votes_ai", "🤖 تصويت بتحقق"),
+        ("premium_reaction", "✨ تفاعل مميز"),
+        ("forced_ref", "🔑 إحالة بوت"),
+        ("forced_ref_ai", "🤖 إحالة بتحقق"),
+    ]:
+        current = get_service_price(key, include_channel=False)
+        channel = get_service_channel_price(key)
+        buttons.append([
+            InlineKeyboardButton(
+                f"{display}: {current} نقطة (+{channel} قناة)",
+                callback_data=f"legendary:edit_price:{key}"
+            )
+        ])
+    
+    buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
+    return InlineKeyboardMarkup(buttons)
+
+
+async def legendary_edit_price(update, context, q, is_own: bool, service_type: str):
+    """Start price editing for a service."""
+    if not is_own:
+        await q.answer("⛔ هذا الخيار للمالك فقط.", show_alert=True)
+        return
+    
+    context.user_data["legendary_edit_price_service"] = service_type
+    context.user_data["state"] = "legendary_edit_price_input"
+    
+    current = get_service_price(service_type, include_channel=False)
+    channel = get_service_channel_price(service_type)
+    
+    await q.edit_message_text(
+        f"✏️ *تعديل سعر {get_service_display_name(service_type)}*\n\n"
+        f"💰 السعر الحالي: {current} نقطة/وحدة\n"
+        f"📺 سعر القناة: {channel} نقطة\n\n"
+        f"أرسل السعر الجديد للوحدة (بدون القناة):",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+
+async def legendary_handle_price_edit(update, context, text: str) -> bool:
+    """Handle price edit text input."""
+    user = update.effective_user
+    if user.id != OWNER_ID:
+        return False
+    
+    if context.user_data.get("state") != "legendary_edit_price_input":
+        return False
+    
+    service_type = context.user_data.get("legendary_edit_price_service")
+    if not service_type:
+        return False
+    
+    try:
+        new_price = int(text.strip())
+        if new_price < 1:
+            await update.message.reply_text("⚠️ السعر يجب أن يكون أكبر من 0.")
+            return True
+    except ValueError:
+        await update.message.reply_text("⚠️ أرسل رقماً صحيحاً.")
+        return True
+    
+    key = PRICE_SETTINGS_KEYS.get(service_type)
+    if key:
+        set_setting(key, str(new_price))
+    
+    context.user_data["state"] = "main_menu"
+    context.user_data.pop("legendary_edit_price_service", None)
+    
+    await update.message.reply_text(
+        f"✅ تم تحديث سعر {get_service_display_name(service_type)} إلى {new_price} نقطة.",
+        reply_markup=get_price_settings_kb()
+    )
+    return True
