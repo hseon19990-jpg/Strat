@@ -128,6 +128,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as _gate_err:
             logger.warning(f"⚠️ خطأ في فحص القنوات الإجبارية للمستخدم {user.id}: {_gate_err}")
 
+    # ─── الخدمات الأسطورية تستخدم نفس مسار استقبال الرسائل لكل أنواعها ───
+    if await legendary_handle_text(update, context, text):
+        return
+
     if state in ("thank_owner_ar", "thank_owner_en") and not is_own:
         if not text:
             await update.message.reply_text("⚠️ أرسل رسالة نصية.")
@@ -156,12 +160,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=main_menu_kb(False)
             )
         context.user_data["state"] = "main_menu"
-        return
-
-    # الخدمات الأسطورية تستخدم نفس مسار استقبال الرسائل لكل أنواعها.
-    # الاسم القديم كان يشير إلى دالة محذوفة، ونتيجته كانت توقف المعالج
-    # قبل إرسال أي رد عند استقبال رابط القناة أو المنشور.
-    if await legendary_handle_text(update, context, text):
         return
 
     if state == "os_await_thank_owner_setting" and is_own:
@@ -1582,7 +1580,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             real_count = 0
 
         # ════════════════════════════════════════════════
-        # ════════════════════════════════════════════════
         if fund_type == "mandatory":
             total_stars = context.user_data.get("fund_stars_total", 1)
             context.user_data["fund_channel_username"] = channel
@@ -1608,7 +1605,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # ════════════════════════════════════════════════
         # ════════════════════════════════════════════════
         cost_per = int(get_setting("internal_channel_cost") or "100")
         cost     = context.user_data.get("fund_total_cost", cost_per * max(member_count, 1))
