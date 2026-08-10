@@ -50,6 +50,21 @@ async def pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if query.from_user.id == uid_in_payload and query.total_amount == expected_stars:
                     valid = True
 
+        # الخدمات الأسطورية بالنجوم
+        # payload: legendary_stars:{user_id}:{service_type}:{quantity}:{stars}
+        if payload.startswith("legendary_stars:"):
+            parts = payload.split(":")
+            if (
+                len(parts) == 5
+                and parts[1].isdigit()
+                and parts[3].isdigit()
+                and parts[4].isdigit()
+            ):
+                uid_in_payload = int(parts[1])
+                expected_stars = int(parts[4])
+                if query.from_user.id == uid_in_payload and query.total_amount == expected_stars:
+                    valid = True
+
         if valid:
             await query.answer(ok=True)
         else:
@@ -88,6 +103,75 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"💰 رصيدك الآن: {db_user['points']} نقطة",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=main_menu_kb(is_own)
+        )
+
+    # ─── الخدمات الأسطورية بالنجوم ───
+    elif payload.startswith("legendary_stars:"):
+        parts = payload.split(":")
+        if (
+            len(parts) != 5
+            or not parts[1].isdigit()
+            or not parts[3].isdigit()
+            or not parts[4].isdigit()
+        ):
+            await update.message.reply_text(
+                "⚠️ بيانات دفع الخدمة الأسطورية غير صالحة.",
+                reply_markup=main_menu_kb(is_own),
+            )
+            return
+
+        payload_user_id = int(parts[1])
+        service_type = parts[2]
+        quantity = int(parts[3])
+        expected_stars = int(parts[4])
+        allowed_services = {
+            "comment", "poll", "story", "votes", "votes_ai", "premium_reaction"
+        }
+        if (
+            payload_user_id != user.id
+            or service_type not in allowed_services
+            or quantity < 1
+            or expected_stars < 1
+            or payment.total_amount != expected_stars
+        ):
+            logger.error(
+                "❌ بيانات دفع الخدمة الأسطورية غير متطابقة: "
+                f"user={user.id}, payload_user={payload_user_id}, "
+                f"service={service_type}, paid={payment.total_amount}, expected={expected_stars}"
+            )
+            await update.message.reply_text(
+                "⚠️ تعذّر التحقق من عملية الدفع.",
+                reply_markup=main_menu_kb(is_own),
+            )
+            return
+
+        # يمنع تنفيذ الطلب مرة أخرى إذا أعاد تيليغرام إشعار الدفع.
+        if context.user_data.get("legendary_payment_charge_id") == payment.telegram_payment_charge_id:
+            return
+        context.user_data["legendary_payment_charge_id"] = payment.telegram_payment_charge_id
+
+        if (
+            context.user_data.get("legendary_service_type") != service_type
+            or context.user_data.get("legendary_quantity") != quantity
+        ):
+            await update.message.reply_text(
+                "⚠️ انتهت جلسة الطلب قبل تأكيد الدفع. تواصل مع المالك لمراجعة العملية.",
+                reply_markup=main_menu_kb(is_own),
+            )
+            return
+
+        context.user_data["legendary_stars_cost"] = expected_stars
+        # رسالة الدفع الناجح رسالة خدمة واردة ولا يمكن الاعتماد على تعديلها.
+        # أنشئ رسالة يملكها البوت لتحديث التقدم والنتيجة عليها.
+        progress_message = await update.message.reply_text(
+            "⏳ تم تأكيد الدفع بالنجوم، وجاري بدء تنفيذ الخدمة..."
+        )
+        await execute_legendary_order(
+            update,
+            context,
+            progress_message,
+            is_own,
+            "stars",
         )
 
     # ─── إحالة بوت إجبارية بالنجوم ───

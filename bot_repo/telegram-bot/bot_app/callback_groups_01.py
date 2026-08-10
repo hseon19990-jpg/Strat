@@ -191,11 +191,11 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             return
 
         if data == "legendary_comment:skip_channel":
-            await legendary_comment_skip_channel(update, context, q, is_own)
+            await legendary_skip_channel(update, context, q, is_own)
             return
 
         if data == "legendary_comment:confirm":
-            await legendary_comment_confirm(update, context, q, is_own)
+            await q.answer("⚠️ هذا الزر قديم. ابدأ الطلب من قائمة الخدمات الأسطورية.", show_alert=True)
             return
 
         # ─── الخدمات الأسطورية ──────────────────────────────────────────

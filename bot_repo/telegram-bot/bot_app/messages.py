@@ -158,7 +158,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
-    if await legendary_comment_handle_text(update, context, text):
+    # الخدمات الأسطورية تستخدم نفس مسار استقبال الرسائل لكل أنواعها.
+    # الاسم القديم كان يشير إلى دالة محذوفة، ونتيجته كانت توقف المعالج
+    # قبل إرسال أي رد عند استقبال رابط القناة أو المنشور.
+    if await legendary_handle_text(update, context, text):
         return
 
     if state == "os_await_thank_owner_setting" and is_own:

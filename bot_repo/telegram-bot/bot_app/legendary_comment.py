@@ -121,7 +121,15 @@ def _parse_channel_reference(value: str) -> tuple[str | None, str | None]:
         token = path.removeprefix("joinchat/").removeprefix("+")
         return f"invite:{token}", value
 
-    username = path.split("/", 1)[0]
+    # Private channel links use https://t.me/c/<channel_id>/<message_id>.
+    # The numeric channel id is a valid Telethon peer even though it has no
+    # public username.
+    path_parts = [part for part in path.split("/") if part]
+    if len(path_parts) >= 2 and path_parts[0] == "c" and path_parts[1].isdigit():
+        return f"-100{path_parts[1]}", value
+
+    # t.me/s/<username>/<message_id> is Telegram's public preview form.
+    username = path_parts[1] if path_parts and path_parts[0] == "s" and len(path_parts) > 1 else (path_parts[0] if path_parts else "")
     if username and username not in {"c", "joinchat"}:
         return f"@{username.lstrip('@')}", value
     return None, None
@@ -133,6 +141,8 @@ def _parse_post_link_parts(value: str) -> tuple[str | int | None, int | None]:
     if parsed.netloc.lower() not in {"t.me", "telegram.me", "www.t.me", "www.telegram.me"}:
         return None, None
     parts = [part for part in parsed.path.strip("/").split("/") if part]
+    if parts and parts[0] == "s":
+        parts = parts[1:]
     if len(parts) < 2 or len(parts) > 3 or not parts[-1].isdigit():
         return None, None
     if parts[0] == "c":
@@ -691,10 +701,6 @@ def legendary_services_back_kb():
 
 async def legendary_service_start(update, context, q, is_own: bool, service_type: str):
     """Start the flow for any legendary service."""
-    if not is_own:
-        await q.answer("⛔ هذه الخدمة متاحة للمالك فقط.", show_alert=True)
-        return
-    
     available = get_available_sessions_count()
     
     if available == 0:
@@ -705,6 +711,7 @@ async def legendary_service_start(update, context, q, is_own: bool, service_type
         return
     
     context.user_data["legendary_service_type"] = service_type
+    context.user_data["legendary_user_id"] = q.from_user.id
     context.user_data["legendary_step"] = "channel"
     
     for key in (
@@ -743,10 +750,6 @@ async def legendary_service_start(update, context, q, is_own: bool, service_type
 
 async def legendary_skip_channel(update, context, q, is_own: bool):
     """Skip channel step."""
-    if not is_own:
-        await q.answer("⛔ هذه الخدمة متاحة للمالك فقط.", show_alert=True)
-        return
-    
     context.user_data.pop("legendary_channel_ref", None)
     context.user_data["legendary_step"] = "main_input"
     
@@ -774,9 +777,6 @@ async def legendary_skip_channel(update, context, q, is_own: bool):
 async def legendary_handle_text(update, context, text: str) -> bool:
     """Handle text input for legendary services."""
     user = update.effective_user
-    if user.id != OWNER_ID:
-        return False
-    
     state = context.user_data.get("state", "")
     if not state:
         return False
@@ -935,6 +935,8 @@ async def legendary_handle_text(update, context, text: str) -> bool:
         points_cost = get_service_price(service_type, include_channel=False) * quantity
         channel_cost = get_service_channel_price(service_type)
         has_channel = bool(context.user_data.get("legendary_channel_ref"))
+        if has_channel:
+            points_cost += channel_cost
         channel_display = f"+{channel_cost} نقطة" if has_channel and channel_cost > 0 else "مجانية"
         
         if user.id == OWNER_ID:
@@ -981,6 +983,8 @@ async def legendary_handle_text(update, context, text: str) -> bool:
         stars_cost = get_stars_price(service_type, quantity)
         points_cost = get_service_price(service_type, include_channel=False) * quantity
         has_channel = bool(context.user_data.get("legendary_channel_ref"))
+        if has_channel:
+            points_cost += get_service_channel_price(service_type)
         
         await show_payment_options(update, context, service_type, quantity, stars_cost, points_cost, has_channel)
         return True
@@ -1013,10 +1017,6 @@ async def show_payment_options(update, context, service_type, quantity, stars_co
 
 async def legendary_payment_callback(update, context, q, is_own: bool, payment_method: str):
     """Handle payment selection."""
-    if not is_own:
-        await q.answer("⛔ هذه الخدمة متاحة للمالك فقط.", show_alert=True)
-        return
-    
     if context.user_data.get("state") not in ("legendary_payment_confirm", "legendary_payment_input"):
         await q.answer("⚠️ انتهت صلاحية الطلب، ابدأ من جديد.", show_alert=True)
         return
@@ -1036,8 +1036,10 @@ async def legendary_payment_callback(update, context, q, is_own: bool, payment_m
         total_cost = points_cost
         payment_label = f"{points_cost} نقطة"
     
+    requester_id = q.from_user.id
+
     if payment_method == "points":
-        db_user = get_user(OWNER_ID)
+        db_user = get_user(requester_id)
         if not db_user or int(db_user.get("points") or 0) < total_cost:
             await q.edit_message_text(
                 f"❌ رصيدك غير كافٍ. التكلفة: {total_cost} نقطة.\n"
@@ -1050,10 +1052,10 @@ async def legendary_payment_callback(update, context, q, is_own: bool, payment_m
     if payment_method == "stars":
         await q.delete_message()
         await context.bot.send_invoice(
-            chat_id=OWNER_ID,
+            chat_id=requester_id,
             title=f"{get_service_display_name(service_type)}",
             description=f"{quantity} وحدة | {payment_label}",
-            payload=f"legendary_stars:{service_type}:{quantity}:{stars_cost}",
+            payload=f"legendary_stars:{requester_id}:{service_type}:{quantity}:{stars_cost}",
             provider_token="",
             currency="XTR",
             prices=[LabeledPrice("خدمة أسطورية", stars_cost)],
@@ -1071,9 +1073,14 @@ async def execute_legendary_order(update, context, q, is_own: bool, payment_meth
     custom_delay = context.user_data.get("legendary_custom_delay")
     stars_cost = context.user_data.get("legendary_stars_cost", 0)
     points_cost = context.user_data.get("legendary_points_cost", 0)
+    requester_id = (
+        context.user_data.get("legendary_user_id")
+        or getattr(update.effective_user, "id", None)
+        or OWNER_ID
+    )
     
     if payment_method == "points":
-        if not deduct_points(OWNER_ID, points_cost):
+        if not deduct_points(requester_id, points_cost):
             await q.edit_message_text("❌ لم يعد رصيدك كافياً.")
             context.user_data["state"] = "main_menu"
             return
@@ -1081,12 +1088,12 @@ async def execute_legendary_order(update, context, q, is_own: bool, payment_meth
     sessions = _get_all_active_sessions()
     if not sessions:
         if payment_method == "points":
-            add_points(OWNER_ID, points_cost)
+            add_points(requester_id, points_cost)
         await q.edit_message_text("❌ لا توجد حسابات متاحة.", reply_markup=legendary_services_back_kb())
         context.user_data["state"] = "main_menu"
         return
     
-    await _send_start_message(context.bot, OWNER_ID, quantity, payment_method, service_type)
+    await _send_start_message(context.bot, requester_id, quantity, payment_method, service_type)
     
     params = {"channel_ref": channel_ref}
     
@@ -1108,10 +1115,16 @@ async def execute_legendary_order(update, context, q, is_own: bool, payment_meth
         params["post_id"] = context.user_data.get("legendary_post_id")
         params["reaction_text"] = context.user_data.get("legendary_reaction_text", "❤️")
     
-    progress_msg = await q.edit_message_text(
-        f"⏳ *جاري التنفيذ...*\n\n📊 0/{quantity}",
-        parse_mode=ParseMode.MARKDOWN
-    )
+    if hasattr(q, "edit_message_text"):
+        progress_msg = await q.edit_message_text(
+            f"⏳ *جاري التنفيذ...*\n\n📊 0/{quantity}",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    else:
+        progress_msg = await q.edit_text(
+            f"⏳ *جاري التنفيذ...*\n\n📊 0/{quantity}",
+            parse_mode=ParseMode.MARKDOWN
+        )
     
     async def update_progress(current, total, success, failed):
         try:
@@ -1140,11 +1153,11 @@ async def execute_legendary_order(update, context, q, is_own: bool, payment_meth
     if failed_count > 0 and payment_method == "points":
         refund_points = failed_count * get_service_price(service_type, include_channel=False)
         if refund_points > 0:
-            add_points(OWNER_ID, refund_points)
+            add_points(requester_id, refund_points)
     
     await _send_group_notification(
         context.bot,
-        OWNER_ID,
+        requester_id,
         quantity,
         success_count,
         failed_count,
@@ -1155,7 +1168,7 @@ async def execute_legendary_order(update, context, q, is_own: bool, payment_meth
     
     await _send_completion_message(
         context.bot,
-        OWNER_ID,
+        requester_id,
         quantity,
         success_count,
         failed_count,
@@ -1178,7 +1191,10 @@ async def execute_legendary_order(update, context, q, is_own: bool, payment_meth
         if len(failed_details) > 3:
             result += f"\n... و{len(failed_details) - 3} أخرى"
     
-    await q.edit_message_text(result, parse_mode=ParseMode.MARKDOWN, reply_markup=main_menu_kb(True))
+    if hasattr(q, "edit_message_text"):
+        await q.edit_message_text(result, parse_mode=ParseMode.MARKDOWN, reply_markup=main_menu_kb(is_own))
+    else:
+        await q.edit_text(result, parse_mode=ParseMode.MARKDOWN, reply_markup=main_menu_kb(is_own))
     context.user_data["state"] = "main_menu"
 
 
