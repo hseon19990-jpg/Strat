@@ -95,6 +95,10 @@ def mark_referral_completion(task_id: int, stock_id: int, status: str, error_msg
 # ═══════════════════════════════════════════════════════════
 # ═══════════════════════════════════════════════════════════
 
+def is_gemini_available() -> bool:
+    """يتحقق من وجود مفتاح Gemini في البيئة."""
+    return bool(os.environ.get("GEMINI_API_KEY"))
+
 # ─── دوال مساعدة للإحالة التلقائية ───
 
 def _parse_channel_tokens(raw: str) -> list:
@@ -297,6 +301,18 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
         t = (text or "").lower()
         return any(k.lower() in t for k in FAIL_KW)
 
+    def _extract_emojis_from_text(text: str) -> list:
+        """يستخرج جميع الإيموجيات من النص."""
+        result = []
+        for ch in text:
+            cp = ord(ch)
+            if (0x1F300 <= cp <= 0x1FFFF or  # إيموجي ورموز متنوعة
+                0x2600 <= cp <= 0x27BF or    # رموز متنوعة
+                0x1F900 <= cp <= 0x1F9FF or  # رموز تكميلية
+                0x1FA00 <= cp <= 0x1FAFF):   # رموز موسعة
+                result.append(ch)
+        return result
+
     async def _wait_and_check(limit: int = 3) -> tuple:
         """ينتظر رد البوت ويُرجع ('success'|'fail'|'unknown', new_msgs)."""
         await asyncio.sleep(3)
@@ -316,7 +332,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
     for _round in range(max_rounds):
         if _round > 0:
             await asyncio.sleep(3)
-            msgs = await client.get_messages(bot_entity, limit=6)
+            msgs = await client.get_messages(bot_entity, limit=10)
 
         for msg in msgs:
             msg_id = getattr(msg, "id", 0)
@@ -479,18 +495,6 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
 
                     # ── كشف مباشر: نمط "select the correct emoji: X" ──────
                     # يستخرج الإيموجي المستهدف مباشرةً من النص بدون الحاجة لـ AI
-                    def _extract_emojis_from_text(text: str) -> list:
-                        """يستخرج جميع الإيموجيات من النص."""
-                        result = []
-                        for ch in text:
-                            cp = ord(ch)
-                            if (0x1F300 <= cp <= 0x1FFFF or  # إيموجي ورموز متنوعة
-                                0x2600 <= cp <= 0x27BF or    # رموز متنوعة
-                                0x1F900 <= cp <= 0x1F9FF or  # رموز تكميلية
-                                0x1FA00 <= cp <= 0x1FAFF):   # رموز موسعة
-                                result.append(ch)
-                        return result
-
                     direct_chosen = None
                     # نمط: "correct emoji: X" أو "اختر الإيموجي: X" أو "select emoji X"
                     is_emoji_select = (
@@ -865,6 +869,9 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
         # "بتحقق" (use_ai=True)  → يحاول حل أي تحقق يطلبه البوت بالذكاء الاصطناعي
         # "بدون تحقق" (use_ai=False) → يتجاوز التحقق تماماً ويُسجَّل كنجاح
         if use_ai:
+            if not is_gemini_available():
+                return False, False, "مفتاح Gemini غير مضبوط — لا يمكن حل التحقق"
+
             _ai_solved = False
             _ai_detail = "لم يتم حل الكابتشا"
 
