@@ -455,6 +455,8 @@ def owner_settings_kb():
                     base_label + _legendary_suffix,
                     callback_data="os:toggle_legendary_services",
                 )
+    # Add legendary settings button
+    rows.append([InlineKeyboardButton("👑 إعدادات الخدمات الأسطورية", callback_data="legendary:settings")])
     rows.append([InlineKeyboardButton("🛡 إضافة مشرف", callback_data="os:add_supervisor"),
                   InlineKeyboardButton("📋 إدارة المشرفين", callback_data="os:list_supervisors")])
     rows.append([InlineKeyboardButton("👁 حسابات المشرفين", callback_data="os:sv_accounts")])
@@ -1880,5 +1882,3 @@ async def show_category_services(update: Update, context: ContextTypes.DEFAULT_T
     else:
         await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(rows),
                                         parse_mode=ParseMode.MARKDOWN)
-
-# ────────────────────────────────────────────────────────────
