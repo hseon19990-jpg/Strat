@@ -487,6 +487,7 @@ def init_db():
               ('captcha_enabled', '0'),
               ('maintenance_mode', '0'),
               ('number_exchange_enabled', '0'),
+              ('legendary_services_visible', '1'),
               ('exchange_success_msg', ''),
               ('mandatory_channel_min_members', '0'),
               ('internal_channel_min_members', '0'),

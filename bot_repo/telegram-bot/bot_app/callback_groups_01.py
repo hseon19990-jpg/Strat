@@ -159,14 +159,18 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             )
             return
 
-        if data == "services_menu":
+        if data in {"services_menu", "legendary_services"}:
+            if data == "legendary_services" and not is_own and not is_legendary_services_visible():
+                await q.answer("⚠️ خدمات أسطورية مخفية حالياً من قبل المالك.", show_alert=True)
+                return
             context.user_data["state"] = "services_menu"
             rows = build_kb_rows(get_menu_items("services_menu"))
             if is_own:
                 rows.append([InlineKeyboardButton("🧩 إضافة/إزالة خيار", callback_data="mb_menu:services_menu")])
             rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")])
+            menu_title = "👑 *خدمات أسطورية*" if data == "legendary_services" else "🛍 *خدمات*"
             await q.edit_message_text(
-                "🛍 *خدمات*\nاختر المنصة المطلوبة:",
+                f"{menu_title}\nاختر المنصة المطلوبة:",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup(rows)
             )

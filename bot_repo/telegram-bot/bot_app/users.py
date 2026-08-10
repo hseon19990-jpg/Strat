@@ -104,6 +104,10 @@ def is_maintenance_on() -> bool:
 def is_number_exchange_on() -> bool:
     return int(get_setting("number_exchange_enabled") or "0") == 1
 
+def is_legendary_services_visible() -> bool:
+    """يحدد ما إذا كان زر «خدمات أسطورية» ظاهراً للأعضاء."""
+    return int(get_setting("legendary_services_visible") or "1") == 1
+
 MAINTENANCE_MESSAGE = (
     "🛠 *البوت في وضع الصيانة حالياً*\n\n"
     "نعمل على تحسين تجربتك، ونعتذر عن أي إزعاج.\n"

@@ -29,7 +29,13 @@ def supervisor_panel_kb():
     ])
 
 def main_menu_kb(is_owner=False, is_supervisor_user=False):
-    rows = build_kb_rows(get_menu_items("main"))
+    menu_items = get_menu_items("main")
+    if not is_owner and not is_legendary_services_visible():
+        menu_items = [
+            item for item in menu_items
+            if item["action_value"] != "legendary_services"
+        ]
+    rows = build_kb_rows(menu_items)
     if is_supervisor_user and not is_owner:
         rows.append([InlineKeyboardButton("🛡 لوحة المشرف", callback_data="sv:panel")])
     if is_owner:
@@ -428,6 +434,8 @@ def owner_settings_kb():
     _maint_suffix = " (مفعل ✅)" if _maint_on else " (مغلق ❌)"
     _numex_on = is_number_exchange_on()
     _numex_suffix = " (مفعل ✅)" if _numex_on else " (مغلق ❌)"
+    _legendary_on = is_legendary_services_visible()
+    _legendary_suffix = " (ظاهر للأعضاء ✅)" if _legendary_on else " (مخفي عن الأعضاء ❌)"
     _mandatory_active = count_active_mandatory_channels()
     _verify_suffix = f" ({_mandatory_active} قناة ✅)" if _mandatory_active > 0 else " (مغلق ❌)"
     for row in rows:
@@ -441,6 +449,12 @@ def owner_settings_kb():
             elif btn.callback_data == "os:manage_channels":
                 base_label = btn.text.split(" (")[0]
                 row[i] = InlineKeyboardButton(base_label + _verify_suffix, callback_data="os:manage_channels")
+            elif btn.callback_data == "os:toggle_legendary_services":
+                base_label = btn.text.split(" (")[0]
+                row[i] = InlineKeyboardButton(
+                    base_label + _legendary_suffix,
+                    callback_data="os:toggle_legendary_services",
+                )
     rows.append([InlineKeyboardButton("🛡 إضافة مشرف", callback_data="os:add_supervisor"),
                   InlineKeyboardButton("📋 إدارة المشرفين", callback_data="os:list_supervisors")])
     rows.append([InlineKeyboardButton("👁 حسابات المشرفين", callback_data="os:sv_accounts")])

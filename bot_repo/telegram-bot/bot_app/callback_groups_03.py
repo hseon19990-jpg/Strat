@@ -2542,6 +2542,14 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
             await q.answer(f'خدمة "إحالة بميزة تحقق" أصبحت {lbl}', show_alert=True)
             return
 
+        if data == "os:toggle_legendary_services" and is_own:
+            nv = "0" if is_legendary_services_visible() else "1"
+            set_setting("legendary_services_visible", nv)
+            lbl = "مرئية للأعضاء ✅" if nv == "1" else "مخفية (مالك فقط) 🔒"
+            await q.answer(f"خدمات أسطورية أصبحت {lbl}", show_alert=True)
+            await q.edit_message_reply_markup(reply_markup=owner_settings_kb())
+            return
+
         if data == "os:ref_tasks" and is_own:
             await q.answer()
             try:

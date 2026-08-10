@@ -73,6 +73,7 @@ MANAGEABLE_MENUS = ["main", "owner_settings", "services_menu"] + [v for _, v in 
 BUILTIN_DEFAULTS = {
     "main": [
         ("🐺 خدمات", "services_menu", 1),
+        ("👑 خدمات أسطورية", "legendary_services", 1),
         ("🦇 تمويل قناتك حقيقي", "fund_channel", 1),
         ("👻 رابط دعوة", "referral", 1),
         ("👍 شحن نقاط", "charge_points", 2), ("⭐ تجميع نقاط", "collect_points", 2),
@@ -175,6 +176,7 @@ BUILTIN_DEFAULTS = {
         ("📱 استبدال الأرقام", "os:toggle_number_exchange", 2),
         ("🏆 الأكثر إرسالاً لرابط الدعوة", "os:top_referrers", 2),
         ("🎯 مسابقة رابط الدعوة", "os:referral_contest", 1),
+        ("👑 خدمات أسطورية للأعضاء", "os:toggle_legendary_services", 1),
         ("💵 رصيد موقع الرشق", "os:site_balance", 1),
         ("🧩 إدارة الأزرار", "os:manage_buttons", 1),
         ("✏️ رسالة عند الاستبدال", "os:edit_exchange_msg", 1),
