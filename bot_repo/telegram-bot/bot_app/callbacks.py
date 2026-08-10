@@ -51,6 +51,84 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_own        = (user.id == OWNER_ID)
     is_supervisor_cb = (not is_own) and is_supervisor(user.id)
 
+    # ── معالجة الخدمات الأسطورية أولاً ────────────────────────────
+    # ── الخدمات الأسطورية ──────────────────────────────────────────
+    if data.startswith("legendary:"):
+        from .legendary_comment import (
+            legendary_service_start, legendary_skip_channel, legendary_payment_choice,
+            legendary_confirm, legendary_show_settings, legendary_edit_service,
+            legendary_toggle_service, legendary_edit_price_points, legendary_edit_price_stars,
+            legendary_edit_welcome, legendary_set_delay
+        )
+
+        # ─── إعدادات المالك ───
+        if data == "legendary:settings" and is_own:
+            await legendary_show_settings(update, context, q, is_own)
+            return
+
+        if data.startswith("legendary:edit_service:") and is_own:
+            service_type = data.split(":")[2]
+            await legendary_edit_service(update, context, q, is_own, service_type)
+            return
+
+        if data.startswith("legendary:toggle_service:") and is_own:
+            service_type = data.split(":")[2]
+            await legendary_toggle_service(update, context, q, is_own, service_type)
+            return
+
+        if data.startswith("legendary:edit_price_points:") and is_own:
+            service_type = data.split(":")[2]
+            await legendary_edit_price_points(update, context, q, is_own, service_type)
+            return
+
+        if data.startswith("legendary:edit_price_stars:") and is_own:
+            service_type = data.split(":")[2]
+            await legendary_edit_price_stars(update, context, q, is_own, service_type)
+            return
+
+        if data == "legendary:edit_welcome" and is_own:
+            await legendary_edit_welcome(update, context, q, is_own)
+            return
+
+        if data == "legendary:set_delay" and is_own:
+            await legendary_set_delay(update, context, q, is_own)
+            return
+
+        # ─── دفع ───
+        if data.startswith("legendary:pay_stars:"):
+            service_type = data.split(":")[2]
+            await legendary_payment_choice(update, context, q, is_own, service_type, "stars")
+            return
+
+        if data.startswith("legendary:pay_points:"):
+            service_type = data.split(":")[2]
+            await legendary_payment_choice(update, context, q, is_own, service_type, "points")
+            return
+
+        # ─── تخطي القناة ───
+        if data.startswith("legendary:skip_channel:"):
+            service_type = data.split(":")[2]
+            await legendary_skip_channel(update, context, q, service_type)
+            return
+
+        # ─── تأكيد ───
+        if data == "legendary:confirm":
+            await legendary_confirm(update, context, q, is_own)
+            return
+
+        # ─── بدء الخدمة من القائمة ───
+        if data.startswith("legendary:start:"):
+            service_type = data.split(":")[2]
+            await legendary_service_start(update, context, q, is_own, service_type)
+            return
+
+        await q.answer("⚠️ خيار غير معروف.", show_alert=True)
+        return
+
+    # ────────────────────────────────────────────────────────────────
+    # ── باقي المعالجات (من الكود الأصلي) ──────────────────────────
+    # ────────────────────────────────────────────────────────────────
+
     if not is_own and is_user_banned(user.id):
         await q.answer("🚫 تم حظرك من استخدام هذا البوت.", show_alert=True)
         return
