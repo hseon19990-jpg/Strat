@@ -41,6 +41,7 @@ async def pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     valid = True
 
         # ─── إحالة بوت إجبارية بالنجوم ───
+        # payload: forced_ref_stars:{user_id}:{qty}:{total_stars}:{use_ai}:{cost_pts_channels}
         if payload.startswith("forced_ref_stars:"):
             parts = payload.split(":")
             if len(parts) >= 5 and parts[1].isdigit() and parts[3].isdigit():
@@ -49,7 +50,8 @@ async def pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if query.from_user.id == uid_in_payload and query.total_amount == expected_stars:
                     valid = True
 
-        # ─── الخدمات الأسطورية بالنجوم ───
+        # الخدمات الأسطورية بالنجوم
+        # payload: legendary_stars:{user_id}:{service_type}:{quantity}:{stars}
         if payload.startswith("legendary_stars:"):
             parts = payload.split(":")
             if (
@@ -173,6 +175,7 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
 
     # ─── إحالة بوت إجبارية بالنجوم ───
+    # payload: forced_ref_stars:{user_id}:{qty}:{total_stars}:{use_ai}:{cost_pts_channels}
     elif payload.startswith("forced_ref_stars:"):
         parts           = payload.split(":")
         _uid            = int(parts[1])
