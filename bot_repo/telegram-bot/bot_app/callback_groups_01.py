@@ -9,6 +9,82 @@ globals().update({key: value for key, value in vars(_shared).items() if not key.
 
 async def _handle_callback_group_01(update, context, q, data, user, is_own, is_supervisor_cb, _gmail_verification_done):
     if True:
+        # ────────────────────────────────────────────────────────────────
+        # ═══ إضافة معالج الخدمات الأسطورية الجديد (حل مشكلة الصمت) ═══
+        # ────────────────────────────────────────────────────────────────
+        if data.startswith("legendary:"):
+            from .legendary_comment import (
+                legendary_service_start, legendary_skip_channel, legendary_payment_choice,
+                legendary_confirm, legendary_show_settings, legendary_edit_service,
+                legendary_toggle_service, legendary_edit_price_points, legendary_edit_price_stars,
+                legendary_edit_welcome, legendary_set_delay
+            )
+
+            # ─── إعدادات المالك ───
+            if data == "legendary:settings" and is_own:
+                await legendary_show_settings(update, context, q, is_own)
+                return
+
+            if data.startswith("legendary:edit_service:") and is_own:
+                service_type = data.split(":")[2]
+                await legendary_edit_service(update, context, q, is_own, service_type)
+                return
+
+            if data.startswith("legendary:toggle_service:") and is_own:
+                service_type = data.split(":")[2]
+                await legendary_toggle_service(update, context, q, is_own, service_type)
+                return
+
+            if data.startswith("legendary:edit_price_points:") and is_own:
+                service_type = data.split(":")[2]
+                await legendary_edit_price_points(update, context, q, is_own, service_type)
+                return
+
+            if data.startswith("legendary:edit_price_stars:") and is_own:
+                service_type = data.split(":")[2]
+                await legendary_edit_price_stars(update, context, q, is_own, service_type)
+                return
+
+            if data == "legendary:edit_welcome" and is_own:
+                await legendary_edit_welcome(update, context, q, is_own)
+                return
+
+            if data == "legendary:set_delay" and is_own:
+                await legendary_set_delay(update, context, q, is_own)
+                return
+
+            # ─── دفع ───
+            if data.startswith("legendary:pay_stars:"):
+                service_type = data.split(":")[2]
+                await legendary_payment_choice(update, context, q, is_own, service_type, "stars")
+                return
+
+            if data.startswith("legendary:pay_points:"):
+                service_type = data.split(":")[2]
+                await legendary_payment_choice(update, context, q, is_own, service_type, "points")
+                return
+
+            # ─── تخطي القناة ───
+            if data.startswith("legendary:skip_channel:"):
+                service_type = data.split(":")[2]
+                await legendary_skip_channel(update, context, q, service_type)
+                return
+
+            # ─── تأكيد ───
+            if data == "legendary:confirm":
+                await legendary_confirm(update, context, q, is_own)
+                return
+
+            # ─── بدء الخدمة من القائمة ───
+            if data.startswith("legendary:start:"):
+                service_type = data.split(":")[2]
+                await legendary_service_start(update, context, q, is_own, service_type)
+                return
+
+            await q.answer("⚠️ خيار غير معروف.", show_alert=True)
+            return
+        # ────────────────────────────────────────────────────────────────
+
         if _gmail_verification_done:
             sub_id = None
             if ":" in data:
@@ -239,6 +315,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 "legendary:votes": "votes",
                 "legendary:votes_ai": "votes_ai",
                 "legendary:premium_reaction": "premium_reaction",
+                "legendary:forced_ref_ai": "forced_ref_ai",
             }
             
             service_type = service_map.get(data)
@@ -781,7 +858,8 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             await q.edit_message_text(
                 "🔍 *إحالات شخص معين*\n\nأرسل user_id أو @يوزرنيم:",
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:top_referrers")]]))
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:top_referrers")]])
+            )
             return
 
         if data == "os:bot_ref_numbers" and is_own:
