@@ -1089,6 +1089,7 @@ async def execute_batch(
     fallback_pool = shuffled.copy()
     fallback_attempts = 0
 
+    # Define executors for Legendary services
     executors = {
         "comment": _execute_comment,
         "poll": _execute_poll_vote,
@@ -1096,76 +1097,145 @@ async def execute_batch(
         "votes": _execute_vote,
         "votes_ai": _execute_vote,
         "premium_reaction": _execute_premium_reaction,
-        "forced_ref_ai": _execute_vote,  # Uses generic _execute_vote for AI
     }
 
     executor = executors.get(service_type)
-    if not executor:
+    
+    # For Forced Ref AI, we use the specific referral logic, not the vote logic
+    if service_type == "forced_ref_ai":
+        # This function is replaced by the custom execution loop below
+        pass
+
+    # If it's a standard legendary service
+    if service_type != "forced_ref_ai" and executor is None:
         raise RuntimeError(f"خدمة غير معروفة: {service_type}")
 
-    for i in range(quantity):
-        if not fallback_pool:
-            break
+    if service_type == "forced_ref_ai":
+        # Custom execution for Forced Ref AI
+        bot_user = params.get("bot_user")
+        start_p = params.get("start_p", "")
+        channels = params.get("channels", "")
+        leave_after = params.get("leave_after", True)
 
-        session = fallback_pool.pop(0)
-        phone = session["phone_number"]
+        if not bot_user:
+            raise RuntimeError("اسم البوت غير مكتمل في المعاملات.")
 
-        if phone in used_phones:
-            continue
-        used_phones.add(phone)
+        for i in range(quantity):
+            if not fallback_pool:
+                break
 
-        is_first = (i == 0)
+            session = fallback_pool.pop(0)
+            phone = session["phone_number"]
 
-        exec_params = {
-            "session": session,
-            "channel_ref": params.get("channel_ref"),
-            "is_first": is_first,
-        }
+            if phone in used_phones:
+                continue
+            used_phones.add(phone)
 
-        if service_type == "comment":
-            exec_params["post_ref"] = params["post_ref"]
-            exec_params["post_id"] = params["post_id"]
-            exec_params["comment_text"] = params["comment_text"]
-        elif service_type == "poll":
-            exec_params["poll_link"] = params["poll_link"]
-            exec_params["poll_option"] = params["poll_option"]
-        elif service_type == "story":
-            exec_params["story_link"] = params["story_link"]
-            exec_params["emojis"] = params["emojis"]
-        elif service_type in ["votes", "votes_ai", "forced_ref_ai"]:
-            exec_params["post_ref"] = params["post_ref"]
-            exec_params["post_id"] = params["post_id"]
-            exec_params["use_ai"] = (service_type in ["votes_ai", "forced_ref_ai"])
-        elif service_type == "premium_reaction":
-            exec_params["post_ref"] = params["post_ref"]
-            exec_params["post_id"] = params["post_id"]
-            exec_params["reaction_text"] = params["reaction_text"]
+            # Execute the referral
+            try:
+                # Check environment variables required for AI
+                if not is_ai_available():
+                    ok, detail = False, "لا يوجد مفتاح AI (Groq أو DeepSeek) للتحقق"
+                else:
+                    # Here we use the core referral function directly
+                    ok, reactiv, detail = await do_referral_for_number(
+                        phone, session["session_string"],
+                        bot_user, start_p,
+                        mandatory_channels=channels,
+                        use_ai=True,
+                        leave_channels_after=leave_after,
+                        stock_id=session.get("id", 0),
+                    )
 
-        try:
-            ok, msg = await executor(**exec_params)
-            if ok:
-                success_count += 1
-                success_phones.append(phone)
-            else:
-                failed_details.append(msg)
-                # Try to get a fallback account
-                if fallback_pool and fallback_attempts < MAX_FALLBACK_ATTEMPTS:
-                    fallback = fallback_pool.pop(0) if fallback_pool else None
-                    if fallback and fallback["phone_number"] not in used_phones:
-                        fallback_pool.append(session)
-                        fallback_pool.append(fallback)
-                        fallback_attempts += 1
-                        continue
-        except Exception as exc:
-            failed_details.append(f"❌ خطأ: {str(exc)[:80]}")
-            continue
+                if ok:
+                    success_count += 1
+                    success_phones.append(phone)
+                else:
+                    failed_details.append(detail)
+                    # Attempt fallback
+                    if fallback_pool and fallback_attempts < MAX_FALLBACK_ATTEMPTS:
+                        fallback = fallback_pool.pop(0) if fallback_pool else None
+                        if fallback and fallback["phone_number"] not in used_phones:
+                            fallback_pool.append(session)
+                            fallback_pool.append(fallback)
+                            fallback_attempts += 1
+                            continue
+            except Exception as exc:
+                failed_details.append(f"❌ خطأ: {str(exc)[:80]}")
+                continue
 
-        if progress_callback:
-            await progress_callback(i + 1, quantity, success_count, len(failed_details))
+            if progress_callback:
+                await progress_callback(i + 1, quantity, success_count, len(failed_details))
 
-        if i < quantity - 1 and fallback_pool:
-            delay = get_delay_seconds(is_owner, custom_delay)
-            await asyncio.sleep(delay)
+            if i < quantity - 1 and fallback_pool:
+                delay = get_delay_seconds(is_owner, custom_delay)
+                await asyncio.sleep(delay)
+
+    else:
+        # Standard execution for other legendary services
+        for i in range(quantity):
+            if not fallback_pool:
+                break
+
+            session = fallback_pool.pop(0)
+            phone = session["phone_number"]
+
+            if phone in used_phones:
+                continue
+            used_phones.add(phone)
+
+            is_first = (i == 0)
+
+            exec_params = {
+                "session": session,
+                "channel_ref": params.get("channel_ref"),
+                "is_first": is_first,
+            }
+
+            if service_type == "comment":
+                exec_params["post_ref"] = params["post_ref"]
+                exec_params["post_id"] = params["post_id"]
+                exec_params["comment_text"] = params["comment_text"]
+            elif service_type == "poll":
+                exec_params["poll_link"] = params["poll_link"]
+                exec_params["poll_option"] = params["poll_option"]
+            elif service_type == "story":
+                exec_params["story_link"] = params["story_link"]
+                exec_params["emojis"] = params["emojis"]
+            elif service_type in ["votes", "votes_ai"]:
+                exec_params["post_ref"] = params["post_ref"]
+                exec_params["post_id"] = params["post_id"]
+                exec_params["use_ai"] = (service_type == "votes_ai")
+            elif service_type == "premium_reaction":
+                exec_params["post_ref"] = params["post_ref"]
+                exec_params["post_id"] = params["post_id"]
+                exec_params["reaction_text"] = params["reaction_text"]
+
+            try:
+                ok, msg = await executor(**exec_params)
+                if ok:
+                    success_count += 1
+                    success_phones.append(phone)
+                else:
+                    failed_details.append(msg)
+                    # Try to get a fallback account
+                    if fallback_pool and fallback_attempts < MAX_FALLBACK_ATTEMPTS:
+                        fallback = fallback_pool.pop(0) if fallback_pool else None
+                        if fallback and fallback["phone_number"] not in used_phones:
+                            fallback_pool.append(session)
+                            fallback_pool.append(fallback)
+                            fallback_attempts += 1
+                            continue
+            except Exception as exc:
+                failed_details.append(f"❌ خطأ: {str(exc)[:80]}")
+                continue
+
+            if progress_callback:
+                await progress_callback(i + 1, quantity, success_count, len(failed_details))
+
+            if i < quantity - 1 and fallback_pool:
+                delay = get_delay_seconds(is_owner, custom_delay)
+                await asyncio.sleep(delay)
 
     return success_count, success_phones, failed_details
 
@@ -1315,7 +1385,12 @@ async def legendary_handle_text(update, context, text: str) -> bool:
 
     # --- Main input ---
     if state == "legendary_main_input":
-        if service_type in ["comment", "votes", "votes_ai", "premium_reaction"]:
+        if service_type == "forced_ref_ai":
+            # Forced Ref AI receives a link directly
+            context.user_data["legendary_forced_ref_link"] = text
+            return await _legendary_ask_quantity(update, context)
+
+        elif service_type in ["comment", "votes", "votes_ai", "premium_reaction"]:
             post_ref, post_id = _parse_post_link_parts(text)
             if post_ref is None or post_id is None:
                 await update.message.reply_text(
@@ -1358,19 +1433,6 @@ async def legendary_handle_text(update, context, text: str) -> bool:
 
             await update.message.reply_text(
                 "😊 أرسل الإيموجيات المطلوبة للتفاعل (كل إيموجي في سطر):\nمثال:\n😁\n😝\n😂\nأو أرسل `عشوائي` لاختيار عشوائي."
-            )
-            return True
-
-        elif service_type == "forced_ref_ai":
-            context.user_data["legendary_forced_ref_link"] = text
-            context.user_data["legendary_step"] = "quantity"
-            context.user_data["state"] = "legendary_quantity_input"
-
-            await update.message.reply_text(
-                "🔢 أرسل عدد الإحالات المطلوبة (لاحظ أنه يتم قبول الأعداد الزوجية فقط بسبب سعر 1.5 نجمة/حساب):",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🔙 رجوع", callback_data="legendary_services")
-                ]])
             )
             return True
 
@@ -1619,15 +1681,9 @@ async def _execute_legendary_order(update, context, q, is_own: bool, payment_met
             params["emojis"] = [random.choice(default_emojis) for _ in range(quantity)]
         else:
             params["emojis"] = emojis
-    elif service_type in ["votes", "votes_ai", "forced_ref_ai"]:
-        if service_type == "forced_ref_ai":
-            # Special handling for Forced Ref AI
-            params["post_ref"] = context.user_data.get("legendary_forced_ref_link")
-            params["post_id"] = 1  # Placeholder for the interface
-            params["use_ai"] = True
-        else:
-            params["post_ref"] = context.user_data.get("legendary_post_ref")
-            params["post_id"] = context.user_data.get("legendary_post_id")
+    elif service_type in ["votes", "votes_ai"]:
+        params["post_ref"] = context.user_data.get("legendary_post_ref")
+        params["post_id"] = context.user_data.get("legendary_post_id")
     elif service_type == "premium_reaction":
         params["post_ref"] = context.user_data.get("legendary_post_ref")
         params["post_id"] = context.user_data.get("legendary_post_id")
@@ -1637,6 +1693,32 @@ async def _execute_legendary_order(update, context, q, is_own: bool, payment_met
             params["reaction_text"] = random.choice(default_emojis)
         else:
             params["reaction_text"] = context.user_data.get("legendary_reaction_text", "❤️")
+
+    # Special preparation for Forced Ref AI
+    if service_type == "forced_ref_ai":
+        params["bot_user"] = context.user_data.get("legendary_forced_ref_link")
+        params["start_p"] = ""
+        params["channels"] = channel_ref or ""
+        params["leave_after"] = True
+        # For forced ref, we need to parse the bot link correctly
+        bot_link = params["bot_user"]
+        if bot_link:
+            try:
+                if "t.me/" in bot_link or "telegram.me/" in bot_link:
+                    from urllib.parse import urlparse, parse_qs
+                    parsed = urlparse(bot_link if bot_link.startswith("http") else "https://" + bot_link)
+                    bot_user = parsed.path.strip("/")
+                    qs = parse_qs(parsed.query)
+                    start_p = qs.get("start", [""])[0]
+                else:
+                    parts = bot_link.split(None, 1)
+                    bot_user = parts[0].lstrip("@")
+                    start_p = parts[1] if len(parts) > 1 else ""
+                
+                params["bot_user"] = bot_user
+                params["start_p"] = start_p
+            except Exception as _e:
+                logger.warning(f"⚠️ Error parsing forced ref link: {_e}")
 
     progress_msg = await q.edit_message_text(
         f"⏳ *جاري التنفيذ...*\n\n📊 0/{quantity}",
