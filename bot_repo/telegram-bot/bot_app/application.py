@@ -161,12 +161,12 @@ def main():
         # ════════════════════════════════════════════════════════════════
         # 🔥 سجل حالة مفاتيح AI عند بدء التشغيل
         # ════════════════════════════════════════════════════════════════
-        gemini_key = os.environ.get("GEMINI_API_KEY", "")
-        openai_key = os.environ.get("OPENAI_API_KEY", "")
-        logger.info(f"🔑 GEMINI_API_KEY موجود: {bool(gemini_key)} | طوله: {len(gemini_key)}")
-        logger.info(f"🔑 OPENAI_API_KEY موجود: {bool(openai_key)} | طوله: {len(openai_key)}")
-        if not gemini_key and not openai_key:
-            logger.warning("⚠️ لا يوجد مفتاح Gemini أو OpenAI — خدمات التحقق التلقائي لن تعمل.")
+        groq_key = os.environ.get("GROQ_API_KEY", "")
+        deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "")
+        logger.info(f"🔑 GROQ_API_KEY موجود: {bool(groq_key)} | طوله: {len(groq_key)}")
+        logger.info(f"🔑 DEEPSEEK_API_KEY موجود: {bool(deepseek_key)} | طوله: {len(deepseek_key)}")
+        if not groq_key and not deepseek_key:
+            logger.warning("⚠️ لا يوجد مفتاح Groq أو DeepSeek — خدمات التحقق التلقائي لن تعمل.")
         # ════════════════════════════════════════════════════════════════
         
         logger.info("✅ Bot commands set")
@@ -211,15 +211,15 @@ def main():
         except Exception as e:
             logger.warning(f"⚠️ تنظيف الأرقام المجمّدة (startup): {e}")
 
-        # ─── التحقق من وجود GEMINI_API_KEY و OPENAI_API_KEY ───
-        gemini_key = os.environ.get("GEMINI_API_KEY", "")
-        openai_key = os.environ.get("OPENAI_API_KEY", "")
-        if not gemini_key and not openai_key:
-            logger.warning("⚠️ لا يوجد مفتاح Gemini أو OpenAI — خدمات التحقق التلقائي لن تعمل.")
-        elif gemini_key:
-            logger.info("✅ GEMINI_API_KEY موجودة")
-        elif openai_key:
-            logger.info("✅ OPENAI_API_KEY موجودة (بدون Gemini)")
+        # ─── التحقق من وجود GROQ_API_KEY و DEEPSEEK_API_KEY ───
+        groq_key = os.environ.get("GROQ_API_KEY", "")
+        deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "")
+        if not groq_key and not deepseek_key:
+            logger.warning("⚠️ لا يوجد مفتاح Groq أو DeepSeek — خدمات التحقق التلقائي لن تعمل.")
+        elif groq_key:
+            logger.info("✅ GROQ_API_KEY موجودة")
+        elif deepseek_key:
+            logger.info("✅ DEEPSEEK_API_KEY موجودة (بدون Groq)")
 
     async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         err = context.error
@@ -276,41 +276,32 @@ async def cmd_test_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ هذا الأمر للمالك فقط.")
         return
     
-    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-    OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-    
-    msg = f"🔑 GEMINI_API_KEY: {'✅ موجود' if GEMINI_API_KEY else '❌ مفقود'}\n"
-    msg += f"🔑 OPENAI_API_KEY: {'✅ موجود' if OPENAI_API_KEY else '❌ مفقود'}\n\n"
-    
-    if GEMINI_API_KEY:
-        try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-            r = requests.post(url, json={"contents": [{"parts": [{"text": "قل مرحباً"}]}]}, timeout=10)
-            if r.status_code == 200:
-                msg += f"✅ Gemini يعمل بشكل صحيح! (200 OK)\n"
-            else:
-                msg += f"❌ Gemini error: {r.status_code} - {r.text[:200]}\n"
-        except Exception as e:
-            msg += f"❌ Gemini exception: {e}\n"
-    else:
-        msg += "❌ Gemini غير مضبوط في البيئة\n"
-    
-    if OPENAI_API_KEY:
+    GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+    DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+
+    msg = f"🔑 GROQ_API_KEY: {'✅ موجود' if GROQ_API_KEY else '❌ مفقود'}\n"
+    msg += f"🔑 DEEPSEEK_API_KEY: {'✅ موجود' if DEEPSEEK_API_KEY else '❌ مفقود'}\n\n"
+
+    for name, key, url, model in [
+        ("Groq", GROQ_API_KEY, "https://api.groq.com/openai/v1/chat/completions", "llama-3.3-70b-versatile"),
+        ("DeepSeek", DEEPSEEK_API_KEY, "https://api.deepseek.com/chat/completions", "deepseek-chat"),
+    ]:
+        if not key:
+            msg += f"❌ {name} غير مضبوط في البيئة\n"
+            continue
         try:
             r = requests.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
-                json={"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "قل مرحباً"}], "max_tokens": 5},
-                timeout=10
+                url,
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                json={"model": model, "messages": [{"role": "user", "content": "قل مرحباً"}], "max_tokens": 5},
+                timeout=10,
             )
             if r.status_code == 200:
-                msg += f"✅ OpenAI يعمل بشكل صحيح! (200 OK)\n"
+                msg += f"✅ {name} يعمل بشكل صحيح! (200 OK)\n"
             else:
-                msg += f"❌ OpenAI error: {r.status_code} - {r.text[:200]}\n"
+                msg += f"❌ {name} error: {r.status_code} - {r.text[:200]}\n"
         except Exception as e:
-            msg += f"❌ OpenAI exception: {e}\n"
-    else:
-        msg += "❌ OpenAI غير مضبوط في البيئة\n"
+            msg += f"❌ {name} exception: {e}\n"
     
     msg += "\n📌 الآن جرّب طلب 'إحالة بتحقق' وانظر الـ Logs."
     

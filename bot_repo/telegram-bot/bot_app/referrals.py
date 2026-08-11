@@ -95,17 +95,17 @@ def mark_referral_completion(task_id: int, stock_id: int, status: str, error_msg
 # ═══════════════════════════════════════════════════════════
 # ═══════════════════════════════════════════════════════════
 
-def is_gemini_available() -> bool:
-    """يتحقق من وجود مفتاح Gemini في البيئة."""
-    return bool(os.environ.get("GEMINI_API_KEY"))
+def is_groq_available() -> bool:
+    """يتحقق من وجود مفتاح Groq في البيئة."""
+    return bool(os.environ.get("GROQ_API_KEY"))
 
-def is_openai_available() -> bool:
-    """يتحقق من وجود مفتاح OpenAI في البيئة."""
-    return bool(os.environ.get("OPENAI_API_KEY"))
+def is_deepseek_available() -> bool:
+    """يتحقق من وجود مفتاح DeepSeek في البيئة."""
+    return bool(os.environ.get("DEEPSEEK_API_KEY"))
 
 def is_ai_available() -> bool:
-    """يتحقق من وجود أي مفتاح AI (Gemini أو OpenAI)."""
-    return is_gemini_available() or is_openai_available()
+    """يتحقق من وجود مفتاح Groq أو DeepSeek."""
+    return is_groq_available() or is_deepseek_available()
 
 def is_telegram_api_configured() -> bool:
     """يتحقق من وجود بيانات Telegram API."""
@@ -219,7 +219,7 @@ async def _join_folder_link(client, folder_url: str) -> str:
 
 async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "", max_attempts: int = 3) -> tuple:
     """
-    يستخدم Gemini AI أو OpenAI لكشف وحل جميع أنواع التحقق الشائعة في بوتات تيليغرام.
+    يستخدم Groq أو DeepSeek لكشف وحل جميع أنواع التحقق الشائعة في بوتات تيليغرام.
     يُرجع (solved: bool, detail: str).
     """
     # ════════════════════════════════════════════════════════════
@@ -227,20 +227,15 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
     # ════════════════════════════════════════════════════════════
     logger.info(f"🔥🔥🔥 solve_captcha_with_ai تم استدعاؤها للرقم {phone} 🔥🔥🔥")
     
-    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-    OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+    GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+    DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
     
-    logger.info(f"🔑 GEMINI_API_KEY موجود: {bool(GEMINI_API_KEY)} | طوله: {len(GEMINI_API_KEY)}")
-    logger.info(f"🔑 OPENAI_API_KEY موجود: {bool(OPENAI_API_KEY)} | طوله: {len(OPENAI_API_KEY)}")
+    logger.info(f"🔑 GROQ_API_KEY موجود: {bool(GROQ_API_KEY)} | طوله: {len(GROQ_API_KEY)}")
+    logger.info(f"🔑 DEEPSEEK_API_KEY موجود: {bool(DEEPSEEK_API_KEY)} | طوله: {len(DEEPSEEK_API_KEY)}")
     # ════════════════════════════════════════════════════════════
 
-    if not GEMINI_API_KEY and not OPENAI_API_KEY:
-        return False, "لا يوجد مفتاح API للتحقق (Gemini أو OpenAI)"
-
-    GEMINI_URL = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-    ) if GEMINI_API_KEY else None
+    if not GROQ_API_KEY and not DEEPSEEK_API_KEY:
+        return False, "لا يوجد مفتاح API للتحقق (Groq أو DeepSeek)"
 
     # ── كلمات دلالية ──────────────────────────────────────────
     SUCCESS_KW = [
@@ -277,86 +272,8 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
     ]
 
     # ── دوال مساعدة ───────────────────────────────────────────
-    async def _gemini_text(prompt: str) -> str | None:
-        if not GEMINI_URL:
-            return None
-        def _do_request():
-            try:
-                r = requests.post(
-                    GEMINI_URL,
-                    json={"contents": [{"parts": [{"text": prompt}]}]},
-                    timeout=30,
-                )
-                if r.status_code == 200:
-                    data = r.json()
-                    if data.get("candidates"):
-                        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                else:
-                    # 🔥 تسجيل الرد كاملاً لمعرفة الخطأ
-                    logger.warning(f"⚠️ Gemini API error {phone}: {r.status_code} - {r.text[:300]}")
-            except Exception as _e:
-                logger.warning(f"⚠️ Gemini text error ({phone}): {_e}")
-            return None
-        try:
-            return await asyncio.to_thread(_do_request)
-        except Exception:
-            return None
-
-    async def _gemini_image(prompt: str, img_bytes: bytes) -> str | None:
-        if not GEMINI_URL:
-            return None
-        def _do_request():
-            try:
-                img_b64 = base64.b64encode(img_bytes).decode()
-                r = requests.post(
-                    GEMINI_URL,
-                    json={"contents": [{"parts": [
-                        {"text": prompt},
-                        {"inlineData": {"mimeType": "image/jpeg", "data": img_b64}},
-                    ]}]},
-                    timeout=35,
-                )
-                if r.status_code == 200:
-                    data = r.json()
-                    if data.get("candidates"):
-                        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                else:
-                    logger.warning(f"⚠️ Gemini image error {phone}: {r.status_code} - {r.text[:200]}")
-            except Exception as _e:
-                logger.warning(f"⚠️ Gemini image error ({phone}): {_e}")
-            return None
-        try:
-            return await asyncio.to_thread(_do_request)
-        except Exception:
-            return None
-
-    async def _openai_text(prompt: str) -> str | None:
-        if not OPENAI_API_KEY:
-            return None
-        def _do_request():
-            try:
-                r = requests.post(
-                    "https://api.openai.com/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
-                    json={"model": "gpt-4o-mini", "messages": [{"role": "user", "content": prompt}], "max_tokens": 50},
-                    timeout=30,
-                )
-                if r.status_code == 200:
-                    data = r.json()
-                    if data.get("choices"):
-                        return data["choices"][0]["message"]["content"].strip()
-                else:
-                    logger.warning(f"⚠️ OpenAI error {phone}: {r.status_code} - {r.text[:200]}")
-            except Exception as _e:
-                logger.warning(f"⚠️ OpenAI text error ({phone}): {_e}")
-            return None
-        try:
-            return await asyncio.to_thread(_do_request)
-        except Exception:
-            return None
-
     # ════════════════════════════════════════════════════════════
-    # 🔥 _solve_text: يستخدم Groq أولاً، ثم DeepSeek، ثم Gemini، ثم OpenAI
+    # 🔥 _solve_text: يستخدم Groq أولاً، ثم DeepSeek
     # ════════════════════════════════════════════════════════════
     async def _solve_text(prompt: str) -> str | None:
         """
@@ -435,21 +352,13 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                 return result
             logger.warning("⚠️ DeepSeek فشل أيضاً!")
         
-        # ── المحاولة 3: Gemini (آخر خيار) ──
-        if GEMINI_URL:
-            return await _gemini_text(prompt)
-        
-        # ── المحاولة 4: OpenAI (آخر خيار) ──
-        if OPENAI_API_KEY:
-            return await _openai_text(prompt)
-        
         return None
 
     # ════════════════════════════════════════════════════════════
-    # 🔥 _solve_image: يستخدم Groq Vision أولاً، ثم Gemini
+    # 🔥 _solve_image: يستخدم Groq Vision
     # ════════════════════════════════════════════════════════════
     async def _solve_image(prompt: str, img_bytes: bytes) -> str | None:
-        """يحل صور الكابتشا باستخدام Groq (يدعم الرؤية) أو Gemini."""
+        """يحل صور الكابتشا باستخدام Groq Vision."""
         
         GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
         
@@ -492,10 +401,6 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
             result = await asyncio.to_thread(_groq_vision_request)
             if result:
                 return result
-        
-        # Fallback إلى Gemini
-        if GEMINI_URL:
-            return await _gemini_image(prompt, img_bytes)
         
         return None
 
@@ -747,8 +652,8 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                         else:
                             return True, f"ضغط الإيموجي | {' | '.join(all_details)}"
                     else:
-                        # ── الوضع الاحتياطي: استخدم Gemini AI ────────────────
-                        # إذا كانت الأزرار كلها إيموجيات، وضّح ذلك لـ Gemini
+                        # ── الوضع الاحتياطي: استخدم Groq أو DeepSeek ─────────
+                        # إذا كانت الأزرار كلها إيموجيات، وضّح ذلك للنموذج
                         all_emoji_btns = all(
                             bool(_extract_emojis_from_text(lbl)) for lbl in btn_labels
                         )
@@ -778,7 +683,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                                 if label.strip() == a_clean:
                                     chosen = btn
                                     break
-                            # مطابقة بالإيموجي (إذا أرجع Gemini نصاً يحتوي إيموجي)
+                            # مطابقة بالإيموجي إذا أرجع النموذج نصاً يحتوي إيموجي
                             if not chosen:
                                 ans_emojis = _extract_emojis_from_text(a_clean)
                                 if ans_emojis:
@@ -1095,7 +1000,7 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
         # "بدون تحقق" (use_ai=False) → يتجاوز التحقق تماماً ويُسجَّل كنجاح
         if use_ai:
             if not is_ai_available():
-                return False, False, "لا يوجد مفتاح AI (Gemini أو OpenAI) — لا يمكن حل التحقق"
+                return False, False, "لا يوجد مفتاح AI (Groq أو DeepSeek) — لا يمكن حل التحقق"
 
             _ai_solved = False
             _ai_detail = "لم يتم حل الكابتشا"
@@ -1130,7 +1035,7 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
             if _ai_solved:
                 steps.append(f"🤖 AI: {_ai_detail}")
             elif _ai_detail != "لم يُكتشف تحقق":
-                # فشل حقيقي مثل غياب مفتاح Gemini أو تعذر الإجابة؛ لا نسجل
+                # فشل حقيقي مثل غياب مفاتيح AI أو تعذر الإجابة؛ لا نسجل
                 # الحساب ناجحاً قبل اجتياز التحقق المطلوب.
                 return False, False, f"فشل حل الكابتشا بعد 3 محاولات: {_ai_detail}"
             else:

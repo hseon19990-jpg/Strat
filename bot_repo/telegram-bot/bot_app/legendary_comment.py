@@ -5,7 +5,7 @@ Services included:
 2. Poll - Vote on polls
 3. Story Views + Reactions - View stories and react with emojis
 4. Votes - Regular voting
-5. Votes with AI - Voting with captcha solving (Gemini/OpenAI)
+5. Votes with AI - Voting with captcha solving (Groq/DeepSeek)
 6. Premium Reaction - Special reactions on posts (with random or same emoji)
 7. Forced Referral with AI verification
 
@@ -321,19 +321,14 @@ async def _join_discussion_group(client, discussion) -> None:
 
 async def _solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "", max_attempts: int = 3) -> tuple:
     """
-    Solve captcha using Gemini or OpenAI.
+    Solve captcha using Groq or DeepSeek.
     Returns (solved: bool, detail: str).
     """
-    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-    OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+    GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+    DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 
-    if not GEMINI_API_KEY and not OPENAI_API_KEY:
-        return False, "لا يوجد مفتاح API للتحقق (Gemini أو OpenAI)"
-
-    GEMINI_URL = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-    ) if GEMINI_API_KEY else None
+    if not GROQ_API_KEY and not DEEPSEEK_API_KEY:
+        return False, "لا يوجد مفتاح API للتحقق (Groq أو DeepSeek)"
 
     # ── كلمات دلالية ──────────────────────────────────────────
     SUCCESS_KW = [
@@ -357,59 +352,15 @@ async def _solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = ""
     FORWARD_KW = ["شارك", "أرسل ملف", "ارسل ملف", "forward", "ملفك الشخصي", "profile", "بروفايل", "contact", "جهة اتصال", "رقمك", "رقم هاتفك", "شارك ملفك", "ارسل بياناتك", "بياناتك الشخصية"]
     REACTION_KW = ["تفاعل", "react", "reaction", "اضغط على", "ارسل إيموجي", "أرسل إيموجي", "انقر", "إيموجي", "emoji", "رد بـ", "reply with", "أرسل رد", "ارسل رد"]
 
-    async def _gemini_text(prompt: str) -> str | None:
-        if not GEMINI_URL:
-            return None
-        def _do_request():
-            try:
-                r = requests.post(GEMINI_URL, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=30)
-                if r.status_code == 200:
-                    data = r.json()
-                    if data.get("candidates"):
-                        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-            except Exception:
-                pass
-            return None
-        try:
-            return await asyncio.to_thread(_do_request)
-        except Exception:
-            return None
-
-    async def _gemini_image(prompt: str, img_bytes: bytes) -> str | None:
-        if not GEMINI_URL:
-            return None
-        def _do_request():
-            try:
-                img_b64 = base64.b64encode(img_bytes).decode()
-                r = requests.post(
-                    GEMINI_URL,
-                    json={"contents": [{"parts": [
-                        {"text": prompt},
-                        {"inlineData": {"mimeType": "image/jpeg", "data": img_b64}},
-                    ]}]},
-                    timeout=35,
-                )
-                if r.status_code == 200:
-                    data = r.json()
-                    if data.get("candidates"):
-                        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-            except Exception:
-                pass
-            return None
-        try:
-            return await asyncio.to_thread(_do_request)
-        except Exception:
-            return None
-
-    async def _openai_text(prompt: str) -> str | None:
-        if not OPENAI_API_KEY:
+    async def _chat_request(api_key: str, url: str, model: str, prompt: str) -> str | None:
+        if not api_key:
             return None
         def _do_request():
             try:
                 r = requests.post(
-                    "https://api.openai.com/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
-                    json={"model": "gpt-4o-mini", "messages": [{"role": "user", "content": prompt}], "max_tokens": 50},
+                    url,
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json={"model": model, "messages": [{"role": "user", "content": prompt}], "max_tokens": 50, "temperature": 0},
                     timeout=30,
                 )
                 if r.status_code == 200:
@@ -452,19 +403,49 @@ async def _solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = ""
         return "unknown", new_msgs
 
     async def _solve_text(prompt: str) -> str | None:
-        # Try Gemini first
-        if GEMINI_URL:
-            result = await _gemini_text(prompt)
-            if result:
-                return result
-        # Try OpenAI as fallback
-        if OPENAI_API_KEY:
-            return await _openai_text(prompt)
-        return None
+        result = await _chat_request(
+            GROQ_API_KEY,
+            "https://api.groq.com/openai/v1/chat/completions",
+            "llama-3.3-70b-versatile",
+            prompt,
+        )
+        if result:
+            return result
+        return await _chat_request(
+            DEEPSEEK_API_KEY,
+            "https://api.deepseek.com/chat/completions",
+            "deepseek-chat",
+            prompt,
+        )
 
     async def _solve_image(prompt: str, img_bytes: bytes) -> str | None:
-        if GEMINI_URL:
-            return await _gemini_image(prompt, img_bytes)
+        if GROQ_API_KEY:
+            def _do_vision_request():
+                try:
+                    img_b64 = base64.b64encode(img_bytes).decode()
+                    r = requests.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+                        json={"model": "meta-llama/llama-4-scout-17b-16e-instruct", "messages": [{
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt},
+                                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
+                            ],
+                        }], "max_tokens": 50, "temperature": 0},
+                        timeout=35,
+                    )
+                    if r.status_code == 200:
+                        data = r.json()
+                        if data.get("choices"):
+                            return data["choices"][0]["message"]["content"].strip()
+                except Exception:
+                    pass
+                return None
+            try:
+                return await asyncio.to_thread(_do_vision_request)
+            except Exception:
+                return None
         return None
 
     all_details: list[str] = []
