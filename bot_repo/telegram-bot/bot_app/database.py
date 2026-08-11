@@ -505,7 +505,7 @@ def init_db():
               ('mandatory_stars_min_members', '50'),
               ('mandatory_stars_tier1_max', '120'),
               ('mandatory_stars_tier1_price_x100', '50'),   # 0.50 نجمة × 100
-                            ('mandatory_stars_tier2_price_x100', '33'),   # 0.33 نجمة × 100
+              ('mandatory_stars_tier2_price_x100', '33'),   # 0.33 نجمة × 100
               ('mandatory_points_price', '5'),    # سعر العضو الواحد بالنقاط
               ('mandatory_points_min',   '50'),   # الحد الأدنى للأعضاء
               ('mansub_base_price',    '250'),
