@@ -5,6 +5,11 @@ handlers can continue to call each other while the code stays separated by
 domain.
 """
 
+import re
+import html
+import time
+import asyncio
+
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
@@ -226,8 +231,7 @@ def credit_referral_if_pending(user_id: int, context=None):
         if c.rowcount == 0:
             return None
         c.execute("UPDATE users SET points=points+%s WHERE user_id=%s", (rp, invited_by))
-    import time as _time_mod
-    _now_ts = _time_mod.time()
+    _now_ts = time.time()
     _bucket = _referral_rate_tracker.setdefault(invited_by, [])
     _bucket.append(_now_ts)
     _referral_rate_tracker[invited_by] = [t for t in _bucket if _now_ts - t <= 300]
@@ -255,7 +259,7 @@ def credit_referral_if_pending(user_id: int, context=None):
                 [InlineKeyboardButton("🔓 رفع التقييد فقط",            callback_data=f"os:ref_unblock:{invited_by}")],
             ])
             try:
-                _aio.ensure_future(_bot2.send_message(OWNER_ID, _fraud_text, parse_mode='Markdown', reply_markup=_fraud_kb))
+                asyncio.ensure_future(_bot2.send_message(OWNER_ID, _fraud_text, parse_mode='Markdown', reply_markup=_fraud_kb))
             except Exception:
                 pass
     return (invited_by, rp)
