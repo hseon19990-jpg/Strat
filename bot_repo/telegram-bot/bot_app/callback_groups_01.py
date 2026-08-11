@@ -10,14 +10,15 @@ globals().update({key: value for key, value in vars(_shared).items() if not key.
 async def _handle_callback_group_01(update, context, q, data, user, is_own, is_supervisor_cb, _gmail_verification_done):
     if True:
         # ────────────────────────────────────────────────────────────────
-        # ═══ إضافة معالج الخدمات الأسطورية الجديد (حل مشكلة الصمت) ═══
+        # ═══ معالج الخدمات الأسطورية ═══
         # ────────────────────────────────────────────────────────────────
         if data.startswith("legendary:"):
             from .legendary_comment import (
                 legendary_service_start, legendary_skip_channel, legendary_payment_choice,
                 legendary_confirm, legendary_show_settings, legendary_edit_service,
                 legendary_toggle_service, legendary_edit_price_points, legendary_edit_price_stars,
-                legendary_edit_welcome, legendary_set_delay
+                legendary_edit_welcome, legendary_set_delay, get_price_settings_kb,
+                legendary_edit_price, legendary_payment_callback, legendary_premium_reaction_callback
             )
 
             # ─── إعدادات المالك ───
@@ -53,6 +54,20 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 await legendary_set_delay(update, context, q, is_own)
                 return
 
+            # ─── تعديل الأسعار (المالك) ───
+            if data == "legendary:price_settings" and is_own:
+                await q.edit_message_text(
+                    "💰 *تعديل أسعار الخدمات الأسطورية*\n\nاختر الخدمة لتعديل سعرها:",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=get_price_settings_kb()
+                )
+                return
+
+            if data.startswith("legendary:edit_price:") and is_own:
+                service_type = data.split(":")[2]
+                await legendary_edit_price(update, context, q, is_own, service_type)
+                return
+
             # ─── دفع ───
             if data.startswith("legendary:pay_stars:"):
                 service_type = data.split(":")[2]
@@ -64,6 +79,11 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 await legendary_payment_choice(update, context, q, is_own, service_type, "points")
                 return
 
+            if data.startswith("legendary:pay:"):
+                payment_method = data.split(":")[2]
+                await legendary_payment_callback(update, context, q, is_own, payment_method)
+                return
+
             # ─── تخطي القناة ───
             if data.startswith("legendary:skip_channel:"):
                 service_type = data.split(":")[2]
@@ -73,6 +93,11 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             # ─── تأكيد ───
             if data == "legendary:confirm":
                 await legendary_confirm(update, context, q, is_own)
+                return
+
+            # ─── تفاعل مميز ───
+            if data.startswith("legendary:reaction:"):
+                await legendary_premium_reaction_callback(update, context, q, is_own, data)
                 return
 
             # ─── بدء الخدمة من القائمة ───
@@ -264,67 +289,6 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup(rows)
             )
-            return
-
-        if data == "legendary_comment:skip_channel":
-            await legendary_skip_channel(update, context, q, is_own)
-            return
-
-        if data == "legendary_comment:confirm":
-            await q.answer("⚠️ هذا الزر قديم. ابدأ الطلب من قائمة الخدمات الأسطورية.", show_alert=True)
-            return
-
-        # ─── الخدمات الأسطورية ──────────────────────────────────────────
-        if data.startswith("legendary:"):
-            if data == "legendary:price_settings" and is_own:
-                await q.edit_message_text(
-                    "💰 *تعديل أسعار الخدمات الأسطورية*\n\nاختر الخدمة لتعديل سعرها:",
-                    parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=get_price_settings_kb()
-                )
-                return
-            
-            if data.startswith("legendary:edit_price:") and is_own:
-                service_type = data.split(":")[2]
-                await legendary_edit_price(update, context, q, is_own, service_type)
-                return
-            
-            if data == "legendary:skip_channel":
-                await legendary_skip_channel(update, context, q, is_own)
-                return
-
-            if data == "legendary:set_delay":
-                await legendary_set_delay(update, context, q, is_own)
-                return
-            
-            if data.startswith("legendary:pay:"):
-                payment_method = data.split(":")[2]
-                await legendary_payment_callback(update, context, q, is_own, payment_method)
-                return
-            
-            # Handle premium reaction selection
-            if data.startswith("legendary:reaction:"):
-                await legendary_premium_reaction_callback(update, context, q, is_own, data)
-                return
-            
-            # Map service type to handler
-            service_map = {
-                "legendary:comment": "comment",
-                "legendary:poll": "poll",
-                "legendary:story": "story",
-                "legendary:votes": "votes",
-                "legendary:votes_ai": "votes_ai",
-                "legendary:premium_reaction": "premium_reaction",
-                "legendary:forced_ref_ai": "forced_ref_ai",
-            }
-            
-            service_type = service_map.get(data)
-            if service_type:
-                await legendary_service_start(update, context, q, is_own, service_type)
-                return
-            
-            # Fallback
-            await q.answer("⚠️ الخيار غير متاح حالياً.", show_alert=True)
             return
 
         if data in SERVICE_PLATFORM_MENUS:
@@ -1818,7 +1782,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 with db_conn() as c:
                     pe = c.execute(
                         "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,status,order_code) "
-                        "VALUES (%s,%s,%s,'completed',%s) RETURNING id",
+                        "VALUES (%s,%s,%s,%s,'completed',%s) RETURNING id",
                         (user.id, "telegram_number", auto_number, cost, code)
                     ).fetchone()
                 display_number = auto_number.lstrip("+")
