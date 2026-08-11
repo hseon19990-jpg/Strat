@@ -65,13 +65,13 @@ LEGENDARY_SETTINGS_KEYS = {
 
 # ==================== DEFAULT PRICES ====================
 DEFAULT_PRICES = {
-    "comment": {"points": 30, "stars": 5, "channel_points": 30},
+    "comment": {"points": 30, "stars": 7, "channel_points": 30},
     "poll": {"points": 30, "stars": 5, "channel_points": 30},
     "story": {"points": 30, "stars": 10, "channel_points": 30},
     "votes": {"points": 20, "stars": 10, "channel_points": 25},
     "votes_ai": {"points": 50, "stars": 4, "channel_points": 25},
     "premium_reaction": {"points": 10, "stars": 25, "channel_points": 0},
-    "forced_ref_ai": {"points": 300, "stars": 3, "channel_points": 25},  # 1.5 star/acc requires even numbers for payment
+    "forced_ref_ai": {"points": 300, "stars": 3, "channel_points": 25},
 }
 
 DEFAULT_WELCOME_MESSAGE = (
@@ -104,21 +104,29 @@ def is_service_enabled(service_type: str) -> bool:
 
 def get_service_price_points(service_type: str, include_channel: bool = False) -> int:
     """Get current price for a service in points."""
-    key = LEGENDARY_SETTINGS_KEYS.get(f"{service_type}_price_points")
-    if key:
-        saved = get_setting(key)
-        if saved:
-            try:
-                return int(saved)
-            except ValueError:
-                pass
-    base = DEFAULT_PRICES.get(service_type, {}).get("points", 30)
+    # للتعليق: السعر ثابت 30 نقطة
+    if service_type == "comment":
+        base = 30
+    else:
+        key = LEGENDARY_SETTINGS_KEYS.get(f"{service_type}_price_points")
+        if key:
+            saved = get_setting(key)
+            if saved:
+                try:
+                    return int(saved)
+                except ValueError:
+                    pass
+        base = DEFAULT_PRICES.get(service_type, {}).get("points", 30)
+    
     channel = DEFAULT_PRICES.get(service_type, {}).get("channel_points", 0)
     return base + (channel if include_channel else 0)
 
 
 def get_service_price_stars(service_type: str) -> int:
     """Get current price for a service in stars (per unit)."""
+    # للتعليق: 7 تعليقات = 1 نجمة
+    if service_type == "comment":
+        return 7
     key = LEGENDARY_SETTINGS_KEYS.get(f"{service_type}_price_stars")
     if key:
         saved = get_setting(key)
@@ -132,6 +140,9 @@ def get_service_price_stars(service_type: str) -> int:
 
 def get_service_channel_price(service_type: str) -> int:
     """Get channel price for a service in points."""
+    # للتعليق: القناة 30 نقطة
+    if service_type == "comment":
+        return 30
     return DEFAULT_PRICES.get(service_type, {}).get("channel_points", 0)
 
 
@@ -264,6 +275,11 @@ def get_delay_seconds(is_owner: bool, custom_delay: str = None) -> int:
             pass
     # Default: 1-8 minutes
     return random.randint(MIN_DELAY_MINUTES * 60, MAX_DELAY_MINUTES * 60)
+
+
+def get_random_delay_seconds() -> int:
+    """يُرجع تأخيراً عشوائياً بين 60 و 300 ثانية (1-5 دقائق) لخدمة التعليق."""
+    return random.randint(60, 300)
 
 
 # ==================== CHANNEL & DISCUSSION HELPERS ====================
@@ -770,7 +786,10 @@ async def _execute_comment(
             return False, "الجلسة غير مصرح بها."
 
         if is_first and channel_ref:
-            await _join_channel_and_schedule_leave(client, channel_ref)
+            # دعم قنوات متعددة (مفصولة بمسافة)
+            for ch in channel_ref.split():
+                if ch.strip():
+                    await _join_channel_and_schedule_leave(client, ch.strip())
 
         post_entity = await client.get_entity(post_ref)
         discussion = await client(
@@ -822,7 +841,9 @@ async def _execute_poll_vote(
             return False, "الجلسة غير مصرح بها."
 
         if is_first and channel_ref:
-            await _join_channel_and_schedule_leave(client, channel_ref)
+            for ch in channel_ref.split():
+                if ch.strip():
+                    await _join_channel_and_schedule_leave(client, ch.strip())
 
         parts = poll_link.split("/")
         if len(parts) < 3:
@@ -894,7 +915,9 @@ async def _execute_story_reaction(
             return False, "الجلسة غير مصرح بها."
 
         if is_first and channel_ref:
-            await _join_channel_and_schedule_leave(client, channel_ref)
+            for ch in channel_ref.split():
+                if ch.strip():
+                    await _join_channel_and_schedule_leave(client, ch.strip())
 
         parts = story_link.split("/")
         if len(parts) < 3:
@@ -961,7 +984,9 @@ async def _execute_vote(
             return False, "الجلسة غير مصرح بها."
 
         if is_first and channel_ref:
-            await _join_channel_and_schedule_leave(client, channel_ref)
+            for ch in channel_ref.split():
+                if ch.strip():
+                    await _join_channel_and_schedule_leave(client, ch.strip())
 
         post_entity = await client.get_entity(post_ref)
         messages = await client.get_messages(post_entity, ids=post_id)
@@ -1043,7 +1068,9 @@ async def _execute_premium_reaction(
             return False, "الجلسة غير مصرح بها."
 
         if is_first and channel_ref:
-            await _join_channel_and_schedule_leave(client, channel_ref)
+            for ch in channel_ref.split():
+                if ch.strip():
+                    await _join_channel_and_schedule_leave(client, ch.strip())
 
         post_entity = await client.get_entity(post_ref)
 
@@ -1168,7 +1195,11 @@ async def execute_batch(
                 await progress_callback(i + 1, quantity, success_count, len(failed_details))
 
             if i < quantity - 1 and fallback_pool:
-                delay = get_delay_seconds(is_owner, custom_delay)
+                # تأخير عشوائي 60-300 ثانية لخدمة التعليق
+                if service_type == "comment":
+                    delay = get_random_delay_seconds()
+                else:
+                    delay = get_delay_seconds(is_owner, custom_delay)
                 await asyncio.sleep(delay)
 
     else:
@@ -1234,7 +1265,11 @@ async def execute_batch(
                 await progress_callback(i + 1, quantity, success_count, len(failed_details))
 
             if i < quantity - 1 and fallback_pool:
-                delay = get_delay_seconds(is_owner, custom_delay)
+                # تأخير عشوائي 60-300 ثانية لخدمة التعليق
+                if service_type == "comment":
+                    delay = get_random_delay_seconds()
+                else:
+                    delay = get_delay_seconds(is_owner, custom_delay)
                 await asyncio.sleep(delay)
 
     return success_count, success_phones, failed_details
@@ -1279,14 +1314,12 @@ def get_price_settings_kb():
 # ==================== LEGENDARY SERVICES START ====================
 
 async def legendary_service_start(update, context, q, is_own: bool, service_type: str):
-    """Start the flow for any legendary service."""
-    # Check if service is enabled
+    """بدء خدمة رشق تعليق مع عرض الأسعار وخيارات الدفع."""
     if not is_own and not is_service_enabled(service_type):
         await q.answer("⚠️ هذه الخدمة غير متاحة حالياً.", show_alert=True)
         return
 
     available = get_available_sessions_count()
-
     if available == 0:
         await q.edit_message_text(
             "❌ لا توجد حسابات متاحة حالياً. حاول لاحقاً.",
@@ -1298,21 +1331,33 @@ async def legendary_service_start(update, context, q, is_own: bool, service_type
     context.user_data["legendary_user_id"] = q.from_user.id
     context.user_data["legendary_step"] = "welcome"
 
-    # Show welcome message with service info
     service_name = get_service_display_name(service_type)
-    price_points = get_service_price_points(service_type, include_channel=False)
-    price_stars = get_service_price_stars(service_type)
-    channel_price = get_service_channel_price(service_type)
-    channel_text = f" + {channel_price} نقطة للقناة" if channel_price > 0 else ""
+    
+    # أسعار الخدمة
+    if service_type == "comment":
+        price_points = 30  # نقطة لكل تعليق
+        price_stars = 7    # 7 تعليقات = 1 نجمة
+        channel_price = 30 # القناة الإجبارية
+    else:
+        price_points = get_service_price_points(service_type, include_channel=False)
+        price_stars = get_service_price_stars(service_type)
+        channel_price = get_service_channel_price(service_type)
 
     welcome = get_legendary_welcome()
+    
+    # عرض الأسعار وخيارات الدفع
     kb = [
-        [InlineKeyboardButton("⭐ الدفع بالنجوم", callback_data=f"legendary:pay_stars:{service_type}")],
-        [InlineKeyboardButton("💰 الدفع بالنقاط", callback_data=f"legendary:pay_points:{service_type}")],
+        [InlineKeyboardButton(
+            f"⭐ {price_stars} تعليق بـ 1 نجمة | القناة: {channel_price} نقطة",
+            callback_data=f"legendary:pay_stars:{service_type}"
+        )],
+        [InlineKeyboardButton(
+            f"💰 {price_points} نقطة/تعليق | القناة: {channel_price} نقطة",
+            callback_data=f"legendary:pay_points:{service_type}"
+        )],
         [InlineKeyboardButton("🔙 رجوع", callback_data="legendary_services")],
     ]
 
-    # Add owner settings button
     if is_own:
         kb.insert(0, [InlineKeyboardButton("⚙️ إعدادات الخدمات الأسطورية", callback_data="legendary:settings")])
 
@@ -1320,9 +1365,10 @@ async def legendary_service_start(update, context, q, is_own: bool, service_type
         f"{welcome}\n\n"
         f"📌 *الخدمة:* {service_name}\n"
         f"📝 {get_service_description(service_type)}\n\n"
-        f"💰 *السعر:*\n"
-        f"• {price_points} نقطة للوحدة{channel_text}\n"
-        f"• {price_stars} نجمة للوحدة (القناة مجانية)\n\n"
+        f"💰 *أسعار التعليق:*\n"
+        f"• {price_points} نقطة لكل تعليق\n"
+        f"• {price_stars} تعليقات = 1 نجمة\n"
+        f"• القناة الإجبارية: +{channel_price} نقطة (تُخصم مرة واحدة)\n\n"
         f"اختر طريقة الدفع:",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=InlineKeyboardMarkup(kb)
@@ -1331,13 +1377,18 @@ async def legendary_service_start(update, context, q, is_own: bool, service_type
 
 
 async def legendary_payment_choice(update, context, q, is_own: bool, service_type: str, method: str):
-    """Handle payment method selection - then ask for channel and details."""
+    """بعد اختيار الدفع، يطلب رابط القناة الإجبارية مع دعم قنوات متعددة."""
     context.user_data["legendary_payment_method"] = method
     context.user_data["legendary_step"] = "channel"
 
     await q.edit_message_text(
         "📢 *القنوات الإجبارية (اختياري)*\n\n"
-        "أرسل رابط القناة أو معرفها (مثال: @channel أو t.me/channel)\n"
+        "أرسل روابط أو معرفات القنوات التي يجب على الحسابات الانضمام إليها.\n"
+        "📌 كل قناة في سطر منفصل:\n"
+        "مثال:\n"
+        "`@channel1`\n"
+        "`@channel2`\n"
+        "`t.me/channel3`\n\n"
         "يمكنك التخطي إذا لا توجد قنوات إجبارية.",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=InlineKeyboardMarkup([
@@ -1349,22 +1400,14 @@ async def legendary_payment_choice(update, context, q, is_own: bool, service_typ
 
 
 async def legendary_skip_channel(update, context, q, service_type: str):
-    """Skip channel step and go to main input."""
+    """تخطي القناة والانتقال لطلب رابط البوست."""
     context.user_data.pop("legendary_channel_ref", None)
     context.user_data["legendary_step"] = "main_input"
 
-    prompts = {
-        "comment": "📎 أرسل رابط المنشور المطلوب التعليق عليه:",
-        "poll": "📎 أرسل رابط الاستفتاء المطلوب التصويت عليه:",
-        "story": "📎 أرسل رابط الستوري المطلوب مشاهدته:",
-        "votes": "📎 أرسل رابط الاستفتاء المطلوب التصويت عليه:",
-        "votes_ai": "📎 أرسل رابط الاستفتاء المطلوب التصويت عليه (مع تحقق):",
-        "premium_reaction": "📎 أرسل رابط المنشور المطلوب التفاعل عليه:",
-        "forced_ref_ai": "📎 أرسل رابط البوت المطلوب الإحالة عليه:\n`t.me/BotUsername?start=CODE`\nأو: `@BotUsername CODE`",
-    }
-
     await q.edit_message_text(
-        f"⏭ تم تخطي القناة.\n\n{prompts.get(service_type, 'أرسل الرابط المطلوب:')}",
+        "⏭ تم تخطي القناة.\n\n"
+        "📎 *أرسل رابط المنشور المطلوب التعليق عليه:*\n"
+        "مثال: `https://t.me/username/123`",
         reply_markup=legendary_services_back_kb()
     )
     context.user_data["state"] = "legendary_main_input"
@@ -1405,13 +1448,19 @@ async def legendary_handle_text(update, context, text: str) -> bool:
 
     service_type = context.user_data.get("legendary_service_type", "comment")
 
-    # --- Channel input ---
+    # --- Channel input (يدعم قنوات متعددة) ---
     if state == "legendary_channel_input":
-        ref, display = _parse_channel_reference(text)
-
-        if ref:
-            context.user_data["legendary_channel_ref"] = ref
-            channel_status = "حفظ"
+        channels = []
+        for line in text.splitlines():
+            line = line.strip()
+            if line:
+                ref, display = _parse_channel_reference(line)
+                if ref:
+                    channels.append(ref)
+        
+        if channels:
+            context.user_data["legendary_channel_ref"] = " ".join(channels)
+            channel_status = f"حفظ {len(channels)} قناة"
         else:
             context.user_data.pop("legendary_channel_ref", None)
             channel_status = "تخطي"
@@ -1430,7 +1479,7 @@ async def legendary_handle_text(update, context, text: str) -> bool:
         }
 
         await update.message.reply_text(
-            f"✅ تم {channel_status} القناة.\n\n{prompts.get(service_type, 'أرسل الرابط المطلوب:')}",
+            f"✅ تم {channel_status}.\n\n{prompts.get(service_type, 'أرسل الرابط المطلوب:')}",
             reply_markup=legendary_services_back_kb()
         )
         return True
