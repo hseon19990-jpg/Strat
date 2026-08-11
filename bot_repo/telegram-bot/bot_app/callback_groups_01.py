@@ -1818,7 +1818,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 with db_conn() as c:
                     pe = c.execute(
                         "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,status,order_code) "
-                        "VALUES (%s,%s,%s,%s,'completed',%s) RETURNING id",
+                        "VALUES (%s,%s,%s,'completed',%s) RETURNING id",
                         (user.id, "telegram_number", auto_number, cost, code)
                     ).fetchone()
                 display_number = auto_number.lstrip("+")
