@@ -279,15 +279,29 @@ async def cmd_test_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
     DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 
-    msg = f"🔑 GROQ_API_KEY: {'✅ موجود' if GROQ_API_KEY else '❌ مفقود'}\n"
+    msg = "🧪 فحص مفاتيح الذكاء الاصطناعي\n\n"
+    msg += f"🔑 GROQ_API_KEY: {'✅ موجود' if GROQ_API_KEY else '❌ مفقود'}\n"
     msg += f"🔑 DEEPSEEK_API_KEY: {'✅ موجود' if DEEPSEEK_API_KEY else '❌ مفقود'}\n\n"
+
+    def _http_status_message(name: str, status_code: int) -> str:
+        if status_code == 200:
+            return f"✅ {name}: يعمل بشكل صحيح | HTTP {status_code}"
+        if status_code in (401, 403):
+            return f"❌ {name}: المفتاح غير صالح أو منتهي الصلاحية | HTTP {status_code}"
+        if status_code == 429:
+            return f"⚠️ {name}: تم تجاوز حد الطلبات | HTTP {status_code}"
+        if 400 <= status_code < 500:
+            return f"❌ {name}: طلب مرفوض من الخدمة | HTTP {status_code}"
+        if status_code >= 500:
+            return f"❌ {name}: عطل مؤقت في خادم الخدمة | HTTP {status_code}"
+        return f"⚠️ {name}: استجابة غير متوقعة | HTTP {status_code}"
 
     for name, key, url, model in [
         ("Groq", GROQ_API_KEY, "https://api.groq.com/openai/v1/chat/completions", "llama-3.3-70b-versatile"),
         ("DeepSeek", DEEPSEEK_API_KEY, "https://api.deepseek.com/chat/completions", "deepseek-chat"),
     ]:
         if not key:
-            msg += f"❌ {name} غير مضبوط في البيئة\n"
+            msg += f"❌ {name}: المفتاح مفقود | HTTP —\n"
             continue
         try:
             r = requests.post(
@@ -296,16 +310,13 @@ async def cmd_test_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 json={"model": model, "messages": [{"role": "user", "content": "قل مرحباً"}], "max_tokens": 5},
                 timeout=10,
             )
-            if r.status_code == 200:
-                msg += f"✅ {name} يعمل بشكل صحيح! (200 OK)\n"
-            else:
-                msg += f"❌ {name} error: {r.status_code} - {r.text[:200]}\n"
+            msg += _http_status_message(name, r.status_code) + "\n"
         except Exception as e:
-            msg += f"❌ {name} exception: {e}\n"
+            msg += f"❌ {name}: لم يصل رد من الخدمة | HTTP — | {type(e).__name__}: {e}\n"
     
-    msg += "\n📌 الآن جرّب طلب 'إحالة بتحقق' وانظر الـ Logs."
+    msg += "\n📌 جرّب الآن طلب إحالة بتحقق للتأكد من عمل مسار الكابتشا."
     
-    await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text(msg)
 # ════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
