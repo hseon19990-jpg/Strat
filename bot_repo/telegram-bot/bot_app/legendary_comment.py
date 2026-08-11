@@ -1248,6 +1248,34 @@ def legendary_services_back_kb():
     ])
 
 
+# ==================== GET PRICE SETTINGS KB ====================
+
+def get_price_settings_kb():
+    """Keyboard for price settings."""
+    services = [
+        ("comment", "💬 تعليق"),
+        ("poll", "📊 استفتاء"),
+        ("story", "👁 ستوري"),
+        ("votes", "🗳 أصوات"),
+        ("votes_ai", "🤖 تصويت بتحقق"),
+        ("premium_reaction", "✨ تفاعل مميز"),
+        ("forced_ref_ai", "🔑 إحالة إجباري بتحقق"),
+    ]
+    rows = []
+    for key, label in services:
+        enabled = "✅" if is_service_enabled(key) else "❌"
+        points = get_service_price_points(key, include_channel=False)
+        stars = get_service_price_stars(key)
+        rows.append([
+            InlineKeyboardButton(
+                f"{enabled} {label} | {points}ن | {stars}⭐",
+                callback_data=f"legendary:edit_price:{key}"
+            )
+        ])
+    rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="legendary:settings")])
+    return InlineKeyboardMarkup(rows)
+
+
 # ==================== LEGENDARY SERVICES START ====================
 
 async def legendary_service_start(update, context, q, is_own: bool, service_type: str):
@@ -1340,6 +1368,30 @@ async def legendary_skip_channel(update, context, q, service_type: str):
         reply_markup=legendary_services_back_kb()
     )
     context.user_data["state"] = "legendary_main_input"
+
+
+async def legendary_payment_callback(update, context, q, is_own: bool, payment_method: str):
+    """Handle payment selection from callback."""
+    service_type = context.user_data.get("legendary_service_type")
+    if not service_type:
+        await q.answer("⚠️ انتهت الجلسة، ابدأ من جديد.", show_alert=True)
+        return
+    
+    await legendary_payment_choice(update, context, q, is_own, service_type, payment_method)
+
+
+async def legendary_premium_reaction_callback(update, context, q, is_own: bool, data: str):
+    """Handle premium reaction selection from callback."""
+    # Extract reaction from data
+    parts = data.split(":")
+    if len(parts) >= 3:
+        reaction = parts[2]
+        context.user_data["legendary_reaction_text"] = reaction
+        context.user_data["legendary_reaction_mode"] = "fixed"
+        await q.answer(f"✅ تم اختيار تفاعل: {reaction}")
+        await _legendary_ask_quantity(update, context)
+    else:
+        await q.answer("⚠️ تفاعل غير صالح.", show_alert=True)
 
 
 # ==================== TEXT HANDLER ====================
@@ -1551,6 +1603,54 @@ async def legendary_handle_text(update, context, text: str) -> bool:
         available = get_available_sessions_count()
         await update.message.reply_text(
             f"✅ تم ضبط الفاصل.\n\n🔢 أرسل عدد الوحدات المطلوبة (1-{min(available, MAX_QUANTITY)}):"
+        )
+        return True
+
+    # --- Price edit (owner) ---
+    if state == "legendary_edit_price_input" and user.id == OWNER_ID:
+        try:
+            new_price = int(text.strip())
+            if new_price < 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً موجباً.")
+            return True
+
+        service_type = context.user_data.get("legendary_edit_service")
+        edit_type = context.user_data.get("legendary_edit_type")
+
+        if not service_type or not edit_type:
+            await update.message.reply_text("⚠️ انتهت الجلسة، حاول مجدداً من الإعدادات.")
+            return True
+
+        key = LEGENDARY_SETTINGS_KEYS.get(f"{service_type}_price_{edit_type}")
+        if key:
+            set_setting(key, str(new_price))
+
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(
+            f"✅ تم تحديث سعر {get_service_display_name(service_type)} "
+            f"ب{'النقاط' if edit_type == 'points' else 'النجوم'} إلى {new_price}.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 رجوع للإعدادات", callback_data="legendary:settings")]
+            ])
+        )
+        return True
+
+    # --- Welcome message edit (owner) ---
+    if state == "legendary_edit_welcome_input" and user.id == OWNER_ID:
+        if not text.strip():
+            await update.message.reply_text("⚠️ الرسالة لا يمكن أن تكون فارغة.")
+            return True
+
+        set_legendary_welcome(text.strip())
+        context.user_data["state"] = "main_menu"
+
+        await update.message.reply_text(
+            "✅ تم تحديث رسالة الترحيب.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 رجوع للإعدادات", callback_data="legendary:settings")]
+            ])
         )
         return True
 
@@ -1887,6 +1987,9 @@ async def legendary_show_settings(update, context, q, is_own: bool):
         InlineKeyboardButton("✏️ تعديل رسالة الترحيب", callback_data="legendary:edit_welcome")
     ])
     rows.append([
+        InlineKeyboardButton("⏱️ ضبط الفاصل الزمني", callback_data="legendary:set_delay")
+    ])
+    rows.append([
         InlineKeyboardButton("🔙 رجوع", callback_data="legendary_services")
     ])
 
@@ -2002,67 +2105,41 @@ async def legendary_edit_welcome(update, context, q, is_own: bool):
     )
 
 
-async def legendary_handle_edit_price(update, context, text: str) -> bool:
-    """Handle price edit text input."""
-    user = update.effective_user
-    if user.id != OWNER_ID:
-        return False
+async def legendary_set_delay(update, context, q, is_own: bool):
+    """Set custom delay between accounts."""
+    if not is_own:
+        await q.answer("⛔ هذا الخيار للمالك فقط.", show_alert=True)
+        return
 
-    if context.user_data.get("state") != "legendary_edit_price_input":
-        return False
+    context.user_data["state"] = "legendary_delay_input"
+    current_delay = get_setting("legendary_default_delay") or "30-480"
 
-    service_type = context.user_data.get("legendary_edit_service")
-    edit_type = context.user_data.get("legendary_edit_type")
-    if not service_type or not edit_type:
-        return False
-
-    try:
-        new_price = int(text.strip())
-        if new_price < 1:
-            await update.message.reply_text("⚠️ السعر يجب أن يكون أكبر من 0.")
-            return True
-    except ValueError:
-        await update.message.reply_text("⚠️ أرسل رقماً صحيحاً.")
-        return True
-
-    key = LEGENDARY_SETTINGS_KEYS.get(f"{service_type}_price_{edit_type}")
-    if key:
-        set_setting(key, str(new_price))
-
-    context.user_data["state"] = "main_menu"
-    context.user_data.pop("legendary_edit_service", None)
-    context.user_data.pop("legendary_edit_type", None)
-
-    await update.message.reply_text(
-        f"✅ تم تحديث سعر {get_service_display_name(service_type)} "
-        f"ب{'النقاط' if edit_type == 'points' else 'النجوم'} إلى {new_price}.",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔙 رجوع للإعدادات", callback_data="legendary:settings")]
-        ])
+    await q.edit_message_text(
+        f"⏱️ *ضبط الفاصل الزمني بين الحسابات*\n\n"
+        f"القيمة الحالية: {current_delay} ثانية\n\n"
+        f"أرسل رقماً ثابتاً مثل `30` أو نطاقاً مثل `30-60`\n"
+        f"أو أرسل `تخطي` للإبقاء على القيمة الحالية.",
+        parse_mode=ParseMode.MARKDOWN
     )
-    return True
 
 
-async def legendary_handle_edit_welcome(update, context, text: str) -> bool:
-    """Handle welcome message edit."""
-    user = update.effective_user
-    if user.id != OWNER_ID:
-        return False
-
-    if context.user_data.get("state") != "legendary_edit_welcome_input":
-        return False
-
-    if not text.strip():
-        await update.message.reply_text("⚠️ الرسالة لا يمكن أن تكون فارغة.")
-        return True
-
-    set_legendary_welcome(text.strip())
-    context.user_data["state"] = "main_menu"
-
-    await update.message.reply_text(
-        "✅ تم تحديث رسالة الترحيب.",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔙 رجوع للإعدادات", callback_data="legendary:settings")]
-        ])
+async def legendary_edit_price(update, context, q, is_own: bool, service_type: str):
+    """Edit price for a legendary service."""
+    if not is_own:
+        await q.answer("⛔ هذا الخيار للمالك فقط.", show_alert=True)
+        return
+    
+    context.user_data["legendary_edit_service"] = service_type
+    context.user_data["legendary_edit_type"] = "points"
+    context.user_data["state"] = "legendary_edit_price_input"
+    
+    current = get_service_price_points(service_type, include_channel=False)
+    stars = get_service_price_stars(service_type)
+    
+    await q.edit_message_text(
+        f"💰 *تعديل سعر {get_service_display_name(service_type)}*\n\n"
+        f"السعر الحالي بالنقاط: {current} نقطة/وحدة\n"
+        f"السعر الحالي بالنجوم: {stars} نجمة/وحدة\n\n"
+        f"أرسل السعر الجديد بالنقاط (رقم فقط):",
+        parse_mode=ParseMode.MARKDOWN
     )
-    return True
