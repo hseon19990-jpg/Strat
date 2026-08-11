@@ -7,7 +7,7 @@ Services included:
 4. Votes - Regular voting
 5. Votes with AI - Voting with captcha solving (Groq/DeepSeek)
 6. Premium Reaction - Special reactions on posts (with random or same emoji)
-7. Forced Referral with AI verification
+7. Forced Referral with AI verification (NEW)
 
 All services support:
 - Payment by points or stars
@@ -52,12 +52,15 @@ LEGENDARY_SETTINGS_KEYS = {
     "votes_ai_price_stars": "legendary_price_votes_ai_stars",
     "premium_reaction_price_points": "legendary_price_premium_reaction_points",
     "premium_reaction_price_stars": "legendary_price_premium_reaction_stars",
+    "forced_ref_ai_price_points": "legendary_price_forced_ref_ai_points",
+    "forced_ref_ai_price_stars": "legendary_price_forced_ref_ai_stars",
     "comment_enabled": "legendary_comment_enabled",
     "poll_enabled": "legendary_poll_enabled",
     "story_enabled": "legendary_story_enabled",
     "votes_enabled": "legendary_votes_enabled",
     "votes_ai_enabled": "legendary_votes_ai_enabled",
     "premium_reaction_enabled": "legendary_premium_reaction_enabled",
+    "forced_ref_ai_enabled": "legendary_forced_ref_ai_enabled",
 }
 
 # ==================== DEFAULT PRICES ====================
@@ -68,6 +71,7 @@ DEFAULT_PRICES = {
     "votes": {"points": 20, "stars": 10, "channel_points": 25},
     "votes_ai": {"points": 50, "stars": 4, "channel_points": 25},
     "premium_reaction": {"points": 10, "stars": 25, "channel_points": 0},
+    "forced_ref_ai": {"points": 300, "stars": 3, "channel_points": 25},  # 1.5 star/acc requires even numbers for payment
 }
 
 DEFAULT_WELCOME_MESSAGE = (
@@ -140,6 +144,7 @@ def get_service_display_name(service_type: str) -> str:
         "votes": "رشق أصوات",
         "votes_ai": "رشق تصويت بتحقق",
         "premium_reaction": "رشق تفاعل مميز",
+        "forced_ref_ai": "إحالة بوت إجباري تحتوي تحقق",
     }
     return names.get(service_type, service_type)
 
@@ -153,6 +158,7 @@ def get_service_description(service_type: str) -> str:
         "votes": "🗳 تصويت على استفتاءاتك",
         "votes_ai": "🤖 تصويت مع حل تحقق تلقائي",
         "premium_reaction": "✨ تفاعلات مميزة على منشورك",
+        "forced_ref_ai": "🤖 إحالة إجبارية مع حل تحقق تلقائي للبوت المستهدف",
     }
     return descriptions.get(service_type, "")
 
@@ -496,6 +502,8 @@ async def _solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = ""
                             return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
                         elif result == "fail":
                             break
+                        else:
+                            return True, f"أُرسلت إجابة الصورة | {' | '.join(all_details)}"
                 except Exception as _e:
                     logger.warning(f"⚠️ AI image captcha ({phone}): {_e}")
                 continue
@@ -519,7 +527,9 @@ async def _solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = ""
                     all_details.append("شارك ملفه الشخصي (Contact)")
                     if result == "success":
                         return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
-                    elif result != "fail":
+                    elif result == "fail":
+                        break
+                    else:
                         return True, f"أُرسل الملف الشخصي | {' | '.join(all_details)}"
                     continue
                 except Exception as _e:
@@ -555,7 +565,9 @@ async def _solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = ""
                         all_details.append(f"أجاب Poll: {answers[chosen_idx]}")
                         if result == "success":
                             return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
-                        elif result != "fail":
+                        elif result == "fail":
+                            break
+                        else:
                             return True, f"أجاب على اختبار | {' | '.join(all_details)}"
                         continue
                 except Exception as _e:
@@ -1084,6 +1096,7 @@ async def execute_batch(
         "votes": _execute_vote,
         "votes_ai": _execute_vote,
         "premium_reaction": _execute_premium_reaction,
+        "forced_ref_ai": _execute_vote,  # Uses generic _execute_vote for AI
     }
 
     executor = executors.get(service_type)
@@ -1119,10 +1132,10 @@ async def execute_batch(
         elif service_type == "story":
             exec_params["story_link"] = params["story_link"]
             exec_params["emojis"] = params["emojis"]
-        elif service_type in ["votes", "votes_ai"]:
+        elif service_type in ["votes", "votes_ai", "forced_ref_ai"]:
             exec_params["post_ref"] = params["post_ref"]
             exec_params["post_id"] = params["post_id"]
-            exec_params["use_ai"] = (service_type == "votes_ai")
+            exec_params["use_ai"] = (service_type in ["votes_ai", "forced_ref_ai"])
         elif service_type == "premium_reaction":
             exec_params["post_ref"] = params["post_ref"]
             exec_params["post_id"] = params["post_id"]
@@ -1249,6 +1262,7 @@ async def legendary_skip_channel(update, context, q, service_type: str):
         "votes": "📎 أرسل رابط الاستفتاء المطلوب التصويت عليه:",
         "votes_ai": "📎 أرسل رابط الاستفتاء المطلوب التصويت عليه (مع تحقق):",
         "premium_reaction": "📎 أرسل رابط المنشور المطلوب التفاعل عليه:",
+        "forced_ref_ai": "📎 أرسل رابط البوت المطلوب الإحالة عليه:\n`t.me/BotUsername?start=CODE`\nأو: `@BotUsername CODE`",
     }
 
     await q.edit_message_text(
@@ -1290,6 +1304,7 @@ async def legendary_handle_text(update, context, text: str) -> bool:
             "votes": "📎 أرسل رابط الاستفتاء المطلوب التصويت عليه:",
             "votes_ai": "📎 أرسل رابط الاستفتاء المطلوب التصويت عليه (مع تحقق):",
             "premium_reaction": "📎 أرسل رابط المنشور المطلوب التفاعل عليه:",
+            "forced_ref_ai": "📎 أرسل رابط البوت المطلوب الإحالة عليه:\n`t.me/BotUsername?start=CODE`\nأو: `@BotUsername CODE`",
         }
 
         await update.message.reply_text(
@@ -1346,6 +1361,19 @@ async def legendary_handle_text(update, context, text: str) -> bool:
             )
             return True
 
+        elif service_type == "forced_ref_ai":
+            context.user_data["legendary_forced_ref_link"] = text
+            context.user_data["legendary_step"] = "quantity"
+            context.user_data["state"] = "legendary_quantity_input"
+
+            await update.message.reply_text(
+                "🔢 أرسل عدد الإحالات المطلوبة (لاحظ أنه يتم قبول الأعداد الزوجية فقط بسبب سعر 1.5 نجمة/حساب):",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 رجوع", callback_data="legendary_services")
+                ]])
+            )
+            return True
+
     # --- Poll option input ---
     if state == "legendary_poll_option_input":
         context.user_data["legendary_poll_option"] = text.strip()
@@ -1390,6 +1418,16 @@ async def legendary_handle_text(update, context, text: str) -> bool:
                 f"⚠️ العدد المسموح بين 1 و {min(available, MAX_QUANTITY)} فقط."
             )
             return True
+        
+        # Check for even number in AI Forced Ref
+        if service_type == "forced_ref_ai":
+            if quantity % 2 != 0:
+                await update.message.reply_text(
+                    "⚠️ في وضع *إحالة بوت إجباري تحتوي تحقق* يُقبل فقط *أعداد زوجية* (٢، ٤، ٦...)\n"
+                    "السبب: سعر الحساب ١.٥ نجمة ولا يمكن كسر النجمة في تيليغرام.",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                return True
 
         context.user_data["legendary_quantity"] = quantity
         context.user_data["state"] = "legendary_confirm"
@@ -1581,9 +1619,15 @@ async def _execute_legendary_order(update, context, q, is_own: bool, payment_met
             params["emojis"] = [random.choice(default_emojis) for _ in range(quantity)]
         else:
             params["emojis"] = emojis
-    elif service_type in ["votes", "votes_ai"]:
-        params["post_ref"] = context.user_data.get("legendary_post_ref")
-        params["post_id"] = context.user_data.get("legendary_post_id")
+    elif service_type in ["votes", "votes_ai", "forced_ref_ai"]:
+        if service_type == "forced_ref_ai":
+            # Special handling for Forced Ref AI
+            params["post_ref"] = context.user_data.get("legendary_forced_ref_link")
+            params["post_id"] = 1  # Placeholder for the interface
+            params["use_ai"] = True
+        else:
+            params["post_ref"] = context.user_data.get("legendary_post_ref")
+            params["post_id"] = context.user_data.get("legendary_post_id")
     elif service_type == "premium_reaction":
         params["post_ref"] = context.user_data.get("legendary_post_ref")
         params["post_id"] = context.user_data.get("legendary_post_id")
@@ -1741,6 +1785,7 @@ async def legendary_show_settings(update, context, q, is_own: bool):
         ("votes", "🗳 أصوات"),
         ("votes_ai", "🤖 تصويت بتحقق"),
         ("premium_reaction", "✨ تفاعل مميز"),
+        ("forced_ref_ai", "🔑 إحالة إجباري بتحقق"),
     ]
 
     rows = []
