@@ -86,13 +86,13 @@ LEGENDARY_SERVICES_MESSAGE = (
 )
 
 LEGENDARY_SERVICE_OPTIONS = [
-    ("💬 رشق تعليق", "legendary:comment", 1),
-    ("📊 رشق استفتاء", "legendary:poll", 1),
-    ("👁 رشق مشاهدة وتفاعل ستوري", "legendary:story", 1),
-    ("🗳 رشق أصوات", "legendary:votes", 1),
-    ("🤖 رشق تصويت بتحقق", "legendary:votes_ai", 1),
-    ("✨ رشق تفاعل مميز", "legendary:premium_reaction", 1),
-    ("🤖 إحالة بوت إجباري تحتوي تحقق", "legendary:forced_ref_ai", 1),
+    ("💬 رشق تعليق", "legendary:start:comment", 1),
+    ("📊 رشق استفتاء", "legendary:start:poll", 1),
+    ("👁 رشق مشاهدة وتفاعل ستوري", "legendary:start:story", 1),
+    ("🗳 رشق أصوات", "legendary:start:votes", 1),
+    ("🤖 رشق تصويت بتحقق", "legendary:start:votes_ai", 1),
+    ("✨ رشق تفاعل مميز", "legendary:start:premium_reaction", 1),
+    ("🤖 إحالة بوت إجباري تحتوي تحقق", "legendary:start:forced_ref_ai", 1),
 ]
 
 BUILTIN_DEFAULTS = {
