@@ -34,7 +34,7 @@ import json
 LEGENDARY_STAY_HOURS = 24
 MIN_DELAY_MINUTES = 1
 MAX_DELAY_MINUTES = 8
-MAX_QUANTITY = 50
+# MAX_QUANTITY محذوف — سيتم استخدام عدد الحسابات المتاحة ديناميكياً
 MAX_FALLBACK_ATTEMPTS = 5
 
 # ==================== SETTINGS KEYS ====================
@@ -279,6 +279,20 @@ def get_delay_seconds(is_owner: bool, custom_delay: str = None) -> int:
 
 def get_random_delay_seconds() -> int:
     """يُرجع تأخيراً عشوائياً بين 60 و 300 ثانية (1-5 دقائق) لخدمة التعليق."""
+    return random.randint(60, 300)
+
+
+def get_custom_delay_seconds(custom_delay: str = None) -> int:
+    """يُرجع التأخير المخصص من المالك، أو 60-300 عشوائي إذا لم يُحدد."""
+    if custom_delay:
+        try:
+            if "-" in custom_delay:
+                parts = custom_delay.split("-")
+                return random.randint(int(parts[0].strip()), int(parts[1].strip()))
+            else:
+                return int(custom_delay.strip())
+        except (ValueError, TypeError):
+            pass
     return random.randint(60, 300)
 
 
@@ -785,8 +799,8 @@ async def _execute_comment(
         if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
             return False, "الجلسة غير مصرح بها."
 
+        # دعم قنوات متعددة (مفصولة بمسافة)
         if is_first and channel_ref:
-            # دعم قنوات متعددة (مفصولة بمسافة)
             for ch in channel_ref.split():
                 if ch.strip():
                     await _join_channel_and_schedule_leave(client, ch.strip())
@@ -1195,11 +1209,8 @@ async def execute_batch(
                 await progress_callback(i + 1, quantity, success_count, len(failed_details))
 
             if i < quantity - 1 and fallback_pool:
-                # تأخير عشوائي 60-300 ثانية لخدمة التعليق
-                if service_type == "comment":
-                    delay = get_random_delay_seconds()
-                else:
-                    delay = get_delay_seconds(is_owner, custom_delay)
+                # استخدام التأخير المخصص إن وُجد، وإلا عشوائي
+                delay = get_custom_delay_seconds(custom_delay)
                 await asyncio.sleep(delay)
 
     else:
@@ -1265,11 +1276,8 @@ async def execute_batch(
                 await progress_callback(i + 1, quantity, success_count, len(failed_details))
 
             if i < quantity - 1 and fallback_pool:
-                # تأخير عشوائي 60-300 ثانية لخدمة التعليق
-                if service_type == "comment":
-                    delay = get_random_delay_seconds()
-                else:
-                    delay = get_delay_seconds(is_owner, custom_delay)
+                # استخدام التأخير المخصص إن وُجد، وإلا عشوائي
+                delay = get_custom_delay_seconds(custom_delay)
                 await asyncio.sleep(delay)
 
     return success_count, success_phones, failed_details
@@ -1576,9 +1584,9 @@ async def legendary_handle_text(update, context, text: str) -> bool:
         quantity = int(qty_text)
         available = get_available_sessions_count()
 
-        if quantity < 1 or quantity > min(available, MAX_QUANTITY):
+        if quantity < 1 or quantity > available:
             await update.message.reply_text(
-                f"⚠️ العدد المسموح بين 1 و {min(available, MAX_QUANTITY)} فقط."
+                f"⚠️ العدد المسموح بين 1 و {available} فقط."
             )
             return True
         
@@ -1651,7 +1659,7 @@ async def legendary_handle_text(update, context, text: str) -> bool:
 
         available = get_available_sessions_count()
         await update.message.reply_text(
-            f"✅ تم ضبط الفاصل.\n\n🔢 أرسل عدد الوحدات المطلوبة (1-{min(available, MAX_QUANTITY)}):"
+            f"✅ تم ضبط الفاصل.\n\n🔢 أرسل عدد الوحدات المطلوبة (1-{available}):"
         )
         return True
 
@@ -1707,7 +1715,7 @@ async def legendary_handle_text(update, context, text: str) -> bool:
 
 
 async def _legendary_ask_quantity(update, context) -> bool:
-    """Ask for quantity."""
+    """Ask for quantity - الحد الأقصى = عدد الحسابات المتاحة."""
     available = get_available_sessions_count()
     context.user_data["legendary_step"] = "quantity"
     context.user_data["state"] = "legendary_quantity_input"
@@ -1719,7 +1727,7 @@ async def _legendary_ask_quantity(update, context) -> bool:
         kb.insert(0, [InlineKeyboardButton("⏱️ تخصيص الفاصل (اختياري)", callback_data="legendary:set_delay")])
 
     await update.message.reply_text(
-        f"🔢 أرسل عدد الوحدات المطلوبة (1-{min(available, MAX_QUANTITY)}):",
+        f"🔢 أرسل عدد الوحدات المطلوبة (1-{available}):",
         reply_markup=InlineKeyboardMarkup(kb)
     )
     return True
@@ -1929,16 +1937,13 @@ async def _execute_legendary_order(update, context, q, is_own: bool, payment_met
     result = f"✅ *اكتمل طلب {get_service_display_name(service_type)}!*\n\n"
     result += f"📊 المطلوب: {quantity}\n"
     result += f"✅ المنجز: {success_count}\n"
-    result += f"❌ الفاشل: {failed_count}\n"
     result += f"💰 طريقة الدفع: {'نجوم' if payment_method == 'stars' else 'نقاط'}\n"
 
     if refund_points > 0:
         result += f"💰 تم تعويضك: {refund_points} نقطة\n"
 
-    if failed_details:
-        result += "\n❌ *التفاصيل:*\n" + "\n".join(f"• {d}" for d in failed_details[:3])
-        if len(failed_details) > 3:
-            result += f"\n... و{len(failed_details) - 3} أخرى"
+    # إخفاء الفاشلة من رسالة المستخدم
+    # لا نضيف failed_details هنا
 
     await q.edit_message_text(
         result,
@@ -1965,14 +1970,12 @@ async def _send_start_message(bot, user_id, quantity, payment_method, service_ty
 
 
 async def _send_completion_message(bot, user_id, quantity, success_count, failed_count, refund_points, payment_method, service_type):
-    """Send completion message."""
+    """إرسال رسالة اكتمال للمستخدم (تظهر الناجحة فقط، الفاشلة تختفي)."""
     try:
         text = (
             f"✅ *اكتمل طلب {get_service_display_name(service_type)}!*\n\n"
             f"📊 المطلوب: {quantity}\n"
             f"✅ المنجز: {success_count}\n"
-            f"❌ الفاشل: {failed_count}\n"
-            f"💰 طريقة الدفع: {payment_method}\n"
         )
         if refund_points > 0:
             text += f"💰 تم تعويضك: {refund_points} نقطة\n"
@@ -1982,23 +1985,25 @@ async def _send_completion_message(bot, user_id, quantity, success_count, failed
 
 
 async def _send_group_notification(bot, user_id, quantity, success_count, failed_count, refund_points, payment_method, service_type):
-    """Send group notification (only positive info)."""
+    """إرسال إشعار لكروب الطلبات (فقط للنجاح، وليس للمالك)."""
     if not ADMIN_GROUP_ID:
+        return
+    # المالك لا تصل طلباته للكروب
+    if user_id == OWNER_ID:
         return
 
     try:
         text = (
-            f"📢 *تم إنجاز طلب {get_service_display_name(service_type)}!*\n\n"
-            f"👤 المستخدم: <code>{user_id}</code>\n"
+            f"📢 *طلب جديد!*\n\n"
+            f"👤 المستخدم: <a href='tg://user?id={user_id}'>{user_id}</a>\n"
+            f"📌 الخدمة: {service_type}\n"
             f"📊 المطلوب: {quantity}\n"
             f"✅ المنجز: {success_count}\n"
             f"💰 طريقة الدفع: {payment_method}\n"
         )
-        if refund_points > 0:
-            text += f"💰 تم تعويض: {refund_points} نقطة\n"
-        await bot.send_message(ADMIN_GROUP_ID, text, parse_mode=ParseMode.MARKDOWN)
-    except Exception:
-        pass
+        await bot.send_message(ADMIN_GROUP_ID, text, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        logger.warning(f"_send_group_notification error: {e}")
 
 
 # ==================== OWNER SETTINGS ====================
