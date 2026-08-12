@@ -3742,7 +3742,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 try:
                     await context.bot.send_message(target_id, f"⚠️ تم خصم *{actual}* نقطة من رصيدك من قبل الإدارة.\n💰 رصيدك الآن: *{new_bal}* نقطة", parse_mode=ParseMode.MARKDOWN)
                 except Exception:
-                    pass)
+                    pass
         return
 
     if is_own and state == "os_await_pkg_stars":
