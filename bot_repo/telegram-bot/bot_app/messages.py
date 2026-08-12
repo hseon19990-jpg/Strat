@@ -238,35 +238,116 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if state == "thank_owner_photo" and not is_own and update.message.photo:
-        sender = f"{user.full_name or 'مستخدم'}"
-        if user.username:
-            sender += f" (@{user.username})"
-        caption = (
-            f"💌 صورة شكر جديدة\n\n"
-            f"👤 المرسل: {sender}\n"
-            f"🆔 ID: {user.id}"
-        )
-        if update.message.caption:
-            caption += f"\n\n💬 تعليق المرسل:\n{update.message.caption}"
-        try:
-            await context.bot.send_photo(
-                chat_id=OWNER_ID,
-                photo=update.message.photo[-1].file_id,
-                caption=caption[:1024]
-            )
-            await update.message.reply_text(
-                get_setting("thank_owner_success_message")
-                or "✅ تم إرسال شكرك إلى المالك، شكراً لك!",
-                reply_markup=main_menu_kb(False)
-            )
-        except Exception:
-            logger.exception("فشل إرسال صورة شكر إلى المالك")
-            await update.message.reply_text(
-                "⚠️ تعذر إرسال الصورة حالياً، حاول مرة أخرى لاحقاً.",
-                reply_markup=main_menu_kb(False)
-            )
+    # ─── معالجة البايو ──────────────────────────────────────────────
+    if state == "os_await_account_bios" and is_own:
         context.user_data["state"] = "main_menu"
+        bios = _parse_generic_lines(text)
+        if not bios:
+            await update.message.reply_text(
+                "⚠️ لم أجد بايو صالحاً.\n"
+                "أرسل بايو واحداً في كل سطر:",
+                reply_markup=account_info_kb(),
+            )
+            return
+
+        available_accounts = _load_unassigned_bio_accounts()
+        progress = await update.message.reply_text(
+            f"⏳ جارٍ توزيع {len(bios):,} بايو على الحسابات بالتسلسل..."
+        )
+        success = []
+        failed = []
+        for account, bio in zip(available_accounts, bios):
+            phone = account["phone_number"]
+            try:
+                await _apply_account_bio(phone, bio)
+                success.append(f"{bio[:30]}… → {phone}")
+            except Exception as exc:
+                logger.warning(f"⚠️ فشل تحديث البايو للحساب {phone}: {exc}")
+                failed.append(f"{bio[:30]}… → {phone} — {str(exc)[:120]}")
+
+        unassigned = bios[len(available_accounts):]
+        if unassigned:
+            failed.extend(
+                f"{b[:30]}… — لا يوجد حساب متاح"
+                for b in unassigned
+            )
+
+        result_lines = [
+            f"📝 *تقرير تحديث البايو*",
+            f"✅ تم تعيينه: {len(success):,}",
+            f"❌ لم يتم تعيينه: {len(failed):,}",
+        ]
+        if success:
+            result_lines.append("\n✅ الناجحة:\n" + "\n".join(f"• {item}" for item in success[:30]))
+            if len(success) > 30:
+                result_lines.append(f"• ... و{len(success) - 30:,} بايو آخر")
+        if failed:
+            result_lines.append("\n❌ الفاشلة:\n" + "\n".join(f"• {item}" for item in failed[:30]))
+            if len(failed) > 30:
+                result_lines.append(f"• ... و{len(failed) - 30:,} بايو آخر")
+        await progress.edit_text(
+            "\n".join(result_lines),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
+            ]),
+        )
+        return
+
+    # ─── معالجة اليوزرات ──────────────────────────────────────────────
+    if state == "os_await_account_usernames" and is_own:
+        context.user_data["state"] = "main_menu"
+        usernames = _parse_generic_lines(text)
+        if not usernames:
+            await update.message.reply_text(
+                "⚠️ لم أجد يوزرات صالحة.\n"
+                "أرسل يوزر واحداً في كل سطر (بدون @):",
+                reply_markup=account_info_kb(),
+            )
+            return
+
+        available_accounts = _load_unassigned_username_accounts()
+        progress = await update.message.reply_text(
+            f"⏳ جارٍ توزيع {len(usernames):,} يوزر على الحسابات بالتسلسل..."
+        )
+        success = []
+        failed = []
+        for account, username in zip(available_accounts, usernames):
+            phone = account["phone_number"]
+            try:
+                await _apply_account_username(phone, username)
+                success.append(f"@{username} → {phone}")
+            except Exception as exc:
+                logger.warning(f"⚠️ فشل تحديث اليوزر للحساب {phone}: {exc}")
+                failed.append(f"@{username} → {phone} — {str(exc)[:120]}")
+
+        unassigned = usernames[len(available_accounts):]
+        if unassigned:
+            failed.extend(
+                f"@{u} — لا يوجد حساب متاح"
+                for u in unassigned
+            )
+
+        result_lines = [
+            f"🔖 *تقرير تحديث اليوزرات*",
+            f"✅ تم تعيينه: {len(success):,}",
+            f"❌ لم يتم تعيينه: {len(failed):,}",
+        ]
+        if success:
+            result_lines.append("\n✅ الناجحة:\n" + "\n".join(f"• {item}" for item in success[:30]))
+            if len(success) > 30:
+                result_lines.append(f"• ... و{len(success) - 30:,} يوزر آخر")
+        if failed:
+            result_lines.append("\n❌ الفاشلة:\n" + "\n".join(f"• {item}" for item in failed[:30]))
+            if len(failed) > 30:
+                result_lines.append(f"• ... و{len(failed) - 30:,} يوزر آخر")
+        await progress.edit_text(
+            "\n".join(result_lines),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
+            ]),
+        )
         return
 
     if state == "os_import_hex" and is_own:
@@ -3661,7 +3742,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 try:
                     await context.bot.send_message(target_id, f"⚠️ تم خصم *{actual}* نقطة من رصيدك من قبل الإدارة.\n💰 رصيدك الآن: *{new_bal}* نقطة", parse_mode=ParseMode.MARKDOWN)
                 except Exception:
-                    pass
+                    pass)
         return
 
     if is_own and state == "os_await_pkg_stars":
