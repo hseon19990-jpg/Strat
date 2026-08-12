@@ -200,10 +200,8 @@ def _parse_post_link_parts(value: str) -> tuple[str | int | None, int | None]:
 def _get_all_active_sessions() -> list[dict]:
     """Load all stored sessions that are valid for service operations.
 
-    ``ever_sold`` and ``assigned_to`` describe the sales workflow, not
-    whether an owner session can perform a service. Excluding those rows here
-    made the service menu report zero accounts even when the stock contained
-    many valid sessions.
+    Sales and inventory flags are not used here because the service executor
+    validates the Telegram session when it connects.
     """
     with db_conn() as c:
         rows = c.execute(
