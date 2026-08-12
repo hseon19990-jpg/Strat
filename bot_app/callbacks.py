@@ -89,7 +89,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _gmail_verification_done = (
         data == "gmail_verify_done" or data.startswith("gmail_verify_done:")
     )
-    if data not in _GATE_EXEMPT and not _gmail_verification_done and not data.startswith("join_verify:") and not data.startswith("thank_owner") and not _owner_admin_action and not _sv_admin_action[...]
+    # Fixed syntax here: removed stray '[...]' and added trailing ':'
+    if data not in _GATE_EXEMPT and not _gmail_verification_done and not data.startswith("join_verify:") and not data.startswith("thank_owner") and not _owner_admin_action and not _sv_admin_action:
         try:
             _db_user = get_user(user.id)
             if _db_user and _db_user.get("verified", 0):
