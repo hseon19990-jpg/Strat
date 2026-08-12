@@ -8,6 +8,10 @@ domain.
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
+# Ensure fmt_price is available (defined in services.py). Importing directly
+# avoids a NameError when formatting prices in _save_service.
+from .services import fmt_price
+
 
 async def _save_service(update, context, price: float):
     """حفظ الخدمة الجديدة بعد تحديد جميع القيم"""
