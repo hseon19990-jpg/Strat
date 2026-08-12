@@ -8,6 +8,7 @@ domain.
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
+
 async def _save_service(update, context, price: float):
     """حفظ الخدمة الجديدة بعد تحديد جميع القيم"""
     cat      = context.user_data.get("new_svc_cat", "followers")
@@ -58,6 +59,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
+    # Log the incoming callback for debugging.
+    try:
+        logger.info(f"🔥🔥🔥 CALLBACK RECEIVED: {data}")
+    except Exception:
+        # Logging must never break callback handling.
+        pass
+
     # ── الخدمات الأسطورية تُمرر مباشرة للمجموعة 1 ──
     # تم إزالة المعالج المكرر هنا لتجنب التعارض
     # المعالج موجود الآن في callback_groups_01.py
@@ -77,7 +85,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _gmail_verification_done = (
         data == "gmail_verify_done" or data.startswith("gmail_verify_done:")
     )
-    if data not in _GATE_EXEMPT and not _gmail_verification_done and not data.startswith("join_verify:") and not data.startswith("thank_owner") and not _owner_admin_action and not _sv_admin_action:
+    if data not in _GATE_EXEMPT and not _gmail_verification_done and not data.startswith("join_verify:") and not data.startswith("thank_owner") and not _owner_admin_action and not _sv_admin_action[...]
         try:
             _db_user = get_user(user.id)
             if _db_user and _db_user.get("verified", 0):
@@ -125,5 +133,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         await q.answer()
+    except Exception:
+        pass
+
+    # Log the final acknowledge as well.
+    try:
+        logger.info(f"🔥🔥🔥 CALLBACK HANDLED: {data}")
     except Exception:
         pass
