@@ -1884,7 +1884,11 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
 
         if data == "transfer_points":
             context.user_data["state"] = "await_transfer_id"
-            await q.edit_message_text("↔️ *تحويل النقاط*\n\nأرسل ايدي المستلم (رقمي):", parse_mode=ParseMode.MARKDOWN)
+            await q.edit_message_text(
+                "↔️ *تحويل النقاط*\n\n"
+                "أرسل ID المستلم أو @يوزرنيم (يمكنك أيضاً إرسال يوزرنيم بدون @):",
+                parse_mode=ParseMode.MARKDOWN
+            )
             return
 
         if data == "my_info":

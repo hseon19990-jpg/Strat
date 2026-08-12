@@ -702,22 +702,35 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if state == "await_transfer_id":
         try:
-            tid = int(text)
-        except ValueError:
-            await update.message.reply_text("⚠️ أرسل ايدي رقمي صحيح.")
+            to_user = lookup_user_by_id_or_username(text)
+        except Exception:
+            logger.exception("فشل البحث عن مستلم تحويل النقاط")
+            await update.message.reply_text(
+                "❌ تعذر البحث عن المستخدم حالياً. حاول مرة أخرى بعد قليل."
+            )
             return
+        if not to_user:
+            await update.message.reply_text(
+                "⚠️ لم يتم العثور على المستلم.\n"
+                "أرسل ID رقمي أو @يوزرنيم مسجّل في البوت:"
+            )
+            return
+        tid = int(to_user["user_id"])
         if tid == user.id:
             await update.message.reply_text("⚠️ لا يمكنك التحويل لنفسك.")
             return
-        to_user = get_user(tid)
-        if not to_user:
-            await update.message.reply_text("⚠️ المستخدم غير موجود في البوت.")
-            return
         context.user_data["transfer_to"] = tid
         context.user_data["transfer_to_name"] = to_user["full_name"]
+        context.user_data["transfer_to_username"] = to_user.get("username") or ""
         context.user_data["state"] = "await_transfer_pts"
+        receiver_label = (
+            f"{to_user.get('full_name') or '—'} "
+            f"(@{to_user['username']})"
+            if to_user.get("username")
+            else f"{to_user.get('full_name') or '—'} (ID: {tid})"
+        )
         await update.message.reply_text(
-            f"👤 المستلم: {to_user['full_name']}\n\nكم نقطة تريد تحويلها؟ (خصم 1%)"
+            f"👤 المستلم: {receiver_label}\n\nكم نقطة تريد تحويلها؟ (خصم 1%)"
         )
         return
 
@@ -733,7 +746,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         fee  = max(1, int(pts * 0.01))
         total_deduct = pts + fee
         db_user = get_user(user.id)
-        if db_user["points"] < total_deduct:
+        current_points = int(db_user.get("points") or 0) if db_user else 0
+        if current_points < total_deduct:
             await update.message.reply_text(f"❌ نقاطك غير كافية. تحتاج {total_deduct} نقطة (شاملة رسوم 1%).")
             return
         context.user_data["transfer_pts"]   = pts
@@ -2548,23 +2562,45 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ─── بحث شامل برقم هاتف (مباع أو غير مباع) ───
     if is_own and state == "os_await_phone_search":
         q_phone = text.strip()
-        like_q  = "%" + q_phone.lstrip("+") + "%"
-        with db_conn() as _sc:
-            rows = _sc.execute(
-                "SELECT ns.id, ns.phone_number, ns.session_string, ns.assigned_to, ns.assigned_at, "
-                "       ns.ever_sold, ns.twofa_password, ns.last_authorized, ns.deleted_at, "
-                "       ns.frozen_at, ns.sessions_reset, "
-                "       pe.order_code, pe.created_at AS sale_date, pe.points_cost, "
-                "       u.full_name AS buyer_name "
-                "FROM number_stock ns "
-                "LEFT JOIN prize_exchanges pe ON pe.prize_value = ns.phone_number "
-                "     AND pe.status = 'completed' "
-                "     AND pe.prize_type IN ('telegram_number','telegram_number_code','telegram_number_stars') "
-                "LEFT JOIN users u ON u.user_id = ns.assigned_to "
-                "WHERE ns.phone_number LIKE %s "
-                "ORDER BY ns.id DESC LIMIT 5",
-                (like_q,)
-            ).fetchall()
+        phone_digits = re.sub(r"\D", "", q_phone)
+        if len(phone_digits) < 3:
+            await update.message.reply_text(
+                "⚠️ أرسل رقم هاتف صحيحاً أو جزءاً منه (3 أرقام على الأقل).",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 رجوع للمخزون", callback_data="os:manage_numbers")]
+                ])
+            )
+            context.user_data["state"] = "main_menu"
+            return
+        try:
+            with db_conn() as _sc:
+                rows = _sc.execute(
+                    "SELECT ns.id, ns.phone_number, ns.session_string, ns.assigned_to, ns.assigned_at, "
+                    "       ns.ever_sold, ns.twofa_password, ns.last_authorized, ns.deleted_at, "
+                    "       ns.frozen_at, ns.sessions_reset, "
+                    "       pe.order_code, pe.created_at AS sale_date, pe.points_cost, "
+                    "       u.full_name AS buyer_name "
+                    "FROM number_stock ns "
+                    "LEFT JOIN prize_exchanges pe ON pe.prize_value = ns.phone_number "
+                    "     AND pe.status = 'completed' "
+                    "     AND pe.prize_type IN ('telegram_number','telegram_number_code','telegram_number_stars') "
+                    "LEFT JOIN users u ON u.user_id = ns.assigned_to "
+                    "WHERE regexp_replace(COALESCE(ns.phone_number, ''), '[^0-9]', '', 'g') LIKE %s "
+                    "ORDER BY ns.id DESC LIMIT 5",
+                    (f"%{phone_digits}%",)
+                ).fetchall()
+        except Exception as search_error:
+            logger.exception("فشل البحث عن رقم الهاتف في المخزون")
+            await update.message.reply_text(
+                "❌ تعذر تنفيذ البحث حالياً بسبب خطأ في قاعدة البيانات.\n"
+                f"التفاصيل: `{str(search_error)[:180]}`",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 رجوع للمخزون", callback_data="os:manage_numbers")]
+                ])
+            )
+            context.user_data["state"] = "main_menu"
+            return
         if not rows:
             await update.message.reply_text(
                 f"❌ لا يوجد رقم يطابق «{q_phone}» في قاعدة البيانات.",
@@ -3672,7 +3708,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if is_own and state == "os_await_points_target":
-        target = lookup_user_by_id_or_username(text)
+        try:
+            target = lookup_user_by_id_or_username(text)
+        except Exception:
+            logger.exception("فشل البحث عن مستخدم لتعديل النقاط")
+            await update.message.reply_text(
+                "❌ تعذر البحث عن المستخدم حالياً. حاول مرة أخرى بعد قليل.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="os:manage_points")]
+                ])
+            )
+            return
         if not target:
             await update.message.reply_text(
                 "⚠️ لم يتم إيجاد المستخدم. أرسل ID رقمي أو @يوزرنيم:",
