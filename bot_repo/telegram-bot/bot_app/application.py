@@ -8,8 +8,14 @@ domain.
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
-# ─── استيراد نظام الرشق الجديد ────────────────────────────────────────────
-from raksh_system import cmd_raksh, handle_raksh_callback, handle_raksh_text, raksh_pre_checkout, raksh_successful_payment
+# ─── استيراد نظام الرشق الجديد من داخل حزمة bot_app ────────────────────────
+from .raksh_system import (
+    cmd_raksh,
+    handle_raksh_callback,
+    handle_raksh_text,
+    raksh_pre_checkout,
+    raksh_successful_payment,
+)
 
 def main():
     # ── إنشاء event loop جديد في كل تشغيل لتفادي RuntimeError: Event loop is closed ──

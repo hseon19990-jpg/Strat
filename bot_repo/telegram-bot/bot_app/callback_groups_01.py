@@ -7,8 +7,8 @@ while the sentinel lets the dispatcher continue to the next group.
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
-# ✅ التعديل: استيراد نظام الرشق الجديد
-from raksh_system import handle_raksh_callback
+# ✅ التعديل: استيراد نظام الرشق الجديد من داخل حزمة bot_app
+from .raksh_system import handle_raksh_callback
 
 async def _handle_callback_group_01(update, context, q, data, user, is_own, is_supervisor_cb, _gmail_verification_done):
     if True:
