@@ -131,25 +131,16 @@ def _get_delay_seconds() -> int:
 def _get_all_active_sessions(service_type: str | None = None) -> list[dict]:
     """جلب كل الجلسات المخزنة التي يمكن استخدامها لخدمات الرشق.
 
-    حقولا ``ever_sold`` و``assigned_to`` وحالة التجميد تخص إدارة المخزون
-    والمبيعات، ولا يجب أن تجعل عدّاد خدمات الرشق صفراً عندما توجد جلسات
-    محفوظة. صلاحية الجلسة الفعلية تُحسم أثناء الاتصال بتيليجرام.
+    يعتمد العدّاد على ``session_string`` فقط. حالات البيع أو الحجز أو
+    التجميد لا تخص توفر جلسة الرشق، وصلاحية الجلسة الفعلية تُحسم أثناء
+    الاتصال بتيليجرام.
     """
-    filters = [
-        "session_string IS NOT NULL",
-        "BTRIM(session_string) <> ''",
-        "deleted_at IS NULL",
-    ]
-    # الاستثناء من الإحالة الإجبارية لا يعني أن الحساب غير صالح للستوري
-    # أو التعليق أو التصويت. طبّق هذا القيد على خدمتي الإحالة فقط.
-    if service_type in {"forced_ref", "forced_ref_ai"}:
-        filters.append("forced_ref_excluded IS NOT TRUE")
-
     with db_conn() as c:
         rows = c.execute(
             "SELECT id, phone_number, session_string "
             "FROM number_stock "
-            f"WHERE {' AND '.join(filters)} "
+            "WHERE session_string IS NOT NULL "
+            "AND BTRIM(session_string) <> '' "
             "ORDER BY id ASC"
         ).fetchall()
     return [dict(row) for row in rows]
