@@ -78,7 +78,14 @@ def main():
     # 🔥 نظام الرشق الجديد (RAKSH SYSTEM)
     # ════════════════════════════════════════════════════════════════
     app.add_handler(CommandHandler("raksh", cmd_raksh))
-    app.add_handler(CallbackQueryHandler(handle_raksh_callback))
+    # لا تلتقط أزرار البوت العامة؛ هذا المعالج مخصص لـ Raksh فقط.
+    # بدون pattern كان يطابق كل CallbackQuery ويمنع handle_callback من العمل.
+    app.add_handler(
+        CallbackQueryHandler(
+            handle_raksh_callback,
+            pattern=r"^raksh(?:_|:)",
+        )
+    )
     app.add_handler(PreCheckoutQueryHandler(raksh_pre_checkout))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, raksh_successful_payment))
     app.add_handler(MessageHandler(
