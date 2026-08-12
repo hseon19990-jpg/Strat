@@ -118,12 +118,6 @@ def get_stars_price(service_type: str, quantity: int) -> int:
     return ((quantity + per_units - 1) // per_units) * stars_per
 
 
-async def legendary_payment_choice(update, context, q, is_own: bool, service_type: str, payment_method: str):
-    """Handle legacy payment callback data emitted by older keyboards."""
-    context.user_data["legendary_service_type"] = service_type
-    await legendary_payment_callback(update, context, q, is_own, payment_method)
-
-
 def is_legendary_service_visible(service_type: str) -> bool:
     """Check if a specific legendary service is visible to non-owners."""
     key = LEGENDARY_VISIBILITY_KEYS.get(service_type)
@@ -805,20 +799,6 @@ def get_legendary_visibility_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(buttons)
 
 
-async def legendary_show_settings(update, context, q, is_own: bool):
-    """Show the settings that are supported by the current legendary flow."""
-    if not is_own:
-        await q.answer("⛔ هذا الخيار للمالك فقط.", show_alert=True)
-        return
-
-    await q.edit_message_text(
-        "⚙️ *إعدادات الخدمات الأسطورية*\n\n"
-        "اختر خدمة لتغيير ظهورها للأعضاء:",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=get_legendary_visibility_kb(),
-    )
-
-
 # ==================== LEGENDARY SERVICES START ====================
 
 async def legendary_service_start(update, context, q, is_own: bool, service_type: str):
@@ -828,15 +808,7 @@ async def legendary_service_start(update, context, q, is_own: bool, service_type
         await q.answer("⚠️ هذه الخدمة مخفية حالياً من قبل المالك.", show_alert=True)
         return
     
-    try:
-        available = get_available_sessions_count()
-    except Exception:
-        logger.exception("❌ تعذر فحص الحسابات المتاحة للخدمة الأسطورية: %s", service_type)
-        await q.answer(
-            "⚠️ تعذر التحقق من الحسابات المتاحة حالياً. حاول مرة أخرى بعد قليل.",
-            show_alert=True,
-        )
-        return
+    available = get_available_sessions_count()
     
     if available == 0:
         await q.edit_message_text(
@@ -882,7 +854,7 @@ async def legendary_service_start(update, context, q, is_own: bool, service_type
     else:
         description = ""
     
-    message_text = (
+    await q.edit_message_text(
         f"👑 *أهلاً بك في أفضل قسم للرشق!*\n\n"
         f"يمكنك الحصول على رشق بحسابات حقيقية\n"
         f"تحتوي أسماء عربية، بايو، ستوري، وأفتار نشطة.\n"
@@ -893,26 +865,14 @@ async def legendary_service_start(update, context, q, is_own: bool, service_type
         f"• {points_cost} نقطة لكل {service_name.replace('رشق ', '')}\n"
         f"• {stars_info['stars']} نجمة لكل {stars_info['per_units']} {service_name.replace('رشق ', '')}\n"
         + (f"• القناة الإجبارية: +{channel_cost} نقطة (تُخصم مرة واحدة)\n" if channel_cost > 0 else "")
-        + f"\nاختر طريقة الدفع:"
+        + f"\nاختر طريقة الدفع:",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"⭐ دفع بالنجوم", callback_data=f"legendary:pay:stars")],
+            [InlineKeyboardButton(f"💰 دفع بالنقاط", callback_data=f"legendary:pay:points")],
+            [InlineKeyboardButton("🔙 رجوع", callback_data="legendary_services")],
+        ])
     )
-    payment_markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"⭐ دفع بالنجوم", callback_data=f"legendary:pay:stars")],
-        [InlineKeyboardButton(f"💰 دفع بالنقاط", callback_data=f"legendary:pay:points")],
-        [InlineKeyboardButton("🔙 رجوع", callback_data="legendary_services")],
-    ])
-    try:
-        await q.edit_message_text(
-            message_text,
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=payment_markup,
-        )
-    except Exception:
-        # Keep the flow usable if Telegram rejects Markdown in a persisted label.
-        logger.warning("⚠️ تعذر عرض تنسيق Markdown لخدمة %s، سيتم العرض كنص عادي.", service_type)
-        await q.edit_message_text(
-            message_text.replace("*", ""),
-            reply_markup=payment_markup,
-        )
     context.user_data["state"] = "legendary_payment_selection"
 
 

@@ -15,13 +15,39 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
         if data.startswith("legendary:"):
             from .legendary_comment import (
                 legendary_service_start, legendary_skip_channel, legendary_payment_choice,
-                legendary_set_delay,
-                legendary_show_settings, legendary_toggle_visibility, get_price_settings_kb,
+                legendary_confirm, legendary_show_settings, legendary_edit_service,
+                legendary_toggle_service, legendary_edit_price_points, legendary_edit_price_stars,
+                legendary_edit_welcome, legendary_set_delay, get_price_settings_kb,
                 legendary_edit_price, legendary_payment_callback, legendary_premium_reaction_callback
             )
 
+            # ─── إعدادات المالك ───
             if data == "legendary:settings" and is_own:
                 await legendary_show_settings(update, context, q, is_own)
+                return
+
+            if data.startswith("legendary:edit_service:") and is_own:
+                service_type = data.split(":")[2]
+                await legendary_edit_service(update, context, q, is_own, service_type)
+                return
+
+            if data.startswith("legendary:toggle_service:") and is_own:
+                service_type = data.split(":")[2]
+                await legendary_toggle_service(update, context, q, is_own, service_type)
+                return
+
+            if data.startswith("legendary:edit_price_points:") and is_own:
+                service_type = data.split(":")[2]
+                await legendary_edit_price_points(update, context, q, is_own, service_type)
+                return
+
+            if data.startswith("legendary:edit_price_stars:") and is_own:
+                service_type = data.split(":")[2]
+                await legendary_edit_price_stars(update, context, q, is_own, service_type)
+                return
+
+            if data == "legendary:edit_welcome" and is_own:
+                await legendary_edit_welcome(update, context, q, is_own)
                 return
 
             if data == "legendary:set_delay" and is_own:
@@ -35,10 +61,6 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=get_price_settings_kb()
                 )
-                return
-
-            if data.startswith("legendary:toggle_visibility:") and is_own:
-                await legendary_toggle_visibility(update, context, q, is_own, data)
                 return
 
             if data.startswith("legendary:edit_price:") and is_own:
@@ -65,6 +87,11 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             # ─── تخطي القناة ───
             if data.startswith("legendary:skip_channel:"):
                 await legendary_skip_channel(update, context, q, is_own)
+                return
+
+            # ─── تأكيد ───
+            if data == "legendary:confirm":
+                await legendary_confirm(update, context, q, is_own)
                 return
 
             # ─── تفاعل مميز ───

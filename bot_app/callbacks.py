@@ -8,11 +8,6 @@ domain.
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
-# Ensure fmt_price is available (defined in services.py). Importing directly
-# avoids a NameError when formatting prices in _save_service.
-from .services import fmt_price
-
-
 async def _save_service(update, context, price: float):
     """حفظ الخدمة الجديدة بعد تحديد جميع القيم"""
     cat      = context.user_data.get("new_svc_cat", "followers")
@@ -56,20 +51,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_own        = (user.id == OWNER_ID)
     is_supervisor_cb = (not is_own) and is_supervisor(user.id)
 
-    # Acknowledge immediately so Telegram never leaves the button spinning
-    # while database checks or message rendering are in progress.
-    try:
-        await q.answer()
-    except Exception:
-        pass
-
-    # Log the incoming callback for debugging.
-    try:
-        logger.info(f"🔥🔥🔥 CALLBACK RECEIVED: {data}")
-    except Exception:
-        # Logging must never break callback handling.
-        pass
-
     # ── الخدمات الأسطورية تُمرر مباشرة للمجموعة 1 ──
     # تم إزالة المعالج المكرر هنا لتجنب التعارض
     # المعالج موجود الآن في callback_groups_01.py
@@ -89,7 +70,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _gmail_verification_done = (
         data == "gmail_verify_done" or data.startswith("gmail_verify_done:")
     )
-    # Fixed syntax here: removed stray '[...]' and added trailing ':'
     if data not in _GATE_EXEMPT and not _gmail_verification_done and not data.startswith("join_verify:") and not data.startswith("thank_owner") and not _owner_admin_action and not _sv_admin_action:
         try:
             _db_user = get_user(user.id)
@@ -112,37 +92,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning(f"⚠️ خطأ في فحص القنوات الإجبارية (callback) للمستخدم {user.id}: {_gate_err}")
 
     # ── العضو يُبلغ المالك بعد إكمال تحقق حساب الجيميل ──
-    try:
-        for _callback_group in (
-            _handle_callback_group_01,
-            _handle_callback_group_02,
-            _handle_callback_group_03,
-            _handle_callback_group_04,
-        ):
-            _handled = await _callback_group(
-                update, context, q, data, user, is_own, is_supervisor_cb,
-                _gmail_verification_done,
-            )
-            if _handled is not True:
-                return
-    except Exception:
-        logger.exception("❌ خطأ أثناء تنفيذ callback: %s", data)
-        try:
-            await q.answer(
-                "⚠️ تعذر تنفيذ هذا الخيار حالياً. حاول مرة أخرى بعد قليل.",
-                show_alert=True,
-            )
-        except Exception:
-            pass
-        return
+    for _callback_group in (
+        _handle_callback_group_01,
+        _handle_callback_group_02,
+        _handle_callback_group_03,
+        _handle_callback_group_04,
+    ):
+        _handled = await _callback_group(
+            update, context, q, data, user, is_own, is_supervisor_cb,
+            _gmail_verification_done,
+        )
+        if _handled is not True:
+            return
 
     try:
         await q.answer()
-    except Exception:
-        pass
-
-    # Log the final acknowledge as well.
-    try:
-        logger.info(f"🔥🔥🔥 CALLBACK HANDLED: {data}")
     except Exception:
         pass
