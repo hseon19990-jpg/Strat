@@ -198,11 +198,12 @@ def _parse_post_link_parts(value: str) -> tuple[str | int | None, int | None]:
 
 
 def _get_all_active_sessions() -> list[dict]:
-    """Load all owner-provided sessions eligible for operations.
+    """Load all stored sessions that are valid for service operations.
 
-    The operation pool is intentionally sourced only from number_stock and
-    excludes deleted, unauthorized, sold, or buyer-assigned accounts. The
-    number of eligible rows is the natural request limit.
+    ``ever_sold`` and ``assigned_to`` describe the sales workflow, not
+    whether an owner session can perform a service. Excluding those rows here
+    made the service menu report zero accounts even when the stock contained
+    many valid sessions.
     """
     with db_conn() as c:
         rows = c.execute(
@@ -211,7 +212,6 @@ def _get_all_active_sessions() -> list[dict]:
             "WHERE session_string IS NOT NULL AND BTRIM(session_string) <> '' "
             "AND deleted_at IS NULL AND last_authorized IS NOT FALSE "
             "AND forced_ref_excluded IS NOT TRUE "
-            "AND ever_sold IS NOT TRUE AND assigned_to IS NULL "
             "ORDER BY id ASC"
         ).fetchall()
     return [dict(row) for row in rows]
