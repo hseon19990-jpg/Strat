@@ -118,6 +118,12 @@ def get_stars_price(service_type: str, quantity: int) -> int:
     return ((quantity + per_units - 1) // per_units) * stars_per
 
 
+async def legendary_payment_choice(update, context, q, is_own: bool, service_type: str, payment_method: str):
+    """Compatibility handler for legacy payment callback data."""
+    context.user_data["legendary_service_type"] = service_type
+    await legendary_payment_callback(update, context, q, is_own, payment_method)
+
+
 def is_legendary_service_visible(service_type: str) -> bool:
     """Check if a specific legendary service is visible to non-owners."""
     key = LEGENDARY_VISIBILITY_KEYS.get(service_type)
@@ -893,7 +899,7 @@ async def legendary_service_start(update, context, q, is_own: bool, service_type
             message_text.replace("*", ""),
             reply_markup=payment_markup,
         )
-    context.user_data["state"] = "legendary_payment_selection"
+    context.user_data["state"] = "legendary_payment_confirm"
 
 
 async def legendary_skip_channel(update, context, q, is_own: bool):
