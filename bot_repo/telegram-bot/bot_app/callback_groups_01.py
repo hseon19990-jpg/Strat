@@ -86,8 +86,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
 
             # ─── تخطي القناة ───
             if data.startswith("legendary:skip_channel:"):
-                service_type = data.split(":")[2]
-                await legendary_skip_channel(update, context, q, service_type)
+                await legendary_skip_channel(update, context, q, is_own)
                 return
 
             # ─── تأكيد ───
@@ -101,9 +100,18 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 return
 
             # ─── بدء الخدمة من القائمة ───
-            if data.startswith("legendary:start:"):
-                service_type = data.split(":")[2]
-                await legendary_service_start(update, context, q, is_own, service_type)
+            service_type = resolve_legendary_service_type(data)
+            if service_type:
+                if service_type == "forced_ref_ai":
+                    # This option belongs to the forced-referral flow, not
+                    # the regular legendary batch executor.
+                    await _forced_ref_start(
+                        update, context, user, q, is_own, with_ai=True
+                    )
+                else:
+                    await legendary_service_start(
+                        update, context, q, is_own, service_type
+                    )
                 return
 
             await q.answer("⚠️ خيار غير معروف.", show_alert=True)
@@ -277,10 +285,12 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 await q.answer("⚠️ خدمات أسطورية مخفية حالياً من قبل المالك.", show_alert=True)
                 return
             context.user_data["state"] = "legendary_services"
-            # Get items and filter out forced_ref options
-            items = get_menu_items("legendary_services")
-            filtered_items = [item for item in items if not item["action_value"].startswith("legendary:forced_ref")]
-            rows = build_kb_rows(filtered_items)
+            # Normalize persisted callbacks before building the buttons.
+            items = [
+                normalize_legendary_menu_item(item)
+                for item in get_menu_items("legendary_services")
+            ]
+            rows = build_kb_rows(items)
             if is_own:
                 rows.append([InlineKeyboardButton("🧩 إضافة/إزالة خيار", callback_data="mb_menu:legendary_services")])
             rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")])

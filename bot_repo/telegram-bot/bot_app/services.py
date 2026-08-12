@@ -95,6 +95,62 @@ LEGENDARY_SERVICE_OPTIONS = [
     ("🤖 إحالة بوت إجباري تحتوي تحقق", "legendary:start:forced_ref_ai", 1),
 ]
 
+_LEGENDARY_SERVICE_TYPES = {
+    action.rsplit(":", 1)[-1]
+    for _, action, _ in LEGENDARY_SERVICE_OPTIONS
+}
+
+
+def resolve_legendary_service_type(action_value: str) -> str | None:
+    """Resolve current and legacy callback values to a service type.
+
+    Menu buttons are persisted in the database, so an older callback value can
+    remain there after the callback format changes. Only known service types
+    are accepted so settings/payment callbacks cannot be mistaken for a
+    service.
+    """
+    if not action_value:
+        return None
+
+    parts = action_value.split(":")
+    candidates = []
+    if len(parts) == 3 and parts[:2] == ["legendary", "start"]:
+        candidates.append(parts[2])
+    elif len(parts) == 2 and parts[0] in {"legendary", "legendary_service"}:
+        candidates.append(parts[1])
+    elif len(parts) == 2 and parts[0] == "legendary_start":
+        candidates.append(parts[1])
+
+    for candidate in candidates:
+        if candidate in _LEGENDARY_SERVICE_TYPES:
+            return candidate
+    return None
+
+
+def normalize_legendary_menu_item(item):
+    """Return a menu item with the callback format understood by the router."""
+    action_value = item["action_value"]
+    service_type = resolve_legendary_service_type(action_value)
+
+    if not service_type:
+        label = item["label"]
+        service_type = next(
+            (
+                action.rsplit(":", 1)[-1]
+                for default_label, action, _ in LEGENDARY_SERVICE_OPTIONS
+                if label == default_label
+            ),
+            None,
+        )
+
+    if not service_type:
+        return item
+
+    normalized = dict(item)
+    normalized["action_type"] = "builtin"
+    normalized["action_value"] = f"legendary:start:{service_type}"
+    return normalized
+
 BUILTIN_DEFAULTS = {
     "main": [
         ("🐺 خدمات", "services_menu", 1),
@@ -270,6 +326,22 @@ def seed_menu_items(menu: str):
                 f"({','.join('?' for _ in old_cats)})",
                 old_cats
             )
+    if menu == "legendary_services":
+        # Migrate buttons saved by older versions without changing their
+        # custom label, order, or enabled state.
+        with db_conn() as c:
+            existing_rows = c.execute(
+                "SELECT id, label, action_value FROM menu_items "
+                "WHERE menu='legendary_services'"
+            ).fetchall()
+            for row in existing_rows:
+                normalized = normalize_legendary_menu_item(row)
+                if normalized["action_value"] != row["action_value"]:
+                    c.execute(
+                        "UPDATE menu_items SET action_type='builtin', action_value=? "
+                        "WHERE id=?",
+                        (normalized["action_value"], row["id"]),
+                    )
     with db_conn() as c:
         if menu in SERVICE_PLATFORM_MENUS:
             existing = c.execute(
