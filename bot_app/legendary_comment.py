@@ -197,6 +197,32 @@ def _parse_post_link_parts(value: str) -> tuple[str | int | None, int | None]:
     return f"@{parts[0].lstrip('@')}", int(parts[1])
 
 
+def _parse_story_link_parts(value: str) -> tuple[str | int | None, int | None]:
+    """Return the Telegram peer and story id from both public story URL formats.
+
+    Telegram currently emits ``/s/<id>`` links, while older links and some
+    services use ``/story/<id>``. Private-channel links use the same marker
+    after ``/c/<channel_id>``.
+    """
+    value = _clean_link(value)
+    parsed = urlparse(value if "://" in value else f"https://{value}")
+    if parsed.netloc.lower() not in {"t.me", "telegram.me", "www.t.me", "www.telegram.me"}:
+        return None, None
+
+    parts = [part for part in parsed.path.strip("/").split("/") if part]
+    if len(parts) == 3 and parts[1] in {"s", "story"} and parts[2].isdigit():
+        return f"@{parts[0].lstrip('@')}", int(parts[2])
+    if (
+        len(parts) == 4
+        and parts[0] == "c"
+        and parts[1].isdigit()
+        and parts[2] in {"s", "story"}
+        and parts[3].isdigit()
+    ):
+        return f"-100{parts[1]}", int(parts[3])
+    return None, None
+
+
 def _get_all_active_sessions() -> list[dict]:
     """Load all stored sessions that are valid for service operations.
 
@@ -475,26 +501,11 @@ async def _execute_story_reaction(
         if is_first and channel_ref:
             await _join_channel_and_schedule_leave(client, channel_ref)
 
-        parts = story_link.split("/")
-        if len(parts) < 3:
-            return False, "رابط الستوري غير صحيح."
-        
-        story_id = None
-        for i, part in enumerate(parts):
-            if part == "story" and i + 1 < len(parts):
-                story_id = int(parts[i + 1])
-                break
-        
-        if story_id is None:
-            return False, "تعذر العثور على معرف الستوري."
-        
-        entity_str = parts[-3] if len(parts) >= 3 else parts[-2]
-        if entity_str.startswith("@"):
-            entity_str = entity_str[1:]
-        if entity_str.isdigit():
-            entity_str = int(entity_str)
-        
-        entity = await client.get_entity(entity_str)
+        entity_ref, story_id = _parse_story_link_parts(story_link)
+        if entity_ref is None or story_id is None:
+            return False, "رابط الستوري غير صحيح. استخدم /s/<id> أو /story/<id>."
+
+        entity = await client.get_entity(entity_ref)
         
         await client(functions.stories.IncrementStoryViewsRequest(
             peer=entity,
@@ -1042,6 +1053,16 @@ async def legendary_handle_text(update, context, text: str) -> bool:
             return True
         
         elif service_type == "story":
+            story_ref, story_id = _parse_story_link_parts(text)
+            if story_ref is None or story_id is None:
+                await update.message.reply_text(
+                    "⚠️ أرسل رابط ستوري تيليجرام صحيحاً، مثال:\n"
+                    "https://t.me/channel/s/108\n"
+                    "أو:\n"
+                    "https://t.me/channel/story/108"
+                )
+                return True
+
             context.user_data["legendary_story_link"] = text
             context.user_data["legendary_step"] = "story_emojis"
             context.user_data["state"] = "legendary_emojis_input"
@@ -1185,6 +1206,11 @@ async def legendary_handle_text(update, context, text: str) -> bool:
         else:
             unit_label = "وحدة"
         
+        await update.message.reply_text(
+            f"✅ تم استلام العدد: {quantity} {unit_label}.\n"
+            "بعد تأكيد الدفع سيبدأ التنفيذ بالحسابات المتاحة، "
+            "وسأرسل لك إشعاراً عند بدء العمل واكتماله."
+        )
         await show_payment_options(update, context, service_type, quantity, stars_cost, points_cost, has_channel)
         return True
     
@@ -1392,9 +1418,9 @@ async def execute_legendary_order(update, context, q, is_own: bool, payment_meth
         context.user_data["state"] = "main_menu"
         return
     
-    # Only send start message if not owner (owner doesn't get group notifications)
-    if requester_id != OWNER_ID:
-        await _send_start_message(context.bot, requester_id, quantity, payment_method, service_type)
+    # The requester must always receive a start notification, including the
+    # owner. Group notifications remain restricted to non-owner requests.
+    await _send_start_message(context.bot, requester_id, quantity, payment_method, service_type)
     
     params = {"channel_ref": channel_ref}
     
