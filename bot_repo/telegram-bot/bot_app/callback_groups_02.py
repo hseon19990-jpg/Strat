@@ -189,7 +189,8 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                 f"💰 {cost:,} نقطة ({cost_per} × {member_count:,})\n"
                 f"📌 {code}"
                 f"{_queue_note}\n"
-                f"{_terms}"
+                f"{_terms}",
+                parse_mode="HTML"
             )
             return
 
@@ -238,6 +239,47 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                 "`علي`\n"
                 "`حسن`\n\n"
                 "كل حساب يحصل على اسم واحد فقط.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
+                ]),
+            )
+            return
+
+        # ─── بايو ──────────────────────────────────────────────────────────
+        if data == "os:account_bios" and is_own:
+            bio_count = len(_load_unassigned_bio_accounts())
+            context.user_data["state"] = "os_await_account_bios"
+            await q.edit_message_text(
+                "📝 *البايو*\n\n"
+                f"تم حفظ بايو لـ {bio_count:,} حساباً حتى الآن.\n\n"
+                "أرسل بايو واحداً في كل سطر، وسيتم توزيعه بالتسلسل "
+                "على الحسابات التي لم تحصل على بايو من قبل.\n\n"
+                "مثال:\n"
+                "`مبرمج ومطور تطبيقات`\n"
+                "`مهندس معماري`\n"
+                "`طالب جامعي`\n\n"
+                "كل حساب يحصل على بايو واحد فقط.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
+                ]),
+            )
+            return
+
+        # ─── يوزر ──────────────────────────────────────────────────────────
+        if data == "os:account_usernames" and is_own:
+            username_count = len(_load_unassigned_username_accounts())
+            context.user_data["state"] = "os_await_account_usernames"
+            await q.edit_message_text(
+                "🔖 *اليوزرات*\n\n"
+                f"تم حفظ يوزر لـ {username_count:,} حساباً حتى الآن.\n\n"
+                "أرسل يوزر واحداً في كل سطر (بدون @)، وسيتم توزيعه بالتسلسل "
+                "على الحسابات التي لم تحصل على يوزر من قبل.\n\n"
+                "مثال:\n"
+                "`myusername`\n"
+                "`yourusername`\n\n"
+                "كل حساب يحصل على يوزر واحد فقط.",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
