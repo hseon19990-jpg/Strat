@@ -170,6 +170,7 @@ def main():
 
         await application.bot.set_my_commands([
             BotCommand("start", "🏠 القائمة الرئيسية"),
+            BotCommand("raksh", "🔥 خدمات الرشق"),
         ])
         if OWNER_ID:
             try:

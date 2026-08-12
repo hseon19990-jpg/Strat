@@ -1072,11 +1072,20 @@ async def cmd_raksh(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not (user.id == OWNER_ID) and is_user_banned(user.id):
         await update.message.reply_text("🚫 تم حظرك من استخدام هذا البوت.")
         return
+
+    # لا تجعل تعطل استعلام قاعدة البيانات يمنع البوت من الرد على الأمر.
+    # عرض القائمة لا يعتمد على معرفة العدد، لذلك نستخدم قيمة توضيحية عند الفشل
+    # مع تسجيل الخطأ لمراجعته من سجلات التشغيل.
+    try:
+        available_sessions = get_available_sessions_count()
+    except Exception:
+        logger.exception("فشل جلب عدد الحسابات عند تنفيذ /raksh")
+        available_sessions = 0
     
     await update.message.reply_text(
         "🔥 *خدمات الرشق*\n\n"
         "اختر الخدمة المطلوبة:\n"
-        f"📊 الحسابات المتاحة: *{get_available_sessions_count()}*",
+        f"📊 الحسابات المتاحة: *{available_sessions}*",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=raksh_menu_kb()
     )
