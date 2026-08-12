@@ -12,7 +12,13 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
         # ────────────────────────────────────────────────────────────────
         # ═══ معالج الخدمات الأسطورية ═══
         # ────────────────────────────────────────────────────────────────
-        if data.startswith("legendary:"):
+        # Accept the current callback namespace plus legacy values that may
+        # still exist in persisted menu_items rows.
+        if (
+            data.startswith("legendary:")
+            or data.startswith("legendary_service:")
+            or data.startswith("legendary_start:")
+        ):
             from .legendary_comment import (
                 legendary_service_start, legendary_skip_channel, legendary_payment_choice,
                 legendary_set_delay,
@@ -240,9 +246,17 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             )
             return
 
-        if data == "services_menu":
+        if data in {"services_menu", "services", "service_menu"}:
             context.user_data["state"] = "services_menu"
-            rows = build_kb_rows(get_menu_items("services_menu"))
+            try:
+                rows = build_kb_rows(get_menu_items("services_menu"))
+            except Exception:
+                logger.exception("فشل تحميل قائمة الخدمات")
+                await q.answer(
+                    "❌ تعذر تحميل الخدمات حالياً. حاول مرة أخرى بعد قليل.",
+                    show_alert=True,
+                )
+                return
             if is_own:
                 rows.append([InlineKeyboardButton("🧩 إضافة/إزالة خيار", callback_data="mb_menu:services_menu")])
             rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")])
@@ -253,16 +267,24 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             )
             return
 
-        if data == "legendary_services":
-            if data == "legendary_services" and not is_own and not is_legendary_services_visible():
+        if data in {"legendary_services", "legendary", "legendary_service"}:
+            if not is_own and not is_legendary_services_visible():
                 await q.answer("⚠️ خدمات أسطورية مخفية حالياً من قبل المالك.", show_alert=True)
                 return
             context.user_data["state"] = "legendary_services"
             # Normalize persisted callbacks before building the buttons.
-            items = [
-                normalize_legendary_menu_item(item)
-                for item in get_menu_items("legendary_services")
-            ]
+            try:
+                items = [
+                    normalize_legendary_menu_item(item)
+                    for item in get_menu_items("legendary_services")
+                ]
+            except Exception:
+                logger.exception("فشل تحميل قائمة الخدمات الأسطورية")
+                await q.answer(
+                    "❌ تعذر تحميل الخدمات الأسطورية حالياً. حاول مرة أخرى بعد قليل.",
+                    show_alert=True,
+                )
+                return
             rows = build_kb_rows(items)
             if is_own:
                 rows.append([InlineKeyboardButton("🧩 إضافة/إزالة خيار", callback_data="mb_menu:legendary_services")])
