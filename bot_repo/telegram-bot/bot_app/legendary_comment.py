@@ -805,6 +805,20 @@ def get_legendary_visibility_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(buttons)
 
 
+async def legendary_show_settings(update, context, q, is_own: bool):
+    """Show the settings that are supported by the current legendary flow."""
+    if not is_own:
+        await q.answer("⛔ هذا الخيار للمالك فقط.", show_alert=True)
+        return
+
+    await q.edit_message_text(
+        "⚙️ *إعدادات الخدمات الأسطورية*\n\n"
+        "اختر خدمة لتغيير ظهورها للأعضاء:",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=get_legendary_visibility_kb(),
+    )
+
+
 # ==================== LEGENDARY SERVICES START ====================
 
 async def legendary_service_start(update, context, q, is_own: bool, service_type: str):

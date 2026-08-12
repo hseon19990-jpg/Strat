@@ -118,6 +118,12 @@ def get_stars_price(service_type: str, quantity: int) -> int:
     return ((quantity + per_units - 1) // per_units) * stars_per
 
 
+async def legendary_payment_choice(update, context, q, is_own: bool, service_type: str, payment_method: str):
+    """Handle legacy payment callback data emitted by older keyboards."""
+    context.user_data["legendary_service_type"] = service_type
+    await legendary_payment_callback(update, context, q, is_own, payment_method)
+
+
 def is_legendary_service_visible(service_type: str) -> bool:
     """Check if a specific legendary service is visible to non-owners."""
     key = LEGENDARY_VISIBILITY_KEYS.get(service_type)
@@ -797,6 +803,20 @@ def get_legendary_visibility_kb() -> InlineKeyboardMarkup:
     
     buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
     return InlineKeyboardMarkup(buttons)
+
+
+async def legendary_show_settings(update, context, q, is_own: bool):
+    """Show the settings that are supported by the current legendary flow."""
+    if not is_own:
+        await q.answer("⛔ هذا الخيار للمالك فقط.", show_alert=True)
+        return
+
+    await q.edit_message_text(
+        "⚙️ *إعدادات الخدمات الأسطورية*\n\n"
+        "اختر خدمة لتغيير ظهورها للأعضاء:",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=get_legendary_visibility_kb(),
+    )
 
 
 # ==================== LEGENDARY SERVICES START ====================
