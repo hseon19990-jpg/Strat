@@ -8,6 +8,10 @@ domain.
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
+# Ensure fmt_price is available (defined in services.py). Importing directly
+# avoids a NameError when formatting prices in _save_service.
+from .services import fmt_price
+
 async def _save_service(update, context, price: float):
     """حفظ الخدمة الجديدة بعد تحديد جميع القيم"""
     cat      = context.user_data.get("new_svc_cat", "followers")
@@ -50,6 +54,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user   = q.from_user
     is_own        = (user.id == OWNER_ID)
     is_supervisor_cb = (not is_own) and is_supervisor(user.id)
+
+    # Acknowledge immediately so Telegram never leaves the button spinning
+    # while database checks or message rendering are in progress.
+    try:
+        await q.answer()
+    except Exception:
+        pass
+
+    # Log the incoming callback for debugging.
+    try:
+        logger.info(f"🔥🔥🔥 CALLBACK RECEIVED: {data}")
+    except Exception:
+        pass
 
     # ── الخدمات الأسطورية تُمرر مباشرة للمجموعة 1 ──
     # تم إزالة المعالج المكرر هنا لتجنب التعارض
