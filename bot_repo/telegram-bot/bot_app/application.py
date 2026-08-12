@@ -12,7 +12,6 @@ globals().update({key: value for key, value in vars(_shared).items() if not key.
 from .raksh_system import (
     cmd_raksh,
     handle_raksh_callback,
-    handle_raksh_text,
     raksh_pre_checkout,
     raksh_successful_payment,
 )
@@ -85,15 +84,11 @@ def main():
             handle_raksh_callback,
             # Match the menu callback as well as every Raksh step explicitly.
             # The old catch-all handler below must never consume these queries.
-            pattern=r"^(?:raksh_menu|raksh(?:_|:))",
+            pattern=r"^(?:raksh_menu|raksh_cancel|raksh(?:_|:))",
         )
     )
     app.add_handler(PreCheckoutQueryHandler(raksh_pre_checkout))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, raksh_successful_payment))
-    app.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
-        handle_raksh_text
-    ))
     # ════════════════════════════════════════════════════════════════
     
     app.add_handler(MessageHandler(

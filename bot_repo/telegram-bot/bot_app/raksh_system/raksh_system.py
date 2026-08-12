@@ -104,6 +104,22 @@ RAKSH_SERVICES = {
     },
 }
 
+def _clear_raksh_state(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """إلغاء الطلب الحالي ومنع الرسالة التالية من متابعة خطوة قديمة."""
+    for key in (
+        "raksh_service",
+        "raksh_step",
+        "raksh_channels",
+        "raksh_link",
+        "raksh_reaction",
+        "raksh_comment",
+        "raksh_poll_option",
+        "raksh_quantity",
+        "raksh_payment_method",
+    ):
+        context.user_data.pop(key, None)
+    context.user_data["state"] = "main_menu"
+
 # ════════════════════════════════════════════════════════════
 # ═══ 2. دوال مساعدة ═══
 # ════════════════════════════════════════════════════════════
@@ -112,27 +128,37 @@ def _get_delay_seconds() -> int:
     """فاصل زمني عشوائي 1-8 دقائق"""
     return random.randint(60, 480)
 
-def _get_all_active_sessions() -> list[dict]:
+def _get_all_active_sessions(service_type: str | None = None) -> list[dict]:
     """جلب جلسات حسابات المالك المؤهلة فعلياً لتنفيذ الطلب.
 
     المصدر الوحيد هو number_stock؛ لذلك لا يمكن لطلب الرشق استخدام جلسة
     عابرة أو حساباً مبيعاً/محجوزاً لمشترٍ. الحد الطبيعي للطلب هو عدد هذه
     الجلسات، وليس رقماً ثابتاً.
     """
+    filters = [
+        "session_string IS NOT NULL",
+        "BTRIM(session_string) <> ''",
+        "deleted_at IS NULL",
+        "ever_sold IS NOT TRUE",
+        "assigned_to IS NULL",
+        "frozen_at IS NULL",
+    ]
+    # الاستثناء من الإحالة الإجبارية لا يعني أن الحساب غير صالح للستوري
+    # أو التعليق أو التصويت. طبّق هذا القيد على خدمتي الإحالة فقط.
+    if service_type in {"forced_ref", "forced_ref_ai"}:
+        filters.append("forced_ref_excluded IS NOT TRUE")
+
     with db_conn() as c:
         rows = c.execute(
             "SELECT id, phone_number, session_string "
             "FROM number_stock "
-            "WHERE session_string IS NOT NULL AND BTRIM(session_string) <> '' "
-            "AND deleted_at IS NULL AND last_authorized IS NOT FALSE "
-            "AND forced_ref_excluded IS NOT TRUE "
-            "AND ever_sold IS NOT TRUE AND assigned_to IS NULL "
+            f"WHERE {' AND '.join(filters)} "
             "ORDER BY id ASC"
         ).fetchall()
     return [dict(row) for row in rows]
 
-def get_available_sessions_count() -> int:
-    return len(_get_all_active_sessions())
+def get_available_sessions_count(service_type: str | None = None) -> int:
+    return len(_get_all_active_sessions(service_type))
 
 def _parse_channel_ref(value: str) -> tuple[str | None, str | None]:
     """تحويل رابط قناة إلى مرجع Telethon"""
@@ -157,6 +183,17 @@ def _parse_channel_ref(value: str) -> tuple[str | None, str | None]:
     if username and username not in {"c", "joinchat"}:
         return f"@{username.lstrip('@')}", value
     return None, None
+
+def _parse_channel_refs(value: str) -> list[str]:
+    """تحويل إدخال القنوات المتعدد إلى مراجع Telethon صالحة."""
+    refs: list[str] = []
+    for token in re.split(r"[\s,،]+", (value or "").strip()):
+        if not token:
+            continue
+        channel_ref, _ = _parse_channel_ref(token)
+        if channel_ref and channel_ref not in refs:
+            refs.append(channel_ref)
+    return refs
 
 def _parse_post_link(value: str) -> tuple[str | None, int | None]:
     """تحليل رابط منشور"""
@@ -189,7 +226,7 @@ def _parse_story_link(value: str) -> tuple[str | None, int | None]:
     story_id = None
     entity_str = None
     for i, part in enumerate(parts):
-        if part == "story" and i + 1 < len(parts):
+        if part == "story" and i + 1 < len(parts) and parts[i + 1].isdigit():
             story_id = int(parts[i + 1])
             entity_str = parts[i - 1] if i > 0 else None
             break
@@ -246,16 +283,26 @@ def raksh_channel_kb():
     """أزرار تخطي القنوات"""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("⏭️ تخطي (بدون قنوات)", callback_data="raksh:skip_channels")],
-        [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_menu")],
+        [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")],
     ])
+
+RAKSH_REACTIONS = {
+    "heart": "❤️",
+    "fire": "🔥",
+    "like": "👍",
+    "love": "😍",
+    "starstruck": "🤩",
+    "sparkles": "✨",
+    "hundred": "💯",
+    "clap": "👏",
+}
 
 def raksh_reaction_kb(service_type: str):
     """أزرار اختيار التفاعل (لخدمتي ستوري وتفاعل مميز)"""
-    reactions = ["❤️", "🔥", "👍", "😍", "🤩", "✨", "💯", "👏"]
     buttons = []
     row = []
-    for i, r in enumerate(reactions):
-        row.append(InlineKeyboardButton(r, callback_data=f"raksh:reaction:{service_type}:{r}"))
+    for reaction_key, reaction in RAKSH_REACTIONS.items():
+        row.append(InlineKeyboardButton(reaction, callback_data=f"raksh:reaction:{service_type}:{reaction_key}"))
         if len(row) == 4:
             buttons.append(row)
             row = []
@@ -269,7 +316,7 @@ def raksh_confirm_kb(service_type: str, quantity: int, total_cost: int, payment_
     """أزرار تأكيد الطلب"""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ تأكيد الطلب", callback_data=f"raksh:confirm:{service_type}:{quantity}:{total_cost}:{payment_method}")],
-        [InlineKeyboardButton("❌ إلغاء", callback_data="raksh_menu")],
+        [InlineKeyboardButton("❌ إلغاء", callback_data="raksh_cancel")],
     ])
 
 # ════════════════════════════════════════════════════════════
@@ -278,11 +325,15 @@ def raksh_confirm_kb(service_type: str, quantity: int, total_cost: int, payment_
 
 async def _join_channel_and_schedule_leave(client, channel_ref: str):
     """الانضمام للقناة والمغادرة بعد 24 ساعة"""
-    if channel_ref.startswith("invite:"):
-        await client(ImportChatInviteRequest(channel_ref.split(":", 1)[1]))
-    else:
-        entity = await client.get_entity(channel_ref)
-        await client(JoinChannelRequest(entity))
+    refs = channel_ref if isinstance(channel_ref, (list, tuple)) else _parse_channel_refs(channel_ref)
+    if not refs:
+        return
+    for ref in refs:
+        if ref.startswith("invite:"):
+            await client(ImportChatInviteRequest(ref.split(":", 1)[1]))
+        else:
+            entity = await client.get_entity(ref)
+            await client(JoinChannelRequest(entity))
 
 async def _join_discussion_group(client, discussion):
     """الانضمام لمجموعة النقاش"""
@@ -320,7 +371,7 @@ async def _execute_story(session, params, is_first):
         await client(IncrementStoryViewsRequest(peer=entity, id=story_id))
         reaction = params.get("reaction")
         if not reaction or reaction == "random":
-            reaction = random.choice(["❤️", "🔥", "👍", "😍", "🤩", "✨", "💯", "👏"])
+            reaction = random.choice(list(RAKSH_REACTIONS.values()))
         await client(SendReactionRequest(peer=entity, story_id=story_id, reaction=[ReactionEmoji(emoticon=reaction)]))
         return True, f"✅ تمت المشاهدة والتفاعل من {session['phone_number']}"
     except Exception as e:
@@ -527,7 +578,7 @@ async def _execute_premium_reaction(session, params, is_first):
         post_entity = await client.get_entity(post_ref)
         reaction = params.get("reaction")
         if not reaction or reaction == "random":
-            reaction = random.choice(["❤️", "🔥", "👍", "😍", "🤩", "✨", "💯", "👏"])
+            reaction = random.choice(list(RAKSH_REACTIONS.values()))
         await client(functions.messages.SendReactionRequest(peer=post_entity, msg_id=post_id, reaction=[ReactionEmoji(emoticon=reaction)]))
         return True, f"✅ تم التفاعل المميز من {session['phone_number']}"
     except Exception as e:
@@ -607,8 +658,16 @@ async def handle_raksh_callback(
     
     await query.answer()
     
-    # ─── القائمة الرئيسية ───
-    if data == "raksh_menu":
+    # ─── إلغاء الطلب أو العودة إلى قائمة الرشق ───
+    if data in {"raksh_menu", "raksh_cancel"}:
+        _clear_raksh_state(context)
+        if data == "raksh_cancel":
+            await query.edit_message_text(
+                "🏠 *القائمة الرئيسية*",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=main_menu_kb(is_own),
+            )
+            return
         await query.edit_message_text(
             "🔥 *خدمات الرشق*\n\n"
             "اختر الخدمة المطلوبة:\n"
@@ -626,6 +685,7 @@ async def handle_raksh_callback(
             await query.edit_message_text("⚠️ خدمة غير موجودة.", reply_markup=raksh_menu_kb())
             return
         
+        _clear_raksh_state(context)
         context.user_data["raksh_service"] = service_type
         context.user_data["raksh_step"] = "channel"
         
@@ -643,7 +703,7 @@ async def handle_raksh_callback(
     
     # ─── تخطي القنوات ───
     if data == "raksh:skip_channels":
-        context.user_data["raksh_channels"] = ""
+        context.user_data["raksh_channels"] = []
         context.user_data["raksh_step"] = "link"
         svc = RAKSH_SERVICES.get(context.user_data.get("raksh_service"))
         await query.edit_message_text(
@@ -651,7 +711,7 @@ async def handle_raksh_callback(
             f"🔗 *أرسل الرابط المطلوب:*\n"
             f"{_get_link_instruction(context.user_data.get('raksh_service'))}",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_menu")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]])
         )
         return
     
@@ -659,13 +719,13 @@ async def handle_raksh_callback(
     if data.startswith("raksh:reaction:"):
         parts = data.split(":")
         service_type = parts[2]
-        reaction = parts[3]
+        reaction = RAKSH_REACTIONS.get(parts[3], parts[3])
         context.user_data["raksh_reaction"] = reaction
         context.user_data["raksh_step"] = "quantity"
         await query.edit_message_text(
             f"✅ تم اختيار التفاعل: {reaction}\n\n"
             f"🔢 *أرسل عدد الوحدات المطلوبة:*\n"
-            f"(الحد الأقصى: {_get_max_quantity()})",
+            f"(الحد الأقصى: {_get_max_quantity(service_type)})",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="raksh_menu")]])
         )
@@ -744,9 +804,33 @@ def _get_link_instruction(service_type: str) -> str:
     }
     return instructions.get(service_type, "أرسل الرابط المطلوب")
 
-def _get_max_quantity() -> int:
+def _raksh_link_error(service_type: str, value: str) -> str | None:
+    """إرجاع رسالة واضحة قبل حفظ رابط لا يناسب الخدمة."""
+    if service_type in {"forced_ref", "forced_ref_ai"}:
+        valid = _parse_bot_link(value)[0] is not None
+        if not valid:
+            return (
+                "⚠️ رابط البوت غير صحيح.\n\n"
+                "أرسله بهذا الشكل:\n"
+                "@BotUsername start123\n"
+                "أو: t.me/BotUsername?start=123"
+            )
+        return None
+
+    if service_type == "story":
+        valid = all(_parse_story_link(value))
+    else:
+        valid = all(_parse_post_link(value))
+    if not valid:
+        return (
+            "⚠️ الرابط غير صحيح لهذه الخدمة.\n\n"
+            f"أرسل الرابط بهذا الشكل:\n{_get_link_instruction(service_type)}"
+        )
+    return None
+
+def _get_max_quantity(service_type: str | None = None) -> int:
     """عدد الوحدات الأقصى حسب الجلسات المؤهلة المتاحة حالياً."""
-    return get_available_sessions_count()
+    return get_available_sessions_count(service_type)
 
 # ════════════════════════════════════════════════════════════
 # ═══ 7. تنفيذ الطلب ═══
@@ -764,7 +848,7 @@ async def _start_raksh_execution(update, context, query, service_type: str, quan
     )
     
     # جلب الجلسات
-    sessions = _get_all_active_sessions()
+    sessions = _get_all_active_sessions(service_type)
     if not sessions:
         await progress_msg.edit_text(
             "❌ لا توجد حسابات متاحة.",
@@ -772,6 +856,7 @@ async def _start_raksh_execution(update, context, query, service_type: str, quan
         )
         if payment_method == "points":
             add_points(user.id, total_cost)
+        _clear_raksh_state(context)
         return
     
     # تجهيز المعاملات
@@ -840,10 +925,7 @@ async def _start_raksh_execution(update, context, query, service_type: str, quan
         reply_markup=main_menu_kb()
     )
     
-    # تنظيف البيانات
-    for key in ["raksh_service", "raksh_step", "raksh_channels", "raksh_link", 
-                "raksh_reaction", "raksh_comment", "raksh_poll_option"]:
-        context.user_data.pop(key, None)
+    _clear_raksh_state(context)
 
 # ════════════════════════════════════════════════════════════
 # ═══ 8. معالج النصوص ═══
@@ -860,7 +942,17 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ─── خطوة القنوات ───
     if state == "channel":
-        context.user_data["raksh_channels"] = text
+        channel_refs = _parse_channel_refs(text)
+        if text.strip() and not channel_refs:
+            await update.message.reply_text(
+                "⚠️ لم أتعرف على أي قناة.\n"
+                "أرسل @username أو رابط t.me للقناة، ويمكنك إرسال أكثر من قناة مفصولة بمسافة.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                ]),
+            )
+            return True
+        context.user_data["raksh_channels"] = channel_refs
         context.user_data["raksh_step"] = "link"
         service_type = context.user_data.get("raksh_service")
         await update.message.reply_text(
@@ -868,7 +960,7 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔗 *أرسل الرابط المطلوب:*\n"
             f"{_get_link_instruction(service_type)}",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_menu")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]])
         )
         return True
     
@@ -876,6 +968,15 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if state == "link":
         service_type = context.user_data.get("raksh_service")
         svc = RAKSH_SERVICES.get(service_type)
+        link_error = _raksh_link_error(service_type, text)
+        if link_error:
+            await update.message.reply_text(
+                link_error,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                ]),
+            )
+            return True
         context.user_data["raksh_link"] = text
         
         # إذا كانت الخدمة تحتاج تفاعل
@@ -889,19 +990,6 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return True
         
-        # خدمات الإحالة
-        if service_type in ["forced_ref", "forced_ref_ai"]:
-            bot_username, start_param = _parse_bot_link(text)
-            if not bot_username:
-                await update.message.reply_text(
-                    "⚠️ رابط البوت غير صحيح.\n\n"
-                    "أرسل الرابط بهذا الشكل:\n"
-                    "@BotUsername start123\n"
-                    "أو: t.me/BotUsername?start=123",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_menu")]])
-                )
-                return True
-        
         # خدمات التعليق
         if service_type == "comment":
             context.user_data["raksh_step"] = "comment_text"
@@ -909,7 +997,7 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"✅ تم حفظ الرابط.\n\n"
                 f"💬 *أرسل نص التعليق:*",
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_menu")]])
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]])
             )
             return True
         
@@ -921,19 +1009,28 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🔢 *أرسل رقم الخيار المطلوب:*\n"
                 f"(مثال: 1 أو 2 أو 3)",
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_menu")]])
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]])
             )
             return True
         
         # باقي الخدمات → انتقل مباشرة للعدد
         context.user_data["raksh_step"] = "quantity"
-        max_qty = _get_max_quantity()
+        service_type = context.user_data.get("raksh_service")
+        max_qty = _get_max_quantity(service_type)
+        if max_qty < 1:
+            await update.message.reply_text(
+                "⚠️ لا توجد حسابات ذات جلسات متاحة حالياً لتنفيذ هذه الخدمة.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                ]),
+            )
+            return True
         await update.message.reply_text(
             f"✅ تم حفظ الرابط.\n\n"
             f"🔢 *أرسل عدد الوحدات المطلوبة:*\n"
             f"(الحد الأقصى: {max_qty})",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_menu")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]])
         )
         return True
     
@@ -941,13 +1038,22 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if state == "comment_text":
         context.user_data["raksh_comment"] = text
         context.user_data["raksh_step"] = "quantity"
-        max_qty = _get_max_quantity()
+        service_type = context.user_data.get("raksh_service")
+        max_qty = _get_max_quantity(service_type)
+        if max_qty < 1:
+            await update.message.reply_text(
+                "⚠️ لا توجد حسابات ذات جلسات متاحة حالياً لتنفيذ هذه الخدمة.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                ]),
+            )
+            return True
         await update.message.reply_text(
             f"✅ تم حفظ التعليق.\n\n"
             f"🔢 *أرسل عدد الوحدات المطلوبة:*\n"
             f"(الحد الأقصى: {max_qty})",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_menu")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]])
         )
         return True
     
@@ -956,18 +1062,29 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not text.isdigit():
             await update.message.reply_text(
                 "⚠️ أرسل رقماً صحيحاً (مثال: 1 أو 2 أو 3).",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_menu")]])
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                ]),
             )
             return True
         context.user_data["raksh_poll_option"] = text
         context.user_data["raksh_step"] = "quantity"
-        max_qty = _get_max_quantity()
+        service_type = context.user_data.get("raksh_service")
+        max_qty = _get_max_quantity(service_type)
+        if max_qty < 1:
+            await update.message.reply_text(
+                "⚠️ لا توجد حسابات ذات جلسات متاحة حالياً لتنفيذ هذه الخدمة.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                ]),
+            )
+            return True
         await update.message.reply_text(
             f"✅ تم حفظ الخيار {text}.\n\n"
             f"🔢 *أرسل عدد الوحدات المطلوبة:*\n"
             f"(الحد الأقصى: {max_qty})",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_menu")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]])
         )
         return True
     
@@ -978,15 +1095,24 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text(
                 "⚠️ أرسل رقماً صحيحاً.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_menu")]])
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]])
             )
             return True
         
-        max_qty = _get_max_quantity()
+        service_type = context.user_data.get("raksh_service")
+        max_qty = _get_max_quantity(service_type)
+        if max_qty < 1:
+            await update.message.reply_text(
+                "⚠️ لا توجد حسابات ذات جلسات متاحة حالياً لتنفيذ هذه الخدمة.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                ]),
+            )
+            return True
         if quantity < 1 or quantity > max_qty:
             await update.message.reply_text(
                 f"⚠️ العدد المسموح بين 1 و {max_qty}.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_menu")]])
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]])
             )
             return True
         
@@ -1068,6 +1194,7 @@ async def raksh_successful_payment(update: Update, context: ContextTypes.DEFAULT
 async def cmd_raksh(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """الأمر /raksh - يعرض قائمة خدمات الرشق"""
     user = update.effective_user
+    _clear_raksh_state(context)
     
     # التحقق من الحظر
     if not (user.id == OWNER_ID) and is_user_banned(user.id):

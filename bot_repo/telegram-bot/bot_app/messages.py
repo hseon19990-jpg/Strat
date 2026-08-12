@@ -89,6 +89,11 @@ async def _apply_account_name(phone: str, display_name: str) -> None:
         )
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get("raksh_step"):
+        from .raksh_system import handle_raksh_text
+        if await handle_raksh_text(update, context):
+            return
+
     user   = update.effective_user
     text   = (update.message.text or update.message.caption or "").strip()
     state  = context.user_data.get("state", "")
