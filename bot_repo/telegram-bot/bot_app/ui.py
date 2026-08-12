@@ -1870,6 +1870,7 @@ async def show_category_services(update: Update, context: ContextTypes.DEFAULT_T
     for s in svcs:
         ico = '🔑' if s.get('service_type') == 'mandatory_sub' else ('⭐' if s['category'] == 'post_stars' else '🔹')
         rows.append([InlineKeyboardButton(f"{ico} {s['name_ar']}", callback_data=f"svc:{s['id']}" )])
+    # ==================== نهاية الدالة show_category_services ====================
     extra_items = get_menu_items(f"cat:{category}")
     rows.extend(build_kb_rows(extra_items))
     if _is_own_v:
@@ -1882,3 +1883,156 @@ async def show_category_services(update: Update, context: ContextTypes.DEFAULT_T
     else:
         await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(rows),
                                         parse_mode=ParseMode.MARKDOWN)
+
+# ⬇️ ⬇️ ⬇️ هنا تضع الدوال الجديدة (بعد نهاية الدالة) ⬇️ ⬇️ ⬇️
+# لا تكرر تعريف show_category_services مرة أخرى!
+
+def _load_unassigned_bio_accounts() -> list[dict]:
+    """Load accounts that don't have a bio assigned yet."""
+    with db_conn() as c:
+        return c.execute(
+            """
+            SELECT ns.phone_number, ns.session_string
+            FROM number_stock ns
+            WHERE ns.deleted_at IS NULL
+              AND ns.session_string IS NOT NULL
+              AND BTRIM(ns.session_string) <> ''
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM account_bio_assignments aba
+                  WHERE aba.phone_number = ns.phone_number
+              )
+            ORDER BY ns.id
+            """
+        ).fetchall()
+
+def _load_unassigned_username_accounts() -> list[dict]:
+    """Load accounts that don't have a username assigned yet."""
+    with db_conn() as c:
+        return c.execute(
+            """
+            SELECT ns.phone_number, ns.session_string
+            FROM number_stock ns
+            WHERE ns.deleted_at IS NULL
+              AND ns.session_string IS NOT NULL
+              AND BTRIM(ns.session_string) <> ''
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM account_username_assignments aua
+                  WHERE aua.phone_number = ns.phone_number
+              )
+            ORDER BY ns.id
+            """
+        ).fetchall()
+
+async def _apply_account_bio(phone: str, bio: str) -> None:
+    """Apply a bio to a Telegram account."""
+    with db_conn() as c:
+        row = c.execute(
+            """
+            SELECT session_string
+            FROM number_stock
+            WHERE phone_number=%s
+              AND deleted_at IS NULL
+              AND session_string IS NOT NULL
+              AND BTRIM(session_string) <> ''
+            """,
+            (phone,),
+        ).fetchone()
+    if not row:
+        raise ValueError("الحساب غير موجود أو لا يملك جلسة صالحة")
+    if not TELEGRAM_API_ID or not TELEGRAM_API_HASH:
+        raise RuntimeError("إعدادات Telegram API غير مكتملة")
+
+    client = TelegramClient(
+        StringSession(row["session_string"]),
+        int(TELEGRAM_API_ID),
+        TELEGRAM_API_HASH,
+    )
+    try:
+        await asyncio.wait_for(client.connect(), timeout=20)
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+            raise RuntimeError("الجلسة غير مصرح بها")
+        await asyncio.wait_for(
+            client(functions.account.UpdateProfileRequest(about=bio)),
+            timeout=30,
+        )
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+    with db_conn() as c:
+        c.execute(
+            """
+            INSERT INTO account_bio_assignments
+                (phone_number, assigned_bio, assigned_at)
+            VALUES (%s, %s, NOW())
+            ON CONFLICT (phone_number) DO UPDATE SET
+                assigned_bio=EXCLUDED.assigned_bio,
+                assigned_at=NOW()
+            """,
+            (phone, bio),
+        )
+
+async def _apply_account_username(phone: str, username: str) -> None:
+    """Apply a username to a Telegram account."""
+    with db_conn() as c:
+        row = c.execute(
+            """
+            SELECT session_string
+            FROM number_stock
+            WHERE phone_number=%s
+              AND deleted_at IS NULL
+              AND session_string IS NOT NULL
+              AND BTRIM(session_string) <> ''
+            """,
+            (phone,),
+        ).fetchone()
+    if not row:
+        raise ValueError("الحساب غير موجود أو لا يملك جلسة صالحة")
+    if not TELEGRAM_API_ID or not TELEGRAM_API_HASH:
+        raise RuntimeError("إعدادات Telegram API غير مكتملة")
+
+    client = TelegramClient(
+        StringSession(row["session_string"]),
+        int(TELEGRAM_API_ID),
+        TELEGRAM_API_HASH,
+    )
+    try:
+        await asyncio.wait_for(client.connect(), timeout=20)
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+            raise RuntimeError("الجلسة غير مصرح بها")
+        await asyncio.wait_for(
+            client(functions.account.UpdateUsernameRequest(username=username)),
+            timeout=30,
+        )
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+    with db_conn() as c:
+        c.execute(
+            """
+            INSERT INTO account_username_assignments
+                (phone_number, assigned_username, assigned_at)
+            VALUES (%s, %s, NOW())
+            ON CONFLICT (phone_number) DO UPDATE SET
+                assigned_username=EXCLUDED.assigned_username,
+                assigned_at=NOW()
+            """,
+            (phone, username),
+        )
+
+def _parse_generic_lines(raw_text: str) -> list[str]:
+    """Parse a list of items (names, bios, usernames) from text, one per line."""
+    parsed = []
+    for raw_line in raw_text.splitlines():
+        item = raw_line.strip()
+        if not item:
+            continue
+        parsed.append(item[:128])
+    return parsed
