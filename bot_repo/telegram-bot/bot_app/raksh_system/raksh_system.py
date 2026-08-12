@@ -113,7 +113,12 @@ def _get_delay_seconds() -> int:
     return random.randint(60, 480)
 
 def _get_all_active_sessions() -> list[dict]:
-    """جلب الجلسات النشطة"""
+    """جلب جلسات حسابات المالك المؤهلة فعلياً لتنفيذ الطلب.
+
+    المصدر الوحيد هو number_stock؛ لذلك لا يمكن لطلب الرشق استخدام جلسة
+    عابرة أو حساباً مبيعاً/محجوزاً لمشترٍ. الحد الطبيعي للطلب هو عدد هذه
+    الجلسات، وليس رقماً ثابتاً.
+    """
     with db_conn() as c:
         rows = c.execute(
             "SELECT id, phone_number, session_string "
@@ -121,6 +126,7 @@ def _get_all_active_sessions() -> list[dict]:
             "WHERE session_string IS NOT NULL AND BTRIM(session_string) <> '' "
             "AND deleted_at IS NULL AND last_authorized IS NOT FALSE "
             "AND forced_ref_excluded IS NOT TRUE "
+            "AND ever_sold IS NOT TRUE AND assigned_to IS NULL "
             "ORDER BY id ASC"
         ).fetchall()
     return [dict(row) for row in rows]
@@ -739,9 +745,8 @@ def _get_link_instruction(service_type: str) -> str:
     return instructions.get(service_type, "أرسل الرابط المطلوب")
 
 def _get_max_quantity() -> int:
-    """الحد الأقصى للوحدات"""
-    available = get_available_sessions_count()
-    return min(available, 50)
+    """عدد الوحدات الأقصى حسب الجلسات المؤهلة المتاحة حالياً."""
+    return get_available_sessions_count()
 
 # ════════════════════════════════════════════════════════════
 # ═══ 7. تنفيذ الطلب ═══
@@ -922,8 +927,7 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # باقي الخدمات → انتقل مباشرة للعدد
         context.user_data["raksh_step"] = "quantity"
-        available = get_available_sessions_count()
-        max_qty = min(available, 50)
+        max_qty = _get_max_quantity()
         await update.message.reply_text(
             f"✅ تم حفظ الرابط.\n\n"
             f"🔢 *أرسل عدد الوحدات المطلوبة:*\n"
@@ -937,8 +941,7 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if state == "comment_text":
         context.user_data["raksh_comment"] = text
         context.user_data["raksh_step"] = "quantity"
-        available = get_available_sessions_count()
-        max_qty = min(available, 50)
+        max_qty = _get_max_quantity()
         await update.message.reply_text(
             f"✅ تم حفظ التعليق.\n\n"
             f"🔢 *أرسل عدد الوحدات المطلوبة:*\n"
@@ -958,8 +961,7 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return True
         context.user_data["raksh_poll_option"] = text
         context.user_data["raksh_step"] = "quantity"
-        available = get_available_sessions_count()
-        max_qty = min(available, 50)
+        max_qty = _get_max_quantity()
         await update.message.reply_text(
             f"✅ تم حفظ الخيار {text}.\n\n"
             f"🔢 *أرسل عدد الوحدات المطلوبة:*\n"
@@ -980,8 +982,7 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return True
         
-        available = get_available_sessions_count()
-        max_qty = min(available, 50)
+        max_qty = _get_max_quantity()
         if quantity < 1 or quantity > max_qty:
             await update.message.reply_text(
                 f"⚠️ العدد المسموح بين 1 و {max_qty}.",

@@ -51,7 +51,6 @@ STARS_PRICES = {
 LEGENDARY_STAY_HOURS = 24
 MIN_DELAY_MINUTES = 1
 MAX_DELAY_MINUTES = 8
-MAX_QUANTITY = 50
 
 # ==================== LEGENDARY SERVICES MESSAGE ====================
 LEGENDARY_SERVICES_MESSAGE = (
@@ -199,7 +198,12 @@ def _parse_post_link_parts(value: str) -> tuple[str | int | None, int | None]:
 
 
 def _get_all_active_sessions() -> list[dict]:
-    """Load ALL active sessions from the stock."""
+    """Load all owner-provided sessions eligible for operations.
+
+    The operation pool is intentionally sourced only from number_stock and
+    excludes deleted, unauthorized, sold, or buyer-assigned accounts. The
+    number of eligible rows is the natural request limit.
+    """
     with db_conn() as c:
         rows = c.execute(
             "SELECT id, phone_number, session_string "
@@ -207,6 +211,7 @@ def _get_all_active_sessions() -> list[dict]:
             "WHERE session_string IS NOT NULL AND BTRIM(session_string) <> '' "
             "AND deleted_at IS NULL AND last_authorized IS NOT FALSE "
             "AND forced_ref_excluded IS NOT TRUE "
+            "AND ever_sold IS NOT TRUE AND assigned_to IS NULL "
             "ORDER BY id ASC"
         ).fetchall()
     return [dict(row) for row in rows]
@@ -1024,7 +1029,7 @@ async def legendary_handle_text(update, context, text: str) -> bool:
             
             available = get_available_sessions_count()
             await update.message.reply_text(
-                f"✅ تم حفظ الرابط.\n\n🔢 أرسل عدد الوحدات المطلوبة (1-{min(available, MAX_QUANTITY)}):",
+                f"✅ تم حفظ الرابط.\n\n🔢 أرسل عدد الوحدات المطلوبة (1-{available}):",
                 parse_mode=ParseMode.MARKDOWN
             )
             return True
@@ -1121,7 +1126,7 @@ async def legendary_handle_text(update, context, text: str) -> bool:
         
         available = get_available_sessions_count()
         await update.message.reply_text(
-            f"✅ الخيار: {text}\n\n🔢 أرسل عدد التصويتات المطلوبة (1-{min(available, MAX_QUANTITY)}):",
+            f"✅ الخيار: {text}\n\n🔢 أرسل عدد التصويتات المطلوبة (1-{available}):",
             parse_mode=ParseMode.MARKDOWN
         )
         return True
@@ -1139,7 +1144,7 @@ async def legendary_handle_text(update, context, text: str) -> bool:
         
         available = get_available_sessions_count()
         await update.message.reply_text(
-            f"✅ تم حفظ {len(emojis)} إيموجي.\n\n🔢 أرسل عدد المشاهدات المطلوبة (1-{min(available, MAX_QUANTITY)}):",
+            f"✅ تم حفظ {len(emojis)} إيموجي.\n\n🔢 أرسل عدد المشاهدات المطلوبة (1-{available}):",
             parse_mode=ParseMode.MARKDOWN
         )
         return True
@@ -1154,9 +1159,9 @@ async def legendary_handle_text(update, context, text: str) -> bool:
         quantity = int(qty_text)
         available = get_available_sessions_count()
         
-        if quantity < 1 or quantity > min(available, MAX_QUANTITY):
+        if quantity < 1 or quantity > available:
             await update.message.reply_text(
-                f"⚠️ العدد المسموح بين 1 و {min(available, MAX_QUANTITY)} فقط."
+                f"⚠️ العدد المسموح بين 1 و {available} فقط."
             )
             return True
         
@@ -1662,7 +1667,7 @@ async def legendary_premium_reaction_callback(update, context, q, is_own: bool, 
         context.user_data["state"] = "legendary_quantity_input"
         available = get_available_sessions_count()
         await q.edit_message_text(
-            f"✅ تم اختيار التفاعل: {reaction}\n\n🔢 أرسل عدد الوحدات المطلوبة (1-{min(available, MAX_QUANTITY)}):",
+            f"✅ تم اختيار التفاعل: {reaction}\n\n🔢 أرسل عدد الوحدات المطلوبة (1-{available}):",
             parse_mode=ParseMode.MARKDOWN
         )
         return
@@ -1686,7 +1691,7 @@ async def legendary_premium_reaction_callback(update, context, q, is_own: bool, 
     context.user_data["state"] = "legendary_quantity_input"
     available = get_available_sessions_count()
     await q.edit_message_text(
-        f"✅ تم اختيار التفاعل: {reaction}\n\n🔢 أرسل عدد الوحدات المطلوبة (1-{min(available, MAX_QUANTITY)}):",
+        f"✅ تم اختيار التفاعل: {reaction}\n\n🔢 أرسل عدد الوحدات المطلوبة (1-{available}):",
         parse_mode=ParseMode.MARKDOWN
     )
 
