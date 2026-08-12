@@ -207,26 +207,23 @@ def _parse_post_link(value: str) -> tuple[str | None, int | None]:
     return f"@{parts[0].lstrip('@')}", int(parts[1])
 
 def _parse_story_link(value: str) -> tuple[str | None, int | None]:
-    """تحليل رابط ستوري"""
+    """تحليل روابط الستوري العامة والخاصة بصيغتي /s/ و /story/."""
     value = (value or "").strip().strip("<>")
     parsed = urlparse(value if "://" in value else f"https://{value}")
     if parsed.netloc.lower() not in {"t.me", "telegram.me", "www.t.me", "www.telegram.me"}:
         return None, None
     parts = [part for part in parsed.path.strip("/").split("/") if part]
-    if len(parts) < 2:
-        return None, None
-    story_id = None
-    entity_str = None
-    for i, part in enumerate(parts):
-        if part == "story" and i + 1 < len(parts) and parts[i + 1].isdigit():
-            story_id = int(parts[i + 1])
-            entity_str = parts[i - 1] if i > 0 else None
-            break
-    if story_id is None:
-        return None, None
-    if entity_str and entity_str.startswith("@"):
-        entity_str = entity_str[1:]
-    return f"@{entity_str}", story_id
+    if len(parts) == 3 and parts[1] in {"s", "story"} and parts[2].isdigit():
+        return f"@{parts[0].lstrip('@')}", int(parts[2])
+    if (
+        len(parts) == 4
+        and parts[0] == "c"
+        and parts[1].isdigit()
+        and parts[2] in {"s", "story"}
+        and parts[3].isdigit()
+    ):
+        return f"-100{parts[1]}", int(parts[3])
+    return None, None
 
 def _parse_bot_link(value: str) -> tuple[str | None, str | None]:
     """تحليل رابط بوت إحالة"""
@@ -730,6 +727,8 @@ async def handle_raksh_callback(
         service_type = parts[3]
         quantity = int(parts[4])
         svc = RAKSH_SERVICES.get(service_type)
+        context.user_data["raksh_payment_method"] = method
+        context.user_data["raksh_step"] = "payment_confirm"
         if method == "stars":
             total = svc["price_stars"] * quantity
             await query.edit_message_text(
@@ -773,6 +772,23 @@ async def handle_raksh_callback(
                     reply_markup=raksh_menu_kb()
                 )
                 return
+        else:
+            svc = RAKSH_SERVICES.get(service_type)
+            total_stars = svc["price_stars"] * quantity
+            await query.edit_message_text(
+                "⭐ *جاري تجهيز فاتورة الدفع بالنجوم...*",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            await context.bot.send_invoice(
+                chat_id=user.id,
+                title=svc["name"],
+                description=f"{quantity} وحدة | {total_stars} نجمة",
+                payload=f"raksh_stars:{user.id}:{service_type}:{quantity}:{total_stars}",
+                provider_token="",
+                currency="XTR",
+                prices=[LabeledPrice("خدمة الرشق", total_stars)],
+            )
+            return
         
         # بدء التنفيذ
         await _start_raksh_execution(update, context, query, service_type, quantity, payment_method, total_cost)
@@ -785,7 +801,7 @@ async def handle_raksh_callback(
 def _get_link_instruction(service_type: str) -> str:
     """نص تعليمات الرابط حسب الخدمة"""
     instructions = {
-        "story": "https://t.me/username/story/123",
+        "story": "https://t.me/username/s/123 أو https://t.me/username/story/123",
         "forced_ref": "@BotUsername start123  أو  t.me/BotUsername?start=123",
         "forced_ref_ai": "@BotUsername start123  أو  t.me/BotUsername?start=123",
         "comment": "https://t.me/channel/123",
@@ -828,16 +844,33 @@ def _get_max_quantity(service_type: str | None = None) -> int:
 # ═══ 7. تنفيذ الطلب ═══
 # ════════════════════════════════════════════════════════════
 
-async def _start_raksh_execution(update, context, query, service_type: str, quantity: int, payment_method: str, total_cost: int):
+async def _start_raksh_execution(
+    update,
+    context,
+    query,
+    service_type: str,
+    quantity: int,
+    payment_method: str,
+    total_cost: int,
+    progress_message=None,
+):
     """بدء تنفيذ طلب الرشق"""
-    user = query.from_user
+    user = query.from_user if query is not None else update.effective_user
     
     # بناء رسالة التقدم
-    progress_msg = await query.edit_message_text(
-        "⏳ *جاري التنفيذ...*\n\n"
-        f"📊 0/{quantity}",
-        parse_mode=ParseMode.MARKDOWN
-    )
+    if progress_message is None:
+        progress_msg = await query.edit_message_text(
+            "✅ *بدأ التنفيذ الآن باستخدام الحسابات النشطة...*\n\n"
+            f"📊 0/{quantity}",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    else:
+        progress_msg = progress_message
+        await progress_msg.edit_text(
+            "✅ *بدأ التنفيذ الآن باستخدام الحسابات النشطة...*\n\n"
+            f"📊 0/{quantity}",
+            parse_mode=ParseMode.MARKDOWN,
+        )
     
     # جلب الجلسات
     sessions = _get_all_active_sessions(service_type)
@@ -953,6 +986,45 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{_get_link_instruction(service_type)}",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]])
+        )
+        return True
+
+    # ─── اختيار الدفع كتابةً ───
+    if state in {"payment", "payment_confirm"}:
+        normalized = re.sub(r"[\s_\-]+", "", (text or "").casefold())
+        if normalized in {"نقاط", "النقاط", "بالنقاط", "points", "point"}:
+            method = "points"
+            method_label = "النقاط"
+        elif normalized in {"نجوم", "النجوم", "بالنجوم", "stars", "star"}:
+            method = "stars"
+            method_label = "النجوم"
+        else:
+            await update.message.reply_text(
+                "⚠️ اكتب «نقاط» أو «نجوم»، أو اختر أحد الزرين الظاهرين.",
+                reply_markup=raksh_payment_kb(
+                    context.user_data.get("raksh_service"),
+                    context.user_data.get("raksh_quantity", 1),
+                    RAKSH_SERVICES[context.user_data.get("raksh_service")]["price_points"]
+                    * context.user_data.get("raksh_quantity", 1),
+                    RAKSH_SERVICES[context.user_data.get("raksh_service")]["price_stars"]
+                    * context.user_data.get("raksh_quantity", 1),
+                ),
+            )
+            return True
+
+        service_type = context.user_data.get("raksh_service")
+        quantity = int(context.user_data.get("raksh_quantity", 1))
+        svc = RAKSH_SERVICES[service_type]
+        total = svc["price_points" if method == "points" else "price_stars"] * quantity
+        context.user_data["raksh_payment_method"] = method
+        context.user_data["raksh_step"] = "payment_confirm"
+        await update.message.reply_text(
+            f"✅ تم اختيار الدفع بـ{method_label}.\n\n"
+            f"الخدمة: {svc['name']}\n"
+            f"العدد: {quantity}\n"
+            f"التكلفة: {total} {'نقطة' if method == 'points' else 'نجمة'}\n\n"
+            "اضغط «تأكيد الطلب» للبدء.",
+            reply_markup=raksh_confirm_kb(service_type, quantity, total, method),
         )
         return True
     
@@ -1175,9 +1247,19 @@ async def raksh_successful_payment(update: Update, context: ContextTypes.DEFAULT
             "⏳ جاري بدء التنفيذ...",
             parse_mode=ParseMode.MARKDOWN
         )
-        
-        # هنا نستدعي دالة التنفيذ مع payment_method = "stars"
-        # التنفيذ الفعلي يحتاج إلى query object، لذلك نستخدم context
+        await _start_raksh_execution(
+            update,
+            context,
+            query=None,
+            service_type=service_type,
+            quantity=quantity,
+            payment_method="stars",
+            total_cost=total_stars,
+            progress_message=await update.message.reply_text(
+                "⏳ *يتم تشغيل الحسابات النشطة الآن...*",
+                parse_mode=ParseMode.MARKDOWN,
+            ),
+        )
 
 # ════════════════════════════════════════════════════════════
 # ═══ 10. الأمر الرئيسي /raksh ═══
