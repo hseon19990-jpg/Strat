@@ -51,6 +51,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_own        = (user.id == OWNER_ID)
     is_supervisor_cb = (not is_own) and is_supervisor(user.id)
 
+    # Acknowledge immediately so Telegram never leaves the button spinning
+    # while database checks or message rendering are in progress.
+    try:
+        await q.answer()
+    except Exception:
+        pass
+
     # ── الخدمات الأسطورية تُمرر مباشرة للمجموعة 1 ──
     # تم إزالة المعالج المكرر هنا لتجنب التعارض
     # المعالج موجود الآن في callback_groups_01.py
@@ -92,18 +99,29 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning(f"⚠️ خطأ في فحص القنوات الإجبارية (callback) للمستخدم {user.id}: {_gate_err}")
 
     # ── العضو يُبلغ المالك بعد إكمال تحقق حساب الجيميل ──
-    for _callback_group in (
-        _handle_callback_group_01,
-        _handle_callback_group_02,
-        _handle_callback_group_03,
-        _handle_callback_group_04,
-    ):
-        _handled = await _callback_group(
-            update, context, q, data, user, is_own, is_supervisor_cb,
-            _gmail_verification_done,
-        )
-        if _handled is not True:
-            return
+    try:
+        for _callback_group in (
+            _handle_callback_group_01,
+            _handle_callback_group_02,
+            _handle_callback_group_03,
+            _handle_callback_group_04,
+        ):
+            _handled = await _callback_group(
+                update, context, q, data, user, is_own, is_supervisor_cb,
+                _gmail_verification_done,
+            )
+            if _handled is not True:
+                return
+    except Exception:
+        logger.exception("❌ خطأ أثناء تنفيذ callback: %s", data)
+        try:
+            await q.answer(
+                "⚠️ تعذر تنفيذ هذا الخيار حالياً. حاول مرة أخرى بعد قليل.",
+                show_alert=True,
+            )
+        except Exception:
+            pass
+        return
 
     try:
         await q.answer()
