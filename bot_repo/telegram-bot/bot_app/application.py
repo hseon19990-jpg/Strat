@@ -83,7 +83,9 @@ def main():
     app.add_handler(
         CallbackQueryHandler(
             handle_raksh_callback,
-            pattern=r"^raksh(?:_|:)",
+            # Match the menu callback as well as every Raksh step explicitly.
+            # The old catch-all handler below must never consume these queries.
+            pattern=r"^(?:raksh_menu|raksh(?:_|:))",
         )
     )
     app.add_handler(PreCheckoutQueryHandler(raksh_pre_checkout))

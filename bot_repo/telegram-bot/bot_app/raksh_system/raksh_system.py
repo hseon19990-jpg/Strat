@@ -582,12 +582,22 @@ async def execute_raksh_service(service_type: str, quantity: int, sessions: list
 # ═══ 5. معالج الأزرار الرئيسي ═══
 # ════════════════════════════════════════════════════════════
 
-async def handle_raksh_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_raksh_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    query=None,
+    data=None,
+    user=None,
+    is_own=None,
+):
     """معالج جميع أزرار نظام الرشق"""
-    query = update.callback_query
-    data = query.data
-    user = query.from_user
-    is_own = (user.id == OWNER_ID)
+    # The application registers this function as a dedicated callback handler,
+    # while the modular callback router may also delegate `raksh_menu` here.
+    # Supporting both call shapes keeps the menu functional in either route.
+    query = query or update.callback_query
+    data = query.data if data is None else data
+    user = user or query.from_user
+    is_own = (user.id == OWNER_ID) if is_own is None else is_own
     
     await query.answer()
     
