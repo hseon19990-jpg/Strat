@@ -8,6 +8,9 @@ domain.
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
+# ─── استيراد نظام الرشق الجديد ────────────────────────────────────────────
+from raksh_system import cmd_raksh, handle_raksh_callback, handle_raksh_text, raksh_pre_checkout, raksh_successful_payment
+
 def main():
     # ── إنشاء event loop جديد في كل تشغيل لتفادي RuntimeError: Event loop is closed ──
     import asyncio as _asyncio
@@ -63,6 +66,19 @@ def main():
     # 🔥 أمر اختبار AI (للمالك فقط)
     # ════════════════════════════════════════════════════════════════
     app.add_handler(CommandHandler("testai", cmd_test_ai))
+    # ════════════════════════════════════════════════════════════════
+    
+    # ════════════════════════════════════════════════════════════════
+    # 🔥 نظام الرشق الجديد (RAKSH SYSTEM)
+    # ════════════════════════════════════════════════════════════════
+    app.add_handler(CommandHandler("raksh", cmd_raksh))
+    app.add_handler(CallbackQueryHandler(handle_raksh_callback))
+    app.add_handler(PreCheckoutQueryHandler(raksh_pre_checkout))
+    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, raksh_successful_payment))
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
+        handle_raksh_text
+    ))
     # ════════════════════════════════════════════════════════════════
     
     app.add_handler(MessageHandler(
@@ -152,6 +168,7 @@ def main():
                         BotCommand("compensate_partial", "💰 تعويض أصحاب الطلبات الجزئية"),
                         BotCommand("refund_mandatory", "🔁 استرجاع تمويلات الاشتراك الإجباري"),
                         BotCommand("testai",             "🧪 اختبار مفاتيح AI"),
+                        BotCommand("raksh",              "🔥 خدمات الرشق"),
                     ],
                     scope=BotCommandScopeChat(chat_id=OWNER_ID)
                 )
