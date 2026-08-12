@@ -468,6 +468,24 @@ def init_db():
               sort_order   INTEGER DEFAULT 0,
               enabled      INTEGER DEFAULT 1
           )""")
+          
+          # ==================== جداول البايو واليوزر ====================
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS account_bio_assignments (
+              phone_number  TEXT PRIMARY KEY,
+              assigned_bio  TEXT NOT NULL,
+              assigned_at   TIMESTAMPTZ DEFAULT NOW()
+          )
+          """)
+
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS account_username_assignments (
+              phone_number     TEXT PRIMARY KEY,
+              assigned_username TEXT NOT NULL,
+              assigned_at      TIMESTAMPTZ DEFAULT NOW()
+          )
+          """)
+          
           default_settings = [
               ('join_channel_reward', '45'),
               ('daily_gift_points', '50'),
