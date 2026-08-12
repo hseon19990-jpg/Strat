@@ -13,7 +13,7 @@
 """
 
 from ..shared import *
-from ..accounts import get_referral_session_count
+from ..accounts import get_forced_ref_account_count
 from telethon import TelegramClient, functions
 from telethon.sessions import StringSession
 from telethon.tl.functions.channels import JoinChannelRequest, LeaveChannelRequest
@@ -132,9 +132,8 @@ def _get_delay_seconds() -> int:
 def _get_all_active_sessions(service_type: str | None = None) -> list[dict]:
     """جلب كل الجلسات المخزنة التي يمكن استخدامها لخدمات الرشق.
 
-    يعتمد العدّاد على ``session_string`` فقط. حالات البيع أو الحجز أو
-    التجميد لا تخص توفر جلسة الرشق، وصلاحية الجلسة الفعلية تُحسم أثناء
-    الاتصال بتيليجرام.
+    يستخدم نفس شروط مخزون «إحالة بوت إجباري» حتى يطابق العدد المعروض
+    عدد الجلسات التي سيحاول نظام الرشق استخدامها فعلياً.
     """
     with db_conn() as c:
         rows = c.execute(
@@ -142,14 +141,16 @@ def _get_all_active_sessions(service_type: str | None = None) -> list[dict]:
             "FROM number_stock "
             "WHERE session_string IS NOT NULL "
             "AND BTRIM(session_string) <> '' "
+            "AND deleted_at IS NULL "
+            "AND forced_ref_excluded IS NOT TRUE "
             "ORDER BY id ASC"
         ).fetchall()
     return [dict(row) for row in rows]
 
 def get_available_sessions_count(service_type: str | None = None) -> int:
-    # Keep the new raking menu in sync with the established mandatory-referral
-    # counter, which reads the same session inventory and exclusion rules.
-    return get_referral_session_count()
+    # Keep the Raksh menu exactly in sync with the counter used by the
+    # mandatory bot-referral entry in the main menu.
+    return get_forced_ref_account_count()
 
 def _parse_channel_ref(value: str) -> tuple[str | None, str | None]:
     """تحويل رابط قناة إلى مرجع Telethon"""
