@@ -157,9 +157,12 @@ BUILTIN_DEFAULTS = {
         ("👑 خدمات أسطورية", "legendary_services", 1),
         ("🦇 تمويل قناتك حقيقي", "fund_channel", 1),
         ("👻 رابط دعوة", "referral", 1),
-        ("👍 شحن نقاط", "charge_points", 2), ("⭐ تجميع نقاط", "collect_points", 2),
-        ("🎁 استبدال نقاط بجوائز", "exchange_points", 2), ("🎙 تحويل النقاط", "transfer_points", 2),
-        ("🎟 استخدام كود", "use_promo", 2), ("⭐ معلوماتي", "my_info", 2),
+        ("👍 شحن نقاط", "charge_points", 2),
+        ("⭐ تجميع نقاط", "collect_points", 2),
+        ("🎁 استبدال نقاط بجوائز", "exchange_points", 2),
+        ("🎙 تحويل النقاط", "transfer_points", 2),
+        ("🎟 استخدام كود", "use_promo", 2),
+        ("⭐ معلوماتي", "my_info", 2),
         ("📱 ارقامي", "my_numbers", 1),
         ("🎁 الأكثر دعوةً اليوم", "top_ref_today", 2),
         ("✅ تواصل مع الدعم", "contact_support", 2),
@@ -167,6 +170,8 @@ BUILTIN_DEFAULTS = {
         ("🏆 مسابقة الدعوة", "referral_contest_view", 2),
         ("📧 احصل على نقاط مقابل إيميل جيميل", "gmail_points", 1),
         ("🔑 إحالة بوت اجباري", "forced_ref", 2),
+        # ✅ التعديل: إضافة زر خدمات الرشق الجديد
+        ("🔥 خدمات الرشق", "raksh_menu", 1),
     ],
     "services_menu": [(label, value, 2) for label, value in SERVICE_PLATFORMS],
     "legendary_services": LEGENDARY_SERVICE_OPTIONS,
@@ -448,7 +453,7 @@ async def notify_gmail_verification_owner(
     with db_conn() as c:
         lock = c.execute(
             "SELECT pg_try_advisory_xact_lock(%s) AS acquired",
-            (sub_id,),
+            (sub_id,)
         ).fetchone()
         if not lock or not lock["acquired"]:
             return "busy"
@@ -456,7 +461,7 @@ async def notify_gmail_verification_owner(
         sub = c.execute(
             "SELECT id, user_id, gmail_email, status, rejection_reason, "
             "verification_notified FROM gmail_submissions WHERE id=%s",
-            (sub_id,),
+            (sub_id,)
         ).fetchone()
         if not sub or sub["user_id"] != user_id:
             return "invalid"
