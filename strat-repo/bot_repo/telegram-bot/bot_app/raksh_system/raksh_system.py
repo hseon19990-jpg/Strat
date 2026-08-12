@@ -207,7 +207,7 @@ def _parse_post_link(value: str) -> tuple[str | None, int | None]:
     return f"@{parts[0].lstrip('@')}", int(parts[1])
 
 def _parse_story_link(value: str) -> tuple[str | None, int | None]:
-    """تحليل رابط ستوري"""
+    """تحليل رابط ستوري بصيغة /story/123 أو /s/123."""
     value = (value or "").strip().strip("<>")
     parsed = urlparse(value if "://" in value else f"https://{value}")
     if parsed.netloc.lower() not in {"t.me", "telegram.me", "www.t.me", "www.telegram.me"}:
@@ -215,18 +215,32 @@ def _parse_story_link(value: str) -> tuple[str | None, int | None]:
     parts = [part for part in parsed.path.strip("/").split("/") if part]
     if len(parts) < 2:
         return None, None
-    story_id = None
-    entity_str = None
-    for i, part in enumerate(parts):
-        if part == "story" and i + 1 < len(parts) and parts[i + 1].isdigit():
-            story_id = int(parts[i + 1])
-            entity_str = parts[i - 1] if i > 0 else None
-            break
-    if story_id is None:
+
+    marker_index = next(
+        (
+            index
+            for index, part in enumerate(parts[:-1])
+            if part.lower() in {"story", "s"} and parts[index + 1].isdigit()
+        ),
+        None,
+    )
+    if marker_index is not None:
+        entity_parts = parts[:marker_index]
+        story_id = int(parts[marker_index + 1])
+    elif len(parts) == 3 and parts[0].lower() in {"story", "s"} and parts[2].isdigit():
+        # Accept the alternate public form /s/<username>/<story_id> too.
+        entity_parts = [parts[1]]
+        story_id = int(parts[2])
+    else:
         return None, None
-    if entity_str and entity_str.startswith("@"):
-        entity_str = entity_str[1:]
-    return f"@{entity_str}", story_id
+
+    if len(entity_parts) >= 2 and entity_parts[0].lower() == "c" and entity_parts[1].isdigit():
+        entity_ref = f"-100{entity_parts[1]}"
+    elif len(entity_parts) == 1:
+        entity_ref = f"@{entity_parts[0].lstrip('@')}"
+    else:
+        return None, None
+    return entity_ref, story_id
 
 def _parse_bot_link(value: str) -> tuple[str | None, str | None]:
     """تحليل رابط بوت إحالة"""
@@ -310,6 +324,37 @@ def raksh_confirm_kb(service_type: str, quantity: int, total_cost: int, payment_
         [InlineKeyboardButton("✅ تأكيد الطلب", callback_data=f"raksh:confirm:{service_type}:{quantity}:{total_cost}:{payment_method}")],
         [InlineKeyboardButton("❌ إلغاء", callback_data="raksh_cancel")],
     ])
+
+async def _cancel_raksh_request(update, context, query, is_own: bool) -> None:
+    """إلغاء الطلب حتى لو تعذر تعديل رسالة الزر القديمة."""
+    _clear_raksh_state(context)
+    text = "🏠 *القائمة الرئيسية*"
+    try:
+        markup = main_menu_kb(is_own)
+    except Exception as exc:
+        logger.warning(f"⚠️ تعذر بناء قائمة البوت بعد إلغاء الرشق: {exc}")
+        markup = None
+    try:
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=markup,
+        )
+        return
+    except Exception as exc:
+        logger.warning(f"⚠️ تعذر تعديل رسالة إلغاء الرشق، سيتم إرسال القائمة بدلاً منها: {exc}")
+
+    chat = update.effective_chat
+    if chat is not None:
+        try:
+            await context.bot.send_message(
+                chat_id=chat.id,
+                text=text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=markup,
+            )
+        except Exception as exc:
+            logger.warning(f"⚠️ تعذر إرسال القائمة بعد إلغاء الرشق: {exc}")
 
 # ════════════════════════════════════════════════════════════
 # ═══ 4. تنفيذ الخدمات ═══
@@ -648,18 +693,18 @@ async def handle_raksh_callback(
     user = user or query.from_user
     is_own = (user.id == OWNER_ID) if is_own is None else is_own
     
-    await query.answer()
+    try:
+        await query.answer()
+    except Exception:
+        pass
     
     # ─── إلغاء الطلب أو العودة إلى قائمة الرشق ───
-    if data in {"raksh_menu", "raksh_cancel"}:
+    if data == "raksh_cancel":
+        await _cancel_raksh_request(update, context, query, is_own)
+        return
+
+    if data == "raksh_menu":
         _clear_raksh_state(context)
-        if data == "raksh_cancel":
-            await query.edit_message_text(
-                "🏠 *القائمة الرئيسية*",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=main_menu_kb(is_own),
-            )
-            return
         await query.edit_message_text(
             "🔥 *خدمات الرشق*\n\n"
             "اختر الخدمة المطلوبة:\n"
@@ -926,7 +971,7 @@ async def _start_raksh_execution(update, context, query, service_type: str, quan
 async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """معالج النصوص لنظام الرشق"""
     user = update.effective_user
-    text = update.message.text
+    text = (update.message.text or "").strip()
     state = context.user_data.get("raksh_step")
     
     if not state:
@@ -1083,7 +1128,12 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ─── خطوة العدد ───
     if state == "quantity":
         try:
-            quantity = int(text)
+            quantity = int(
+                text.translate(str.maketrans(
+                    "٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹",
+                    "01234567890123456789",
+                ))
+            )
         except ValueError:
             await update.message.reply_text(
                 "⚠️ أرسل رقماً صحيحاً.",

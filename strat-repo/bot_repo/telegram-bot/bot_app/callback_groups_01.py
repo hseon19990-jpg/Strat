@@ -262,7 +262,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
         # ════════════════════════════════════════════════════════════════
         # ✅ التعديل: معالج نظام الرشق الجديد
         # ════════════════════════════════════════════════════════════════
-        if data == "raksh_menu":
+        if data in {"raksh_menu", "raksh_cancel"}:
             await handle_raksh_callback(update, context, q, data, user, is_own)
             return
         # ════════════════════════════════════════════════════════════════

@@ -91,7 +91,15 @@ async def _apply_account_name(phone: str, display_name: str) -> None:
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("raksh_step"):
         from .raksh_system import handle_raksh_text
-        if await handle_raksh_text(update, context):
+        try:
+            raksh_handled = await handle_raksh_text(update, context)
+        except Exception:
+            logger.exception("❌ فشل استقبال رسالة في نظام الرشق")
+            await update.message.reply_text(
+                "⚠️ حدث خطأ أثناء معالجة طلب الرشق. اضغط «إلغاء» ثم ابدأ الطلب من جديد."
+            )
+            return
+        if raksh_handled:
             return
 
     user   = update.effective_user
