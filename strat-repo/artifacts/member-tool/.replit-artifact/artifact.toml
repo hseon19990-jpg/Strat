@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "بوابة الأعضاء"
+description = "بوابة أعضاء عربية تتيح الوصول إلى خدمات الأعضاء، مع تحكم خاص بالمالك في إظهار أو إخفاء خدمات أسطورية."
+version = "1.0.0"
+id = "artifacts/member-tool"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 22123
+
+[services.development]
+run = "pnpm --filter @workspace/member-tool run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/member-tool", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/member-tool/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "22123"
+BASE_PATH = "/"
