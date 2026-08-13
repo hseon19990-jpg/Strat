@@ -212,6 +212,7 @@ def _clear_raksh_state(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 RAKSH_MIN_DELAY_SECONDS = 60
 RAKSH_MAX_DELAY_SECONDS = 3 * 60
+RAKSH_VOTE_DELAY_SECONDS = 3
 # The available session pool is the real per-request limit.  A value greater
 # than zero can still be supplied when an operator wants an hourly safety cap;
 # zero keeps the cap disabled instead of silently limiting a 71-account pool
@@ -224,7 +225,9 @@ except ValueError:
     RAKSH_MAX_EXECUTIONS_PER_HOUR = 0
 
 def _get_delay_seconds(service_type: str | None = None) -> int:
-    """فاصل عشوائي بين كل حساب والذي يليه لجميع خدمات الرشق."""
+    """إرجاع الفاصل بين الحسابات حسب نوع الخدمة."""
+    if service_type in {"votes", "votes_ai"}:
+        return RAKSH_VOTE_DELAY_SECONDS
     return random.randint(RAKSH_MIN_DELAY_SECONDS, RAKSH_MAX_DELAY_SECONDS)
 
 def get_raksh_hourly_remaining(user_id: int) -> int:
@@ -361,6 +364,15 @@ def _parse_post_link(value: str) -> tuple[str | None, int | None]:
     if len(parts) != 2:
         return None, None
     return f"@{parts[0].lstrip('@')}", int(parts[1])
+
+
+def _as_message_list(value) -> list:
+    """توحيد نتيجة Telethon عند طلب رسالة واحدة أو عدة رسائل."""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
 
 
 def _reaction_emoticons(reactions) -> list[str]:
@@ -944,7 +956,7 @@ async def _execute_poll(session, params, is_first):
         if not entity_ref or not msg_id:
             return False, "رابط الاستفتاء غير صحيح."
         entity = await client.get_entity(entity_ref)
-        messages = await client.get_messages(entity, ids=msg_id)
+        messages = _as_message_list(await client.get_messages(entity, ids=msg_id))
         if not messages:
             return False, "المنشور غير موجود."
         msg = messages[0]
@@ -975,7 +987,7 @@ async def _execute_votes(session, params, is_first):
         if not post_ref or not post_id:
             return False, "رابط المنشور غير صحيح."
         post_entity = await client.get_entity(post_ref)
-        messages = await client.get_messages(post_entity, ids=post_id)
+        messages = _as_message_list(await client.get_messages(post_entity, ids=post_id))
         if not messages:
             return False, "المنشور غير موجود."
         msg = messages[0]
@@ -1015,7 +1027,7 @@ async def _execute_votes_ai(session, params, is_first):
         if not post_ref or not post_id:
             return False, "رابط المنشور غير صحيح."
         post_entity = await client.get_entity(post_ref)
-        messages = await client.get_messages(post_entity, ids=post_id)
+        messages = _as_message_list(await client.get_messages(post_entity, ids=post_id))
         if not messages:
             return False, "المنشور غير موجود."
         solved, detail = await solve_captcha_with_ai(client, post_entity, messages, session["phone_number"], max_attempts=3)
