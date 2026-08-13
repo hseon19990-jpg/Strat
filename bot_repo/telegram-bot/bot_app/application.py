@@ -39,16 +39,31 @@ def main():
     start_health_server()
 
     from telegram.request import HTTPXRequest
+
+    # Railway can occasionally take longer to establish or return a Telegram
+    # API connection. Configure both request clients: get_me() and normal bot
+    # calls use the default client, while long polling uses the updates client.
+    telegram_request = HTTPXRequest(
+        connection_pool_size=8,
+        read_timeout=120,
+        connect_timeout=60,
+        write_timeout=60,
+        pool_timeout=60,
+    )
+    updates_request = HTTPXRequest(
+        connection_pool_size=2,
+        read_timeout=120,
+        connect_timeout=60,
+        write_timeout=60,
+        pool_timeout=60,
+    )
+
     app = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
         .concurrent_updates(True)
-        .get_updates_request(HTTPXRequest(
-            connection_pool_size=1,
-            read_timeout=60,
-            connect_timeout=30,
-            write_timeout=30,
-        ))
+        .request(telegram_request)
+        .get_updates_request(updates_request)
         .build()
     )
 
@@ -288,6 +303,7 @@ def main():
     logger.info("🤖 Bot started!")
     app.run_polling(
         drop_pending_updates=True,
+        bootstrap_retries=-1,
         read_timeout=45,
         write_timeout=45,
         connect_timeout=45,
