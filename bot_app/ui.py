@@ -1842,13 +1842,16 @@ async def show_category_services(update: Update, context: ContextTypes.DEFAULT_T
     _is_own_v = _vu and _vu.id == OWNER_ID
     _ms_vis = get_setting('mansub_visible') == '1'
     with db_conn() as c:
+        active_filter = "" if _is_own_v else " AND active=1"
         svcs = c.execute(
-            "SELECT * FROM services WHERE category=%s AND platform=%s AND active=1", (category, platform)
+            f"SELECT * FROM services WHERE category=%s AND platform=%s{active_filter}",
+            (category, platform)
         ).fetchall()
     if not svcs and platform != 'tg':
         with db_conn() as c:
             svcs = c.execute(
-                "SELECT * FROM services WHERE category=%s AND (platform=%s OR platform IS NULL) AND active=1",
+                f"SELECT * FROM services WHERE category=%s "
+                f"AND (platform=%s OR platform IS NULL){active_filter}",
                 (category, platform)
             ).fetchall()
     if _is_own_v and category == 'start_bot' and platform == 'tg':
@@ -1869,7 +1872,8 @@ async def show_category_services(update: Update, context: ContextTypes.DEFAULT_T
     rows = []
     for s in svcs:
         ico = '🔑' if s.get('service_type') == 'mandatory_sub' else ('⭐' if s['category'] == 'post_stars' else '🔹')
-        rows.append([InlineKeyboardButton(f"{ico} {s['name_ar']}", callback_data=f"svc:{s['id']}" )])
+        status = f" {'✅' if s['active'] else '❌'}" if _is_own_v else ""
+        rows.append([InlineKeyboardButton(f"{ico} {s['name_ar']}{status}", callback_data=f"svc:{s['id']}" )])
     # ==================== نهاية الدالة show_category_services ====================
     extra_items = get_menu_items(f"cat:{category}")
     rows.extend(build_kb_rows(extra_items))

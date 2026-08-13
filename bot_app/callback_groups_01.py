@@ -336,12 +336,50 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             await context.bot.send_message(user.id, content or "—")
             return
 
+        if data.startswith("svc:toggle:") and is_own:
+            parts = data.split(":")
+            try:
+                svc_id = int(parts[2])
+                new_active = int(parts[3])
+            except (IndexError, TypeError, ValueError):
+                await q.answer("⚠️ بيانات الخدمة غير صالحة.", show_alert=True)
+                return
+            if new_active not in (0, 1):
+                await q.answer("⚠️ حالة الخدمة غير صالحة.", show_alert=True)
+                return
+            with db_conn() as c:
+                c.execute("UPDATE services SET active=%s WHERE id=%s", (new_active, svc_id))
+                svc = c.execute("SELECT * FROM services WHERE id=%s", (svc_id,)).fetchone()
+            if not svc:
+                await q.answer("⚠️ الخدمة غير موجودة.", show_alert=True)
+                return
+            status = "✅ مفعّلة" if svc["active"] else "❌ معطّلة"
+            toggle_label = "❌ تعطيل الخدمة" if svc["active"] else "✅ تفعيل الخدمة"
+            cat = svc["category"]
+            await q.answer("✅ تم تحديث حالة الخدمة.")
+            await q.edit_message_text(
+                f"🔹 *{svc['name_ar']}*\n\n"
+                f"📉 الحد الأدنى: {svc['min_qty']}\n"
+                f"📈 الحد الأعلى: {svc['max_qty']}\n"
+                f"💰 السعر: {fmt_price(svc['price_per_point'])} نقطة / 1000 وحدة\n"
+                f"🟢 الحالة: {status}",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton(toggle_label, callback_data=f"svc:toggle:{svc_id}:{0 if svc['active'] else 1}")],
+                    [InlineKeyboardButton("🔙 رجوع", callback_data=f"cat:{cat}")]
+                ])
+            )
+            return
+
         if data.startswith("svc:"):
             svc_id = int(data.split(":")[1])
             with db_conn() as c:
                 svc = c.execute("SELECT * FROM services WHERE id=?", (svc_id,)).fetchone()
             if not svc:
                 await q.edit_message_text("⚠️ الخدمة غير موجودة.", reply_markup=back_kb())
+                return
+            if not is_own and not svc["active"]:
+                await q.answer("⚠️ هذه الخدمة متوقفة حالياً.", show_alert=True)
                 return
             if svc.get('service_type') == 'mandatory_sub':
                 await _mansub_start(update, context, user, q, is_own)
@@ -350,17 +388,26 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             context.user_data["smm_svc_db_id"] = svc_id
             context.user_data["smm_svc"] = dict(svc)
             context.user_data["smm_cat"] = cat
-            context.user_data["state"] = "await_smm_qty"
+            context.user_data["state"] = "smm_owner_service_view" if is_own else "await_smm_qty"
+            detail_rows = []
+            if is_own:
+                toggle_label = "❌ تعطيل الخدمة" if svc["active"] else "✅ تفعيل الخدمة"
+                detail_rows.append([
+                    InlineKeyboardButton(
+                        toggle_label,
+                        callback_data=f"svc:toggle:{svc_id}:{0 if svc['active'] else 1}"
+                    )
+                ])
+            detail_rows.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"cat:{cat}")])
             await q.edit_message_text(
                 f"🔹 *{svc['name_ar']}*\n\n"
                 f"📉 الحد الأدنى: {svc['min_qty']}\n"
                 f"📈 الحد الأعلى: {svc['max_qty']}\n"
-                f"💰 السعر: {fmt_price(svc['price_per_point'])} نقطة / 1000 وحدة\n\n"
-                f"🔢 أرسل *الكمية* المطلوبة:",
+                f"💰 السعر: {fmt_price(svc['price_per_point'])} نقطة / 1000 وحدة\n"
+                + (f"🟢 الحالة: {'✅ مفعّلة' if svc['active'] else '❌ معطّلة'}\n\n" if is_own else "\n")
+                + ("🔢 أرسل *الكمية* المطلوبة:" if not is_own else "اختر الإجراء المطلوب:"),
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 رجوع", callback_data=f"cat:{cat}")]
-                ])
+                reply_markup=InlineKeyboardMarkup(detail_rows)
             )
             return
 
