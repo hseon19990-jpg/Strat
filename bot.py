@@ -1,16 +1,8 @@
 """Compatibility entry point for the modular Telegram bot.
 
-The repository contains a newer bot under ``bot_repo/telegram-bot``. The
-Docker image already starts there, while the root Procfile starts this file.
-Put the newer package first so both launch paths use the same Raksh system.
+Railway/Procfile can continue to run ``python bot.py``. Importing this file
+also keeps the old ``from bot import ...`` style available.
 """
-
-from pathlib import Path
-import sys
-
-_NESTED_BOT_DIR = Path(__file__).resolve().parent / "bot_repo" / "telegram-bot"
-if _NESTED_BOT_DIR.is_dir():
-    sys.path.insert(0, str(_NESTED_BOT_DIR))
 
 from bot_app import *  # noqa: F401,F403 - backwards-compatible bot API
 from bot_app import Conflict, logger, main, time, traceback
