@@ -47,6 +47,22 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 await legendary_toggle_visibility(update, context, q, is_own, data)
                 return
 
+            if data.startswith("legendary:toggle_service:") and is_own:
+                service_type = data.split(":", 2)[2]
+                if service_type not in {
+                    "comment", "poll", "story", "votes",
+                    "votes_ai", "premium_reaction",
+                }:
+                    await q.answer("⚠️ الخدمة غير صالحة.", show_alert=True)
+                    return
+                visible = toggle_legendary_service_visibility(service_type)
+                await q.answer(
+                    "✅ تم تفعيل الخدمة للأعضاء." if visible else "❌ تم تعطيل الخدمة للأعضاء.",
+                    show_alert=True,
+                )
+                await legendary_service_start(update, context, q, is_own, service_type)
+                return
+
             if data.startswith("legendary:edit_price:") and is_own:
                 service_type = data.split(":")[2]
                 await legendary_edit_price(update, context, q, is_own, service_type)

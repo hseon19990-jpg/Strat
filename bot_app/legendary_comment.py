@@ -506,7 +506,7 @@ async def _execute_story_reaction(
             return False, "رابط الستوري غير صحيح. استخدم /s/<id> أو /story/<id>."
 
         entity = await client.get_entity(entity_ref)
-        
+
         await client(functions.stories.IncrementStoryViewsRequest(
             peer=entity,
             id=story_id
@@ -912,6 +912,17 @@ async def legendary_service_start(update, context, q, is_own: bool, service_type
     payment_markup = InlineKeyboardMarkup([
         [InlineKeyboardButton(f"⭐ دفع بالنجوم", callback_data=f"legendary:pay:stars")],
         [InlineKeyboardButton(f"💰 دفع بالنقاط", callback_data=f"legendary:pay:points")],
+        *(
+            [[
+                InlineKeyboardButton(
+                    "❌ تعطيل الخدمة للأعضاء"
+                    if is_legendary_service_visible(service_type)
+                    else "✅ تفعيل الخدمة للأعضاء",
+                    callback_data=f"legendary:toggle_service:{service_type}",
+                )
+            ]]
+            if is_own else []
+        ),
         [InlineKeyboardButton("🔙 رجوع", callback_data="legendary_services")],
     ])
     try:
