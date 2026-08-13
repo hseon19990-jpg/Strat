@@ -1508,6 +1508,34 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         svc = RAKSH_SERVICES[service_type]
         total = get_raksh_total(service_type, quantity, method)
         context.user_data["raksh_payment_method"] = method
+
+        # عند كتابة «نقاط» لا نترك الطلب عالقاً بانتظار زر تأكيد ثانٍ.
+        if method == "points":
+            if not deduct_points(user.id, total):
+                await update.message.reply_text(
+                    f"❌ نقاطك غير كافية لإتمام الطلب.\n"
+                    f"التكلفة المطلوبة: {total} نقطة.",
+                    reply_markup=raksh_menu_kb(user.id == OWNER_ID),
+                )
+                _clear_raksh_state(context)
+                return True
+
+            progress_message = await update.message.reply_text(
+                f"✅ تم الدفع بالنقاط وخصم {total} نقطة.\n"
+                "✅ بدأ التنفيذ الآن باستخدام الحسابات النشطة..."
+            )
+            await _start_raksh_execution(
+                update,
+                context,
+                query=None,
+                service_type=service_type,
+                quantity=quantity,
+                payment_method="points",
+                total_cost=total,
+                progress_message=progress_message,
+            )
+            return True
+
         context.user_data["raksh_step"] = "payment_confirm"
         await update.message.reply_text(
             f"✅ تم اختيار الدفع بـ{method_label}.\n\n"
