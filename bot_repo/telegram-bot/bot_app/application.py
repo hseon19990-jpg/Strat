@@ -7,6 +7,18 @@ domain.
 
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
+from telegram.ext import ExtBot
+
+class ResilientExtBot(ExtBot):
+    """Let polling handle Telegram bootstrap retries instead of blocking on getMe()."""
+
+    async def initialize(self) -> None:
+        if self._initialized:
+            return
+        if self.rate_limiter:
+            await self.rate_limiter.initialize()
+        await asyncio.gather(self._request[0].initialize(), self._request[1].initialize())
+        self._initialized = True
 
 # ─── استيراد نظام الرشق الجديد من داخل حزمة bot_app ────────────────────────
 from .raksh_system import (
@@ -58,12 +70,15 @@ def main():
         pool_timeout=60,
     )
 
+    telegram_bot = ResilientExtBot(
+        token=BOT_TOKEN,
+        request=telegram_request,
+        get_updates_request=updates_request,
+    )
     app = (
         ApplicationBuilder()
-        .token(BOT_TOKEN)
+        .bot(telegram_bot)
         .concurrent_updates(True)
-        .request(telegram_request)
-        .get_updates_request(updates_request)
         .build()
     )
 
@@ -171,35 +186,43 @@ def main():
         except Exception:
             pass
 
-        # ─── حذف أي webhook مسجّل مسبقاً حتى يعمل long polling بشكل صحيح ───
-        try:
-            await application.bot.delete_webhook(drop_pending_updates=True)
-            logger.info("✅ Webhook deleted — polling mode active")
-        except Exception as _wh_err:
-            logger.warning(f"⚠️ تعذّر حذف webhook: {_wh_err}")
-
-        await application.bot.set_my_commands([
-            BotCommand("start", "🏠 القائمة الرئيسية"),
-            BotCommand("raksh", "🔥 خدمات الرشق"),
-        ])
-        if OWNER_ID:
+        async def _configure_telegram():
+            """Configure optional Telegram metadata without blocking polling startup."""
             try:
-                await application.bot.set_my_commands(
-                    [
-                        BotCommand("start",     "🏠 القائمة الرئيسية"),
-                        BotCommand("admin",     "⚙️ لوحة المالك"),
-                        BotCommand("addpoints", "💰 إضافة/خصم نقاط لمستخدم"),
-                        BotCommand("broadcast",          "📢 إرسال رسالة جماعية"),
-                        BotCommand("status",             "🔍 فحص حالة طلب"),
-                        BotCommand("compensate_partial", "💰 تعويض أصحاب الطلبات الجزئية"),
-                        BotCommand("refund_mandatory", "🔁 استرجاع تمويلات الاشتراك الإجباري"),
-                        BotCommand("testai",             "🧪 اختبار مفاتيح AI"),
-                        BotCommand("raksh",              "🔥 خدمات الرشق"),
-                    ],
-                    scope=BotCommandScopeChat(chat_id=OWNER_ID)
-                )
+                await application.bot.set_my_commands([
+                    BotCommand("start", "🏠 القائمة الرئيسية"),
+                    BotCommand("raksh", "🔥 خدمات الرشق"),
+                ])
+                if OWNER_ID:
+                    try:
+                        await application.bot.set_my_commands(
+                            [
+                                BotCommand("start",     "🏠 القائمة الرئيسية"),
+                                BotCommand("admin",     "⚙️ لوحة المالك"),
+                                BotCommand("addpoints", "💰 إضافة/خصم نقاط لمستخدم"),
+                                BotCommand("broadcast",          "📢 إرسال رسالة جماعية"),
+                                BotCommand("status",             "🔍 فحص حالة طلب"),
+                                BotCommand("compensate_partial", "💰 تعويض أصحاب الطلبات الجزئية"),
+                                BotCommand("refund_mandatory", "🔁 استرجاع تمويلات الاشتراك الإجباري"),
+                                BotCommand("testai",             "🧪 اختبار مفاتيح AI"),
+                                BotCommand("raksh",              "🔥 خدمات الرشق"),
+                            ],
+                            scope=BotCommandScopeChat(chat_id=OWNER_ID)
+                        )
+                    except Exception as e:
+                        logger.warning(f"⚠️ تعذّر تعيين أوامر المالك الخاصة (ربما لم يبدأ المالك محادثة مع البوت بعد): {e}")
+
+                global _OWN_BOT_USERNAME
+                _me = await application.bot.get_me()
+                _OWN_BOT_USERNAME = (_me.username or "").lower().strip()
+                logger.info(f"✅ Telegram API connected — bot username: @{_OWN_BOT_USERNAME}")
+            except (TimedOut, NetworkError) as e:
+                logger.warning(f"⚠️ تعذّر مزامنة إعدادات Telegram مؤقتاً؛ polling مستمر: {e}")
             except Exception as e:
-                logger.warning(f"⚠️ تعذّر تعيين أوامر المالك الخاصة (ربما لم يبدأ المالك محادثة مع البوت بعد): {e}")
+                logger.warning(f"⚠️ تعذّر مزامنة إعدادات Telegram: {e}")
+
+        asyncio.create_task(_configure_telegram(), name="telegram-metadata-sync")
+        logger.info("✅ Telegram polling startup is non-blocking; bootstrap retries are enabled")
         
         # ════════════════════════════════════════════════════════════════
         # 🔥 سجل حالة مفاتيح AI عند بدء التشغيل
@@ -212,15 +235,7 @@ def main():
             logger.warning("⚠️ لا يوجد مفتاح Groq أو DeepSeek — خدمات التحقق التلقائي لن تعمل.")
         # ════════════════════════════════════════════════════════════════
         
-        logger.info("✅ Bot commands set")
-        # حفظ اسم المستخدم الخاص بهذا البوت لاستخدامه في تخطي الإحالة الذاتية
-        global _OWN_BOT_USERNAME
-        try:
-            _me = await application.bot.get_me()
-            _OWN_BOT_USERNAME = (_me.username or "").lower().strip()
-            logger.info(f"✅ _OWN_BOT_USERNAME = @{_OWN_BOT_USERNAME}")
-        except Exception as _e:
-            logger.warning(f"⚠️ تعذّر جلب username البوت: {_e}")
+        logger.info("ℹ️ Telegram command synchronization scheduled in background")
         # ─── تعويض المبيعات المكررة عند الإقلاع ────
         async def _bg_startup():
             try:
