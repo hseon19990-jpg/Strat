@@ -202,8 +202,12 @@ def _clear_raksh_state(context: ContextTypes.DEFAULT_TYPE) -> None:
 # ═══ 2. دوال مساعدة ═══
 # ════════════════════════════════════════════════════════════
 
-def _get_delay_seconds() -> int:
-    """فاصل زمني عشوائي 1-8 دقائق"""
+RAKSH_FIXED_DELAY_SERVICES = {"story", "forced_ref", "forced_ref_ai", "comment"}
+
+def _get_delay_seconds(service_type: str | None = None) -> int:
+    """الفاصل بين الحسابات: 3 ثوانٍ للخدمات المطلوبة، وعشوائي للباقي."""
+    if service_type in RAKSH_FIXED_DELAY_SERVICES:
+        return 3
     return random.randint(60, 480)
 
 def _get_all_active_sessions(service_type: str | None = None) -> list[dict]:
@@ -712,7 +716,7 @@ async def execute_raksh_service(service_type: str, quantity: int, sessions: list
         if progress_callback:
             await progress_callback(i + 1, quantity, success_count, len(failed_details))
         if i < quantity - 1 and shuffled:
-            delay = _get_delay_seconds()
+            delay = _get_delay_seconds(service_type)
             await asyncio.sleep(delay)
     return success_count, success_phones, failed_details
 
