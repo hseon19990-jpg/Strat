@@ -285,9 +285,7 @@ def _get_all_active_sessions(service_type: str | None = None) -> list[dict]:
     return [dict(row) for row in rows]
 
 def get_available_sessions_count(service_type: str | None = None) -> int:
-    # Keep the Raksh menu exactly in sync with the counter used by the
-    # mandatory bot-referral entry in the main menu.
-    return get_forced_ref_account_count()
+    return len(_get_all_active_sessions(service_type))
 
 def _parse_channel_ref(value: str) -> tuple[str | None, str | None]:
     """تحويل رابط قناة إلى مرجع Telethon"""
@@ -389,11 +387,41 @@ def _parse_bot_link(value: str) -> tuple[str | None, str | None]:
 # ═══ 3. أزرار الواجهة ═══
 # ════════════════════════════════════════════════════════════
 
-def raksh_menu_kb():
-    """القائمة الرئيسية للخدمات"""
+def _raksh_setting_key(service_type: str) -> str:
+    return f"raksh_service_enabled_{service_type}"
+
+
+def _is_raksh_service_enabled(service_type: str) -> bool:
+    """الخدمات مفعلة افتراضياً حتى لا يتغير السلوك الحالي بعد التحديث."""
+    return get_setting(_raksh_setting_key(service_type)).strip().lower() not in {
+        "0", "false", "off", "hidden", "disabled"
+    }
+
+
+def _set_raksh_service_enabled(service_type: str, enabled: bool) -> None:
+    set_setting(_raksh_setting_key(service_type), "1" if enabled else "0")
+
+
+def raksh_menu_kb(is_owner: bool = False):
+    """قائمة الخدمات؛ المالك يرى زر التحكم، والأعضاء يرون المفعّل فقط."""
     buttons = []
     for key, svc in RAKSH_SERVICES.items():
-        buttons.append([InlineKeyboardButton(svc["name"], callback_data=f"raksh:start:{key}")])
+        if not is_owner and not _is_raksh_service_enabled(key):
+            continue
+        service_button = InlineKeyboardButton(
+            svc["name"], callback_data=f"raksh:start:{key}"
+        )
+        if is_owner:
+            enabled = _is_raksh_service_enabled(key)
+            buttons.append([
+                service_button,
+                InlineKeyboardButton(
+                    "✅ مفعلة" if enabled else "🚫 مخفية",
+                    callback_data=f"raksh:toggle:{key}",
+                ),
+            ])
+        else:
+            buttons.append([service_button])
     buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")])
     return InlineKeyboardMarkup(buttons)
 
@@ -920,6 +948,27 @@ async def handle_raksh_callback(
     
     await query.answer()
 
+    # ─── إظهار/إخفاء خدمة من قائمة الأعضاء (للمالك فقط) ───
+    if data.startswith("raksh:toggle:"):
+        if not is_own:
+            await query.answer("⛔ هذا الخيار للمالك فقط.", show_alert=True)
+            return
+        service_type = data.split(":", 2)[2]
+        if service_type not in RAKSH_SERVICES:
+            await query.answer("⚠️ الخدمة غير موجودة.", show_alert=True)
+            return
+        enabled = not _is_raksh_service_enabled(service_type)
+        _set_raksh_service_enabled(service_type, enabled)
+        await query.edit_message_text(
+            "🔥 *إدارة خدمات الرشق*\n\n"
+            "✅ مفعلة: تظهر للأعضاء\n"
+            "🚫 مخفية: لا تظهر للأعضاء\n\n"
+            f"📊 الحسابات المتاحة: *{get_available_sessions_count()}*",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=raksh_menu_kb(True),
+        )
+        return
+
     # ─── إعداد أسعار الرشق (للمالك فقط) ───
     if data == "raksh:settings":
         if not is_own:
@@ -976,7 +1025,7 @@ async def handle_raksh_callback(
             "اختر الخدمة المطلوبة:\n"
             f"📊 الحسابات المتاحة: *{get_available_sessions_count()}*",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=raksh_menu_kb()
+            reply_markup=raksh_menu_kb(is_own)
         )
         return
     
@@ -985,7 +1034,16 @@ async def handle_raksh_callback(
         service_type = data.split(":")[2]
         svc = RAKSH_SERVICES.get(service_type)
         if not svc:
-            await query.edit_message_text("⚠️ خدمة غير موجودة.", reply_markup=raksh_menu_kb())
+            await query.edit_message_text(
+                "⚠️ خدمة غير موجودة.",
+                reply_markup=raksh_menu_kb(is_own),
+            )
+            return
+        if not is_own and not _is_raksh_service_enabled(service_type):
+            await query.edit_message_text(
+                "⚠️ هذه الخدمة مخفية حالياً.",
+                reply_markup=raksh_menu_kb(False),
+            )
             return
         
         _clear_raksh_state(context)
@@ -1110,7 +1168,7 @@ async def handle_raksh_callback(
         if quantity > _get_request_limit(user.id, service_type):
             await query.edit_message_text(
                 "⚠️ لا يمكن قبول هذا الطلب حالياً. حاول لاحقاً.",
-                reply_markup=raksh_menu_kb(),
+                reply_markup=raksh_menu_kb(is_own),
             )
             return
         # لا نثق بالسعر القادم من الزر؛ أعد حسابه من الإعداد الحالي حتى لا
@@ -1128,7 +1186,7 @@ async def handle_raksh_callback(
                 await query.edit_message_text(
                     "❌ *نقاطك غير كافية!*",
                     parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=raksh_menu_kb()
+                    reply_markup=raksh_menu_kb(is_own)
                 )
                 return
         else:
@@ -1260,7 +1318,7 @@ async def _start_raksh_execution(
     if not sessions:
         await progress_msg.edit_text(
             "❌ لا توجد حسابات متاحة.",
-            reply_markup=raksh_menu_kb()
+            reply_markup=raksh_menu_kb(user.id == OWNER_ID)
         )
         if payment_method == "points":
             add_points(user.id, total_cost)
@@ -1687,13 +1745,13 @@ async def raksh_successful_payment(update: Update, context: ContextTypes.DEFAULT
                 )
                 await update.message.reply_text(
                     "⚠️ تعذر بدء الطلب حالياً، وتمت إعادة قيمة الدفع.",
-                    reply_markup=raksh_menu_kb(),
+                    reply_markup=raksh_menu_kb(user_id == OWNER_ID),
                 )
             except Exception:
                 logger.exception("فشل إعادة دفع النجوم لطلب رشق المستخدم %s", user_id)
                 await update.message.reply_text(
                     "⚠️ تعذر بدء الطلب حالياً. تواصل مع المالك.",
-                    reply_markup=raksh_menu_kb(),
+                    reply_markup=raksh_menu_kb(user_id == OWNER_ID),
                 )
             return
         
@@ -1750,5 +1808,5 @@ async def cmd_raksh(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "اختر الخدمة المطلوبة:\n"
         f"📊 الحسابات المتاحة: *{available_sessions}*",
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=raksh_menu_kb()
+        reply_markup=raksh_menu_kb(user.id == OWNER_ID)
     )
