@@ -429,8 +429,11 @@ async def _fetch_raksh_reactions(
             client.get_messages(post_entity, ids=post_id),
             timeout=RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS,
         )
+        # Telethon returns a single Message for an integer `ids` argument,
+        # but returns a list when the caller supplies multiple ids.
+        if isinstance(message, (list, tuple)):
+            message = message[0] if message else None
         if message:
-            message = message[0]
             message_reactions = getattr(
                 getattr(message, "reactions", None),
                 "results",
