@@ -457,8 +457,24 @@ async def _execute_story(session, params, is_first):
         reaction = params.get("reaction")
         if not reaction or reaction == "random":
             reaction = random.choice(list(RAKSH_REACTIONS.values()))
-        await client(SendReactionRequest(peer=entity, story_id=story_id, reaction=[ReactionEmoji(emoticon=reaction)]))
-        return True, f"✅ تمت المشاهدة والتفاعل من {session['phone_number']}"
+        try:
+            await client(
+                SendReactionRequest(
+                    peer=entity,
+                    story_id=story_id,
+                    reaction=ReactionEmoji(emoticon=reaction),
+                )
+            )
+            return True, f"✅ تمت المشاهدة والتفاعل من {session['phone_number']}"
+        except Exception as reaction_error:
+            # نجاح المشاهدة لا ينبغي أن يتحول إلى فشل كامل إذا كانت
+            # التفاعلات معطلة على الستوري أو رفضها Telegram لهذا الحساب.
+            logger.warning(
+                "Story view succeeded but reaction failed for %s: %s",
+                session["phone_number"],
+                str(reaction_error)[:120],
+            )
+            return True, f"✅ تمت المشاهدة من {session['phone_number']} (تعذر التفاعل)"
     except Exception as e:
         return False, f"❌ فشل: {str(e)[:80]}"
     finally:
