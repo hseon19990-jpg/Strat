@@ -442,6 +442,66 @@ async def _join_discussion_group(client, discussion):
             raise
     return discussion_chat
 
+
+def _normalize_digits(value: str) -> str:
+    """توحيد الأرقام العربية قبل تحليل أرقام خيارات الاستفتاء."""
+    return (value or "").translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
+
+
+def _select_poll_option(options, requested: str):
+    """اختيار خيار الاستفتاء بالرقم أو بالنص."""
+    requested = (requested or "").strip()
+    normalized_requested = _normalize_digits(requested)
+    if normalized_requested.isdigit():
+        index = int(normalized_requested) - 1
+        return options[index] if 0 <= index < len(options) else None
+
+    requested_folded = requested.casefold()
+    return next(
+        (
+            option
+            for option in options
+            if str(getattr(option, "text", "")).strip().casefold() == requested_folded
+        ),
+        None,
+    )
+
+
+def _same_poll_option(left, right) -> bool:
+    """مقارنة خيارات Telethon سواء كانت bytes أو كائنات قابلة للمقارنة."""
+    if left is None or right is None:
+        return False
+    try:
+        return bytes(left) == bytes(right)
+    except (TypeError, ValueError):
+        return left == right
+
+
+async def _send_vote_and_check(client, peer, msg_id: int, option) -> bool:
+    """إرسال التصويت ثم محاولة التأكد من ظهور علامة chosen في النتائج."""
+    await client(SendVoteRequest(peer=peer, msg_id=msg_id, options=[option]))
+
+    for delay in (0.0, 0.5, 1.0):
+        if delay:
+            await asyncio.sleep(delay)
+        refreshed = await client.get_messages(peer, ids=msg_id)
+        if not refreshed:
+            continue
+        refreshed_message = refreshed[0] if isinstance(refreshed, (list, tuple)) else refreshed
+        poll_media = getattr(refreshed_message, "poll", None)
+        results = getattr(poll_media, "results", None)
+        result_items = getattr(results, "results", None) or []
+        if any(
+            _same_poll_option(getattr(result, "option", None), option)
+            and bool(getattr(result, "chosen", False))
+            for result in result_items
+        ):
+            return True
+
+    # Telegram can accept the request while omitting `chosen` in the
+    # response, so the caller still counts the successful API request.
+    return False
+
 # ─── تنفيذ كل خدمة ───
 
 async def _execute_story(session, params, is_first):
@@ -547,6 +607,9 @@ async def _execute_comment(session, params, is_first):
     try:
         if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
             return False, "الجلسة غير مصرح بها."
+        comment_text = (params.get("comment_text") or "").strip()
+        if not comment_text:
+            return False, "نص التعليق فارغ."
         if is_first and params.get("channel_ref"):
             await _join_channel_and_schedule_leave(client, params["channel_ref"])
         post_ref, post_id = _parse_post_link(params["link"])
@@ -561,11 +624,13 @@ async def _execute_comment(session, params, is_first):
         if discussion_peer is None:
             return False, "تعذر تحديد مساحة التعليقات."
         discussion_chat = await _join_discussion_group(client, discussion)
-        await client.send_message(
+        sent_message = await client.send_message(
             discussion_chat,
-            params["comment_text"],
+            comment_text,
             reply_to=discussion_message.id,
         )
+        if not getattr(sent_message, "id", None):
+            return False, "تعذر تأكيد إرسال التعليق."
         return True, f"✅ تم التعليق من {session['phone_number']}"
     except Exception as e:
         return False, f"❌ فشل: {str(e)[:80]}"
@@ -580,12 +645,10 @@ async def _execute_poll(session, params, is_first):
             return False, "الجلسة غير مصرح بها."
         if is_first and params.get("channel_ref"):
             await _join_channel_and_schedule_leave(client, params["channel_ref"])
-        parts = params["link"].split("/")
-        if len(parts) < 3:
+        entity_ref, msg_id = _parse_post_link(params["link"])
+        if not entity_ref or not msg_id:
             return False, "رابط الاستفتاء غير صحيح."
-        entity_str = parts[-2] if parts[-2].startswith("@") else parts[-2]
-        msg_id = int(parts[-1].split("?")[0])
-        entity = await client.get_entity(entity_str)
+        entity = await client.get_entity(entity_ref)
         messages = await client.get_messages(entity, ids=msg_id)
         if not messages:
             return False, "المنشور غير موجود."
@@ -594,11 +657,12 @@ async def _execute_poll(session, params, is_first):
             return False, "هذا المنشور ليس استفتاءً."
         poll = msg.poll.poll
         options = getattr(poll, "answers", [])
-        chosen_index = int(params["poll_option"]) - 1
-        if chosen_index < 0 or chosen_index >= len(options):
+        chosen_option = _select_poll_option(options, params.get("poll_option"))
+        if chosen_option is None:
             return False, "الخيار المطلوب غير موجود."
-        await client(SendVoteRequest(peer=entity, msg_id=msg_id, options=[options[chosen_index].option]))
-        return True, f"✅ تم التصويت من {session['phone_number']}"
+        verified = await _send_vote_and_check(client, entity, msg_id, chosen_option.option)
+        verification = " وتم التحقق من تسجيله" if verified else " وتم إرسال الطلب إلى Telegram"
+        return True, f"✅ تم التصويت{verification} من {session['phone_number']}"
     except Exception as e:
         return False, f"❌ فشل: {str(e)[:80]}"
     finally:
@@ -626,9 +690,15 @@ async def _execute_votes(session, params, is_first):
         options = getattr(poll, "answers", [])
         if not options:
             return False, "لا توجد خيارات."
-        chosen = random.randint(0, len(options) - 1)
-        await client(SendVoteRequest(peer=post_entity, msg_id=post_id, options=[options[chosen].option]))
-        return True, f"✅ تم التصويت من {session['phone_number']}"
+        chosen = random.choice(options)
+        verified = await _send_vote_and_check(
+            client,
+            post_entity,
+            post_id,
+            chosen.option,
+        )
+        verification = " وتم التحقق من تسجيله" if verified else " وتم إرسال الطلب إلى Telegram"
+        return True, f"✅ تم التصويت{verification} من {session['phone_number']}"
     except Exception as e:
         return False, f"❌ فشل: {str(e)[:80]}"
     finally:
@@ -666,9 +736,15 @@ async def _execute_votes_ai(session, params, is_first):
         options = getattr(poll, "answers", [])
         if not options:
             return False, "لا توجد خيارات."
-        chosen = random.randint(0, len(options) - 1)
-        await client(SendVoteRequest(peer=post_entity, msg_id=post_id, options=[options[chosen].option]))
-        return True, f"✅ تم التصويت مع التحقق من {session['phone_number']}"
+        chosen = random.choice(options)
+        verified = await _send_vote_and_check(
+            client,
+            post_entity,
+            post_id,
+            chosen.option,
+        )
+        verification = " وتم التحقق من تسجيله" if verified else " وتم إرسال الطلب إلى Telegram"
+        return True, f"✅ تم التصويت مع التحقق{verification} من {session['phone_number']}"
     except Exception as e:
         return False, f"❌ فشل: {str(e)[:80]}"
     finally:
@@ -1380,7 +1456,8 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ─── خطوة خيار الاستفتاء ───
     if state == "poll_option":
-        if not text.isdigit():
+        normalized_option = _normalize_digits(text.strip())
+        if not normalized_option.isdigit():
             await update.message.reply_text(
                 "⚠️ أرسل رقماً صحيحاً (مثال: 1 أو 2 أو 3).",
                 reply_markup=InlineKeyboardMarkup([
@@ -1388,7 +1465,7 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]),
             )
             return True
-        context.user_data["raksh_poll_option"] = text
+        context.user_data["raksh_poll_option"] = normalized_option
         context.user_data["raksh_step"] = "quantity"
         service_type = context.user_data.get("raksh_service")
         max_qty = _get_max_quantity(service_type)
@@ -1401,7 +1478,7 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return True
         await update.message.reply_text(
-            f"✅ تم حفظ الخيار {text}.\n\n"
+            f"✅ تم حفظ الخيار {normalized_option}.\n\n"
             f"🔢 *أرسل عدد الوحدات المطلوبة:*\n"
             f"(الحد الأقصى: {max_qty})",
             parse_mode=ParseMode.MARKDOWN,
