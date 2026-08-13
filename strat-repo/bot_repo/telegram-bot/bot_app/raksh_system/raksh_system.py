@@ -133,8 +133,9 @@ def _get_delay_seconds() -> int:
 def _get_all_active_sessions(service_type: str | None = None) -> list[dict]:
     """جلب كل الجلسات المخزنة التي يمكن استخدامها لخدمات الرشق.
 
-    يستخدم الرشق نفس مخزون الحسابات المؤهل لخدمة إحالة البوت الإجباري،
-    حتى يطابق العدد المعروض الحسابات التي سيحاول التنفيذ استخدامها.
+    الحد المعروض للمستخدم يأتي من عدّاد الإحالة الإجبارية، لكن التنفيذ
+    يقرأ كل الجلسات غير المحذوفة حتى لا يختلف عن محمل الجلسات الموجود
+    في ملف الإحالة القديم/المجزأ.
     """
     with db_conn() as c:
         rows = c.execute(
@@ -143,7 +144,6 @@ def _get_all_active_sessions(service_type: str | None = None) -> list[dict]:
             "WHERE session_string IS NOT NULL "
             "AND BTRIM(session_string) <> '' "
             "AND deleted_at IS NULL "
-            "AND forced_ref_excluded IS NOT TRUE "
             "ORDER BY id ASC"
         ).fetchall()
     return [dict(row) for row in rows]
