@@ -5,7 +5,7 @@ also keeps the old ``from bot import ...`` style available.
 """
 
 from bot_app import *  # noqa: F401,F403 - backwards-compatible bot API
-from bot_app import Conflict, logger, main, time, traceback
+from bot_app import Conflict, NetworkError, TimedOut, logger, main, time, traceback
 
 
 def run_forever() -> None:
@@ -17,16 +17,29 @@ def run_forever() -> None:
             main()
         except SystemExit:
             raise
+        except Conflict:
+            logger.warning("⚠️ Conflict أثناء polling — انتظار 45 ثانية ثم إعادة التشغيل...")
+            time.sleep(45)
+            restart_delay = 5
+            continue
+        except (TimedOut, NetworkError) as transient_error:
+            uptime = time.monotonic() - last_start_time
+            if uptime > 120:
+                restart_delay = 5
+            logger.warning(
+                "⚠️ Telegram API غير متاح مؤقتاً (%s). "
+                "إعادة الاتصال بعد %ss دون إيقاف الخدمة...",
+                type(transient_error).__name__,
+                restart_delay,
+            )
+            time.sleep(restart_delay)
+            restart_delay = min(restart_delay * 2, 60)
+            continue
         except Exception as crash:
             uptime = time.monotonic() - last_start_time
             if uptime > 120:
                 restart_delay = 5
             error_name = type(crash).__name__
-            if "Conflict" in error_name:
-                logger.warning("⚠️ Conflict أثناء polling — انتظار 45 ثانية ثم إعادة التشغيل...")
-                time.sleep(45)
-                restart_delay = 5
-                continue
             logger.critical(
                 f"💥 البوت انهار [{error_name}] بعد {uptime:.0f}ث: {crash}\n"
                 f"{traceback.format_exc()}"

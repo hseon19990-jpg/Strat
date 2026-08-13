@@ -303,6 +303,9 @@ def main():
     logger.info("🤖 Bot started!")
     app.run_polling(
         drop_pending_updates=True,
+        # Keep Telegram bootstrap failures recoverable. The outer runner also
+        # retries failures from getMe(), which happens before polling starts.
+        timeout=45,
         bootstrap_retries=-1,
         read_timeout=45,
         write_timeout=45,
