@@ -271,6 +271,7 @@ BUILTIN_DEFAULTS = {
         ("📱 أرقام إحالة بوت إجباري", "os:bot_ref_numbers", 1),
         ("👥 الأعضاء المقيدين", "os:restricted_members", 1),
         ("💰 تعديل أسعار الخدمات الأسطورية", "legendary:price_settings", 1),
+        ("🔥 تعديل أسعار خدمات الرشق", "raksh:settings", 1),
     ],
 }
 

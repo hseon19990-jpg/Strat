@@ -14,6 +14,10 @@
 
 from ..shared import *
 from ..accounts import get_forced_ref_account_count
+from ..database import db_conn
+from ..security import add_points, deduct_points, get_user, is_user_banned
+from ..users import get_setting, set_setting
+from ..ui import main_menu_kb
 from telethon import TelegramClient, functions
 from telethon.sessions import StringSession
 from telethon.tl.functions.channels import JoinChannelRequest, LeaveChannelRequest
@@ -34,7 +38,9 @@ RAKSH_SERVICES = {
     "story": {
         "name": "📱 رشق مشاهدة ستوري وتفاعل",
         "price_points": 30,
-        "price_stars": 5,
+        "points_quantity": 1,
+        "price_stars": 1,
+        "stars_quantity": 10,
         "has_channel": True,
         "has_reaction": True,
         "has_ai": False,
@@ -43,7 +49,9 @@ RAKSH_SERVICES = {
     "forced_ref": {
         "name": "🔑 إحالة بوت إجباري",
         "price_points": 250,
+        "points_quantity": 1,
         "price_stars": 10,
+        "stars_quantity": 1,
         "has_channel": True,
         "has_reaction": False,
         "has_ai": False,
@@ -52,7 +60,9 @@ RAKSH_SERVICES = {
     "forced_ref_ai": {
         "name": "🤖 إحالة بوت إجباري مع تحقق",
         "price_points": 300,
+        "points_quantity": 1,
         "price_stars": 15,
+        "stars_quantity": 1,
         "has_channel": True,
         "has_reaction": False,
         "has_ai": True,
@@ -61,7 +71,9 @@ RAKSH_SERVICES = {
     "comment": {
         "name": "💬 رشق تعليق",
         "price_points": 30,
+        "points_quantity": 1,
         "price_stars": 5,
+        "stars_quantity": 1,
         "has_channel": True,
         "has_reaction": False,
         "has_ai": False,
@@ -70,7 +82,9 @@ RAKSH_SERVICES = {
     "poll": {
         "name": "📊 رشق استفتاء",
         "price_points": 30,
+        "points_quantity": 1,
         "price_stars": 5,
+        "stars_quantity": 1,
         "has_channel": True,
         "has_reaction": False,
         "has_ai": False,
@@ -79,7 +93,9 @@ RAKSH_SERVICES = {
     "votes": {
         "name": "🗳 رشق أصوات",
         "price_points": 20,
+        "points_quantity": 1,
         "price_stars": 4,
+        "stars_quantity": 1,
         "has_channel": True,
         "has_reaction": False,
         "has_ai": False,
@@ -88,7 +104,9 @@ RAKSH_SERVICES = {
     "votes_ai": {
         "name": "🛡 رشق تصويت مع تحقق",
         "price_points": 50,
+        "points_quantity": 1,
         "price_stars": 10,
+        "stars_quantity": 1,
         "has_channel": True,
         "has_reaction": False,
         "has_ai": True,
@@ -97,13 +115,71 @@ RAKSH_SERVICES = {
     "premium_reaction": {
         "name": "✨ رشق تفاعل مميز",
         "price_points": 10,
+        "points_quantity": 1,
         "price_stars": 2,
+        "stars_quantity": 1,
         "has_channel": True,
         "has_reaction": True,
         "has_ai": False,
         "needs_link": True,
     },
 }
+
+RAKSH_PRICE_KEYS = {
+    service_type: {
+        "points_price": f"raksh_{service_type}_points_price",
+        "points_quantity": f"raksh_{service_type}_points_quantity",
+        "stars_price": f"raksh_{service_type}_stars_price",
+        "stars_quantity": f"raksh_{service_type}_stars_quantity",
+    }
+    for service_type in RAKSH_SERVICES
+}
+
+RAKSH_SERVICE_LABELS = {
+    "story": "📱 مشاهدة ستوري وتفاعل",
+    "forced_ref": "🔑 إحالة بوت إجباري",
+    "forced_ref_ai": "🤖 إحالة بوت إجباري مع تحقق",
+    "comment": "💬 تعليق",
+    "poll": "📊 استفتاء",
+    "votes": "🗳 أصوات",
+    "votes_ai": "🛡 تصويت مع تحقق",
+    "premium_reaction": "✨ تفاعل مميز",
+}
+
+def _positive_setting(key: str, fallback: int) -> int:
+    try:
+        value = int(get_setting(key) or fallback)
+        return value if value > 0 else fallback
+    except (TypeError, ValueError):
+        return fallback
+
+def get_raksh_price_config(service_type: str) -> dict[str, int]:
+    """إرجاع سعر كل باقة وعدد الوحدات التي تغطيها، مع دعم الإعدادات القديمة."""
+    svc = RAKSH_SERVICES[service_type]
+    keys = RAKSH_PRICE_KEYS[service_type]
+    return {
+        "points_price": _positive_setting(keys["points_price"], svc["price_points"]),
+        "points_quantity": _positive_setting(keys["points_quantity"], svc["points_quantity"]),
+        "stars_price": _positive_setting(keys["stars_price"], svc["price_stars"]),
+        "stars_quantity": _positive_setting(keys["stars_quantity"], svc["stars_quantity"]),
+    }
+
+def get_raksh_total(service_type: str, quantity: int, payment_method: str) -> int:
+    """حساب السعر بالتقريب للأعلى حسب صيغة «السعر لكل عدد»."""
+    if quantity <= 0:
+        return 0
+    config = get_raksh_price_config(service_type)
+    price_key = "stars_price" if payment_method == "stars" else "points_price"
+    quantity_key = "stars_quantity" if payment_method == "stars" else "points_quantity"
+    price = config[price_key]
+    bundle_quantity = config[quantity_key]
+    return ((max(1, quantity) + bundle_quantity - 1) // bundle_quantity) * price
+
+def _raksh_rate_text(service_type: str, payment_method: str) -> str:
+    config = get_raksh_price_config(service_type)
+    if payment_method == "stars":
+        return f"{config['stars_price']} نجمة لكل {config['stars_quantity']}"
+    return f"{config['points_price']} نقطة لكل {config['points_quantity']}"
 
 def _clear_raksh_state(context: ContextTypes.DEFAULT_TYPE) -> None:
     """إلغاء الطلب الحالي ومنع الرسالة التالية من متابعة خطوة قديمة."""
@@ -117,6 +193,7 @@ def _clear_raksh_state(context: ContextTypes.DEFAULT_TYPE) -> None:
         "raksh_poll_option",
         "raksh_quantity",
         "raksh_payment_method",
+        "raksh_price_edit_service",
     ):
         context.user_data.pop(key, None)
     context.user_data["state"] = "main_menu"
@@ -259,6 +336,21 @@ def raksh_menu_kb():
         buttons.append([InlineKeyboardButton(svc["name"], callback_data=f"raksh:start:{key}")])
     buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")])
     return InlineKeyboardMarkup(buttons)
+
+def raksh_price_settings_kb():
+    """أزرار إعداد أسعار نظام الرشق للمالك."""
+    rows = []
+    for service_type, label in RAKSH_SERVICE_LABELS.items():
+        config = get_raksh_price_config(service_type)
+        rows.append([
+            InlineKeyboardButton(
+                f"{label}: ⭐ {config['stars_price']}/{config['stars_quantity']} | "
+                f"💰 {config['points_price']}/{config['points_quantity']}",
+                callback_data=f"raksh:price:{service_type}",
+            )
+        ])
+    rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
+    return InlineKeyboardMarkup(rows)
 
 def raksh_payment_kb(service_type: str, quantity: int, points_cost: int, stars_cost: int):
     """أزرار اختيار طريقة الدفع"""
@@ -646,6 +738,47 @@ async def handle_raksh_callback(
     is_own = (user.id == OWNER_ID) if is_own is None else is_own
     
     await query.answer()
+
+    # ─── إعداد أسعار الرشق (للمالك فقط) ───
+    if data == "raksh:settings":
+        if not is_own:
+            await query.answer("⛔ هذا الخيار للمالك فقط.", show_alert=True)
+            return
+        await query.edit_message_text(
+            "⚙️ *إعدادات أسعار خدمات الرشق*\n\n"
+            "اضغط على الخدمة، ثم أرسل السعرين بصيغة:\n"
+            "⭐ `نجوم 1 لكل 10`\n"
+            "💰 `نقاط 30 لكل 1`\n\n"
+            "أي سطر ترسله سيحدّث الطريقة المذكورة فيه.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=raksh_price_settings_kb(),
+        )
+        return
+
+    if data.startswith("raksh:price:"):
+        if not is_own:
+            await query.answer("⛔ هذا الخيار للمالك فقط.", show_alert=True)
+            return
+        service_type = data.split(":")[2]
+        if service_type not in RAKSH_SERVICES:
+            await query.answer("⚠️ الخدمة غير موجودة.", show_alert=True)
+            return
+        config = get_raksh_price_config(service_type)
+        context.user_data["raksh_price_edit_service"] = service_type
+        context.user_data["raksh_step"] = "admin_price"
+        await query.edit_message_text(
+            f"✏️ *تعديل سعر {RAKSH_SERVICE_LABELS[service_type]}*\n\n"
+            f"⭐ الحالي: {config['stars_price']} نجمة لكل {config['stars_quantity']}\n"
+            f"💰 الحالي: {config['points_price']} نقطة لكل {config['points_quantity']}\n\n"
+            "أرسل سطراً أو سطرين بهذا الشكل:\n"
+            "`نجوم 1 لكل 10`\n"
+            "`نقاط 30 لكل 1`",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 رجوع للأسعار", callback_data="raksh:settings")]
+            ]),
+        )
+        return
     
     # ─── إلغاء الطلب أو العودة إلى قائمة الرشق ───
     if data in {"raksh_menu", "raksh_cancel"}:
@@ -680,8 +813,8 @@ async def handle_raksh_callback(
         
         await query.edit_message_text(
             f"{svc['name']}\n\n"
-            f"💰 السعر: {svc['price_points']} نقطة/وحدة\n"
-            f"⭐ السعر: {svc['price_stars']} نجوم/وحدة\n\n"
+            f"💰 السعر: {_raksh_rate_text(service_type, 'points')}\n"
+            f"⭐ السعر: {_raksh_rate_text(service_type, 'stars')}\n\n"
             "📢 *أرسل القنوات الإجبارية:*\n"
             "مثال: @channel1 @channel2\n\n"
             "أو اضغط تخطي:",
@@ -723,14 +856,24 @@ async def handle_raksh_callback(
     # ─── اختيار الدفع ───
     if data.startswith("raksh:pay:"):
         parts = data.split(":")
+        if len(parts) != 5 or parts[2] not in {"stars", "points"}:
+            await query.answer("⚠️ بيانات الدفع غير صالحة.", show_alert=True)
+            return
         method = parts[2]  # stars / points
         service_type = parts[3]
-        quantity = int(parts[4])
+        try:
+            quantity = int(parts[4])
+        except ValueError:
+            await query.answer("⚠️ العدد غير صالح.", show_alert=True)
+            return
         svc = RAKSH_SERVICES.get(service_type)
+        if not svc or quantity < 1:
+            await query.answer("⚠️ الخدمة أو العدد غير صالح.", show_alert=True)
+            return
         context.user_data["raksh_payment_method"] = method
         context.user_data["raksh_step"] = "payment_confirm"
         if method == "stars":
-            total = svc["price_stars"] * quantity
+            total = get_raksh_total(service_type, quantity, "stars")
             await query.edit_message_text(
                 f"⭐ *الدفع بالنجوم*\n\n"
                 f"الخدمة: {svc['name']}\n"
@@ -741,7 +884,7 @@ async def handle_raksh_callback(
                 reply_markup=raksh_confirm_kb(service_type, quantity, total, "stars")
             )
         else:
-            total = svc["price_points"] * quantity
+            total = get_raksh_total(service_type, quantity, "points")
             db_user = get_user(user.id)
             points = db_user["points"] if db_user else 0
             await query.edit_message_text(
@@ -759,10 +902,29 @@ async def handle_raksh_callback(
     # ─── تأكيد الطلب ───
     if data.startswith("raksh:confirm:"):
         parts = data.split(":")
-        service_type = parts[1]
-        quantity = int(parts[2])
-        total_cost = int(parts[3])
-        payment_method = parts[4]
+        if len(parts) != 6 or parts[1] != "confirm":
+            await query.answer("⚠️ بيانات تأكيد الطلب غير صالحة.", show_alert=True)
+            return
+        service_type = parts[2]
+        try:
+            quantity = int(parts[3])
+            button_total = int(parts[4])
+        except ValueError:
+            await query.answer("⚠️ العدد أو السعر غير صالح.", show_alert=True)
+            return
+        payment_method = parts[5]
+        if service_type not in RAKSH_SERVICES or payment_method not in {"points", "stars"} or quantity < 1:
+            await query.answer("⚠️ بيانات الطلب غير صالحة.", show_alert=True)
+            return
+        # لا نثق بالسعر القادم من الزر؛ أعد حسابه من الإعداد الحالي حتى لا
+        # يفشل الطلب بعد تغيير السعر أو يمكن التلاعب بالتكلفة.
+        total_cost = get_raksh_total(service_type, quantity, payment_method)
+        if button_total != total_cost:
+            logger.info(
+                "Raksh price refreshed before confirmation: service=%s quantity=%s",
+                service_type,
+                quantity,
+            )
         
         if payment_method == "points":
             if not deduct_points(user.id, total_cost):
@@ -774,7 +936,7 @@ async def handle_raksh_callback(
                 return
         else:
             svc = RAKSH_SERVICES.get(service_type)
-            total_stars = svc["price_stars"] * quantity
+            total_stars = get_raksh_total(service_type, quantity, "stars")
             await query.edit_message_text(
                 "⭐ *جاري تجهيز فاتورة الدفع بالنجوم...*",
                 parse_mode=ParseMode.MARKDOWN,
@@ -811,6 +973,23 @@ def _get_link_instruction(service_type: str) -> str:
         "premium_reaction": "https://t.me/channel/123",
     }
     return instructions.get(service_type, "أرسل الرابط المطلوب")
+
+def _parse_raksh_rate_updates(text: str) -> dict[str, tuple[int, int]]:
+    """قراءة أسطر مثل «نجوم 1 لكل 10» و«نقاط 30 لكل 1»."""
+    updates = {}
+    for line in (text or "").splitlines():
+        normalized = line.casefold().strip()
+        numbers = re.findall(r"\d+", normalized)
+        if len(numbers) < 2:
+            continue
+        price, bundle_quantity = int(numbers[0]), int(numbers[1])
+        if price < 1 or bundle_quantity < 1:
+            continue
+        if "نج" in normalized or "star" in normalized:
+            updates["stars"] = (price, bundle_quantity)
+        elif "نق" in normalized or "point" in normalized:
+            updates["points"] = (price, bundle_quantity)
+    return updates
 
 def _raksh_link_error(service_type: str, value: str) -> str | None:
     """إرجاع رسالة واضحة قبل حفظ رابط لا يناسب الخدمة."""
@@ -919,8 +1098,10 @@ async def _start_raksh_execution(
     failed_count = quantity - success_count
     refund = 0
     if failed_count > 0 and payment_method == "points":
-        svc = RAKSH_SERVICES.get(service_type)
-        refund = svc["price_points"] * failed_count
+        refund = max(
+            0,
+            total_cost - get_raksh_total(service_type, success_count, "points"),
+        )
         add_points(user.id, refund)
     
     # بناء رسالة النتيجة
@@ -964,6 +1145,47 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not state:
         return False
+
+    # ─── تعديل أسعار الرشق للمالك ───
+    if state == "admin_price":
+        if user.id != OWNER_ID:
+            _clear_raksh_state(context)
+            return False
+        service_type = context.user_data.get("raksh_price_edit_service")
+        if service_type not in RAKSH_SERVICES:
+            _clear_raksh_state(context)
+            await update.message.reply_text("⚠️ انتهت جلسة تعديل الأسعار.")
+            return True
+        updates = _parse_raksh_rate_updates(text)
+        if not updates:
+            await update.message.reply_text(
+                "⚠️ لم أفهم الصيغة.\n"
+                "استخدم مثلاً:\n"
+                "⭐ نجوم 1 لكل 10\n"
+                "💰 نقاط 30 لكل 1",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 رجوع للأسعار", callback_data="raksh:settings")]
+                ]),
+            )
+            return True
+        keys = RAKSH_PRICE_KEYS[service_type]
+        if "stars" in updates:
+            price, bundle_quantity = updates["stars"]
+            set_setting(keys["stars_price"], str(price))
+            set_setting(keys["stars_quantity"], str(bundle_quantity))
+        if "points" in updates:
+            price, bundle_quantity = updates["points"]
+            set_setting(keys["points_price"], str(price))
+            set_setting(keys["points_quantity"], str(bundle_quantity))
+        config = get_raksh_price_config(service_type)
+        await update.message.reply_text(
+            f"✅ تم حفظ أسعار {RAKSH_SERVICE_LABELS[service_type]}.\n\n"
+            f"⭐ {config['stars_price']} نجمة لكل {config['stars_quantity']}\n"
+            f"💰 {config['points_price']} نقطة لكل {config['points_quantity']}\n\n"
+            "يمكنك إرسال تعديل آخر أو اختيار خدمة أخرى.",
+            reply_markup=raksh_price_settings_kb(),
+        )
+        return True
     
     # ─── خطوة القنوات ───
     if state == "channel":
@@ -1004,10 +1226,16 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=raksh_payment_kb(
                     context.user_data.get("raksh_service"),
                     context.user_data.get("raksh_quantity", 1),
-                    RAKSH_SERVICES[context.user_data.get("raksh_service")]["price_points"]
-                    * context.user_data.get("raksh_quantity", 1),
-                    RAKSH_SERVICES[context.user_data.get("raksh_service")]["price_stars"]
-                    * context.user_data.get("raksh_quantity", 1),
+                    get_raksh_total(
+                        context.user_data.get("raksh_service"),
+                        context.user_data.get("raksh_quantity", 1),
+                        "points",
+                    ),
+                    get_raksh_total(
+                        context.user_data.get("raksh_service"),
+                        context.user_data.get("raksh_quantity", 1),
+                        "stars",
+                    ),
                 ),
             )
             return True
@@ -1015,7 +1243,7 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         service_type = context.user_data.get("raksh_service")
         quantity = int(context.user_data.get("raksh_quantity", 1))
         svc = RAKSH_SERVICES[service_type]
-        total = svc["price_points" if method == "points" else "price_stars"] * quantity
+        total = get_raksh_total(service_type, quantity, method)
         context.user_data["raksh_payment_method"] = method
         context.user_data["raksh_step"] = "payment_confirm"
         await update.message.reply_text(
@@ -1182,8 +1410,8 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         service_type = context.user_data.get("raksh_service")
         svc = RAKSH_SERVICES.get(service_type)
-        points_cost = svc["price_points"] * quantity
-        stars_cost = svc["price_stars"] * quantity
+        points_cost = get_raksh_total(service_type, quantity, "points")
+        stars_cost = get_raksh_total(service_type, quantity, "stars")
         
         context.user_data["raksh_quantity"] = quantity
         context.user_data["raksh_step"] = "payment"
