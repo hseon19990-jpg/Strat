@@ -1788,6 +1788,12 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reaction_options = None
             if service_type == "premium_reaction":
                 # لا تعرض قائمة ثابتة قبل قراءة التفاعلات المفعلة للمنشور.
+                post_ref, post_id = _parse_post_link(text)
+                if not post_ref or post_id is None:
+                    await update.message.reply_text(
+                        "⚠️ تعذر تحليل رابط المنشور. أرسل رابط منشور قناة صالحاً ثم أعد المحاولة."
+                    )
+                    return True
                 reaction_sessions = _get_all_active_sessions(service_type)
                 for reaction_session in reaction_sessions:
                     reaction_options = await _fetch_raksh_reactions(
