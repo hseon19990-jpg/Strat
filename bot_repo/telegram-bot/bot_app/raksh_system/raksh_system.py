@@ -1109,7 +1109,7 @@ async def handle_raksh_callback(
     data = query.data if data is None else data
     user = user or query.from_user
     is_own = (user.id == OWNER_ID) if is_own is None else is_own
-    
+
     await query.answer()
 
     # ─── إظهار/إخفاء خدمة من قائمة الأعضاء (للمالك فقط) ───
