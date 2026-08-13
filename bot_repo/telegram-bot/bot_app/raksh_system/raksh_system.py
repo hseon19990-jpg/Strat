@@ -421,7 +421,7 @@ async def _join_channel_and_schedule_leave(client, channel_ref: str):
             await client(JoinChannelRequest(entity))
 
 async def _join_discussion_group(client, discussion):
-    """الانضمام لمجموعة النقاش"""
+    """الانضمام لمجموعة النقاش وإرجاع الكيان الصحيح لإرسال الرد."""
     messages = getattr(discussion, "messages", None) or []
     if not messages:
         raise RuntimeError("المنشور لا يملك نقاشاً.")
@@ -435,7 +435,12 @@ async def _join_discussion_group(client, discussion):
     )
     if discussion_chat is None:
         raise RuntimeError("تعذر تحديد مجموعة النقاش.")
-    await client(JoinChannelRequest(discussion_chat))
+    try:
+        await client(JoinChannelRequest(discussion_chat))
+    except Exception as exc:
+        if "USER_ALREADY_PARTICIPANT" not in str(exc).upper():
+            raise
+    return discussion_chat
 
 # ─── تنفيذ كل خدمة ───
 
@@ -555,8 +560,12 @@ async def _execute_comment(session, params, is_first):
         discussion_peer = getattr(discussion_message, "peer_id", None)
         if discussion_peer is None:
             return False, "تعذر تحديد مساحة التعليقات."
-        await _join_discussion_group(client, discussion)
-        await client.send_message(discussion_peer, params["comment_text"], reply_to=discussion_message.id)
+        discussion_chat = await _join_discussion_group(client, discussion)
+        await client.send_message(
+            discussion_chat,
+            params["comment_text"],
+            reply_to=discussion_message.id,
+        )
         return True, f"✅ تم التعليق من {session['phone_number']}"
     except Exception as e:
         return False, f"❌ فشل: {str(e)[:80]}"
