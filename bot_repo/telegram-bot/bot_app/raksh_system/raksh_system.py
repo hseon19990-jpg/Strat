@@ -30,6 +30,9 @@ import random
 import asyncio
 import re
 
+RAKSH_PAID_REACTION = "__raksh_paid_reaction__"
+RAKSH_PAID_REACTION_LABEL = "⭐ تفاعل مدفوع"
+
 # ════════════════════════════════════════════════════════════
 # ═══ 1. ثوابت الخدمات ═══
 # ════════════════════════════════════════════════════════════
@@ -357,9 +360,17 @@ def _parse_post_link(value: str) -> tuple[str | None, int | None]:
 
 
 def _reaction_emoticons(reactions) -> list[str]:
-    """تحويل كائنات Telethon إلى إيموجيات قابلة للإرسال بدون تكرار."""
+    """تحويل نتائج Telethon إلى قيم قابلة للاختيار والإرسال بدون تكرار.
+
+    Telegram represents paid reactions as ``ReactionPaid`` rather than an
+    emoji. Older code only looked for ``emoticon`` and discarded this type.
+    """
     result = []
     for reaction in reactions or []:
+        if reaction.__class__.__name__ == "ReactionPaid":
+            if RAKSH_PAID_REACTION not in result:
+                result.append(RAKSH_PAID_REACTION)
+            continue
         emoticon = getattr(reaction, "emoticon", None)
         if emoticon and emoticon not in result:
             result.append(emoticon)
@@ -407,6 +418,11 @@ async def _fetch_raksh_reactions(
         )
         full_chat = getattr(full_channel, "full_chat", None)
         available = getattr(full_chat, "available_reactions", None)
+        # Paid reactions are a channel capability, not an entry in
+        # `available_reactions`.  They can therefore be enabled even when the
+        # post has no paid-reaction count yet.
+        if getattr(full_chat, "paid_reactions_available", False):
+            return [RAKSH_PAID_REACTION]
 
         # ChatReactionsSome: هذه هي القائمة التي فعّلها مالك القناة.
         configured = getattr(available, "reactions", None)
@@ -564,9 +580,14 @@ def raksh_reaction_kb(service_type: str, reactions=None):
         else [(reaction, reaction) for reaction in reactions]
     )
     for reaction_key, reaction in reaction_items:
+        if reaction == RAKSH_PAID_REACTION:
+            reaction_key = "paid"
+            reaction_label = RAKSH_PAID_REACTION_LABEL
+        else:
+            reaction_label = reaction
         row.append(
             InlineKeyboardButton(
-                reaction,
+                reaction_label,
                 callback_data=f"raksh:reaction:{service_type}:{reaction_key}",
             )
         )
@@ -958,7 +979,19 @@ async def _execute_premium_reaction(session, params, is_first):
             available_reactions = params.get("available_reactions") or []
             reaction_pool = available_reactions or list(RAKSH_REACTIONS.values())
             reaction = random.choice(reaction_pool)
-        await client(functions.messages.SendReactionRequest(peer=post_entity, msg_id=post_id, reaction=[ReactionEmoji(emoticon=reaction)]))
+        if reaction == RAKSH_PAID_REACTION:
+            try:
+                from telethon.tl.types import ReactionPaid
+            except ImportError:
+                return False, "إصدار Telethon الحالي لا يدعم التفاعل المدفوع."
+            reaction_value = ReactionPaid()
+        else:
+            reaction_value = ReactionEmoji(emoticon=reaction)
+        await client(functions.messages.SendReactionRequest(
+            peer=post_entity,
+            msg_id=post_id,
+            reaction=[reaction_value],
+        ))
         return True, f"✅ تم التفاعل المميز من {session['phone_number']}"
     except Exception as e:
         return False, f"❌ فشل: {str(e)[:80]}"
@@ -1211,18 +1244,28 @@ async def handle_raksh_callback(
     if data.startswith("raksh:reaction:"):
         parts = data.split(":")
         service_type = parts[2]
-        reaction = RAKSH_REACTIONS.get(parts[3], parts[3])
+        reaction_key = parts[3]
+        reaction = (
+            RAKSH_PAID_REACTION
+            if reaction_key == "paid"
+            else RAKSH_REACTIONS.get(reaction_key, reaction_key)
+        )
         if service_type == "premium_reaction":
             available_reactions = context.user_data.get("raksh_available_reactions") or []
-            if parts[3] == "random":
+            if reaction_key == "random":
                 reaction = "random"
             elif available_reactions and reaction not in available_reactions:
                 await query.answer("⚠️ هذا التفاعل غير متاح في المنشور.", show_alert=True)
                 return
         context.user_data["raksh_reaction"] = reaction
         context.user_data["raksh_step"] = "quantity"
+        reaction_label = (
+            RAKSH_PAID_REACTION_LABEL
+            if reaction == RAKSH_PAID_REACTION
+            else reaction
+        )
         await query.edit_message_text(
-            f"✅ تم اختيار التفاعل: {reaction}\n\n"
+            f"✅ تم اختيار التفاعل: {reaction_label}\n\n"
             f"🔢 *أرسل عدد الوحدات المطلوبة:*\n"
             f"(الحد الأقصى: {_get_max_quantity(service_type)})",
             parse_mode=ParseMode.MARKDOWN,
