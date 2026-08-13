@@ -424,6 +424,29 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                 result.append(ch)
         return result
 
+    def _extract_target_emoji(text: str) -> str | None:
+        """يستخرج الإيموجي الذي يأتي بعد عبارة الطلب، لا إيموجي الترويسة."""
+        lowered = (text or "").casefold()
+        markers = (
+            "اضغط على",
+            "انقر على",
+            "اختر الإيموجي",
+            "اختار الإيموجي",
+            "الإيموجي الصحيح",
+            "correct emoji",
+            "select emoji",
+            "choose emoji",
+            "pick emoji",
+        )
+        for marker in markers:
+            marker_index = lowered.find(marker.casefold())
+            if marker_index >= 0:
+                tail = text[marker_index + len(marker):]
+                emojis = _extract_emojis_from_text(tail)
+                if emojis:
+                    return emojis[0]
+        return None
+
     async def _wait_and_check(limit: int = 5) -> tuple:
         """ينتظر رد البوت ويُرجع ('success'|'fail'|'unknown', new_msgs)."""
         await asyncio.sleep(3)
@@ -619,12 +642,19 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                         or "choose emoji" in msg_text_lower
                         or "pick emoji" in msg_text_lower
                         or "اختر الإيموجي" in msg_text
+                        or "اختار الإيموجي" in msg_text
                         or "الإيموجي الصحيح" in msg_text
+                        or "اضغط على" in msg_text
+                        or "انقر على" in msg_text
                     )
                     if is_emoji_select:
-                        msg_emojis = _extract_emojis_from_text(msg_text)
-                        if msg_emojis:
-                            target_emoji = msg_emojis[0]
+                        target_emoji = _extract_target_emoji(msg_text)
+                        if not target_emoji:
+                            msg_emojis = _extract_emojis_from_text(msg_text)
+                            # إذا لم توجد عبارة دالة وكان هناك إيموجي واحد فقط،
+                            # فهو آمن للاختيار؛ أما تعددها فيُترك للنمط العام/الذكاء الاصطناعي.
+                            target_emoji = msg_emojis[0] if len(msg_emojis) == 1 else None
+                        if target_emoji:
                             # ابحث عن الزر المطابق
                             for lbl, btn in btn_objects.items():
                                 if target_emoji in lbl:
@@ -639,6 +669,11 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                                         direct_chosen = btn
                                         logger.info(f"🎯 كشف إيموجي بمطابقة الكود '{target_emoji}' ({phone})")
                                         if direct_chosen: break
+                        if not direct_chosen:
+                            logger.warning(
+                                f"⚠️ تعذر تحديد زر الإيموجي المطلوب من الرسالة ({phone})"
+                            )
+                            continue
                         processed_ids.add(msg_id)
                         await direct_chosen.click()
                         result, msgs = await _wait_and_check()

@@ -712,11 +712,20 @@ async def _join_channel_and_schedule_leave(client, channel_ref: str):
     if not refs:
         return
     for ref in refs:
-        if ref.startswith("invite:"):
-            await client(ImportChatInviteRequest(ref.split(":", 1)[1]))
-        else:
-            entity = await client.get_entity(ref)
-            await client(JoinChannelRequest(entity))
+        try:
+            if ref.startswith("invite:"):
+                await client(ImportChatInviteRequest(ref.split(":", 1)[1]))
+            else:
+                entity = await client.get_entity(ref)
+                await client(JoinChannelRequest(entity))
+        except Exception as exc:
+            # قناة ترويجية/اختيارية غير صالحة لا ينبغي أن تمنع تنفيذ
+            # التصويت على المنشور المطلوب.
+            logger.warning(
+                "تعذر الانضمام للقناة الاختيارية %s: %s",
+                ref,
+                str(exc)[:120],
+            )
 
 async def _join_discussion_group(client, discussion):
     """الانضمام لمجموعة النقاش وإرجاع الكيان الصحيح لإرسال الرد."""
@@ -1026,14 +1035,19 @@ async def _execute_votes_ai(session, params, is_first):
         post_ref, post_id = _parse_post_link(params["link"])
         if not post_ref or not post_id:
             return False, "رابط المنشور غير صحيح."
-        post_entity = await client.get_entity(post_ref)
+        try:
+            post_entity = await client.get_entity(post_ref)
+        except Exception as exc:
+            if "No user has" in str(exc):
+                return False, "رابط المنشور غير صالح أو القناة غير متاحة للحساب."
+            raise
         messages = _as_message_list(await client.get_messages(post_entity, ids=post_id))
         if not messages:
             return False, "المنشور غير موجود."
         solved, detail = await solve_captcha_with_ai(client, post_entity, messages, session["phone_number"], max_attempts=3)
         if not solved:
             return False, f"فشل التحقق: {detail}"
-        messages = await client.get_messages(post_entity, ids=post_id)
+        messages = _as_message_list(await client.get_messages(post_entity, ids=post_id))
         if not messages:
             return False, "المنشور غير موجود بعد التحقق."
         msg = messages[0]
