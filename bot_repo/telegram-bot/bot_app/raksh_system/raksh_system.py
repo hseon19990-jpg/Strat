@@ -203,7 +203,7 @@ def _clear_raksh_state(context: ContextTypes.DEFAULT_TYPE) -> None:
 # ════════════════════════════════════════════════════════════
 
 RAKSH_MIN_DELAY_SECONDS = 60
-RAKSH_MAX_DELAY_SECONDS = 8 * 60
+RAKSH_MAX_DELAY_SECONDS = 3 * 60
 # The available session pool is the real per-request limit.  A value greater
 # than zero can still be supplied when an operator wants an hourly safety cap;
 # zero keeps the cap disabled instead of silently limiting a 71-account pool
@@ -889,6 +889,20 @@ EXECUTORS = {
     "premium_reaction": _execute_premium_reaction,
 }
 
+def _raksh_order_label(service_type: str) -> str:
+    """اسم مختصر مناسب لإشعارات الطلبات."""
+    labels = {
+        "comment": "تعليقات",
+        "poll": "استفتاء",
+        "story": "مشاهدات ستوري",
+        "forced_ref": "إحالات",
+        "forced_ref_ai": "إحالات بتحقق",
+        "votes": "أصوات",
+        "votes_ai": "أصوات بتحقق",
+        "premium_reaction": "تفاعلات مميزة",
+    }
+    return labels.get(service_type, service_type)
+
 async def execute_raksh_service(
     service_type: str,
     quantity: int,
@@ -907,6 +921,7 @@ async def execute_raksh_service(
     random.shuffle(shuffled)
     success_count = 0
     success_phones = []
+    failed_phones = []
     failed_details = []
     used_phones = set()
     for i in range(quantity):
@@ -919,6 +934,12 @@ async def execute_raksh_service(
         used_phones.add(phone)
         if not _reserve_raksh_execution_slot(user_id, service_type, phone):
             remaining = quantity - i
+            failed_phones.append(phone)
+            failed_phones.extend(
+                candidate["phone_number"]
+                for candidate in shuffled[:remaining - 1]
+                if candidate["phone_number"] not in used_phones
+            )
             failed_details.extend(
                 ["⏳ تم إيقاف بقية التنفيذ مؤقتاً."] * remaining
             )
@@ -939,13 +960,14 @@ async def execute_raksh_service(
             success_count += 1
             success_phones.append(phone)
         else:
+            failed_phones.append(phone)
             failed_details.append(msg)
         if progress_callback:
             await progress_callback(i + 1, quantity, success_count, len(failed_details))
         if i < quantity - 1 and shuffled:
             delay = _get_delay_seconds(service_type)
             await asyncio.sleep(delay)
-    return success_count, success_phones, failed_details
+    return success_count, success_phones, failed_phones, failed_details
 
 # ════════════════════════════════════════════════════════════
 # ═══ 5. معالج الأزرار الرئيسي ═══
@@ -1303,6 +1325,71 @@ def _get_request_limit(user_id: int, service_type: str | None = None) -> int:
         get_raksh_hourly_remaining(user_id),
     )
 
+def _chunk_lines(lines: list[str], max_chars: int = 3500) -> list[str]:
+    """تقسيم قوائم الحسابات حتى تبقى رسائل تيليجرام ضمن الحجم المسموح."""
+    chunks: list[str] = []
+    current: list[str] = []
+    current_length = 0
+    for line in lines:
+        line_length = len(line) + 1
+        if current and current_length + line_length > max_chars:
+            chunks.append("\n".join(current))
+            current = []
+            current_length = 0
+        current.append(line)
+        current_length += line_length
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
+
+async def _send_raksh_order_to_group(bot, user_id: int, quantity: int, payment_method: str, service_type: str) -> None:
+    """إرسال إشعار بدء الطلب إلى كروب الطلبات."""
+    if not ADMIN_GROUP_ID:
+        return
+    try:
+        await bot.send_message(
+            ADMIN_GROUP_ID,
+            f"طلب {_raksh_order_label(service_type)} العدد: {quantity}\n"
+            f"المستخدم: {user_id}\n"
+            f"طريقة الدفع: {payment_method}",
+        )
+    except Exception:
+        logger.exception("فشل إرسال طلب الرشق إلى كروب الطلبات")
+
+async def _send_raksh_owner_result(
+    bot,
+    service_type: str,
+    quantity: int,
+    success_phones: list[str],
+    failed_phones: list[str],
+    failed_details: list[str],
+) -> None:
+    """إرسال الحسابات الناجحة والفاشلة للمالك بعد اكتمال الطلب."""
+    if not OWNER_ID:
+        return
+    try:
+        failed_count = len(failed_phones)
+        lines = [
+            f"نتيجة طلب {_raksh_order_label(service_type)} العدد: {quantity}",
+            f"✅ المنفذة: {len(success_phones)}",
+            f"❌ الفاشلة: {failed_count}",
+            "",
+            "✅ الحسابات المنفذة:",
+        ]
+        lines.extend(f"• {phone}" for phone in success_phones)
+        lines.extend(["", "❌ الحسابات الفاشلة:"])
+        if failed_phones:
+            for index, phone in enumerate(failed_phones):
+                detail = failed_details[index] if index < len(failed_details) else "فشل التنفيذ"
+                lines.append(f"• {phone} — {detail}")
+        else:
+            lines.append("• لا يوجد")
+
+        for chunk in _chunk_lines(lines):
+            await bot.send_message(OWNER_ID, chunk)
+    except Exception:
+        logger.exception("فشل إرسال نتيجة حسابات طلب الرشق إلى المالك")
+
 # ════════════════════════════════════════════════════════════
 # ═══ 7. تنفيذ الطلب ═══
 # ════════════════════════════════════════════════════════════
@@ -1346,6 +1433,14 @@ async def _start_raksh_execution(
             add_points(user.id, total_cost)
         _clear_raksh_state(context)
         return
+
+    await _send_raksh_order_to_group(
+        context.bot,
+        user.id,
+        quantity,
+        payment_method,
+        service_type,
+    )
     
     # تجهيز المعاملات
     params = {
@@ -1370,7 +1465,7 @@ async def _start_raksh_execution(
             pass
     
     # التنفيذ
-    success_count, success_phones, failed_details = await execute_raksh_service(
+    success_count, success_phones, failed_phones, failed_details = await execute_raksh_service(
         service_type=service_type,
         quantity=quantity,
         sessions=sessions,
@@ -1409,6 +1504,15 @@ async def _start_raksh_execution(
         result_text += "\n".join(f"• {d}" for d in failed_details[:5])
         if len(failed_details) > 5:
             result_text += f"\n... و{len(failed_details)-5} أخرى"
+
+    await _send_raksh_owner_result(
+        context.bot,
+        service_type,
+        quantity,
+        success_phones,
+        failed_phones,
+        failed_details,
+    )
     
     await progress_msg.edit_text(
         result_text,
