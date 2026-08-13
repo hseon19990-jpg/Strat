@@ -7,7 +7,7 @@ domain.
 
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
-from telegram.ext import ExtBot
+from telegram.ext import ExtBot, Updater
 
 class ResilientExtBot(ExtBot):
     """Let polling handle Telegram bootstrap retries instead of blocking on getMe()."""
@@ -19,6 +19,12 @@ class ResilientExtBot(ExtBot):
             await self.rate_limiter.initialize()
         await asyncio.gather(self._request[0].initialize(), self._request[1].initialize())
         self._initialized = True
+
+class ResilientUpdater(Updater):
+    """Start getUpdates immediately; webhook cleanup runs independently."""
+
+    async def _bootstrap(self, *args, **kwargs) -> None:
+        logger.info("ℹ️ Skipping blocking Telegram bootstrap request; polling starts now")
 
 # ─── استيراد نظام الرشق الجديد من داخل حزمة bot_app ────────────────────────
 from .raksh_system import (
@@ -75,9 +81,10 @@ def main():
         request=telegram_request,
         get_updates_request=updates_request,
     )
+    polling_updater = ResilientUpdater(telegram_bot, asyncio.Queue())
     app = (
         ApplicationBuilder()
-        .bot(telegram_bot)
+        .updater(polling_updater)
         .concurrent_updates(True)
         .build()
     )
@@ -221,8 +228,34 @@ def main():
             except Exception as e:
                 logger.warning(f"⚠️ تعذّر مزامنة إعدادات Telegram: {e}")
 
+        async def _clear_webhook():
+            retry_delay = 5
+            while True:
+                try:
+                    await application.bot.delete_webhook(
+                        drop_pending_updates=True,
+                        read_timeout=10,
+                        write_timeout=10,
+                        connect_timeout=10,
+                        pool_timeout=10,
+                    )
+                    logger.info("✅ Webhook cleanup completed")
+                    return
+                except (TimedOut, NetworkError) as e:
+                    logger.warning(
+                        f"⚠️ Webhook cleanup مؤجل بسبب اتصال Telegram: {e}; "
+                        f"إعادة المحاولة بعد {retry_delay}ث"
+                    )
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 60)
+                except Exception as e:
+                    logger.warning(f"⚠️ تعذّر تنظيف Webhook: {e}; إعادة المحاولة بعد {retry_delay}ث")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 60)
+
         asyncio.create_task(_configure_telegram(), name="telegram-metadata-sync")
-        logger.info("✅ Telegram polling startup is non-blocking; bootstrap retries are enabled")
+        asyncio.create_task(_clear_webhook(), name="telegram-webhook-cleanup")
+        logger.info("✅ Telegram polling startup is non-blocking; webhook cleanup runs in background")
         
         # ════════════════════════════════════════════════════════════════
         # 🔥 سجل حالة مفاتيح AI عند بدء التشغيل
