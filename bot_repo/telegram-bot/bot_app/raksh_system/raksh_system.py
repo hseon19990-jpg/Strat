@@ -189,6 +189,7 @@ def _clear_raksh_state(context: ContextTypes.DEFAULT_TYPE) -> None:
         "raksh_channels",
         "raksh_link",
         "raksh_reaction",
+        "raksh_available_reactions",
         "raksh_comment",
         "raksh_poll_option",
         "raksh_quantity",
@@ -354,6 +355,80 @@ def _parse_post_link(value: str) -> tuple[str | None, int | None]:
         return None, None
     return f"@{parts[0].lstrip('@')}", int(parts[1])
 
+
+def _reaction_emoticons(reactions) -> list[str]:
+    """تحويل كائنات Telethon إلى إيموجيات قابلة للإرسال بدون تكرار."""
+    result = []
+    for reaction in reactions or []:
+        emoticon = getattr(reaction, "emoticon", None)
+        if emoticon and emoticon not in result:
+            result.append(emoticon)
+    return result
+
+
+async def _fetch_raksh_reactions(
+    session: dict, post_ref: str, post_id: int
+) -> list[str]:
+    """قراءة التفاعلات المسموحة فعلياً في قناة المنشور.
+
+    عند وجود تفاعل على المنشور نستخدمه أولاً، لأنه ما طلبه المستخدم فعلياً.
+    وإذا لم توجد نتائج، نقرأ available_reactions من القناة بدلاً من عرض قائمة
+    ثابتة خاطئة.
+    """
+    client = TelegramClient(
+        StringSession(session["session_string"]),
+        int(TELEGRAM_API_ID),
+        TELEGRAM_API_HASH,
+    )
+    await asyncio.wait_for(client.connect(), timeout=20)
+    try:
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+            return []
+
+        post_entity = await client.get_entity(post_ref)
+        # نتائج المنشور هي المصدر الأدق لهذه الخدمة: إذا كان عليه تفاعل واحد
+        # فلا ينبغي أن نعرض بقية التفاعلات المسموحة في القناة.
+        message = await client.get_messages(post_entity, ids=post_id)
+        if message:
+            message = message[0]
+            message_reactions = getattr(
+                getattr(message, "reactions", None),
+                "results",
+                [],
+            )
+            reactions = _reaction_emoticons(
+                getattr(item, "reaction", None) for item in message_reactions
+            )
+            if reactions:
+                return reactions
+
+        full_channel = await client(
+            functions.channels.GetFullChannelRequest(channel=post_entity)
+        )
+        full_chat = getattr(full_channel, "full_chat", None)
+        available = getattr(full_chat, "available_reactions", None)
+
+        # ChatReactionsSome: هذه هي القائمة التي فعّلها مالك القناة.
+        configured = getattr(available, "reactions", None)
+        reactions = _reaction_emoticons(configured)
+        if reactions:
+            return reactions
+
+        # ChatReactionsAll لا يحدد قائمة واحدة؛ نستخدم مجموعة العرض المعتادة.
+        if available is not None and available.__class__.__name__ == "ChatReactionsAll":
+            return list(RAKSH_REACTIONS.values())
+        return []
+    except Exception:
+        logger.exception(
+            "تعذر قراءة التفاعلات المسموحة للمنشور %s/%s",
+            post_ref,
+            post_id,
+        )
+        return []
+    finally:
+        await client.disconnect()
+
+
 def _parse_story_link(value: str) -> tuple[str | None, int | None]:
     """تحليل روابط الستوري العامة والخاصة بصيغتي /s/ و /story/."""
     value = (value or "").strip().strip("<>")
@@ -479,12 +554,22 @@ RAKSH_REACTIONS = {
     "clap": "👏",
 }
 
-def raksh_reaction_kb(service_type: str):
+def raksh_reaction_kb(service_type: str, reactions=None):
     """أزرار اختيار التفاعل (لخدمتي ستوري وتفاعل مميز)"""
     buttons = []
     row = []
-    for reaction_key, reaction in RAKSH_REACTIONS.items():
-        row.append(InlineKeyboardButton(reaction, callback_data=f"raksh:reaction:{service_type}:{reaction_key}"))
+    reaction_items = (
+        list(RAKSH_REACTIONS.items())
+        if reactions is None
+        else [(reaction, reaction) for reaction in reactions]
+    )
+    for reaction_key, reaction in reaction_items:
+        row.append(
+            InlineKeyboardButton(
+                reaction,
+                callback_data=f"raksh:reaction:{service_type}:{reaction_key}",
+            )
+        )
         if len(row) == 4:
             buttons.append(row)
             row = []
@@ -870,7 +955,9 @@ async def _execute_premium_reaction(session, params, is_first):
         post_entity = await client.get_entity(post_ref)
         reaction = params.get("reaction")
         if not reaction or reaction == "random":
-            reaction = random.choice(list(RAKSH_REACTIONS.values()))
+            available_reactions = params.get("available_reactions") or []
+            reaction_pool = available_reactions or list(RAKSH_REACTIONS.values())
+            reaction = random.choice(reaction_pool)
         await client(functions.messages.SendReactionRequest(peer=post_entity, msg_id=post_id, reaction=[ReactionEmoji(emoticon=reaction)]))
         return True, f"✅ تم التفاعل المميز من {session['phone_number']}"
     except Exception as e:
@@ -1125,6 +1212,13 @@ async def handle_raksh_callback(
         parts = data.split(":")
         service_type = parts[2]
         reaction = RAKSH_REACTIONS.get(parts[3], parts[3])
+        if service_type == "premium_reaction":
+            available_reactions = context.user_data.get("raksh_available_reactions") or []
+            if parts[3] == "random":
+                reaction = "random"
+            elif available_reactions and reaction not in available_reactions:
+                await query.answer("⚠️ هذا التفاعل غير متاح في المنشور.", show_alert=True)
+                return
         context.user_data["raksh_reaction"] = reaction
         context.user_data["raksh_step"] = "quantity"
         await query.edit_message_text(
@@ -1446,6 +1540,7 @@ async def _start_raksh_execution(
     params = {
         "channel_ref": context.user_data.get("raksh_channels"),
         "reaction": context.user_data.get("raksh_reaction"),
+        "available_reactions": context.user_data.get("raksh_available_reactions"),
         "link": context.user_data.get("raksh_link"),
         "comment_text": context.user_data.get("raksh_comment"),
         "poll_option": context.user_data.get("raksh_poll_option"),
@@ -1690,12 +1785,32 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # إذا كانت الخدمة تحتاج تفاعل
         if svc.get("has_reaction"):
+            reaction_options = None
+            if service_type == "premium_reaction":
+                # لا تعرض قائمة ثابتة قبل قراءة التفاعلات المفعلة للمنشور.
+                reaction_sessions = _get_all_active_sessions(service_type)
+                for reaction_session in reaction_sessions:
+                    reaction_options = await _fetch_raksh_reactions(
+                        reaction_session,
+                        post_ref,
+                        post_id,
+                    )
+                    if reaction_options:
+                        break
+                if not reaction_options:
+                    await update.message.reply_text(
+                        "⚠️ تعذر قراءة التفاعل المفعّل في هذا المنشور.\n"
+                        "تأكد أن الرابط لمنشور قناة وأن إحدى جلسات البوت تملك صلاحية الوصول إليه، ثم أعد المحاولة."
+                    )
+                    return True
+                context.user_data["raksh_available_reactions"] = reaction_options
+
             context.user_data["raksh_step"] = "reaction"
             await update.message.reply_text(
                 f"✅ تم حفظ الرابط.\n\n"
                 f"😊 *اختر التفاعل المطلوب:*",
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=raksh_reaction_kb(service_type)
+                reply_markup=raksh_reaction_kb(service_type, reaction_options)
             )
             return True
         
