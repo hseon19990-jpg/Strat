@@ -1395,6 +1395,26 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             )
             return
 
+        if data.startswith("os_tog_cat:") and is_own:
+            _, platform, category, sid, val = data.split(":")
+            with db_conn() as c:
+                service = c.execute(
+                    "SELECT id FROM services WHERE id=%s AND category=%s",
+                    (int(sid), category),
+                ).fetchone()
+                if service:
+                    c.execute(
+                        "UPDATE services SET active=%s WHERE id=%s",
+                        (int(val), int(sid)),
+                    )
+            if not service:
+                await q.answer("⚠️ تعذر تحديث حالة الخدمة.", show_alert=True)
+                return
+            context.user_data["current_platform"] = platform
+            await q.answer("✅ تم تحديث حالة الخدمة")
+            await show_category_services(update, context, category)
+            return
+
         if data.startswith("os_tog_svc:") and is_own:
             _, sid, val = data.split(":")
             with db_conn() as c:
