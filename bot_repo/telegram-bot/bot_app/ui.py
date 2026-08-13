@@ -491,6 +491,10 @@ def account_info_kb() -> InlineKeyboardMarkup:
             InlineKeyboardButton("🔤 الاسم", callback_data="os:account_names"),
         ],
         [
+            InlineKeyboardButton("📝 البايو", callback_data="os:account_bios"),
+            InlineKeyboardButton("🔖 اليوزر", callback_data="os:account_usernames"),
+        ],
+        [
             InlineKeyboardButton("🖼️ الأفتار", callback_data="os:avatars"),
             InlineKeyboardButton("📊 نتائج الأفتار", callback_data="os:media_report:avatar:summary"),
         ],
