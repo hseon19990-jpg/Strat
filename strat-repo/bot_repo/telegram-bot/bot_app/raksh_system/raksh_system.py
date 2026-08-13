@@ -366,11 +366,18 @@ async def _join_channel_and_schedule_leave(client, channel_ref: str):
     if not refs:
         return
     for ref in refs:
-        if ref.startswith("invite:"):
-            await client(ImportChatInviteRequest(ref.split(":", 1)[1]))
-        else:
-            entity = await client.get_entity(ref)
-            await client(JoinChannelRequest(entity))
+        try:
+            if ref.startswith("invite:"):
+                await client(ImportChatInviteRequest(ref.split(":", 1)[1]))
+            else:
+                entity = await client.get_entity(ref)
+                try:
+                    await client(JoinChannelRequest(entity))
+                except UserAlreadyParticipantError:
+                    pass
+        except UserAlreadyParticipantError:
+            # الحساب منضم مسبقاً، وهذا ليس فشلاً في تنفيذ الخدمة.
+            pass
 
 async def _join_discussion_group(client, discussion):
     """الانضمام لمجموعة النقاش"""
@@ -643,7 +650,7 @@ EXECUTORS = {
 }
 
 async def execute_raksh_service(service_type: str, quantity: int, sessions: list, params: dict, progress_callback=None):
-    """تنفيذ طلب رشق بعدد محدد من الحسابات"""
+    """تنفيذ الطلب حتى ينجح العدد المطلوب أو تنفد كل الجلسات."""
     if not sessions:
         raise RuntimeError("لا توجد جلسات نشطة متاحة.")
     executor = EXECUTORS.get(service_type)
@@ -655,16 +662,17 @@ async def execute_raksh_service(service_type: str, quantity: int, sessions: list
     success_phones = []
     failed_details = []
     used_phones = set()
-    for i in range(quantity):
-        if not shuffled:
-            break
+    attempted_count = 0
+    while shuffled and success_count < quantity:
         session = shuffled.pop(0)
         phone = session["phone_number"]
         if phone in used_phones:
             continue
         used_phones.add(phone)
+        attempted_count += 1
         try:
-            ok, msg = await executor(session=session, params=params, is_first=(i == 0))
+            # كل حساب مستقل ويحتاج تنفيذ الانضمام للقنوات المطلوبة.
+            ok, msg = await executor(session=session, params=params, is_first=True)
         except Exception as e:
             ok = False
             msg = f"❌ خطأ: {str(e)[:80]}"
@@ -674,8 +682,13 @@ async def execute_raksh_service(service_type: str, quantity: int, sessions: list
         else:
             failed_details.append(msg)
         if progress_callback:
-            await progress_callback(i + 1, quantity, success_count, len(failed_details))
-        if i < quantity - 1 and shuffled:
+            await progress_callback(
+                attempted_count,
+                len(sessions),
+                success_count,
+                len(failed_details),
+            )
+        if success_count < quantity and shuffled:
             delay = _get_delay_seconds()
             await asyncio.sleep(delay)
     return success_count, success_phones, failed_details
