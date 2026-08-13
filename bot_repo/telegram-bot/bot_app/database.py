@@ -166,6 +166,18 @@ def init_db():
               created_at   TEXT DEFAULT CURRENT_TIMESTAMP
           )""")
           c.execute("""
+          CREATE TABLE IF NOT EXISTS raksh_execution_usage (
+              id            BIGSERIAL PRIMARY KEY,
+              user_id       BIGINT NOT NULL,
+              service_type  TEXT NOT NULL,
+              phone_number  TEXT,
+              executed_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )""")
+          c.execute("""
+          CREATE INDEX IF NOT EXISTS raksh_execution_usage_user_time_idx
+          ON raksh_execution_usage (user_id, executed_at)
+          """)
+          c.execute("""
           CREATE TABLE IF NOT EXISTS services (
               id              SERIAL PRIMARY KEY,
               category        TEXT,

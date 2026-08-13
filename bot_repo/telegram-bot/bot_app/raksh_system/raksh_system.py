@@ -202,13 +202,69 @@ def _clear_raksh_state(context: ContextTypes.DEFAULT_TYPE) -> None:
 # ═══ 2. دوال مساعدة ═══
 # ════════════════════════════════════════════════════════════
 
-RAKSH_FIXED_DELAY_SERVICES = {"story", "forced_ref", "forced_ref_ai", "comment"}
+RAKSH_MIN_DELAY_SECONDS = 60
+RAKSH_MAX_DELAY_SECONDS = 8 * 60
+RAKSH_MAX_EXECUTIONS_PER_HOUR = 12
 
 def _get_delay_seconds(service_type: str | None = None) -> int:
-    """الفاصل بين الحسابات: 3 ثوانٍ للخدمات المطلوبة، وعشوائي للباقي."""
-    if service_type in RAKSH_FIXED_DELAY_SERVICES:
-        return 3
-    return random.randint(60, 480)
+    """فاصل عشوائي بين كل حساب والذي يليه لجميع خدمات الرشق."""
+    return random.randint(RAKSH_MIN_DELAY_SECONDS, RAKSH_MAX_DELAY_SECONDS)
+
+def get_raksh_hourly_remaining(user_id: int) -> int:
+    """عدد التنفيذات المتبقية للمستخدم خلال آخر ساعة متحركة."""
+    try:
+        with db_conn() as c:
+            row = c.execute(
+                """
+                SELECT COUNT(*) AS used
+                FROM raksh_execution_usage
+                WHERE user_id=%s
+                  AND executed_at >= NOW() - INTERVAL '1 hour'
+                """,
+                (user_id,),
+            ).fetchone()
+        used = int(row["used"] or 0) if row else 0
+        return max(0, RAKSH_MAX_EXECUTIONS_PER_HOUR - used)
+    except Exception:
+        logger.exception("فشل قراءة حد تنفيذات الرشق للمستخدم %s", user_id)
+        return 0
+
+def _reserve_raksh_execution_slot(user_id: int, service_type: str, phone_number: str) -> bool:
+    """حجز تنفيذ واحد بشكل ذري حتى لا تتجاوز الطلبات المتزامنة حد الساعة."""
+    try:
+        with db_conn() as c:
+            # قفل خاص بالمستخدم داخل المعاملة الحالية لمنع سباق طلبين متزامنين.
+            c.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                (f"raksh-hourly:{user_id}",),
+            )
+            row = c.execute(
+                """
+                SELECT COUNT(*) AS used
+                FROM raksh_execution_usage
+                WHERE user_id=%s
+                  AND executed_at >= NOW() - INTERVAL '1 hour'
+                """,
+                (user_id,),
+            ).fetchone()
+            if row and int(row["used"] or 0) >= RAKSH_MAX_EXECUTIONS_PER_HOUR:
+                return False
+            c.execute(
+                """
+                INSERT INTO raksh_execution_usage
+                    (user_id, service_type, phone_number)
+                VALUES (%s, %s, %s)
+                """,
+                (user_id, service_type, phone_number),
+            )
+        return True
+    except Exception:
+        logger.exception(
+            "فشل حجز تنفيذ رشق للمستخدم %s والخدمة %s",
+            user_id,
+            service_type,
+        )
+        return False
 
 def _get_all_active_sessions(service_type: str | None = None) -> list[dict]:
     """جلب كل الجلسات المخزنة التي يمكن استخدامها لخدمات الرشق.
@@ -783,7 +839,14 @@ EXECUTORS = {
     "premium_reaction": _execute_premium_reaction,
 }
 
-async def execute_raksh_service(service_type: str, quantity: int, sessions: list, params: dict, progress_callback=None):
+async def execute_raksh_service(
+    service_type: str,
+    quantity: int,
+    sessions: list,
+    params: dict,
+    user_id: int,
+    progress_callback=None,
+):
     """تنفيذ طلب رشق بعدد محدد من الحسابات"""
     if not sessions:
         raise RuntimeError("لا توجد جلسات نشطة متاحة.")
@@ -804,6 +867,19 @@ async def execute_raksh_service(service_type: str, quantity: int, sessions: list
         if phone in used_phones:
             continue
         used_phones.add(phone)
+        if not _reserve_raksh_execution_slot(user_id, service_type, phone):
+            remaining = quantity - i
+            failed_details.extend(
+                ["⏳ تم إيقاف بقية التنفيذ مؤقتاً."] * remaining
+            )
+            if progress_callback:
+                await progress_callback(
+                    quantity,
+                    quantity,
+                    success_count,
+                    len(failed_details),
+                )
+            break
         try:
             ok, msg = await executor(session=session, params=params, is_first=(i == 0))
         except Exception as e:
@@ -975,6 +1051,16 @@ async def handle_raksh_callback(
         if not svc or quantity < 1:
             await query.answer("⚠️ الخدمة أو العدد غير صالح.", show_alert=True)
             return
+        request_limit = min(
+            _get_max_quantity(service_type),
+            get_raksh_hourly_remaining(user.id),
+        )
+        if quantity > request_limit:
+            await query.answer(
+                "⚠️ لا يمكن قبول هذا العدد حالياً. خفّض العدد أو حاول لاحقاً.",
+                show_alert=True,
+            )
+            return
         context.user_data["raksh_payment_method"] = method
         context.user_data["raksh_step"] = "payment_confirm"
         if method == "stars":
@@ -1020,6 +1106,12 @@ async def handle_raksh_callback(
         payment_method = parts[5]
         if service_type not in RAKSH_SERVICES or payment_method not in {"points", "stars"} or quantity < 1:
             await query.answer("⚠️ بيانات الطلب غير صالحة.", show_alert=True)
+            return
+        if quantity > _get_request_limit(user.id, service_type):
+            await query.edit_message_text(
+                "⚠️ لا يمكن قبول هذا الطلب حالياً. حاول لاحقاً.",
+                reply_markup=raksh_menu_kb(),
+            )
             return
         # لا نثق بالسعر القادم من الزر؛ أعد حسابه من الإعداد الحالي حتى لا
         # يفشل الطلب بعد تغيير السعر أو يمكن التلاعب بالتكلفة.
@@ -1124,6 +1216,13 @@ def _get_max_quantity(service_type: str | None = None) -> int:
     """عدد الوحدات الأقصى حسب الجلسات المؤهلة المتاحة حالياً."""
     return get_available_sessions_count(service_type)
 
+def _get_request_limit(user_id: int, service_type: str | None = None) -> int:
+    """الحد الفعلي للطلب: الحسابات المتاحة أو رصيد الساعة، أيهما أقل."""
+    return min(
+        _get_max_quantity(service_type),
+        get_raksh_hourly_remaining(user_id),
+    )
+
 # ════════════════════════════════════════════════════════════
 # ═══ 7. تنفيذ الطلب ═══
 # ════════════════════════════════════════════════════════════
@@ -1196,6 +1295,7 @@ async def _start_raksh_execution(
         quantity=quantity,
         sessions=sessions,
         params=params,
+        user_id=user.id,
         progress_callback=update_progress
     )
     
@@ -1413,7 +1513,7 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # باقي الخدمات → انتقل مباشرة للعدد
         context.user_data["raksh_step"] = "quantity"
         service_type = context.user_data.get("raksh_service")
-        max_qty = _get_max_quantity(service_type)
+        max_qty = _get_request_limit(user.id, service_type)
         if max_qty < 1:
             await update.message.reply_text(
                 "⚠️ لا توجد حسابات ذات جلسات متاحة حالياً لتنفيذ هذه الخدمة.",
@@ -1436,7 +1536,7 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["raksh_comment"] = text
         context.user_data["raksh_step"] = "quantity"
         service_type = context.user_data.get("raksh_service")
-        max_qty = _get_max_quantity(service_type)
+        max_qty = _get_request_limit(user.id, service_type)
         if max_qty < 1:
             await update.message.reply_text(
                 "⚠️ لا توجد حسابات ذات جلسات متاحة حالياً لتنفيذ هذه الخدمة.",
@@ -1468,7 +1568,7 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["raksh_poll_option"] = normalized_option
         context.user_data["raksh_step"] = "quantity"
         service_type = context.user_data.get("raksh_service")
-        max_qty = _get_max_quantity(service_type)
+        max_qty = _get_request_limit(user.id, service_type)
         if max_qty < 1:
             await update.message.reply_text(
                 "⚠️ لا توجد حسابات ذات جلسات متاحة حالياً لتنفيذ هذه الخدمة.",
@@ -1498,7 +1598,7 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return True
         
         service_type = context.user_data.get("raksh_service")
-        max_qty = _get_max_quantity(service_type)
+        max_qty = _get_request_limit(user.id, service_type)
         if max_qty < 1:
             await update.message.reply_text(
                 "⚠️ لا توجد حسابات ذات جلسات متاحة حالياً لتنفيذ هذه الخدمة.",
@@ -1552,7 +1652,11 @@ async def raksh_pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE)
         quantity = int(parts[3])
         total_stars = int(parts[4])
         
-        if query.from_user.id == user_id and query.total_amount == total_stars:
+        if (
+            query.from_user.id == user_id
+            and query.total_amount == total_stars
+            and quantity <= _get_request_limit(user_id, service_type)
+        ):
             await query.answer(ok=True)
             return
     
@@ -1569,6 +1673,29 @@ async def raksh_successful_payment(update: Update, context: ContextTypes.DEFAULT
         service_type = parts[2]
         quantity = int(parts[3])
         total_stars = int(parts[4])
+
+        if update.effective_user.id != user_id:
+            return
+
+        # قد يكون مستخدم آخر قد استهلك الحصة بين الفاتورة والدفع؛
+        # أعد النجوم تلقائياً ولا تبدأ التنفيذ خارج الحد.
+        if quantity > _get_request_limit(user_id, service_type):
+            try:
+                await context.bot.refund_star_payment(
+                    user_id=user_id,
+                    telegram_payment_charge_id=payment.telegram_payment_charge_id,
+                )
+                await update.message.reply_text(
+                    "⚠️ تعذر بدء الطلب حالياً، وتمت إعادة قيمة الدفع.",
+                    reply_markup=raksh_menu_kb(),
+                )
+            except Exception:
+                logger.exception("فشل إعادة دفع النجوم لطلب رشق المستخدم %s", user_id)
+                await update.message.reply_text(
+                    "⚠️ تعذر بدء الطلب حالياً. تواصل مع المالك.",
+                    reply_markup=raksh_menu_kb(),
+                )
+            return
         
         # حفظ البيانات
         context.user_data["raksh_service"] = service_type
