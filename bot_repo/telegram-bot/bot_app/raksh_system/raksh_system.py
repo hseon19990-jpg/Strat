@@ -204,7 +204,16 @@ def _clear_raksh_state(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 RAKSH_MIN_DELAY_SECONDS = 60
 RAKSH_MAX_DELAY_SECONDS = 8 * 60
-RAKSH_MAX_EXECUTIONS_PER_HOUR = 12
+# The available session pool is the real per-request limit.  A value greater
+# than zero can still be supplied when an operator wants an hourly safety cap;
+# zero keeps the cap disabled instead of silently limiting a 71-account pool
+# to the old hard-coded value of 12.
+try:
+    RAKSH_MAX_EXECUTIONS_PER_HOUR = int(
+        os.getenv("RAKSH_MAX_EXECUTIONS_PER_HOUR", "0")
+    )
+except ValueError:
+    RAKSH_MAX_EXECUTIONS_PER_HOUR = 0
 
 def _get_delay_seconds(service_type: str | None = None) -> int:
     """فاصل عشوائي بين كل حساب والذي يليه لجميع خدمات الرشق."""
@@ -212,6 +221,8 @@ def _get_delay_seconds(service_type: str | None = None) -> int:
 
 def get_raksh_hourly_remaining(user_id: int) -> int:
     """عدد التنفيذات المتبقية للمستخدم خلال آخر ساعة متحركة."""
+    if RAKSH_MAX_EXECUTIONS_PER_HOUR <= 0:
+        return 2_147_483_647
     try:
         with db_conn() as c:
             row = c.execute(
@@ -231,6 +242,8 @@ def get_raksh_hourly_remaining(user_id: int) -> int:
 
 def _reserve_raksh_execution_slot(user_id: int, service_type: str, phone_number: str) -> bool:
     """حجز تنفيذ واحد بشكل ذري حتى لا تتجاوز الطلبات المتزامنة حد الساعة."""
+    if RAKSH_MAX_EXECUTIONS_PER_HOUR <= 0:
+        return True
     try:
         with db_conn() as c:
             # قفل خاص بالمستخدم داخل المعاملة الحالية لمنع سباق طلبين متزامنين.
@@ -695,7 +708,16 @@ async def _execute_comment(session, params, is_first):
         if not comment_text:
             return False, "نص التعليق فارغ."
         if is_first and params.get("channel_ref"):
-            await _join_channel_and_schedule_leave(client, params["channel_ref"])
+            try:
+                await _join_channel_and_schedule_leave(client, params["channel_ref"])
+            except Exception as channel_error:
+                # Joining an optional promotion channel must not make the
+                # first comment fail while the remaining accounts continue.
+                logger.warning(
+                    "تعذر انضمام أول حساب لقنوات الطلب %s: %s",
+                    session["phone_number"],
+                    str(channel_error)[:120],
+                )
         post_ref, post_id = _parse_post_link(params["link"])
         if not post_ref or not post_id:
             return False, "رابط المنشور غير صحيح."

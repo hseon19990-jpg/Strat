@@ -21,7 +21,17 @@ logger = logging.getLogger(__name__)
 # ─── إعدادات من متغيرات البيئة ───────────────────────────────────────────────
 BOT_TOKEN    = os.environ["ASSISTANT_BOT_TOKEN"]
 GEMINI_KEY   = os.environ["GEMINI_API_KEY"]
-GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
+# Replit exposes the configured GitHub credential as
+# GITHUB_PERSONAL_ACCESS_TOKEN. Keep GITHUB_TOKEN as a backwards-compatible
+# alias for existing Railway deployments.
+GITHUB_TOKEN = (
+    os.environ.get("GITHUB_TOKEN")
+    or os.environ.get("GITHUB_PERSONAL_ACCESS_TOKEN")
+)
+if not GITHUB_TOKEN:
+    raise RuntimeError(
+        "Missing GITHUB_TOKEN or GITHUB_PERSONAL_ACCESS_TOKEN"
+    )
 OWNER_ID     = int(os.environ["OWNER_ID"])
 REPO         = os.environ.get("TARGET_REPO",  "hseon19990-jpg/Strat")
 FILE_PATH    = os.environ.get("TARGET_FILE",  "telegram-bot/bot.py")
