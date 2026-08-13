@@ -868,7 +868,7 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
       1. ينضم للقنوات الإجبارية المحددة مسبقاً (قنوات بوتنا الإجبارية)
       2. ينضم للمجلد إن وُجد
       3. يضغط رابط الدعوة (StartBotRequest مع start_param)
-      4. يفحص ردّ البوت: إذا طلب الانضمام لقنوات → ينضم ثم يضغط زر التحقق من الاشتراك
+      4. يتجاوز قنوات البوت المستهدف لأن القنوات الإجبارية انضم إليها الحساب مسبقاً
       5. إذا كان النوع "بتحقق" (use_ai=True) → يحل التحقق بالذكاء الاصطناعي
          إذا كان "بدون تحقق" (use_ai=False) → يتجاوز أي تحقق ويُسجَّل كنجاح
 
@@ -974,26 +974,10 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
         await asyncio.sleep(5)
         msgs = await asyncio.wait_for(client.get_messages(bot_entity, limit=15), timeout=10)
 
-        # ── الخطوة 4: التعامل مع اشتراط البوت الانضمام لقنواته (حلقة متكررة) ──
-        # يكرر: انضم للقنوات من ردود البوت → تحقق من الاشتراك → رسائل جديدة
-        # يستمر حتى لا توجد قنوات جديدة أو يبلغ الحد الأقصى (6 جولات)
-        _total_joined_from_bot = 0
-        for _sub_round in range(6):
-            joined_channels = await _join_channels_from_buttons(client, msgs)
-            if joined_channels == 0:
-                break  # لا قنوات جديدة → خروج من الحلقة
-            _total_joined_from_bot += joined_channels
-            steps.append(f"انضم لـ {joined_channels} قناة من رد البوت (جولة {_sub_round + 1})")
-            await asyncio.sleep(2)
-            # بعد الانضمام، ابحث عن زر التحقق من الاشتراك واضغطه
-            _clicked = await _click_check_subscription_button(client, bot_entity, msgs)
-            if _clicked:
-                steps.append(f"ضغط زر التحقق من الاشتراك (جولة {_sub_round + 1})")
-            await asyncio.sleep(4)
-            # احصل على رسائل جديدة — قد تحتوي على قنوات إضافية تطلبها
-            msgs = await asyncio.wait_for(client.get_messages(bot_entity, limit=15), timeout=10)
-        if _total_joined_from_bot > 0:
-            logger.info(f"🔗 {phone}: انضم إجمالاً لـ {_total_joined_from_bot} قناة من ردود البوت")
+        # ── الخطوة 4: تجاوز اشتراك البوت المستهدف ──
+        # القنوات المطلوبة تُرسل مسبقاً عبر زر القنوات الإجبارية في نظامنا،
+        # لذلك لا ننضم إلى أي قناة من أزرار البوت المستهدف ولا نضغط زر اشتراكه.
+        # ننتقل مباشرة إلى رسائل التحقق التي أرسلها البوت بعد /start.
 
         # ── الخطوة 5: حل التحقق (كابتشا) ──
         # "بتحقق" (use_ai=True)  → يحاول حل أي تحقق يطلبه البوت بالذكاء الاصطناعي
