@@ -1472,7 +1472,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=code_reply_markup
             )
-            context.user_data.pop("gmail_verification_sub_id", None)
+            # Keep the request id through the state transition. The callback
+            # already carries this id, but retaining it also lets the fallback
+            # lookup use the same request instead of an unrelated one.
+            if verification_sub_id:
+                context.user_data["gmail_verification_sub_id"] = verification_sub_id
             context.user_data["state"] = ""
         except Exception:
             await update.message.reply_text(

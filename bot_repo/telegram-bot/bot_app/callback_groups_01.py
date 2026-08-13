@@ -149,6 +149,27 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                         )
                         return
         
+                    sub = c.execute(
+                        "SELECT id, user_id, gmail_email, status, rejection_reason, "
+                        "verification_completed, verification_notified "
+                        "FROM gmail_submissions WHERE id=%s",
+                        (sub_id,)
+                    ).fetchone()
+
+                    if not sub:
+                        await q.answer(
+                            "⚠️ انتهت صلاحية طلب التحقق أو لم يعد موجوداً.",
+                            show_alert=True
+                        )
+                        return
+                    if sub["user_id"] != user.id:
+                        await q.answer("❌ هذا الزر لا يخص طلبك.", show_alert=True)
+                        return
+
+                    # Lock only after confirming that the request exists and
+                    # belongs to this user.  This avoids treating an old
+                    # callback as a missing/foreign order and prevents two
+                    # completion clicks from racing each other.
                     lock = c.execute(
                         "SELECT pg_try_advisory_xact_lock(%s) AS acquired",
                         (sub_id,)
@@ -158,17 +179,6 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                             "⏳ تتم معالجة طلبك الآن، حاول بعد لحظات.",
                             show_alert=True
                         )
-                        return
-        
-                    sub = c.execute(
-                        "SELECT id, user_id, gmail_email, status, rejection_reason, "
-                        "verification_completed, verification_notified "
-                        "FROM gmail_submissions WHERE id=%s",
-                        (sub_id,)
-                    ).fetchone()
-        
-                    if not sub or sub["user_id"] != user.id:
-                        await q.answer("❌ هذا الزر لا يخص طلبك.", show_alert=True)
                         return
                     if (
                         sub["status"] != "rejected"
