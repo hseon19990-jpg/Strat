@@ -859,7 +859,7 @@ async def _execute_forced_ref_ai(session, params, is_first):
     from telethon.tl.functions.contacts import ResolveUsernameRequest
     from telethon.tl.functions.messages import StartBotRequest
     try:
-        from referrals import solve_captcha_with_ai
+        from ..referrals import solve_captcha_with_ai
     except ImportError:
         return False, "لا يمكن استيراد solve_captcha_with_ai"
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
@@ -1001,7 +1001,7 @@ async def _execute_votes(session, params, is_first):
 
 async def _execute_votes_ai(session, params, is_first):
     try:
-        from referrals import solve_captcha_with_ai
+        from ..referrals import solve_captcha_with_ai
     except ImportError:
         return False, "لا يمكن استيراد solve_captcha_with_ai"
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
