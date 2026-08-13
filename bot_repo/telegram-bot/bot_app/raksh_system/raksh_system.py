@@ -32,8 +32,10 @@ import re
 
 RAKSH_PAID_REACTION = "__raksh_paid_reaction__"
 RAKSH_PAID_REACTION_LABEL = "⭐ تفاعل مدفوع"
+RAKSH_CUSTOM_REACTION_PREFIX = "__raksh_custom_reaction__:"
 RAKSH_REACTION_LOOKUP_MAX_SESSIONS = 3
-RAKSH_REACTION_LOOKUP_TIMEOUT_SECONDS = 12
+RAKSH_REACTION_LOOKUP_TIMEOUT_SECONDS = 8
+RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS = 5
 
 # ════════════════════════════════════════════════════════════
 # ═══ 1. ثوابت الخدمات ═══
@@ -369,14 +371,30 @@ def _reaction_emoticons(reactions) -> list[str]:
     """
     result = []
     for reaction in reactions or []:
-        if reaction.__class__.__name__ == "ReactionPaid":
+        reaction_type = reaction.__class__.__name__
+        if reaction_type == "ReactionPaid":
             if RAKSH_PAID_REACTION not in result:
                 result.append(RAKSH_PAID_REACTION)
+            continue
+        if reaction_type == "ReactionCustomEmoji":
+            document_id = getattr(reaction, "document_id", None)
+            if document_id is not None:
+                custom_key = f"{RAKSH_CUSTOM_REACTION_PREFIX}{document_id}"
+                if custom_key not in result:
+                    result.append(custom_key)
             continue
         emoticon = getattr(reaction, "emoticon", None)
         if emoticon and emoticon not in result:
             result.append(emoticon)
     return result
+
+
+def _custom_reaction_document_id(value: str) -> int | None:
+    """Extract the Telegram custom-emoji document id from our safe UI value."""
+    if not isinstance(value, str) or not value.startswith(RAKSH_CUSTOM_REACTION_PREFIX):
+        return None
+    raw_id = value[len(RAKSH_CUSTOM_REACTION_PREFIX):]
+    return int(raw_id) if raw_id.isdigit() else None
 
 
 async def _fetch_raksh_reactions(
@@ -393,15 +411,24 @@ async def _fetch_raksh_reactions(
         int(TELEGRAM_API_ID),
         TELEGRAM_API_HASH,
     )
-    await asyncio.wait_for(client.connect(), timeout=20)
+    await asyncio.wait_for(client.connect(), timeout=RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS)
     try:
-        if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+        if not await asyncio.wait_for(
+            client.is_user_authorized(),
+            timeout=RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS,
+        ):
             return []
 
-        post_entity = await client.get_entity(post_ref)
+        post_entity = await asyncio.wait_for(
+            client.get_entity(post_ref),
+            timeout=RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS,
+        )
         # نتائج المنشور هي المصدر الأدق لهذه الخدمة: إذا كان عليه تفاعل واحد
         # فلا ينبغي أن نعرض بقية التفاعلات المسموحة في القناة.
-        message = await client.get_messages(post_entity, ids=post_id)
+        message = await asyncio.wait_for(
+            client.get_messages(post_entity, ids=post_id),
+            timeout=RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS,
+        )
         if message:
             message = message[0]
             message_reactions = getattr(
@@ -415,8 +442,9 @@ async def _fetch_raksh_reactions(
             if reactions:
                 return reactions
 
-        full_channel = await client(
-            functions.channels.GetFullChannelRequest(channel=post_entity)
+        full_channel = await asyncio.wait_for(
+            client(functions.channels.GetFullChannelRequest(channel=post_entity)),
+            timeout=RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS,
         )
         full_chat = getattr(full_channel, "full_chat", None)
         available = getattr(full_chat, "available_reactions", None)
@@ -457,7 +485,10 @@ async def _fetch_raksh_reactions_from_pool(
     Public posts normally work with the first authorized session, while the
     small parallel fallback still covers private/channel-specific access.
     """
-    candidates = sessions[:RAKSH_REACTION_LOOKUP_MAX_SESSIONS]
+    if len(sessions) > RAKSH_REACTION_LOOKUP_MAX_SESSIONS:
+        candidates = random.sample(sessions, RAKSH_REACTION_LOOKUP_MAX_SESSIONS)
+    else:
+        candidates = list(sessions)
     if not candidates:
         return []
 
@@ -470,11 +501,24 @@ async def _fetch_raksh_reactions_from_pool(
         except Exception:
             return []
 
-    results = await asyncio.gather(*(lookup(session) for session in candidates))
-    for reactions in results:
-        if reactions:
-            return reactions
-    return []
+    tasks = [asyncio.create_task(lookup(session)) for session in candidates]
+    try:
+        # Return as soon as one authorized session can read the post.  Using
+        # gather() here would wait for every fallback session, even after the
+        # first successful lookup had already produced the buttons.
+        for completed in asyncio.as_completed(tasks):
+            try:
+                reactions = await completed
+            except Exception:
+                continue
+            if reactions:
+                return reactions
+        return []
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def _parse_story_link(value: str) -> tuple[str | None, int | None]:
@@ -611,16 +655,20 @@ def raksh_reaction_kb(service_type: str, reactions=None):
         if reactions is None
         else [(reaction, reaction) for reaction in reactions]
     )
-    for reaction_key, reaction in reaction_items:
+    for index, (reaction_key, reaction) in enumerate(reaction_items, start=1):
         if reaction == RAKSH_PAID_REACTION:
-            reaction_key = "paid"
+            callback_key = "paid"
             reaction_label = RAKSH_PAID_REACTION_LABEL
+        elif _custom_reaction_document_id(reaction) is not None:
+            callback_key = f"custom_{_custom_reaction_document_id(reaction)}"
+            reaction_label = f"🎨 تفاعل مميز {index}"
         else:
+            callback_key = reaction_key
             reaction_label = reaction
         row.append(
             InlineKeyboardButton(
                 reaction_label,
-                callback_data=f"raksh:reaction:{service_type}:{reaction_key}",
+                callback_data=f"raksh:reaction:{service_type}:{callback_key}",
             )
         )
         if len(row) == 4:
@@ -1017,6 +1065,12 @@ async def _execute_premium_reaction(session, params, is_first):
             except ImportError:
                 return False, "إصدار Telethon الحالي لا يدعم التفاعل المدفوع."
             reaction_value = ReactionPaid()
+        elif (custom_document_id := _custom_reaction_document_id(reaction)) is not None:
+            try:
+                from telethon.tl.types import ReactionCustomEmoji
+            except ImportError:
+                return False, "إصدار Telethon الحالي لا يدعم التفاعلات المميزة."
+            reaction_value = ReactionCustomEmoji(document_id=custom_document_id)
         else:
             reaction_value = ReactionEmoji(emoticon=reaction)
         await client(functions.messages.SendReactionRequest(
@@ -1277,11 +1331,12 @@ async def handle_raksh_callback(
         parts = data.split(":")
         service_type = parts[2]
         reaction_key = parts[3]
-        reaction = (
-            RAKSH_PAID_REACTION
-            if reaction_key == "paid"
-            else RAKSH_REACTIONS.get(reaction_key, reaction_key)
-        )
+        if reaction_key == "paid":
+            reaction = RAKSH_PAID_REACTION
+        elif reaction_key.startswith("custom_") and reaction_key[7:].isdigit():
+            reaction = f"{RAKSH_CUSTOM_REACTION_PREFIX}{reaction_key[7:]}"
+        else:
+            reaction = RAKSH_REACTIONS.get(reaction_key, reaction_key)
         if service_type == "premium_reaction":
             available_reactions = context.user_data.get("raksh_available_reactions") or []
             if reaction_key == "random":
