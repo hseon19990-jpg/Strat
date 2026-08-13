@@ -12,6 +12,12 @@ from telegram.ext import ExtBot, Updater
 class ResilientExtBot(ExtBot):
     """Let polling handle Telegram bootstrap retries instead of blocking on getMe()."""
 
+    @property
+    def id(self) -> int:
+        # Application.start() uses bot.id only for asyncio task names. Keep
+        # startup non-blocking until the background getMe() call succeeds.
+        return self._bot_user.id if self._bot_user is not None else 0
+
     async def initialize(self) -> None:
         if self._initialized:
             return
