@@ -13,8 +13,8 @@
 """
 
 from ..shared import *
-from ..accounts import get_forced_ref_account_count
 from telethon import TelegramClient, functions
+from telethon.errors import UserAlreadyParticipantError
 from telethon.sessions import StringSession
 from telethon.tl.functions.channels import JoinChannelRequest, LeaveChannelRequest
 from telethon.tl.functions.messages import ImportChatInviteRequest, SendVoteRequest, StartBotRequest
@@ -132,8 +132,8 @@ def _get_delay_seconds() -> int:
 def _get_all_active_sessions(service_type: str | None = None) -> list[dict]:
     """جلب كل الجلسات المخزنة التي يمكن استخدامها لخدمات الرشق.
 
-    يستخدم نفس شروط مخزون «إحالة بوت إجباري» حتى يطابق العدد المعروض
-    عدد الجلسات التي سيحاول نظام الرشق استخدامها فعلياً.
+    خدمات الرشق تستخدم كل جلسة محفوظة وغير محذوفة. لا نستخدم
+    forced_ref_excluded هنا، لأنه استثناء خاص بخدمة الإحالة الإجبارية فقط.
     """
     with db_conn() as c:
         rows = c.execute(
@@ -142,15 +142,13 @@ def _get_all_active_sessions(service_type: str | None = None) -> list[dict]:
             "WHERE session_string IS NOT NULL "
             "AND BTRIM(session_string) <> '' "
             "AND deleted_at IS NULL "
-            "AND forced_ref_excluded IS NOT TRUE "
             "ORDER BY id ASC"
         ).fetchall()
     return [dict(row) for row in rows]
 
 def get_available_sessions_count(service_type: str | None = None) -> int:
-    # Keep the Raksh menu exactly in sync with the counter used by the
-    # mandatory bot-referral entry in the main menu.
-    return get_forced_ref_account_count()
+    """عدد الجلسات التي سيستخدمها التنفيذ فعلياً."""
+    return len(_get_all_active_sessions(service_type))
 
 def _parse_channel_ref(value: str) -> tuple[str | None, str | None]:
     """تحويل رابط قناة إلى مرجع Telethon"""
@@ -387,7 +385,12 @@ async def _join_discussion_group(client, discussion):
     )
     if discussion_chat is None:
         raise RuntimeError("تعذر تحديد مجموعة النقاش.")
-    await client(JoinChannelRequest(discussion_chat))
+    try:
+        await client(JoinChannelRequest(discussion_chat))
+    except UserAlreadyParticipantError:
+        # الحساب عضو بالفعل؛ يمكنه التعليق ولا يجب أن تفشل العملية هنا.
+        pass
+    return discussion_chat
 
 # ─── تنفيذ كل خدمة ───
 
@@ -483,6 +486,9 @@ async def _execute_comment(session, params, is_first):
         post_ref, post_id = _parse_post_link(params["link"])
         if not post_ref or not post_id:
             return False, "رابط المنشور غير صحيح."
+        comment_text = (params.get("comment_text") or "").strip()
+        if not comment_text:
+            return False, "نص التعليق فارغ."
         post_entity = await client.get_entity(post_ref)
         discussion = await client(functions.messages.GetDiscussionMessageRequest(peer=post_entity, msg_id=post_id))
         if not getattr(discussion, "messages", None):
@@ -491,8 +497,8 @@ async def _execute_comment(session, params, is_first):
         discussion_peer = getattr(discussion_message, "peer_id", None)
         if discussion_peer is None:
             return False, "تعذر تحديد مساحة التعليقات."
-        await _join_discussion_group(client, discussion)
-        await client.send_message(discussion_peer, params["comment_text"], reply_to=discussion_message.id)
+        discussion_chat = await _join_discussion_group(client, discussion)
+        await client.send_message(discussion_chat or discussion_peer, comment_text, reply_to=discussion_message.id)
         return True, f"✅ تم التعليق من {session['phone_number']}"
     except Exception as e:
         return False, f"❌ فشل: {str(e)[:80]}"
@@ -866,7 +872,7 @@ def _raksh_link_error(service_type: str, value: str) -> str | None:
     return None
 
 def _get_max_quantity(service_type: str | None = None) -> int:
-    """عدد الوحدات الأقصى حسب الجلسات المؤهلة المتاحة حالياً."""
+    """عدد الوحدات الأقصى حسب الجلسات التي سينفذ بها الطلب فعلياً."""
     return get_available_sessions_count(service_type)
 
 # ════════════════════════════════════════════════════════════
