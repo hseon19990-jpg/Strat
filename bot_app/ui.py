@@ -491,6 +491,10 @@ def account_info_kb() -> InlineKeyboardMarkup:
             InlineKeyboardButton("🔤 الاسم", callback_data="os:account_names"),
         ],
         [
+            InlineKeyboardButton("📝 البايو", callback_data="os:account_bios"),
+            InlineKeyboardButton("🔖 اليوزر", callback_data="os:account_usernames"),
+        ],
+        [
             InlineKeyboardButton("🖼️ الأفتار", callback_data="os:avatars"),
             InlineKeyboardButton("📊 نتائج الأفتار", callback_data="os:media_report:avatar:summary"),
         ],
@@ -513,6 +517,28 @@ def _account_name_count() -> int:
         return int(row["total"] or 0)
     except Exception as exc:
         logger.warning(f"⚠️ تعذر قراءة عدد أسماء الحسابات: {exc}")
+        return 0
+
+def _account_bio_count() -> int:
+    try:
+        with db_conn() as c:
+            row = c.execute(
+                "SELECT COUNT(*) AS total FROM account_bio_assignments"
+            ).fetchone()
+        return int(row["total"] or 0)
+    except Exception as exc:
+        logger.warning(f"⚠️ تعذر قراءة عدد البايو: {exc}")
+        return 0
+
+def _account_username_count() -> int:
+    try:
+        with db_conn() as c:
+            row = c.execute(
+                "SELECT COUNT(*) AS total FROM account_username_assignments"
+            ).fetchone()
+        return int(row["total"] or 0)
+    except Exception as exc:
+        logger.warning(f"⚠️ تعذر قراءة عدد اليوزرات: {exc}")
         return 0
 
 def _seed_historical_media_assignments(kind: str) -> None:

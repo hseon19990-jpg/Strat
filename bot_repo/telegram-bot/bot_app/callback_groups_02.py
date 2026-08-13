@@ -248,7 +248,7 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
 
         # ─── بايو ──────────────────────────────────────────────────────────
         if data == "os:account_bios" and is_own:
-            bio_count = len(_load_unassigned_bio_accounts())
+            bio_count = _account_bio_count()
             context.user_data["state"] = "os_await_account_bios"
             await q.edit_message_text(
                 "📝 *البايو*\n\n"
@@ -269,7 +269,7 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
 
         # ─── يوزر ──────────────────────────────────────────────────────────
         if data == "os:account_usernames" and is_own:
-            username_count = len(_load_unassigned_username_accounts())
+            username_count = _account_username_count()
             context.user_data["state"] = "os_await_account_usernames"
             await q.edit_message_text(
                 "🔖 *اليوزرات*\n\n"

@@ -519,6 +519,28 @@ def _account_name_count() -> int:
         logger.warning(f"⚠️ تعذر قراءة عدد أسماء الحسابات: {exc}")
         return 0
 
+def _account_bio_count() -> int:
+    try:
+        with db_conn() as c:
+            row = c.execute(
+                "SELECT COUNT(*) AS total FROM account_bio_assignments"
+            ).fetchone()
+        return int(row["total"] or 0)
+    except Exception as exc:
+        logger.warning(f"⚠️ تعذر قراءة عدد البايو: {exc}")
+        return 0
+
+def _account_username_count() -> int:
+    try:
+        with db_conn() as c:
+            row = c.execute(
+                "SELECT COUNT(*) AS total FROM account_username_assignments"
+            ).fetchone()
+        return int(row["total"] or 0)
+    except Exception as exc:
+        logger.warning(f"⚠️ تعذر قراءة عدد اليوزرات: {exc}")
+        return 0
+
 def _seed_historical_media_assignments(kind: str) -> None:
     """ينقل الحسابات الناجحة في التقارير القديمة إلى سجل الاستخدام الدائم."""
     if kind not in {"stories", "avatar"}:
