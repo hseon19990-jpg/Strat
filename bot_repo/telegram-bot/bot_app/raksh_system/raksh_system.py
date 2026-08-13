@@ -32,6 +32,8 @@ import re
 
 RAKSH_PAID_REACTION = "__raksh_paid_reaction__"
 RAKSH_PAID_REACTION_LABEL = "⭐ تفاعل مدفوع"
+RAKSH_REACTION_LOOKUP_MAX_SESSIONS = 3
+RAKSH_REACTION_LOOKUP_TIMEOUT_SECONDS = 12
 
 # ════════════════════════════════════════════════════════════
 # ═══ 1. ثوابت الخدمات ═══
@@ -443,6 +445,36 @@ async def _fetch_raksh_reactions(
         return []
     finally:
         await client.disconnect()
+
+
+async def _fetch_raksh_reactions_from_pool(
+    sessions: list[dict], post_ref: str, post_id: int
+) -> list[str]:
+    """قراءة التفاعلات بسرعة من عدد محدود من الجلسات بالتوازي.
+
+    The old flow waited for every session sequentially. A single unavailable
+    session could therefore add 30 seconds before the next one was tried.
+    Public posts normally work with the first authorized session, while the
+    small parallel fallback still covers private/channel-specific access.
+    """
+    candidates = sessions[:RAKSH_REACTION_LOOKUP_MAX_SESSIONS]
+    if not candidates:
+        return []
+
+    async def lookup(session: dict) -> list[str]:
+        try:
+            return await asyncio.wait_for(
+                _fetch_raksh_reactions(session, post_ref, post_id),
+                timeout=RAKSH_REACTION_LOOKUP_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            return []
+
+    results = await asyncio.gather(*(lookup(session) for session in candidates))
+    for reactions in results:
+        if reactions:
+            return reactions
+    return []
 
 
 def _parse_story_link(value: str) -> tuple[str | None, int | None]:
@@ -1837,15 +1869,11 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         "⚠️ تعذر تحليل رابط المنشور. أرسل رابط منشور قناة صالحاً ثم أعد المحاولة."
                     )
                     return True
-                reaction_sessions = _get_all_active_sessions(service_type)
-                for reaction_session in reaction_sessions:
-                    reaction_options = await _fetch_raksh_reactions(
-                        reaction_session,
-                        post_ref,
-                        post_id,
-                    )
-                    if reaction_options:
-                        break
+                reaction_options = await _fetch_raksh_reactions_from_pool(
+                    _get_all_active_sessions(service_type),
+                    post_ref,
+                    post_id,
+                )
                 if not reaction_options:
                     await update.message.reply_text(
                         "⚠️ تعذر قراءة التفاعل المفعّل في هذا المنشور.\n"
