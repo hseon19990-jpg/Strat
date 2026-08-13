@@ -13,6 +13,7 @@
 """
 
 from ..shared import *
+from ..accounts import get_forced_ref_account_count
 from telethon import TelegramClient, functions
 from telethon.errors import UserAlreadyParticipantError
 from telethon.sessions import StringSession
@@ -132,8 +133,8 @@ def _get_delay_seconds() -> int:
 def _get_all_active_sessions(service_type: str | None = None) -> list[dict]:
     """جلب كل الجلسات المخزنة التي يمكن استخدامها لخدمات الرشق.
 
-    خدمات الرشق تستخدم كل جلسة محفوظة وغير محذوفة. لا نستخدم
-    forced_ref_excluded هنا، لأنه استثناء خاص بخدمة الإحالة الإجبارية فقط.
+    يستخدم الرشق نفس مخزون الحسابات المؤهل لخدمة إحالة البوت الإجباري،
+    حتى يطابق العدد المعروض الحسابات التي سيحاول التنفيذ استخدامها.
     """
     with db_conn() as c:
         rows = c.execute(
@@ -142,13 +143,14 @@ def _get_all_active_sessions(service_type: str | None = None) -> list[dict]:
             "WHERE session_string IS NOT NULL "
             "AND BTRIM(session_string) <> '' "
             "AND deleted_at IS NULL "
+            "AND forced_ref_excluded IS NOT TRUE "
             "ORDER BY id ASC"
         ).fetchall()
     return [dict(row) for row in rows]
 
 def get_available_sessions_count(service_type: str | None = None) -> int:
-    """عدد الجلسات التي سيستخدمها التنفيذ فعلياً."""
-    return len(_get_all_active_sessions(service_type))
+    """نفس عدّاد الحسابات الظاهر في خدمة إحالة بوت إجباري."""
+    return get_forced_ref_account_count()
 
 def _parse_channel_ref(value: str) -> tuple[str | None, str | None]:
     """تحويل رابط قناة إلى مرجع Telethon"""
