@@ -1025,29 +1025,76 @@ async def _execute_votes_ai(session, params, is_first):
         from ..referrals import solve_captcha_with_ai
     except ImportError:
         return False, "لا يمكن استيراد solve_captcha_with_ai"
+    
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     await asyncio.wait_for(client.connect(), timeout=20)
     try:
         if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
             return False, "الجلسة غير مصرح بها."
-        if is_first and params.get("channel_ref"):
-            await _join_channel_and_schedule_leave(client, params["channel_ref"])
+            
         post_ref, post_id = _parse_post_link(params["link"])
         if not post_ref or not post_id:
             return False, "رابط المنشور غير صحيح."
+        
         try:
             post_entity = await client.get_entity(post_ref)
         except Exception as exc:
             if "No user has" in str(exc):
-                return False, "رابط المنشور غير صالح أو القناة غير متاحة للحساب."
+                return False, "رابط المنшور غير صالح أو القناة غير متاحة للحساب."
             raise
-        messages = _as_message_list(await client.get_messages(post_entity, ids=post_id))
+
+        # =========================================================
+        # ✅ تسلسل العمليات الجديد (خطوة بخطوة)
+        # =========================================================
+
+        # ① انضمام القناة الإجبارية (إن وُجدت) - 1-2 ثانية
+        if is_first and params.get("channel_ref"):
+            try:
+                await _join_channel_and_schedule_leave(client, params["channel_ref"])
+                await asyncio.sleep(random.uniform(1, 2))
+            except Exception as e:
+                logger.warning(f"فشل انضمام القناة للحساب {session['phone_number']}: {e}")
+
+        # ② ضغط زر التفاعل (مشاركة أو ابدأ) - 1-2 ثانية
+        messages = await client.get_messages(post_entity, ids=post_id)
         if not messages:
             return False, "المنشور غير موجود."
-        solved, detail = await solve_captcha_with_ai(client, post_entity, messages, session["phone_number"], max_attempts=3)
+        msg = messages[0]
+        
+        if msg.buttons:
+            for row in msg.buttons:
+                for btn in row:
+                    btn_text = (getattr(btn, "text", "") or "").lower()
+                    if any(k in btn_text for k in ["مشاركة", "مسابقة", "start", "ابدأ", "اشتراك", "تحقق"]):
+                        try:
+                            await btn.click()
+                            logger.info(f"✅ الحساب {session['phone_number']} ضغط زر: {btn.text}")
+                            await asyncio.sleep(random.uniform(1, 2))
+                            break
+                        except Exception as e:
+                            logger.warning(f"فشل ضغط الزر: {e}")
+                break
+
+        # ③ ضغط زر "بدء" (Start) إذا لم يتم الضغط عليه بواسطة الزر السابق - 1-2 ثانية
+        # ملاحظة: بعض البوتات لا تطلب التحقق إلا بعد إرسال /start.
+        try:
+            bot_msgs = await client.get_messages(post_entity, limit=1)
+            if not bot_msgs or not any("ابدأ" in (getattr(m, "text", "") or "") for m in bot_msgs):
+                await client.send_message(post_entity, "/start")
+                logger.info(f"✅ الحساب {session['phone_number']} أرسل /start")
+                await asyncio.sleep(random.uniform(1, 2))
+        except Exception:
+            pass
+
+        # ④ حل التحقق باستخدام Groq (السؤال: "اختر الإيموجي الصحيح") - 1-2 ثانية
+        # يتم استخدام solve_captcha_with_ai من ملف referrals.py
+        messages = await client.get_messages(post_entity, limit=15)  # جلب آخر الرسائل بعد إرسال /start
+        solved, detail = await solve_captcha_with_ai(client, post_entity, messages, session["phone_number"], max_attempts=1)
         if not solved:
             return False, f"فشل التحقق: {detail}"
-        messages = _as_message_list(await client.get_messages(post_entity, ids=post_id))
+        
+        # ⑤ التصويت بعد حل التحقق
+        messages = await client.get_messages(post_entity, ids=post_id)
         if not messages:
             return False, "المنشور غير موجود بعد التحقق."
         msg = messages[0]
@@ -1058,19 +1105,15 @@ async def _execute_votes_ai(session, params, is_first):
         if not options:
             return False, "لا توجد خيارات."
         chosen = random.choice(options)
-        verified = await _send_vote_and_check(
-            client,
-            post_entity,
-            post_id,
-            chosen.option,
-        )
+        verified = await _send_vote_and_check(client, post_entity, post_id, chosen.option)
         verification = " وتم التحقق من تسجيله" if verified else " وتم إرسال الطلب إلى Telegram"
+        
         return True, f"✅ تم التصويت مع التحقق{verification} من {session['phone_number']}"
+        
     except Exception as e:
         return False, f"❌ فشل: {str(e)[:80]}"
     finally:
         await client.disconnect()
-
 async def _execute_premium_reaction(session, params, is_first):
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     await asyncio.wait_for(client.connect(), timeout=20)
