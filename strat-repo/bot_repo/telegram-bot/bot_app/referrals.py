@@ -652,6 +652,39 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                         else:
                             return True, f"ضغط الإيموجي | {' | '.join(all_details)}"
                     else:
+                        # ✅ (جديد) كشف مباشر لرسائل المسابقات مثل "اختر الإيموجي الصحيح"
+                        if "اختر الإيموجي" in msg_text or "اضغط على" in msg_text or "رمز" in msg_text:
+                            prompt = (
+                                f"بوت المسابقات يطلب منك اختيار الإيموجي الصحيح أو الرمز:\n{msg_text}\n\n"
+                                "الأزرار المتاحة:\n"
+                                + "\n".join(f"- {b.text}" for row in msg.buttons for b in row)
+                                + "\n\nما هو الإيموجي أو الرمز المطلوب اختياره؟ أجب بنص الزر بالضبط."
+                            )
+                            answer = await _solve_text(prompt)
+                            if answer:
+                                logger.info(f"🤖 AI اختار إيموجي مسابقة → '{answer}' ({phone})")
+                                chosen = None
+                                a_clean = answer.strip()
+                                # مطابقة دقيقة
+                                for label, btn in btn_objects.items():
+                                    if label.strip() == a_clean:
+                                        chosen = btn
+                                        break
+                                if chosen:
+                                    processed_ids.add(msg_id)
+                                    await chosen.click()
+                                    result, msgs = await _wait_and_check()
+                                    detail = f"ضغط إيموجي مسابقة: {getattr(chosen, 'text', '')}"
+                                    all_details.append(detail)
+                                    if result == "success":
+                                        logger.info(f"✅ تم حل الكابتشا للرقم {phone} في المحاولة {_round+1}")
+                                        return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
+                                    elif result == "fail":
+                                        break
+                                    else:
+                                        return True, f"ضغط إيموجي المسابقة | {' | '.join(all_details)}"
+                        # ✅ نهاية الكود الجديد
+
                         # ── الوضع الاحتياطي: استخدم Groq أو DeepSeek ─────────
                         # إذا كانت الأزرار كلها إيموجيات، وضّح ذلك للنموذج
                         all_emoji_btns = all(
