@@ -147,7 +147,7 @@ def init_db():
               points       INTEGER DEFAULT 0,
               invited_by   BIGINT DEFAULT 0,
               total_orders INTEGER DEFAULT 0,
-              joined_at    TEXT DEFAULT CURRENT_DATE,
+              joined_at    TEXT DEFAULT CURRENT_DATE::text,
               bot_user_num INTEGER,
               verified     INTEGER DEFAULT 0
           )""")
@@ -163,7 +163,7 @@ def init_db():
               api_order_id TEXT DEFAULT '',
               status       TEXT DEFAULT 'pending',
               order_code   TEXT,
-              created_at   TEXT DEFAULT CURRENT_TIMESTAMP
+              created_at   TEXT DEFAULT CURRENT_TIMESTAMP::text
           )""")
           c.execute("""
           CREATE TABLE IF NOT EXISTS raksh_execution_usage (
@@ -262,7 +262,7 @@ def init_db():
               funding_type     TEXT,
               cost_points      INTEGER,
               active           INTEGER DEFAULT 1,
-              created_at       TEXT DEFAULT CURRENT_TIMESTAMP
+              created_at       TEXT DEFAULT CURRENT_TIMESTAMP::text
           )""")
           c.execute("""
           CREATE TABLE IF NOT EXISTS star_transactions (
@@ -272,7 +272,7 @@ def init_db():
               points_given        INTEGER,
               telegram_payment_id TEXT,
               status              TEXT DEFAULT 'completed',
-              created_at          TEXT DEFAULT CURRENT_TIMESTAMP
+              created_at          TEXT DEFAULT CURRENT_TIMESTAMP::text
           )""")
           c.execute("""
           CREATE TABLE IF NOT EXISTS number_star_purchases (
@@ -290,7 +290,7 @@ def init_db():
               to_user    BIGINT,
               points     INTEGER,
               fee        INTEGER,
-              created_at TEXT DEFAULT CURRENT_TIMESTAMP
+              created_at TEXT DEFAULT CURRENT_TIMESTAMP::text
           )""")
           c.execute("""
           CREATE TABLE IF NOT EXISTS prize_exchanges (
@@ -300,7 +300,7 @@ def init_db():
               prize_value TEXT,
               points_cost INTEGER,
               status      TEXT DEFAULT 'pending',
-              created_at  TEXT DEFAULT CURRENT_TIMESTAMP
+              created_at  TEXT DEFAULT CURRENT_TIMESTAMP::text
           )""")
           c.execute("""
           CREATE TABLE IF NOT EXISTS number_stock (
@@ -319,7 +319,7 @@ def init_db():
               funding_type     TEXT DEFAULT 'mandatory',
               active           INTEGER DEFAULT 1
           )""")
-          for _alt in [
+          for _migration_index, _alt in enumerate([
               "ALTER TABLE channel_funding ADD COLUMN IF NOT EXISTS target_members INTEGER DEFAULT 0",
               "ALTER TABLE channel_funding ADD COLUMN IF NOT EXISTS current_members INTEGER DEFAULT 0",
               "ALTER TABLE channel_funding ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active'",
@@ -350,15 +350,25 @@ def init_db():
               "ALTER TABLE users ADD COLUMN IF NOT EXISTS banned INTEGER DEFAULT 0",
               "ALTER TABLE users ADD COLUMN IF NOT EXISTS banned_at TIMESTAMPTZ",
               "ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT",
-              "ALTER TABLE channel_join_rewards ADD COLUMN IF NOT EXISTS joined_at TIMESTAMPTZ DEFAULT NOW()",
               "ALTER TABLE mandatory_sub_orders ADD COLUMN IF NOT EXISTS reactivated_count INTEGER DEFAULT 0",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS referral_only BOOLEAN DEFAULT FALSE",
               "ALTER TABLE forced_ref_orders ADD COLUMN IF NOT EXISTS reactivated_count INTEGER DEFAULT 0",
               "ALTER TABLE forced_ref_orders ADD COLUMN IF NOT EXISTS payment_method TEXT DEFAULT 'points'",
               "ALTER TABLE forced_ref_orders ADD COLUMN IF NOT EXISTS cost_stars INTEGER DEFAULT 0",
-          ]:
-              try: c.execute(_alt)
-              except Exception: pass
+          ]):
+              # An error aborts the current PostgreSQL transaction. Isolate
+              # optional migrations so one harmless skipped migration cannot
+              # make every following CREATE TABLE fail with
+              # InFailedSqlTransaction.
+              _savepoint = f"init_migration_{_migration_index}"
+              c.execute(f"SAVEPOINT {_savepoint}")
+              try:
+                  c.execute(_alt)
+              except Exception as _migration_error:
+                  c.execute(f"ROLLBACK TO SAVEPOINT {_savepoint}")
+                  logger.warning(f"⚠️ تم تجاوز ترحيل اختياري: {_migration_error}")
+              finally:
+                  c.execute(f"RELEASE SAVEPOINT {_savepoint}")
           c.execute("""
           CREATE TABLE IF NOT EXISTS channel_funding_counts (
               id         SERIAL PRIMARY KEY,
@@ -373,7 +383,7 @@ def init_db():
               quantity    INTEGER DEFAULT 1,
               points_cost INTEGER NOT NULL,
               active      INTEGER DEFAULT 1,
-              created_at  TEXT DEFAULT CURRENT_TIMESTAMP
+              created_at  TEXT DEFAULT CURRENT_TIMESTAMP::text
           )""")
           c.execute("""
           CREATE TABLE IF NOT EXISTS promo_codes (
@@ -382,7 +392,7 @@ def init_db():
               used_count INTEGER DEFAULT 0,
               points     INTEGER DEFAULT 0,
               active     INTEGER DEFAULT 1,
-              created_at TEXT DEFAULT CURRENT_TIMESTAMP
+              created_at TEXT DEFAULT CURRENT_TIMESTAMP::text
           )""")
           c.execute("""
           CREATE TABLE IF NOT EXISTS promo_uses (
@@ -397,7 +407,7 @@ def init_db():
               max_uses   INTEGER DEFAULT 1,
               used_count INTEGER DEFAULT 0,
               active     INTEGER DEFAULT 1,
-              created_at TEXT DEFAULT CURRENT_TIMESTAMP
+              created_at TEXT DEFAULT CURRENT_TIMESTAMP::text
           )""")
           c.execute("""
           CREATE TABLE IF NOT EXISTS number_purchase_code_uses (
@@ -423,6 +433,10 @@ def init_db():
               joined_at  TIMESTAMPTZ DEFAULT NOW(),
               PRIMARY KEY (user_id, channel_id)
           )""")
+          c.execute(
+              "ALTER TABLE channel_join_rewards "
+              "ADD COLUMN IF NOT EXISTS joined_at TIMESTAMPTZ DEFAULT NOW()"
+          )
           c.execute("""
           CREATE TABLE IF NOT EXISTS referral_tasks (
               id                  SERIAL PRIMARY KEY,
@@ -570,7 +584,7 @@ def init_db():
               )
       try:
           with db_conn() as c:
-              c.execute("ALTER TABLE users ADD COLUMN verified INTEGER DEFAULT 0")
+              c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS verified INTEGER DEFAULT 0")
       except Exception:
           pass
       try:
@@ -595,12 +609,12 @@ def init_db():
           logger.warning(f"⚠️ فشل تحديث أعمدة تحقق الإيميل: {e}")
       try:
           with db_conn() as c:
-              c.execute("ALTER TABLE services ADD COLUMN panel INTEGER DEFAULT 1")
+              c.execute("ALTER TABLE services ADD COLUMN IF NOT EXISTS panel INTEGER DEFAULT 1")
       except Exception:
           pass
       try:
           with db_conn() as c:
-              c.execute("ALTER TABLE users ADD COLUMN referral_credited INTEGER DEFAULT 0")
+              c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_credited INTEGER DEFAULT 0")
               c.execute("UPDATE users SET referral_credited=1 WHERE invited_by IS NOT NULL AND invited_by != 0")
       except Exception:
           pass

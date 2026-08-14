@@ -2284,4 +2284,3 @@ async def cmd_raksh(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=raksh_menu_kb(user.id == OWNER_ID)
     )
-[file content end]
