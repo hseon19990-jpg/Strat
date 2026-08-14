@@ -736,7 +736,10 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                                         chosen = btn
                                         break
                             if not chosen:
-                                chosen = list(btn_objects.values())[0]
+                                logger.warning(
+                                    f"⚠️ رد Groq لا يطابق أي زر تحقق ({phone}): {a_clean!r}"
+                                )
+                                continue
                             processed_ids.add(msg_id)
                             await chosen.click()
                             result, msgs = await _wait_and_check()
