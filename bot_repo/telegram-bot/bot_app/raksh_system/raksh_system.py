@@ -2,7 +2,7 @@
 نظام الرشق الجديد - منفصل تماماً عن بقية البوت
 
 الخدمات المتوفرة:
-1. رشق مشاهدة ستوري وتفاعل
+1. رشق مشاهدة ستوري وتف아عل
 2. إحالة بوت إجباري
 3. إحالة بوت إجباري مع تحقق
 4. رشق تعليق
@@ -1040,7 +1040,7 @@ async def _execute_votes_ai(session, params, is_first):
             post_entity = await client.get_entity(post_ref)
         except Exception as exc:
             if "No user has" in str(exc):
-                return False, "رابط المنшور غير صالح أو القناة غير متاحة للحساب."
+                return False, "رابط المنشور غير صالح أو القناة غير متاحة للحساب."
             raise
 
         # =========================================================
@@ -1056,7 +1056,7 @@ async def _execute_votes_ai(session, params, is_first):
                 logger.warning(f"فشل انضمام القناة للحساب {session['phone_number']}: {e}")
 
         # ② ضغط زر التفاعل (مشاركة أو ابدأ) - 1-2 ثانية
-        messages = await client.get_messages(post_entity, ids=post_id)
+        messages = _as_message_list(await client.get_messages(post_entity, ids=post_id))
         if not messages:
             return False, "المنشور غير موجود."
         msg = messages[0]
@@ -1078,7 +1078,7 @@ async def _execute_votes_ai(session, params, is_first):
         # ③ ضغط زر "بدء" (Start) إذا لم يتم الضغط عليه بواسطة الزر السابق - 1-2 ثانية
         # ملاحظة: بعض البوتات لا تطلب التحقق إلا بعد إرسال /start.
         try:
-            bot_msgs = await client.get_messages(post_entity, limit=1)
+            bot_msgs = _as_message_list(await client.get_messages(post_entity, limit=1))
             if not bot_msgs or not any("ابدأ" in (getattr(m, "text", "") or "") for m in bot_msgs):
                 await client.send_message(post_entity, "/start")
                 logger.info(f"✅ الحساب {session['phone_number']} أرسل /start")
@@ -1088,13 +1088,13 @@ async def _execute_votes_ai(session, params, is_first):
 
         # ④ حل التحقق باستخدام Groq (السؤال: "اختر الإيموجي الصحيح") - 1-2 ثانية
         # يتم استخدام solve_captcha_with_ai من ملف referrals.py
-        messages = await client.get_messages(post_entity, limit=15)  # جلب آخر الرسائل بعد إرسال /start
+        messages = _as_message_list(await client.get_messages(post_entity, limit=15))  # جلب آخر الرسائل بعد إرسال /start
         solved, detail = await solve_captcha_with_ai(client, post_entity, messages, session["phone_number"], max_attempts=1)
         if not solved:
             return False, f"فشل التحقق: {detail}"
         
         # ⑤ التصويت بعد حل التحقق
-        messages = await client.get_messages(post_entity, ids=post_id)
+        messages = _as_message_list(await client.get_messages(post_entity, ids=post_id))
         if not messages:
             return False, "المنشور غير موجود بعد التحقق."
         msg = messages[0]
@@ -1114,6 +1114,7 @@ async def _execute_votes_ai(session, params, is_first):
         return False, f"❌ فشل: {str(e)[:80]}"
     finally:
         await client.disconnect()
+
 async def _execute_premium_reaction(session, params, is_first):
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     await asyncio.wait_for(client.connect(), timeout=20)
@@ -2283,3 +2284,4 @@ async def cmd_raksh(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=raksh_menu_kb(user.id == OWNER_ID)
     )
+[file content end]
