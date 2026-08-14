@@ -319,7 +319,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
             # 1. تنزيل صورة الرسالة (الشاشة)
             img_bytes = await client.download_media(msg_id, bytes)
             if not img_bytes:
-                return None, None
+                return None
             
             import base64
             img_b64 = base64.b64encode(img_bytes).decode()
@@ -361,7 +361,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                     return None
             return await asyncio.to_thread(_vision_request)
         except Exception:
-            return None, None
+            return None
 
     # ── بدء حل الكابتشا ──
     for _round in range(max_attempts):
@@ -375,7 +375,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
             
             # 1. استخدم الرؤية لتحليل الشاشة
             analysis = await _analyze_screen_via_vision(msg.id)
-            if not analysis:
+            if not isinstance(analysis, dict):
                 continue
 
             action = analysis.get("action")
