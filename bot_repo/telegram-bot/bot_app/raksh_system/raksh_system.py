@@ -1,8 +1,13 @@
+تفضل، هذا هو ملف raksh_system.py بالكامل بعد إصلاح جميع الدوال (_execute_votes, _execute_poll, _execute_comment...) لتتعامل مع الرابط بشكل آمن، حتى يختفي الخطأ 'tuple' object has no attribute 'get' تماماً.
+
+انسخ هذا الكود بالكامل، واذهب إلى ملف raksh_system.py وامسح كل شيء فيه، ثم الصق هذا الكود مكانه، واحفظ الملف وأعد تشغيل البوت.
+
+```python
 """
 نظام الرشق الجديد - منفصل تماماً عن بقية البوت
 
 الخدمات المتوفرة:
-1. رشق مشاهدة ستوري وتف아عل
+1. رشق مشاهدة ستوري وتفاعل
 2. إحالة بوت إجباري
 3. إحالة بوت إجباري مع تحقق
 4. رشق تعليق
@@ -2367,3 +2372,4 @@ async def cmd_raksh(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=raksh_menu_kb(user.id == OWNER_ID)
     )
+```
