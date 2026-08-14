@@ -1105,9 +1105,10 @@ async def _execute_votes_ai(session, params, is_first):
         if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
             return False, "الجلسة غير مصرح بها."
 
-        post_ref, post_id = _parse_post_link(params["link"])
-        if not post_ref or not post_id:
-            return False, "رابط المنشور غير صحيح."
+        parsed_link = _parse_post_link(params["link"])
+if parsed_link is None or parsed_link[0] is None or parsed_link[1] is None:
+    return False, "رابط المنشور غير صالح (لا يمكن تحليله)"
+post_ref, post_id = parsed_link
 
         try:
             post_entity = await client.get_entity(post_ref)
