@@ -217,142 +217,6 @@ async def _join_folder_link(client, folder_url: str) -> str:
         logger.warning(f"⚠️ تعذّر الانضمام للمجلد: {e}")
         return f"فشل المجلد: {str(e)[:60]}"
 
-async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "", max_attempts: int = 3) -> tuple:
-    """
-    يستخدم Groq أو DeepSeek لكشف وحل جميع أنواع التحقق الشائعة في بوتات تيليغرام.
-    يُرجع (solved: bool, detail: str).
-    """
-    # ════════════════════════════════════════════════════════════
-    # 🔥 DEBUG: تأكد من أن الدالة تُستدعى والمفاتيح موجودة
-    # ════════════════════════════════════════════════════════════
-    logger.info(f"🔥🔥🔥 solve_captcha_with_ai تم استدعاؤها للرقم {phone} 🔥🔥🔥")
-    
-    GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-    DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
-    
-    logger.info(f"🔑 GROQ_API_KEY موجود: {bool(GROQ_API_KEY)} | طوله: {len(GROQ_API_KEY)}")
-    logger.info(f"🔑 DEEPSEEK_API_KEY موجود: {bool(DEEPSEEK_API_KEY)} | طوله: {len(DEEPSEEK_API_KEY)}")
-    # ════════════════════════════════════════════════════════════
-
-    if not GROQ_API_KEY and not DEEPSEEK_API_KEY:
-        return False, "لا يوجد مفتاح API للتحقق (Groq أو DeepSeek)"
-
-    # ── كلمات دلالية ──────────────────────────────────────────
-    SUCCESS_KW = [
-        "✅", "تم", "نجح", "مبروك", "أهلاً", "مرحباً", "welcome", "success",
-        "تم التحقق", "مقبول", "accepted", "verified", "شكراً", "برافو",
-        "اشتركت", "سجلت", "تسجيل", "دخلت", "ترحيب", "congratulations",
-        "passed", "اجتزت", "صحيح", "correct", "ممتاز", "👍", "تم قبولك",
-        "تم التسجيل", "انتهت عملية", "تم التفعيل", "بنجاح",
-    ]
-    FAIL_KW = [
-        "خطأ", "غلط", "wrong", "incorrect", "فشل", "error", "❌",
-        "حاول مجدداً", "try again", "retry", "invalid", "غير صحيح",
-        "أعد", "مجدداً", "again", "حاول ثانية", "إجابة خاطئة",
-    ]
-    CAPTCHA_KW = [
-        "تحقق", "verify", "captcha", "اضغط", "ادخل", "أجب", "اختر",
-        "robot", "بشر", "human", "confirm", "verification", "كابتشا",
-        "لست روبوت", "لست بوت", "not a robot", "prove", "إثبت",
-    ]
-    MATH_KW = [
-        "=", "؟", "?", "كم", "احسب", "حل", "اكتب", "أدخل",
-        "اجمع", "اطرح", "اضرب", "اقسم", "ناتج", "حاصل", "result",
-        "calculate", "solve", "answer", "الإجابة", "الجواب", "الرقم",
-    ]
-    FORWARD_KW = [
-        "شارك", "أرسل ملف", "ارسل ملف", "forward", "ملفك الشخصي",
-        "profile", "بروفايل", "contact", "جهة اتصال", "رقمك",
-        "رقم هاتفك", "شارك ملفك", "ارسل بياناتك", "بياناتك الشخصية",
-    ]
-    REACTION_KW = [
-        "تفاعل", "react", "reaction", "اضغط على", "ارسل إيموجي",
-        "أرسل إيموجي", "انقر", "إيموجي", "emoji", "رد بـ", "reply with",
-        "أرسل رد", "ارسل رد",
-    ]
-
-    # ── دوال مساعدة ───────────────────────────────────────────
-    # ════════════════════════════════════════════════════════════
-    # 🔥 _solve_text: يستخدم Groq أولاً، ثم DeepSeek
-    # ════════════════════════════════════════════════════════════
-    async def _solve_text(prompt: str) -> str | None:
-        """
-        يحل النصوص باستخدام Groq API أولاً (أسرع وأكثر استقراراً).
-        في حال فشل Groq، يستخدم DeepSeek كاحتياطي.
-        """
-        
-        GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-        DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
-        
-        # ── المحاولة 1: Groq (الأسرع والأفضل) ──
-        if GROQ_API_KEY:
-            def _groq_request():
-                try:
-                    r = requests.post(
-                        "https://api.groq.com/openai/v1/chat/completions",
-                        headers={
-                            "Authorization": f"Bearer {GROQ_API_KEY}",
-                            "Content-Type": "application/json"
-                        },
-                        json={
-                            "model": "llama3-70b-8192",
-                            "messages": [{"role": "user", "content": prompt}],
-                            "max_tokens": 20,
-                            "temperature": 0
-                        },
-                        timeout=15
-                    )
-                    if r.status_code == 200:
-                        data = r.json()
-                        if data.get("choices"):
-                            return data["choices"][0]["message"]["content"].strip()
-                    else:
-                        logger.warning(f"⚠️ Groq error: {r.status_code} - {r.text[:200]}")
-                except Exception as e:
-                    logger.warning(f"⚠️ Groq exception: {e}")
-                return None
-            
-            result = await asyncio.to_thread(_groq_request)
-            if result:
-                logger.info(f"🤖 Groq → '{result[:30]}...'")
-                return result
-            logger.warning("⚠️ Groq فشل، جارٍ الانتقال إلى DeepSeek...")
-        
-        # ── المحاولة 2: DeepSeek (احتياطي) ──
-        if DEEPSEEK_API_KEY:
-            def _deepseek_request():
-                try:
-                    r = requests.post(
-                        "https://api.deepseek.com/v1/chat/completions",
-                        headers={
-                            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-                            "Content-Type": "application/json"
-                        },
-                        json={
-                            "model": "deepseek-chat",
-                            "messages": [{"role": "user", "content": prompt}],
-                            "max_tokens": 20,
-                            "temperature": 0
-                        },
-                        timeout=15
-                    )
-                    if r.status_code == 200:
-                        data = r.json()
-                        if data.get("choices"):
-                            return data["choices"][0]["message"]["content"].strip()
-                    else:
-                        logger.warning(f"⚠️ DeepSeek error: {r.status_code} - {r.text[:200]}")
-                except Exception as e:
-                    logger.warning(f"⚠️ DeepSeek exception: {e}")
-                return None
-            
-            result = await asyncio.to_thread(_deepseek_request)
-            if result:
-                logger.info(f"🤖 DeepSeek → '{result[:30]}...'")
-                return result
-            logger.warning("⚠️ DeepSeek فشل أيضاً!")
-        
-        return None
 
 async def _solve_text(prompt: str) -> str | None:
     """يحل النصوص باستخدام Groq API فقط."""
@@ -397,407 +261,178 @@ async def _solve_text(prompt: str) -> str | None:
     else:
         logger.warning("⚠️ Groq فشل تماماً")
     return result
-    async def _wait_and_check(limit: int = 5) -> tuple:
-        """ينتظر رد البوت ويُرجع ('success'|'fail'|'unknown', new_msgs)."""
-        await asyncio.sleep(3)
-        new_msgs = await client.get_messages(bot_entity, limit=limit)
-        for m in new_msgs:
-            t = getattr(m, "message", "") or ""
-            if _is_success(t):
-                return "success", new_msgs
-            if _is_fail(t):
-                return "fail", new_msgs
-        return "unknown", new_msgs
 
-    all_details: list[str] = []
-    processed_ids: set[int] = set()
 
-    # ── حلقة المحاولات (تدعم تحقق متعدد المراحل) ─────────────
-    for _round in range(max_attempts):
-        logger.info(f"🔄 محاولة حل الكابتشا {_round+1}/{max_attempts} للرقم {phone}")
-        
-        if _round > 0:
-            await asyncio.sleep(4)
-            msgs = await client.get_messages(bot_entity, limit=15)
+async def _solve_image(prompt: str, img_bytes: bytes) -> str | None:
+    """يحل صور الكابتشا باستخدام Groq Vision."""
+    GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+    
+    if GROQ_API_KEY:
+        def _groq_vision_request():
+            try:
+                import base64
+                img_b64 = base64.b64encode(img_bytes).decode()
+                r = requests.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {GROQ_API_KEY}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "model": "llama-3.2-90b-vision-preview",
+                        "messages": [{
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt},
+                                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
+                            ]
+                        }],
+                        "max_tokens": 20,
+                        "temperature": 0
+                    },
+                    timeout=35
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    if data.get("choices"):
+                        return data["choices"][0]["message"]["content"].strip()
+                return None
+            except Exception:
+                return None
+        return await asyncio.to_thread(_groq_vision_request)
+    return None
 
-        for msg in msgs:
-            msg_id = getattr(msg, "id", 0)
-            if msg_id in processed_ids:
-                continue
 
-            msg_text       = getattr(msg, "message", "") or getattr(msg, "text", "") or ""
-            msg_text_lower = msg_text.lower()
-            has_photo      = bool(getattr(msg, "photo", None))
-            has_doc        = bool(getattr(msg, "document", None))
-            has_media      = has_photo or has_doc
-            has_btns       = bool(msg.buttons)
-            has_poll       = bool(getattr(msg, "poll", None))
+async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "", max_attempts: int = 3) -> tuple:
+    """
+    دالة ذكية شاملة لحل أي نوع من الكابتشا.
+    تستخدم Groq Vision لتحليل الصورة، وGroq Text للكتابة،
+    وتتعامل مع الأزرار، الأرقام، الإيموجي، وجهات الاتصال.
+    """
+    GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+    if not GROQ_API_KEY:
+        return False, "لا يوجد مفتاح GROQ_API_KEY"
 
-            # اكتشاف نجاح مبكر — إذا وصلنا رسالة ترحيب بعد حل سابق
-            if _is_success(msg_text) and all_details:
-                logger.info(f"✅ تم حل الكابتشا للرقم {phone} في المحاولة {_round+1}")
-                return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
+    # دالة مساعدة لتحليل الصورة وإرجاع ما يجب فعله
+    async def _analyze_screen_via_vision(msg_id):
+        try:
+            # 1. تنزيل صورة الرسالة (الشاشة)
+            img_bytes = await client.download_media(msg_id, bytes)
+            if not img_bytes:
+                return None, None
+            
+            import base64
+            img_b64 = base64.b64encode(img_bytes).decode()
 
-            # ════════════════════════════════════════════════════
-            # 1. كابتشا صورة (CAPTCHA بصورة مشوّهة)
-            # ════════════════════════════════════════════════════
-            if has_media:
+            # 2. إرسال الصورة لـ Groq Vision
+            def _vision_request():
                 try:
-                    img_bytes = await client.download_media(msg, bytes)
-                    if not img_bytes:
-                        continue
-                    prompt = (
-                        "هذه صورة كابتشا (CAPTCHA) من بوت تيليغرام.\n"
-                        f"النص المرافق للصورة: {msg_text or '(لا يوجد)'}\n\n"
-                        "اقرأ بدقة النص أو الأرقام الظاهرة في الصورة وأجب بها فقط "
-                        "بدون أي شرح أو مسافات إضافية."
+                    r = requests.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {GROQ_API_KEY}",
+                            "Content-Type": "application/json"
+                        },
+                        json={
+                            "model": "llama-3.2-90b-vision-preview",
+                            "messages": [{
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": "أنت بوت تيليغرام. هذه صورة لرسالة تحقق (كابتشا) تطلب مني إجراءً معيناً. حلل الصورة وأخبرني:\n1. ما هو الإجراء المطلوب؟ (اكتب: 'زر'، 'كتابة'، 'جهة اتصال'، أو 'لا شيء')\n2. إذا كان 'زر'، ما هو النص الظاهر على الزر الصحيح؟ (أو الإيموجي إذا كان زر إيموجي)\n3. إذا كان 'كتابة'، ما هو الجواب الصحيح الذي يجب كتابته؟ (مثل رقم ناتج مسألة رياضية).\nأجب بصيغة JSON فقط: {\"action\": \"زر\", \"target\": \"زر الإيموجي أو النص\"} أو {\"action\": \"كتابة\", \"answer\": \"الجواب\"} أو {\"action\": \"جهة اتصال\", \"target\": \"ارسل البيانات\"}."},
+                                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
+                                ]
+                            }],
+                            "max_tokens": 100,
+                            "temperature": 0
+                        },
+                        timeout=35
                     )
-                    answer = await _solve_image(prompt, img_bytes)
-                    if answer:
-                        logger.info(f"🤖 AI كابتشا صورة → '{answer}' ({phone})")
-                        processed_ids.add(msg_id)
-                        await asyncio.sleep(1)
-                        await client.send_message(bot_entity, answer)
-                        result, msgs = await _wait_and_check()
-                        detail = f"كابتشا صورة: {answer}"
-                        all_details.append(detail)
-                        if result == "success":
-                            logger.info(f"✅ تم حل الكابتشا للرقم {phone} في المحاولة {_round+1}")
-                            return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
-                        elif result == "fail":
-                            break  # حاول في الجولة التالية
-                        else:
-                            return True, f"أُرسلت إجابة الصورة | {' | '.join(all_details)}"
-                except Exception as _e:
-                    logger.warning(f"⚠️ AI image captcha ({phone}): {_e}")
+                    if r.status_code == 200:
+                        data = r.json()
+                        if data.get("choices"):
+                            content = data["choices"][0]["message"]["content"].strip()
+                            import json
+                            try:
+                                return json.loads(content)
+                            except json.JSONDecodeError:
+                                return None
+                    return None
+                except Exception:
+                    return None
+            return await asyncio.to_thread(_vision_request)
+        except Exception:
+            return None, None
+
+    # ── بدء حل الكابتشا ──
+    for _round in range(max_attempts):
+        if _round > 0:
+            await asyncio.sleep(3)
+        
+        # ابحث عن رسالة تحتوي على أزرار أو نص تحقق
+        for msg in msgs:
+            if not msg.text and not msg.buttons:
+                continue
+            
+            # 1. استخدم الرؤية لتحليل الشاشة
+            analysis = await _analyze_screen_via_vision(msg.id)
+            if not analysis:
                 continue
 
-            # ════════════════════════════════════════════════════
-            # 2. مشاركة ملف شخصي / Contact
-            # ════════════════════════════════════════════════════
-            if any(k in msg_text_lower for k in FORWARD_KW):
+            action = analysis.get("action")
+            target = analysis.get("target")
+
+            # ── الحالة 1: زر إيموجي أو زر نصي ──
+            if action == "زر" and msg.buttons:
+                for row in msg.buttons:
+                    for btn in row:
+                        # نبحث عن الزر الذي يطابق ما قاله الذكاء الاصطناعي
+                        if btn.text and (target in btn.text or btn.text == target):
+                            try:
+                                await btn.click()
+                                await asyncio.sleep(2)
+                                # تحقق من النجاح
+                                new_msgs = await client.get_messages(bot_entity, limit=5)
+                                for nm in new_msgs:
+                                    if any(k in nm.text for k in ["أهلاً", "مرحباً", "تم", "success", "✅"]):
+                                        return True, f"نجح التحقق بالزر: {target}"
+                            except Exception:
+                                continue
+
+            # ── الحالة 2: كتابة رقم أو جواب نصي ──
+            elif action == "كتابة" and target:
+                try:
+                    await client.send_message(bot_entity, target)
+                    await asyncio.sleep(2)
+                    new_msgs = await client.get_messages(bot_entity, limit=5)
+                    for nm in new_msgs:
+                        if any(k in nm.text for k in ["أهلاً", "مرحباً", "تم", "success", "✅"]):
+                            return True, f"نجح التحقق بالكتابة: {target}"
+                except Exception:
+                    continue
+
+            # ── الحالة 3: مشاركة جهة اتصال ──
+            elif action == "جهة اتصال" or "شارك" in str(analysis):
                 try:
                     from telethon.tl.types import InputMediaContact
-                    me    = await client.get_me()
+                    me = await client.get_me()
                     first = getattr(me, "first_name", "") or ""
-                    last  = getattr(me, "last_name",  "") or ""
-                    ph    = getattr(me, "phone",      "") or phone.lstrip("+")
+                    last = getattr(me, "last_name", "") or ""
+                    ph = getattr(me, "phone", "") or phone.lstrip("+")
                     if not ph.startswith("+"):
                         ph = "+" + ph
-                    logger.info(f"🤖 AI مشاركة ملف شخصي ({phone})")
-                    processed_ids.add(msg_id)
                     await client.send_file(
                         bot_entity,
-                        InputMediaContact(
-                            phone_number=ph,
-                            first_name=first,
-                            last_name=last,
-                            vcard="",
-                        ),
+                        InputMediaContact(phone_number=ph, first_name=first, last_name=last, vcard=""),
                     )
-                    result, msgs = await _wait_and_check()
-                    detail = "شارك ملفه الشخصي (Contact)"
-                    all_details.append(detail)
-                    if result == "success":
-                        logger.info(f"✅ تم حل الكابتشا للرقم {phone} في المحاولة {_round+1}")
-                        return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
-                    elif result != "fail":
-                        return True, f"أُرسل الملف الشخصي | {' | '.join(all_details)}"
+                    await asyncio.sleep(2)
+                    new_msgs = await client.get_messages(bot_entity, limit=5)
+                    for nm in new_msgs:
+                        if any(k in nm.text for k in ["أهلاً", "مرحباً", "تم", "success", "✅"]):
+                            return True, "نجح التحقق بمشاركة جهة الاتصال"
+                except Exception:
                     continue
-                except Exception as _e:
-                    logger.warning(f"⚠️ AI forward profile ({phone}): {_e}")
-
-            # ════════════════════════════════════════════════════
-            # 3. Poll / Quiz (اختبار متعدد الخيارات)
-            # ════════════════════════════════════════════════════
-            if has_poll:
-                try:
-                    poll_obj = msg.poll.poll
-                    question = getattr(poll_obj, "question", "") or ""
-                    answers  = [getattr(a, "text", "") for a in (getattr(poll_obj, "answers", []) or [])]
-                    if question and answers:
-                        prompt = (
-                            f"بوت تيليغرام يطرح اختباراً:\nالسؤال: {question}\n"
-                            "الخيارات:\n" + "\n".join(f"{i+1}. {a}" for i, a in enumerate(answers)) + "\n\n"
-                            "أي خيار هو الصحيح؟ أجب برقم الخيار فقط (1، 2، 3...)."
-                        )
-                        ai_ans = await _solve_text(prompt)
-                        chosen_idx = 0
-                        if ai_ans:
-                            # حاول استخراج رقم
-                            nums = re.findall(r"\d+", ai_ans)
-                            if nums:
-                                chosen_idx = max(0, int(nums[0]) - 1)
-                            else:
-                                # مطابقة نصية
-                                for i, a in enumerate(answers):
-                                    if ai_ans.strip().lower() in a.lower():
-                                        chosen_idx = i
-                                        break
-                        chosen_idx = min(chosen_idx, len(answers) - 1)
-                        processed_ids.add(msg_id)
-                        await msg.click(chosen_idx)
-                        result, msgs = await _wait_and_check()
-                        detail = f"أجاب Poll: {answers[chosen_idx]}"
-                        all_details.append(detail)
-                        logger.info(f"🤖 AI Poll → '{answers[chosen_idx]}' ({phone})")
-                        if result == "success":
-                            logger.info(f"✅ تم حل الكابتشا للرقم {phone} في المحاولة {_round+1}")
-                            return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
-                        elif result != "fail":
-                            return True, f"أجاب على اختبار | {' | '.join(all_details)}"
-                        continue
-                except Exception as _e:
-                    logger.warning(f"⚠️ AI poll captcha ({phone}): {_e}")
-
-            # ════════════════════════════════════════════════════
-            # 4. أزرار اختيار (كابتشا أزرار / إيموجي / خيارات)
-            # ════════════════════════════════════════════════════
-            if has_btns and msg_text:
-                try:
-                    btn_labels  = []
-                    btn_objects = {}
-                    for row in msg.buttons:
-                        for btn in row:
-                            label = getattr(btn, "text", "") or ""
-                            url   = getattr(btn, "url",  None) or ""
-                            # تخطي أزرار روابط القنوات — تُعالج لاحقاً في do_referral_for_number
-                            if url and ("t.me/" in url or "telegram.me/" in url):
-                                continue
-                            if label:
-                                btn_labels.append(label)
-                                btn_objects[label] = btn
-                    if not btn_labels:
-                        continue
-                    # هل تبدو رسالة تحقق؟ (تحقق، رياضيات، إيموجي...)
-                    is_verif = (
-                        any(k in msg_text_lower for k in CAPTCHA_KW)
-                        or any(k in msg_text_lower for k in MATH_KW)
-                        or any(k in msg_text_lower for k in REACTION_KW)
-                        or "select" in msg_text_lower
-                        or "choose" in msg_text_lower
-                        or "click" in msg_text_lower
-                        or "press" in msg_text_lower
-                        or "pick" in msg_text_lower
-                    )
-                    if not is_verif:
-                        continue
-
-                    # ── كشف مباشر: نمط "select the correct emoji: X" ──────
-                    direct_chosen = None
-                    # نمط: "correct emoji: X" أو "اختر الإيموجي: X" أو "select emoji X"
-                    is_emoji_select = (
-                        "correct emoji" in msg_text_lower
-                        or "select emoji" in msg_text_lower
-                        or "choose emoji" in msg_text_lower
-                        or "pick emoji" in msg_text_lower
-                        or "اختر الإيموجي" in msg_text
-                        or "اختار الإيموجي" in msg_text
-                        or "الإيموجي الصحيح" in msg_text
-                        or "اضغط على" in msg_text
-                        or "انقر على" in msg_text
-                    )
-                    if is_emoji_select:
-                        target_emoji = _extract_target_emoji(msg_text)
-                        if not target_emoji:
-                            msg_emojis = _extract_emojis_from_text(msg_text)
-                            # إذا لم توجد عبارة دالة وكان هناك إيموجي واحد فقط،
-                            # فهو آمن للاختيار؛ أما تعددها فيُترك للنمط العام/الذكاء الاصطناعي.
-                            target_emoji = msg_emojis[0] if len(msg_emojis) == 1 else None
-                        if target_emoji:
-                            # ابحث عن الزر المطابق
-                            target_signature = _emoji_signature(target_emoji)
-                            for lbl, btn in btn_objects.items():
-                                label_signature = _emoji_signature(lbl)
-                                if (
-                                    target_emoji in lbl
-                                    or (
-                                        target_signature
-                                        and label_signature == target_signature
-                                    )
-                                ):
-                                    direct_chosen = btn
-                                    logger.info(
-                                        f"🎯 كشف مباشر للإيموجي '{target_emoji}' "
-                                        f"({phone})"
-                                    )
-                                    break
-                            # إذا لم نجد مطابقة مباشرة، حاول باستخراج إيموجيات الأزرار
-                            if not direct_chosen:
-                                for lbl, btn in btn_objects.items():
-                                    if _emoji_signature(lbl) == target_signature:
-                                        direct_chosen = btn
-                                        logger.info(
-                                            f"🎯 كشف إيموجي بمطابقة Unicode "
-                                            f"'{target_emoji}' ({phone})"
-                                        )
-                                        break
-                        if not direct_chosen:
-                            logger.warning(
-                                f"⚠️ تعذر تحديد زر الإيموجي المطلوب ({phone}) "
-                                f"target={target_emoji!r} buttons={btn_labels!r}"
-                            )
-                            continue
-                        processed_ids.add(msg_id)
-                        await direct_chosen.click()
-                        result, msgs = await _wait_and_check()
-                        detail = f"ضغط إيموجي مباشر: {getattr(direct_chosen, 'text', '')}"
-                        all_details.append(detail)
-                        if result == "success":
-                            logger.info(f"✅ تم حل الكابتشا للرقم {phone} في المحاولة {_round+1}")
-                            return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
-                        elif result == "fail":
-                            break  # حاول مجدداً
-                        else:
-                            # لا نعتبر الضغط نجاحاً قبل وصول رد صريح من البوت.
-                            # بعض البوتات تحتاج دورة جلب إضافية بعد callback.
-                            await asyncio.sleep(2)
-                            continue
-                    else:
-                        # ── الوضع الاحتياطي: استخدم Groq أو DeepSeek ─────────
-                        # إذا كانت الأزرار كلها إيموجيات، وضّح ذلك للنموذج
-                        all_emoji_btns = all(
-                            bool(_extract_emojis_from_text(lbl)) for lbl in btn_labels
-                        )
-                        if all_emoji_btns:
-                            prompt = (
-                                f"Telegram bot verification:\n{msg_text}\n\n"
-                                "Available emoji buttons:\n"
-                                + "\n".join(f"- {b}" for b in btn_labels)
-                                + "\n\nWhich emoji button should be clicked? "
-                                "Reply with ONLY the exact emoji character, nothing else."
-                            )
-                        else:
-                            prompt = (
-                                f"بوت تيليغرام يطلب التحقق:\n{msg_text}\n\n"
-                                "الأزرار المتاحة:\n"
-                                + "\n".join(f"- {b}" for b in btn_labels)
-                                + "\n\nأي زر يجب الضغط عليه؟ أجب بنص الزر فقط كما هو بالضبط."
-                            )
-                        answer = await _solve_text(prompt)
-                        if answer:
-                            logger.info(f"🤖 AI اختار زر → '{answer}' ({phone})")
-                            chosen = None
-                            a_clean = answer.strip()
-                            a_lower = a_clean.lower()
-                            # مطابقة دقيقة أولاً
-                            for label, btn in btn_objects.items():
-                                if label.strip() == a_clean:
-                                    chosen = btn
-                                    break
-                            # مطابقة بالإيموجي إذا أرجع النموذج نصاً يحتوي إيموجي
-                            if not chosen:
-                                ans_emojis = _extract_emojis_from_text(a_clean)
-                                if ans_emojis:
-                                    for label, btn in btn_objects.items():
-                                        if ans_emojis[0] in label:
-                                            chosen = btn
-                                            break
-                            # مطابقة نصية احتياطية
-                            if not chosen:
-                                for label, btn in btn_objects.items():
-                                    if a_lower in label.lower() or label.lower() in a_lower:
-                                        chosen = btn
-                                        break
-                            if not chosen:
-                                logger.warning(
-                                    f"⚠️ رد Groq لا يطابق أي زر تحقق ({phone}): {a_clean!r}"
-                                )
-                                continue
-                            processed_ids.add(msg_id)
-                            await chosen.click()
-                            result, msgs = await _wait_and_check()
-                            detail = f"ضغط زر: {getattr(chosen, 'text', '')}"
-                            all_details.append(detail)
-                            if result == "success":
-                                logger.info(f"✅ تم حل الكابتشا للرقم {phone} في المحاولة {_round+1}")
-                                return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
-                            elif result == "fail":
-                                break  # حاول مجدداً
-                            else:
-                                await asyncio.sleep(2)
-                                continue
-                except Exception as _e:
-                    logger.warning(f"⚠️ AI button captcha ({phone}): {_e}")
-                continue
-
-            # ════════════════════════════════════════════════════
-            # 5. سؤال نصي / رياضي / إيموجي كرسالة نصية
-            # ════════════════════════════════════════════════════
-            if msg_text and not has_btns and not has_media and not has_poll:
-                is_captcha_q = any(k in msg_text_lower for k in CAPTCHA_KW)
-                is_math_q    = any(k in msg_text_lower for k in MATH_KW)
-                is_react_q   = any(k in msg_text_lower for k in REACTION_KW)
-                if not (is_captcha_q or is_math_q or is_react_q):
-                    continue
-                try:
-                    prompt = (
-                        f"بوت تيليغرام يطرح هذا السؤال للتحقق:\n{msg_text}\n\n"
-                        "أجب بالرقم أو النص أو الإيموجي المطلوب فقط "
-                        "بدون أي شرح أو رموز إضافية. إذا كان السؤال رياضياً أجب بالرقم فقط."
-                    )
-                    answer = await _solve_text(prompt)
-                    if answer:
-                        logger.info(f"🤖 AI سؤال نصي → '{answer}' ({phone})")
-                        processed_ids.add(msg_id)
-                        await asyncio.sleep(1)
-                        await client.send_message(bot_entity, answer)
-                        result, msgs = await _wait_and_check()
-                        detail = f"أجاب: {answer}"
-                        all_details.append(detail)
-                        if result == "success":
-                            logger.info(f"✅ تم حل الكابتشا للرقم {phone} في المحاولة {_round+1}")
-                            return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
-                        elif result == "fail":
-                            break  # حاول مجدداً
-                        else:
-                            await asyncio.sleep(2)
-                            continue
-                except Exception as _e:
-                    logger.warning(f"⚠️ AI text captcha ({phone}): {_e}")
-
-            # ════════════════════════════════════════════════════
-            # 6. ردود فعل Reactions (البوت يطلب تفاعلاً على رسالة)
-            # ════════════════════════════════════════════════════
-            if any(k in msg_text_lower for k in REACTION_KW):
-                try:
-                    from telethon.tl.functions.messages import SendReactionRequest
-                    from telethon.tl.types import ReactionEmoji
-                    prompt = (
-                        f"بوت تيليغرام يطلب منك التفاعل:\n{msg_text}\n\n"
-                        "ما هو الإيموجي أو التفاعل المطلوب؟ "
-                        "أجب بالإيموجي فقط (مثال: 👍 أو ❤️ أو 🔥)."
-                    )
-                    emoji_answer = await _solve_text(prompt)
-                    if emoji_answer:
-                        # خذ أول إيموجي فقط
-                        emoji_clean = emoji_answer.strip().split()[0]
-                        processed_ids.add(msg_id)
-                        await client(SendReactionRequest(
-                            peer=bot_entity,
-                            msg_id=msg_id,
-                            reaction=[ReactionEmoji(emoticon=emoji_clean)],
-                        ))
-                        result, msgs = await _wait_and_check()
-                        detail = f"تفاعل: {emoji_clean}"
-                        all_details.append(detail)
-                        logger.info(f"🤖 AI Reaction → '{emoji_clean}' ({phone})")
-                        if result == "success":
-                            logger.info(f"✅ تم حل الكابتشا للرقم {phone} في المحاولة {_round+1}")
-                            return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
-                        elif result != "fail":
-                            await asyncio.sleep(2)
-                            continue
-                except Exception as _e:
-                    logger.warning(f"⚠️ AI reaction ({phone}): {_e}")
-
-    # ── النتيجة النهائية ───────────────────────────────────────
-    if all_details:
-        logger.warning(f"⚠️ تم تنفيذ خطوة تحقق دون تأكيد نهائي للرقم {phone}: {all_details}")
-        return False, f"لم يؤكد البوت نجاح التحقق | {' | '.join(all_details)}"
-    
-    logger.warning(f"❌ لم يتم حل الكابتشا للرقم {phone} بعد {max_attempts} محاولات")
-    return False, "لم يُكتشف تحقق"
+                
+    return False, "لم يتم حل الكابتشا بعد المحاولات"
 
 
 # ═══════════════════════════════════════════════════════════
