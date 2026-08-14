@@ -424,6 +424,19 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                 result.append(ch)
         return result
 
+    def _emoji_signature(text: str) -> tuple[str, ...]:
+        """مقارنة الإيموجي دون variation selectors أو skin-tone modifiers."""
+        ignored = {0xFE0E, 0xFE0F, 0x200D, *range(0x1F3FB, 0x1F400)}
+        return tuple(
+            ch
+            for ch in (text or "")
+            if ord(ch) not in ignored
+            and (
+                0x1F300 <= ord(ch) <= 0x1FFFF
+                or 0x2600 <= ord(ch) <= 0x27BF
+            )
+        )
+
     def _extract_target_emoji(text: str) -> str | None:
         """يستخرج الإيموجي الذي يأتي بعد عبارة الطلب، لا إيموجي الترويسة."""
         lowered = (text or "").casefold()
@@ -656,22 +669,36 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             target_emoji = msg_emojis[0] if len(msg_emojis) == 1 else None
                         if target_emoji:
                             # ابحث عن الزر المطابق
+                            target_signature = _emoji_signature(target_emoji)
                             for lbl, btn in btn_objects.items():
-                                if target_emoji in lbl:
+                                label_signature = _emoji_signature(lbl)
+                                if (
+                                    target_emoji in lbl
+                                    or (
+                                        target_signature
+                                        and label_signature == target_signature
+                                    )
+                                ):
                                     direct_chosen = btn
-                                    logger.info(f"🎯 كشف مباشر للإيموجي '{target_emoji}' ({phone})")
+                                    logger.info(
+                                        f"🎯 كشف مباشر للإيموجي '{target_emoji}' "
+                                        f"({phone})"
+                                    )
                                     break
                             # إذا لم نجد مطابقة مباشرة، حاول باستخراج إيموجيات الأزرار
                             if not direct_chosen:
                                 for lbl, btn in btn_objects.items():
-                                    btn_emojis = _extract_emojis_from_text(lbl)
-                                    if btn_emojis and btn_emojis[0] == target_emoji:
+                                    if _emoji_signature(lbl) == target_signature:
                                         direct_chosen = btn
-                                        logger.info(f"🎯 كشف إيموجي بمطابقة الكود '{target_emoji}' ({phone})")
-                                        if direct_chosen: break
+                                        logger.info(
+                                            f"🎯 كشف إيموجي بمطابقة Unicode "
+                                            f"'{target_emoji}' ({phone})"
+                                        )
+                                        break
                         if not direct_chosen:
                             logger.warning(
-                                f"⚠️ تعذر تحديد زر الإيموجي المطلوب من الرسالة ({phone})"
+                                f"⚠️ تعذر تحديد زر الإيموجي المطلوب ({phone}) "
+                                f"target={target_emoji!r} buttons={btn_labels!r}"
                             )
                             continue
                         processed_ids.add(msg_id)
