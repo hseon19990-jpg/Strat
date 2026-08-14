@@ -8,6 +8,54 @@ domain.
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
+import re
+import unicodedata
+
+
+_EMOJI_RANGES = (
+    (0x1F000, 0x1FAFF),
+    (0x2600, 0x27BF),
+)
+
+
+def _normalize_captcha_text(value) -> str:
+    """توحيد نص Groq ونص الزر قبل المقارنة."""
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return (
+        text.replace("\ufe0f", "")
+        .replace("\u200d", "")
+        .replace("\u200c", "")
+        .replace("\u200b", "")
+        .strip()
+    )
+
+
+def _emoji_tokens(value) -> str:
+    """استخراج الإيموجي فقط، مع تجاهل العدادات والمسافات."""
+    text = _normalize_captcha_text(value)
+    return "".join(
+        char
+        for char in text
+        if any(start <= ord(char) <= end for start, end in _EMOJI_RANGES)
+    )
+
+
+def _captcha_button_matches(button_text, target) -> bool:
+    """مطابقة هدف Groq مع زر Telegram حتى مع اختلاف Unicode أو وجود عدّاد."""
+    button_text = str(button_text or "").strip()
+    target = str(target or "").strip().strip("`'\"“”‘’")
+    if not button_text or not target:
+        return False
+
+    normalized_button = _normalize_captcha_text(button_text)
+    normalized_target = _normalize_captcha_text(target)
+    if normalized_target in normalized_button or normalized_button in normalized_target:
+        return True
+
+    target_emojis = _emoji_tokens(target)
+    button_emojis = _emoji_tokens(button_text)
+    return bool(target_emojis and target_emojis in button_emojis)
+
 def get_referral_tasks(only_active: bool = False) -> list:
     with db_conn() as c:
         sql = "SELECT * FROM referral_tasks"
@@ -338,7 +386,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             "messages": [{
                                 "role": "user",
                                 "content": [
-                                    {"type": "text", "text": "أنت بوت تيليغرام. هذه صورة لرسالة تحقق (كابتشا) تطلب مني إجراءً معيناً. حلل الصورة وأخبرني:\n1. ما هو الإجراء المطلوب؟ (اكتب: 'زر'، 'كتابة'، 'جهة اتصال'، أو 'لا شيء')\n2. إذا كان 'زر'، ما هو النص الظاهر على الزر الصحيح؟ (أو الإيموجي إذا كان زر إيموجي)\n3. إذا كان 'كتابة'، ما هو الجواب الصحيح الذي يجب كتابته؟ (مثل رقم ناتج مسألة رياضية).\nأجب بصيغة JSON فقط: {\"action\": \"زر\", \"target\": \"زر الإيموجي أو النص\"} أو {\"action\": \"كتابة\", \"answer\": \"الجواب\"} أو {\"action\": \"جهة اتصال\", \"target\": \"ارسل البيانات\"}."},
+                                    {"type": "text", "text": "أنت بوت تيليغرام. هذه صورة لرسالة تحقق (كابتشا) تطلب مني إجراءً معيناً. حلل الصورة وأخبرني:\n1. ما هو الإجراء المطلوب؟ (اكتب: 'زر'، 'كتابة'، 'جهة اتصال'، أو 'لا شيء')\n2. إذا كان 'زر'، ما هو النص الظاهر على الزر الصحيح؟ وإذا كان الزر إيموجياً فأعد الإيموجي نفسه فقط بدون شرح أو عدّاد.\n3. إذا كان 'كتابة'، ما هو الجواب الصحيح الذي يجب كتابته؟ (مثل رقم ناتج مسألة رياضية).\nأجب بصيغة JSON فقط: {\"action\": \"زر\", \"target\": \"الإيموجي أو نص الزر فقط\"} أو {\"action\": \"كتابة\", \"answer\": \"الجواب\"} أو {\"action\": \"جهة اتصال\", \"target\": \"ارسل البيانات\"}."},
                                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
                                 ]
                             }],
@@ -378,15 +426,37 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
             if not isinstance(analysis, dict):
                 continue
 
-            action = analysis.get("action")
-            target = analysis.get("target")
+            action = _normalize_captcha_text(analysis.get("action"))
+            target = analysis.get("target") or analysis.get("answer")
 
             # ── الحالة 1: زر إيموجي أو زر نصي ──
-            if action == "زر" and msg.buttons:
+            is_button_action = (
+                action in {"زر", "button", "emoji", "إيموجي", "click"}
+                or "زر" in action
+                or "button" in action
+                or "emoji" in action
+            )
+            if is_button_action and msg.buttons:
+                button_labels = [
+                    (getattr(btn, "text", "") or "").strip()
+                    for row in msg.buttons
+                    for btn in row
+                    if getattr(btn, "text", None)
+                    and not getattr(btn, "url", None)
+                ]
+                logger.info(
+                    "🤖 Groq target=%r action=%r | أزرار التحقق=%r",
+                    target,
+                    action,
+                    button_labels,
+                )
                 for row in msg.buttons:
                     for btn in row:
                         # نبحث عن الزر الذي يطابق ما قاله الذكاء الاصطناعي
-                        if btn.text and (target in btn.text or btn.text == target):
+                        if _captcha_button_matches(
+                            getattr(btn, "text", ""),
+                            target,
+                        ):
                             try:
                                 await btn.click()
                                 await asyncio.sleep(2)
@@ -399,7 +469,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                                 continue
 
             # ── الحالة 2: كتابة رقم أو جواب نصي ──
-            elif action == "كتابة" and target:
+            elif action in {"كتابة", "write", "text"} and target:
                 try:
                     await client.send_message(bot_entity, target)
                     await asyncio.sleep(2)
