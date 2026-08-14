@@ -25,7 +25,7 @@ from telethon.tl.functions.messages import ImportChatInviteRequest, SendVoteRequ
 from telethon.tl.functions.contacts import ResolveUsernameRequest
 from telethon.tl.functions.stories import IncrementStoryViewsRequest, SendReactionRequest
 from telethon.tl.types import ReactionEmoji
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 import random
 import asyncio
 import re
@@ -563,12 +563,14 @@ def _parse_bot_link(value: str) -> tuple[str | None, str | None]:
     if "t.me/" in value or "telegram.me/" in value:
         parsed = urlparse(value if "://" in value else f"https://{value}")
         path = parsed.path.strip("/")
-        query = parsed.query
         if path:
             bot_username = path.split("/")[0]
-            start_param = ""
-            if query.startswith("start="):
-                start_param = query.split("=")[1]
+            query = parse_qs(parsed.query)
+            start_param = (
+                query.get("start", [""])[0]
+                or query.get("startapp", [""])[0]
+                or query.get("startgroup", [""])[0]
+            )
             return bot_username, start_param
     else:
         parts = value.split()
@@ -577,6 +579,77 @@ def _parse_bot_link(value: str) -> tuple[str | None, str | None]:
             start_param = parts[1] if len(parts) > 1 else ""
             return bot_username, start_param
     return None, None
+
+
+def _find_bot_start_link(message) -> tuple[str | None, str | None]:
+    """استخراج رابط البوت ذي التوكن من زر منشور المسابقة.
+
+    زر «المشاركة في المسابقة» هو زر رابط، وليس زر callback داخل القناة.
+    لذلك لا يكفي استدعاء ``button.click()``؛ يجب تحويل الرابط إلى
+    StartBotRequest حتى يصل التوكن إلى بوت المسابقة كما أرسله مالكها.
+    """
+    fallback = None
+    for row in getattr(message, "buttons", None) or []:
+        for button in row:
+            url = (getattr(button, "url", None) or "").strip()
+            if not url:
+                continue
+            bot_username, start_param = _parse_bot_link(url)
+            if bot_username:
+                if start_param:
+                    return bot_username, start_param
+                fallback = fallback or (bot_username, start_param)
+    return fallback or (None, None)
+
+
+async def _start_contest_bot_from_post(client, post_message):
+    """يفتح بوت المسابقة من زر المنشور باستخدام رابط البدء الموقّع."""
+    bot_username, start_param = _find_bot_start_link(post_message)
+    if not bot_username:
+        raise RuntimeError("لم يُعثر على رابط بوت المسابقة داخل زر المنشور.")
+    if not start_param:
+        raise RuntimeError("رابط بوت المسابقة لا يحتوي على توكن start.")
+
+    bot_entity = await client.get_entity(bot_username)
+    await client(
+        StartBotRequest(
+            bot=bot_entity,
+            peer=bot_entity,
+            start_param=start_param,
+        )
+    )
+    await asyncio.sleep(random.uniform(1.5, 2.5))
+    return bot_entity
+
+
+def _find_contest_vote_button(message):
+    """العثور على زر التصويت، مثل «❤️ 0»، مع تجاهل أزرار الروابط."""
+    candidates = []
+    for row in getattr(message, "buttons", None) or []:
+        for button in row:
+            label = (getattr(button, "text", None) or "").strip()
+            if not label or getattr(button, "url", None):
+                continue
+            folded = label.casefold()
+            if any(word in folded for word in ("تصويت", "صوت", "vote", "voting")):
+                return button
+            # منشورات المسابقات غالباً تعرض الزر كإيموجي وعدّاد فقط.
+            if re.search(r"\d+", label) and any(
+                0x1F300 <= ord(char) <= 0x1FAFF or 0x2600 <= ord(char) <= 0x27BF
+                for char in label
+            ):
+                candidates.append(button)
+    return candidates[0] if candidates else None
+
+
+def _callback_answer_text(answer) -> str:
+    """قراءة رسالة جواب callback إن أعادها Telegram."""
+    return (
+        getattr(answer, "message", None)
+        or getattr(answer, "alert", None)
+        or getattr(answer, "text", None)
+        or ""
+    )
 
 # ════════════════════════════════════════════════════════════
 # ═══ 3. أزرار الواجهة ═══
@@ -1025,17 +1098,17 @@ async def _execute_votes_ai(session, params, is_first):
         from ..referrals import solve_captcha_with_ai
     except ImportError:
         return False, "لا يمكن استيراد solve_captcha_with_ai"
-    
+
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     await asyncio.wait_for(client.connect(), timeout=20)
     try:
         if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
             return False, "الجلسة غير مصرح بها."
-            
+
         post_ref, post_id = _parse_post_link(params["link"])
         if not post_ref or not post_id:
             return False, "رابط المنشور غير صحيح."
-        
+
         try:
             post_entity = await client.get_entity(post_ref)
         except Exception as exc:
@@ -1043,11 +1116,7 @@ async def _execute_votes_ai(session, params, is_first):
                 return False, "رابط المنشور غير صالح أو القناة غير متاحة للحساب."
             raise
 
-        # =========================================================
-        # ✅ تسلسل العمليات الجديد (خطوة بخطوة)
-        # =========================================================
-
-        # ① انضمام القناة الإجبارية (إن وُجدت) - 1-2 ثانية
+        # ① انضمام القناة الإجبارية قبل فتح المسابقة.
         if is_first and params.get("channel_ref"):
             try:
                 await _join_channel_and_schedule_leave(client, params["channel_ref"])
@@ -1055,61 +1124,74 @@ async def _execute_votes_ai(session, params, is_first):
             except Exception as e:
                 logger.warning(f"فشل انضمام القناة للحساب {session['phone_number']}: {e}")
 
-        # ② ضغط زر التفاعل (مشاركة أو ابدأ) - 1-2 ثانية
+        # ② زر «المشاركة في المسابقة» رابط إلى البوت. يجب استخدام
+        # StartBotRequest حتى يصل التوكن، وليس الضغط على الرابط داخل القناة
+        # أو إرسال /start إلى كيان القناة.
         messages = _as_message_list(await client.get_messages(post_entity, ids=post_id))
         if not messages:
             return False, "المنشور غير موجود."
         msg = messages[0]
-        
-        if msg.buttons:
-            for row in msg.buttons:
-                for btn in row:
-                    btn_text = (getattr(btn, "text", "") or "").lower()
-                    if any(k in btn_text for k in ["مشاركة", "مسابقة", "start", "ابدأ", "اشتراك", "تحقق"]):
-                        try:
-                            await btn.click()
-                            logger.info(f"✅ الحساب {session['phone_number']} ضغط زر: {btn.text}")
-                            await asyncio.sleep(random.uniform(1, 2))
-                            break
-                        except Exception as e:
-                            logger.warning(f"فشل ضغط الزر: {e}")
-                break
+        bot_entity = await _start_contest_bot_from_post(client, msg)
+        logger.info(
+            "✅ الحساب %s فتح بوت المسابقة عبر StartBotRequest بالتوكن",
+            session["phone_number"],
+        )
 
-        # ③ ضغط زر "بدء" (Start) إذا لم يتم الضغط عليه بواسطة الزر السابق - 1-2 ثانية
-        # ملاحظة: بعض البوتات لا تطلب التحقق إلا بعد إرسال /start.
-        try:
-            bot_msgs = _as_message_list(await client.get_messages(post_entity, limit=1))
-            if not bot_msgs or not any("ابدأ" in (getattr(m, "text", "") or "") for m in bot_msgs):
-                await client.send_message(post_entity, "/start")
-                logger.info(f"✅ الحساب {session['phone_number']} أرسل /start")
-                await asyncio.sleep(random.uniform(1, 2))
-        except Exception:
-            pass
-
-        # ④ حل التحقق باستخدام Groq (السؤال: "اختر الإيموجي الصحيح") - 1-2 ثانية
-        # يتم استخدام solve_captcha_with_ai من ملف referrals.py
-        messages = _as_message_list(await client.get_messages(post_entity, limit=15))  # جلب آخر الرسائل بعد إرسال /start
-        solved, detail = await solve_captcha_with_ai(client, post_entity, messages, session["phone_number"], max_attempts=1)
+        # ③ حل التحقق داخل محادثة البوت، وليس داخل محادثة القناة.
+        bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=20))
+        solved, detail = await solve_captcha_with_ai(
+            client,
+            bot_entity,
+            bot_messages,
+            session["phone_number"],
+            max_attempts=3,
+        )
         if not solved:
             return False, f"فشل التحقق: {detail}"
-        
-        # ⑤ التصويت بعد حل التحقق
+
+        # ④ بعد نجاح التحقق نضغط زر التصويت في منشور المسابقة.
         messages = _as_message_list(await client.get_messages(post_entity, ids=post_id))
         if not messages:
             return False, "المنشور غير موجود بعد التحقق."
         msg = messages[0]
-        if not hasattr(msg, "poll") or not msg.poll:
-            return False, "هذا المنشور ليس استفتاءً."
-        poll = msg.poll.poll
-        options = getattr(poll, "answers", [])
-        if not options:
-            return False, "لا توجد خيارات."
-        chosen = random.choice(options)
-        verified = await _send_vote_and_check(client, post_entity, post_id, chosen.option)
-        verification = " وتم التحقق من تسجيله" if verified else " وتم إرسال الطلب إلى Telegram"
-        
-        return True, f"✅ تم التصويت مع التحقق{verification} من {session['phone_number']}"
-        
+        vote_button = _find_contest_vote_button(msg)
+        if vote_button is not None:
+            answer = await vote_button.click()
+            await asyncio.sleep(random.uniform(1, 2))
+            answer_text = _callback_answer_text(answer)
+            if any(
+                word in answer_text.casefold()
+                for word in ("خطأ", "فشل", "wrong", "error", "غير مسموح")
+            ):
+                return False, f"رفض بوت المسابقة التصويت: {answer_text[:100]}"
+            logger.info(
+                "✅ الحساب %s ضغط زر التصويت %s",
+                session["phone_number"],
+                getattr(vote_button, "text", ""),
+            )
+            return True, f"✅ تم التصويت مع التحقق من {session['phone_number']}"
+
+        # مسار احتياطي للاستفتاءات الأصلية القديمة.
+        if hasattr(msg, "poll") and msg.poll:
+            poll = msg.poll.poll
+            options = getattr(poll, "answers", [])
+            if not options:
+                return False, "لا توجد خيارات للتصويت."
+            chosen = random.choice(options)
+            verified = await _send_vote_and_check(
+                client,
+                post_entity,
+                post_id,
+                chosen.option,
+            )
+            verification = (
+                " وتم التحقق من تسجيله"
+                if verified
+                else " وتم إرسال الطلب إلى Telegram"
+            )
+            return True, f"✅ تم التصويت مع التحقق{verification} من {session['phone_number']}"
+
+        return False, "لم يُعثر على زر التصويت في منشور المسابقة."
     except Exception as e:
         return False, f"❌ فشل: {str(e)[:80]}"
     finally:

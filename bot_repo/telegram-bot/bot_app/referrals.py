@@ -685,7 +685,10 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                         elif result == "fail":
                             break  # حاول مجدداً
                         else:
-                            return True, f"ضغط الإيموجي | {' | '.join(all_details)}"
+                            # لا نعتبر الضغط نجاحاً قبل وصول رد صريح من البوت.
+                            # بعض البوتات تحتاج دورة جلب إضافية بعد callback.
+                            await asyncio.sleep(2)
+                            continue
                     else:
                         # ── الوضع الاحتياطي: استخدم Groq أو DeepSeek ─────────
                         # إذا كانت الأزرار كلها إيموجيات، وضّح ذلك للنموذج
@@ -745,7 +748,8 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             elif result == "fail":
                                 break  # حاول مجدداً
                             else:
-                                return True, f"ضغط الزر | {' | '.join(all_details)}"
+                                await asyncio.sleep(2)
+                                continue
                 except Exception as _e:
                     logger.warning(f"⚠️ AI button captcha ({phone}): {_e}")
                 continue
@@ -780,7 +784,8 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                         elif result == "fail":
                             break  # حاول مجدداً
                         else:
-                            return True, f"أُرسلت الإجابة | {' | '.join(all_details)}"
+                            await asyncio.sleep(2)
+                            continue
                 except Exception as _e:
                     logger.warning(f"⚠️ AI text captcha ({phone}): {_e}")
 
@@ -814,14 +819,15 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             logger.info(f"✅ تم حل الكابتشا للرقم {phone} في المحاولة {_round+1}")
                             return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
                         elif result != "fail":
-                            return True, f"أُرسل التفاعل | {' | '.join(all_details)}"
+                            await asyncio.sleep(2)
+                            continue
                 except Exception as _e:
                     logger.warning(f"⚠️ AI reaction ({phone}): {_e}")
 
     # ── النتيجة النهائية ───────────────────────────────────────
     if all_details:
-        logger.info(f"ℹ️ تم حل الكابتشا جزئياً للرقم {phone}: {all_details}")
-        return True, f"حُلّ جزئياً | {' | '.join(all_details)}"
+        logger.warning(f"⚠️ تم تنفيذ خطوة تحقق دون تأكيد نهائي للرقم {phone}: {all_details}")
+        return False, f"لم يؤكد البوت نجاح التحقق | {' | '.join(all_details)}"
     
     logger.warning(f"❌ لم يتم حل الكابتشا للرقم {phone} بعد {max_attempts} محاولات")
     return False, "لم يُكتشف تحقق"
