@@ -354,112 +354,49 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
         
         return None
 
-    # ════════════════════════════════════════════════════════════
-    # 🔥 _solve_image: يستخدم Groq Vision
-    # ════════════════════════════════════════════════════════════
-    async def _solve_image(prompt: str, img_bytes: bytes) -> str | None:
-        """يحل صور الكابتشا باستخدام Groq Vision."""
-        
-        GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-        
-        # Groq يدعم الرؤية عبر llama-3.2-90b-vision
-        if GROQ_API_KEY:
-            def _groq_vision_request():
-                try:
-                    import base64
-                    img_b64 = base64.b64encode(img_bytes).decode()
-                    r = requests.post(
-                        "https://api.groq.com/openai/v1/chat/completions",
-                        headers={
-                            "Authorization": f"Bearer {GROQ_API_KEY}",
-                            "Content-Type": "application/json"
-                        },
-                        json={
-                            "model": "llama-3.2-90b-vision-preview",
-                            "messages": [{
-                                "role": "user",
-                                "content": [
-                                    {"type": "text", "text": prompt},
-                                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
-                                ]
-                            }],
-                            "max_tokens": 20,
-                            "temperature": 0
-                        },
-                        timeout=35
-                    )
-                    if r.status_code == 200:
-                        data = r.json()
-                        if data.get("choices"):
-                            return data["choices"][0]["message"]["content"].strip()
-                    else:
-                        logger.warning(f"⚠️ Groq Vision error: {r.status_code}")
-                except Exception as e:
-                    logger.warning(f"⚠️ Groq Vision exception: {e}")
-                return None
-            
-            result = await asyncio.to_thread(_groq_vision_request)
-            if result:
-                return result
-        
+async def _solve_text(prompt: str) -> str | None:
+    """يحل النصوص باستخدام Groq API فقط."""
+    GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+    
+    if not GROQ_API_KEY:
+        logger.warning("⚠️ GROQ_API_KEY مفقود")
         return None
 
-    def _is_success(text: str) -> bool:
-        t = (text or "").lower()
-        return any(k.lower() in t for k in SUCCESS_KW)
-
-    def _is_fail(text: str) -> bool:
-        t = (text or "").lower()
-        return any(k.lower() in t for k in FAIL_KW)
-
-    def _extract_emojis_from_text(text: str) -> list:
-        """يستخرج جميع الإيموجيات من النص."""
-        result = []
-        for ch in text:
-            cp = ord(ch)
-            if (0x1F300 <= cp <= 0x1FFFF or  # إيموجي ورموز متنوعة
-                0x2600 <= cp <= 0x27BF or    # رموز متنوعة
-                0x1F900 <= cp <= 0x1F9FF or  # رموز تكميلية
-                0x1FA00 <= cp <= 0x1FAFF):   # رموز موسعة
-                result.append(ch)
-        return result
-
-    def _emoji_signature(text: str) -> tuple[str, ...]:
-        """مقارنة الإيموجي دون variation selectors أو skin-tone modifiers."""
-        ignored = {0xFE0E, 0xFE0F, 0x200D, *range(0x1F3FB, 0x1F400)}
-        return tuple(
-            ch
-            for ch in (text or "")
-            if ord(ch) not in ignored
-            and (
-                0x1F300 <= ord(ch) <= 0x1FFFF
-                or 0x2600 <= ord(ch) <= 0x27BF
+    def _groq_request():
+        try:
+            r = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {GROQ_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "llama-3.3-70b-versatile",  # النموذج الأحدث
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 20,
+                    "temperature": 0
+                },
+                timeout=15
             )
-        )
-
-    def _extract_target_emoji(text: str) -> str | None:
-        """يستخرج الإيموجي الذي يأتي بعد عبارة الطلب، لا إيموجي الترويسة."""
-        lowered = (text or "").casefold()
-        markers = (
-            "اضغط على",
-            "انقر على",
-            "اختر الإيموجي",
-            "اختار الإيموجي",
-            "الإيموجي الصحيح",
-            "correct emoji",
-            "select emoji",
-            "choose emoji",
-            "pick emoji",
-        )
-        for marker in markers:
-            marker_index = lowered.find(marker.casefold())
-            if marker_index >= 0:
-                tail = text[marker_index + len(marker):]
-                emojis = _extract_emojis_from_text(tail)
-                if emojis:
-                    return emojis[0]
+            if r.status_code == 200:
+                data = r.json()
+                if data.get("error"):
+                    logger.warning(f"⚠️ Groq JSON error: {data['error']}")
+                    return None
+                if data.get("choices") and len(data["choices"]) > 0:
+                    return data["choices"][0]["message"]["content"].strip()
+            else:
+                logger.warning(f"⚠️ Groq HTTP {r.status_code}: {r.text[:200]}")
+        except Exception as e:
+            logger.warning(f"⚠️ Groq exception: {e}")
         return None
 
+    result = await asyncio.to_thread(_groq_request)
+    if result:
+        logger.info(f"🤖 Groq → '{result[:30]}...'")
+    else:
+        logger.warning("⚠️ Groq فشل تماماً")
+    return result
     async def _wait_and_check(limit: int = 5) -> tuple:
         """ينتظر رد البوت ويُرجع ('success'|'fail'|'unknown', new_msgs)."""
         await asyncio.sleep(3)
