@@ -1,1 +1,1 @@
-worker: python bot_repo/telegram-bot/bot.py
+worker: python bot.py
