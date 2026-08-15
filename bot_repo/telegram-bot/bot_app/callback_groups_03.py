@@ -2938,13 +2938,13 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
             cur = get_setting("owner_contact") or "غير مضبوط"
             cur_label = get_setting("owner_contact_label") or "💬 تواصل مع المالك"
             await q.edit_message_text(
-                f"💬 *رابط تواصل المالك*\n\n"
-                f"الرابط الحالي: {cur}\n"
-                f"نص الزر الحالي: {cur_label}\n\n"
+                f"💬 <b>رابط تواصل المالك</b>\n\n"
+                f"الرابط الحالي: <code>{html.escape(str(cur))}</code>\n"
+                f"نص الزر الحالي: {html.escape(str(cur_label))}\n\n"
                 f"أرسل رابط تيلغرام الخاص بك:\n"
-                f"مثال: `https://t.me/username`\n\n"
-                f"(أرسل *حذف* لإزالة الرابط)",
-                parse_mode=ParseMode.MARKDOWN
+                f"مثال: <code>https://t.me/username</code>\n\n"
+                f"(أرسل <b>حذف</b> لإزالة الرابط)",
+                parse_mode=ParseMode.HTML,
             )
             return
 
