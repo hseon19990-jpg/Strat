@@ -541,27 +541,54 @@ async def cmd_mass_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def cmd_addpoints(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """أمر المالك: /addpoints <user_id> <points> — يضيف (أو يخصم برقم سالب) نقاطاً لمستخدم معيّن."""
+    """أمر المالك: /addpoints <user_id> [points].
+    يقبل المعرف وحده ثم يطلب عدد النقاط في رسالة مستقلة.
+    """
     user = update.effective_user
     if user.id != OWNER_ID:
         await update.message.reply_text("⛔ هذا الأمر للمالك فقط.")
         return
 
     args = context.args
-    if len(args) != 2:
-        await update.message.reply_text("الاستخدام:\n/addpoints <user_id> <points>")
+    if len(args) not in (1, 2):
+        await update.message.reply_text(
+            "الاستخدام:\n"
+            "/addpoints <user_id> [points]\n\n"
+            "مثال مباشر: `/addpoints 123456789 500`\n"
+            "أو أرسل المعرف أولاً ثم عدد النقاط.",
+            parse_mode=ParseMode.MARKDOWN
+        )
         return
 
     try:
         target_id = int(args[0])
-        pts = int(args[1])
     except ValueError:
-        await update.message.reply_text("⚠️ تأكد أن المعرف والنقاط أرقام صحيحة.")
+        await update.message.reply_text("⚠️ تأكد أن معرف المستخدم رقم صحيح.")
         return
 
     target = get_user(target_id)
     if not target:
         await update.message.reply_text("⚠️ لا يوجد مستخدم بهذا المعرف في قاعدة البيانات.")
+        return
+
+    if len(args) == 1:
+        context.user_data.pop("edit_svc_id", None)
+        context.user_data["points_target_id"] = target_id
+        context.user_data["points_mode"] = "give"
+        context.user_data["state"] = "os_await_points_amount"
+        await update.message.reply_text(
+            f"👤 المستخدم: {target.get('full_name') or target_id}\n"
+            f"🆔 المعرف: `{target_id}`\n"
+            f"💰 الرصيد الحالي: {target.get('points', 0)} نقطة\n\n"
+            "أرسل عدد النقاط الآن (رقم موجب):",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    try:
+        pts = int(args[1])
+    except ValueError:
+        await update.message.reply_text("⚠️ تأكد أن عدد النقاط رقم صحيح.")
         return
 
     if pts == 0:

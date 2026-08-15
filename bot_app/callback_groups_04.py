@@ -291,6 +291,10 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             return
 
         if data == "os:give_points" and is_own:
+            # افصل عملية النقاط عن أي حالة سابقة لتعديل خدمة/سعر.
+            context.user_data.pop("edit_svc_id", None)
+            context.user_data.pop("new_svc_id", None)
+            context.user_data.pop("points_target_id", None)
             context.user_data["state"]       = "os_await_points_target"
             context.user_data["points_mode"] = "give"
             await q.edit_message_text(
@@ -301,6 +305,10 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             return
 
         if data == "os:deduct_points" and is_own:
+            # افصل عملية النقاط عن أي حالة سابقة لتعديل خدمة/سعر.
+            context.user_data.pop("edit_svc_id", None)
+            context.user_data.pop("new_svc_id", None)
+            context.user_data.pop("points_target_id", None)
             context.user_data["state"]       = "os_await_points_target"
             context.user_data["points_mode"] = "deduct"
             await q.edit_message_text(

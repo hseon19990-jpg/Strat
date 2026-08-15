@@ -3714,6 +3714,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if is_own and state == "os_await_points_target":
+        # لا تسمح لحالة قديمة من تعديل الخدمة بأن تتداخل مع عملية النقاط.
+        context.user_data.pop("edit_svc_id", None)
         try:
             target = lookup_user_by_id_or_username(text)
         except Exception:
@@ -3746,6 +3748,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if is_own and state == "os_await_points_amount":
+        context.user_data.pop("edit_svc_id", None)
         try:
             amount = int(text.strip())
             if amount <= 0:
