@@ -4,7 +4,7 @@ This section is loaded with the shared compatibility namespace so existing
 handlers can continue to call each other while the code stays separated by
 domain.
 """
-
+from .referrals import run_referral_tasks_job
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 from telegram.ext import ExtBot, Updater
