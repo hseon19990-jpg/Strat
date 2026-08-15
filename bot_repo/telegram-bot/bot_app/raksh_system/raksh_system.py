@@ -10,6 +10,11 @@
 6. رشق أصوات
 7. رشق تصويت مع تحقق
 8. رشق تفاعل مميز
+
+ملاحظة: قد يحدث تأخير ملحوظ في التنفيذ بسبب:
+- إزالة شك الرشق (Anti-Spam)
+- الحسابات تحتوي على ستوري، افتار، اسم عربي، يوزر وبايو
+- التأخير طبيعي لضمان جودة الخدمة
 """
 
 from ..shared import *
@@ -52,6 +57,9 @@ RAKSH_SERVICES = {
         "has_reaction": True,
         "has_ai": False,
         "needs_link": True,
+        "channel_price_points": 30,  # سعر القناة بالنقاط
+        "channel_price_stars": 3,    # سعر القناة بالنجوم
+        "description": "مشاهدة ستوري وتفاعل معه بحسابات حقيقية تحتوي على ستوري، افتار، اسم عربي، يوزر وبايو"
     },
     "forced_ref": {
         "name": "🔑 إحالة بوت إجباري",
@@ -63,6 +71,9 @@ RAKSH_SERVICES = {
         "has_reaction": False,
         "has_ai": False,
         "needs_link": True,
+        "channel_price_points": 25,
+        "channel_price_stars": 2,
+        "description": "إحالة بوت إجباري بحسابات حقيقية"
     },
     "forced_ref_ai": {
         "name": "🤖 إحالة بوت إجباري مع تحقق",
@@ -74,6 +85,9 @@ RAKSH_SERVICES = {
         "has_reaction": False,
         "has_ai": True,
         "needs_link": True,
+        "channel_price_points": 35,
+        "channel_price_stars": 3,
+        "description": "إحالة بوت إجباري مع تحقق ذكي"
     },
     "comment": {
         "name": "💬 رشق تعليق",
@@ -85,6 +99,9 @@ RAKSH_SERVICES = {
         "has_reaction": False,
         "has_ai": False,
         "needs_link": True,
+        "channel_price_points": 30,
+        "channel_price_stars": 3,
+        "description": "رشق تعليقات بحسابات حقيقية"
     },
     "poll": {
         "name": "📊 رشق استفتاء",
@@ -96,6 +113,9 @@ RAKSH_SERVICES = {
         "has_reaction": False,
         "has_ai": False,
         "needs_link": True,
+        "channel_price_points": 30,
+        "channel_price_stars": 3,
+        "description": "رشق استفتاءات بحسابات حقيقية"
     },
     "votes": {
         "name": "🗳 رشق أصوات",
@@ -107,6 +127,9 @@ RAKSH_SERVICES = {
         "has_reaction": False,
         "has_ai": False,
         "needs_link": True,
+        "channel_price_points": 25,
+        "channel_price_stars": 2,
+        "description": "رشق أصوات بحسابات حقيقية"
     },
     "votes_ai": {
         "name": "🛡 رشق تصويت مع تحقق",
@@ -118,6 +141,9 @@ RAKSH_SERVICES = {
         "has_reaction": False,
         "has_ai": True,
         "needs_link": True,
+        "channel_price_points": 25,
+        "channel_price_stars": 2,
+        "description": "رشق تصويت مع تحقق ذكي"
     },
     "premium_reaction": {
         "name": "✨ رشق تفاعل مميز",
@@ -129,6 +155,9 @@ RAKSH_SERVICES = {
         "has_reaction": True,
         "has_ai": False,
         "needs_link": True,
+        "channel_price_points": 0,
+        "channel_price_stars": 0,
+        "description": "رشق تفاعلات مميزة (مدفوعة)"
     },
 }
 
@@ -138,6 +167,8 @@ RAKSH_PRICE_KEYS = {
         "points_quantity": f"raksh_{service_type}_points_quantity",
         "stars_price": f"raksh_{service_type}_stars_price",
         "stars_quantity": f"raksh_{service_type}_stars_quantity",
+        "channel_points_price": f"raksh_{service_type}_channel_points_price",
+        "channel_stars_price": f"raksh_{service_type}_channel_stars_price",
     }
     for service_type in RAKSH_SERVICES
 }
@@ -169,24 +200,33 @@ def get_raksh_price_config(service_type: str) -> dict[str, int]:
         "points_quantity": _positive_setting(keys["points_quantity"], svc["points_quantity"]),
         "stars_price": _positive_setting(keys["stars_price"], svc["price_stars"]),
         "stars_quantity": _positive_setting(keys["stars_quantity"], svc["stars_quantity"]),
+        "channel_points_price": _positive_setting(keys["channel_points_price"], svc.get("channel_price_points", 30)),
+        "channel_stars_price": _positive_setting(keys["channel_stars_price"], svc.get("channel_price_stars", 3)),
     }
 
-def get_raksh_total(service_type: str, quantity: int, payment_method: str) -> int:
-    """حساب السعر بالتقريب للأعلى حسب صيغة «السعر لكل عدد»."""
+def get_raksh_total(service_type: str, quantity: int, payment_method: str, channel_count: int = 0) -> int:
+    """حساب السعر بالتقريب للأعلى مع احتساب القنوات."""
     if quantity <= 0:
         return 0
     config = get_raksh_price_config(service_type)
     price_key = "stars_price" if payment_method == "stars" else "points_price"
     quantity_key = "stars_quantity" if payment_method == "stars" else "points_quantity"
+    channel_price_key = "channel_stars_price" if payment_method == "stars" else "channel_points_price"
+    
     price = config[price_key]
     bundle_quantity = config[quantity_key]
-    return ((max(1, quantity) + bundle_quantity - 1) // bundle_quantity) * price
+    channel_price = config[channel_price_key]
+    
+    total = ((max(1, quantity) + bundle_quantity - 1) // bundle_quantity) * price
+    total += channel_count * channel_price
+    return total
 
 def _raksh_rate_text(service_type: str, payment_method: str) -> str:
     config = get_raksh_price_config(service_type)
+    channel_price_key = "channel_stars_price" if payment_method == "stars" else "channel_points_price"
     if payment_method == "stars":
-        return f"{config['stars_price']} نجمة لكل {config['stars_quantity']}"
-    return f"{config['points_price']} نقطة لكل {config['points_quantity']}"
+        return f"{config['stars_price']} نجمة لكل {config['stars_quantity']} (القناة: {config[channel_price_key]} نجمة)"
+    return f"{config['points_price']} نقطة لكل {config['points_quantity']} (القناة: {config[channel_price_key]} نقطة)"
 
 def _clear_raksh_state(context: ContextTypes.DEFAULT_TYPE) -> None:
     """إلغاء الطلب الحالي ومنع الرسالة التالية من متابعة خطوة قديمة."""
@@ -202,6 +242,10 @@ def _clear_raksh_state(context: ContextTypes.DEFAULT_TYPE) -> None:
         "raksh_quantity",
         "raksh_payment_method",
         "raksh_price_edit_service",
+        "raksh_failed_phones",
+        "raksh_success_phones",
+        "raksh_processed_count",
+        "raksh_total_quantity",
     ):
         context.user_data.pop(key, None)
     context.user_data["state"] = "main_menu"
@@ -213,10 +257,8 @@ def _clear_raksh_state(context: ContextTypes.DEFAULT_TYPE) -> None:
 RAKSH_MIN_DELAY_SECONDS = 60
 RAKSH_MAX_DELAY_SECONDS = 3 * 60
 RAKSH_VOTE_DELAY_SECONDS = 3
-# The available session pool is the real per-request limit.  A value greater
-# than zero can still be supplied when an operator wants an hourly safety cap;
-# zero keeps the cap disabled instead of silently limiting a 71-account pool
-# to the old hard-coded value of 12.
+RAKSH_AUTO_RETRY_LIMIT = 3  # عدد مرات إعادة المحاولة للحسابات الفاشلة
+
 try:
     RAKSH_MAX_EXECUTIONS_PER_HOUR = int(
         os.getenv("RAKSH_MAX_EXECUTIONS_PER_HOUR", "0")
@@ -257,7 +299,6 @@ def _reserve_raksh_execution_slot(user_id: int, service_type: str, phone_number:
         return True
     try:
         with db_conn() as c:
-            # قفل خاص بالمستخدم داخل المعاملة الحالية لمنع سباق طلبين متزامنين.
             c.execute(
                 "SELECT pg_advisory_xact_lock(hashtext(%s))",
                 (f"raksh-hourly:{user_id}",),
@@ -291,11 +332,7 @@ def _reserve_raksh_execution_slot(user_id: int, service_type: str, phone_number:
         return False
 
 def _get_all_active_sessions(service_type: str | None = None) -> list[dict]:
-    """جلب كل الجلسات المخزنة التي يمكن استخدامها لخدمات الرشق.
-
-    يستخدم نفس شروط مخزون «إحالة بوت إجباري» حتى يطابق العدد المعروض
-    عدد الجلسات التي سيحاول نظام الرشق استخدامها فعلياً.
-    """
+    """جلب كل الجلسات المخزنة التي يمكن استخدامها لخدمات الرشق."""
     with db_conn() as c:
         rows = c.execute(
             "SELECT id, phone_number, session_string "
@@ -376,11 +413,7 @@ def _as_message_list(value) -> list:
 
 
 def _reaction_emoticons(reactions) -> list[str]:
-    """تحويل نتائج Telethon إلى قيم قابلة للاختيار والإرسال بدون تكرار.
-
-    Telegram represents paid reactions as ``ReactionPaid`` rather than an
-    emoji. Older code only looked for ``emoticon`` and discarded this type.
-    """
+    """تحويل نتائج Telethon إلى قيم قابلة للاختيار والإرسال بدون تكرار."""
     result = []
     for reaction in reactions or []:
         reaction_type = reaction.__class__.__name__
@@ -412,12 +445,7 @@ def _custom_reaction_document_id(value: str) -> int | None:
 async def _fetch_raksh_reactions(
     session: dict, post_ref: str, post_id: int
 ) -> list[str]:
-    """قراءة التفاعلات المسموحة فعلياً في قناة المنشور.
-
-    عند وجود تفاعل على المنشور نستخدمه أولاً، لأنه ما طلبه المستخدم فعلياً.
-    وإذا لم توجد نتائج، نقرأ available_reactions من القناة بدلاً من عرض قائمة
-    ثابتة خاطئة.
-    """
+    """قراءة التفاعلات المسموحة فعلياً في قناة المنشور."""
     client = TelegramClient(
         StringSession(session["session_string"]),
         int(TELEGRAM_API_ID),
@@ -435,14 +463,10 @@ async def _fetch_raksh_reactions(
             client.get_entity(post_ref),
             timeout=RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS,
         )
-        # نتائج المنشور هي المصدر الأدق لهذه الخدمة: إذا كان عليه تفاعل واحد
-        # فلا ينبغي أن نعرض بقية التفاعلات المسموحة في القناة.
         message = await asyncio.wait_for(
             client.get_messages(post_entity, ids=post_id),
             timeout=RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS,
         )
-        # Telethon returns a single Message for an integer `ids` argument,
-        # but returns a list when the caller supplies multiple ids.
         if isinstance(message, (list, tuple)):
             message = message[0] if message else None
         if message:
@@ -463,19 +487,14 @@ async def _fetch_raksh_reactions(
         )
         full_chat = getattr(full_channel, "full_chat", None)
         available = getattr(full_chat, "available_reactions", None)
-        # Paid reactions are a channel capability, not an entry in
-        # `available_reactions`.  They can therefore be enabled even when the
-        # post has no paid-reaction count yet.
         if getattr(full_chat, "paid_reactions_available", False):
             return [RAKSH_PAID_REACTION]
 
-        # ChatReactionsSome: هذه هي القائمة التي فعّلها مالك القناة.
         configured = getattr(available, "reactions", None)
         reactions = _reaction_emoticons(configured)
         if reactions:
             return reactions
 
-        # ChatReactionsAll لا يحدد قائمة واحدة؛ نستخدم مجموعة العرض المعتادة.
         if available is not None and available.__class__.__name__ == "ChatReactionsAll":
             return list(RAKSH_REACTIONS.values())
         return []
@@ -493,13 +512,7 @@ async def _fetch_raksh_reactions(
 async def _fetch_raksh_reactions_from_pool(
     sessions: list[dict], post_ref: str, post_id: int
 ) -> list[str]:
-    """قراءة التفاعلات بسرعة من عدد محدود من الجلسات بالتوازي.
-
-    The old flow waited for every session sequentially. A single unavailable
-    session could therefore add 30 seconds before the next one was tried.
-    Public posts normally work with the first authorized session, while the
-    small parallel fallback still covers private/channel-specific access.
-    """
+    """قراءة التفاعلات بسرعة من عدد محدود من الجلسات بالتوازي."""
     if len(sessions) > RAKSH_REACTION_LOOKUP_MAX_SESSIONS:
         candidates = random.sample(sessions, RAKSH_REACTION_LOOKUP_MAX_SESSIONS)
     else:
@@ -518,9 +531,6 @@ async def _fetch_raksh_reactions_from_pool(
 
     tasks = [asyncio.create_task(lookup(session)) for session in candidates]
     try:
-        # Return as soon as one authorized session can read the post.  Using
-        # gather() here would wait for every fallback session, even after the
-        # first successful lookup had already produced the buttons.
         for completed in asyncio.as_completed(tasks):
             try:
                 reactions = await completed
@@ -582,12 +592,7 @@ def _parse_bot_link(value: str) -> tuple[str | None, str | None]:
 
 
 def _find_bot_start_link(message) -> tuple[str | None, str | None]:
-    """استخراج رابط البوت ذي التوكن من زر منشور المسابقة.
-
-    زر «المشاركة في المسابقة» هو زر رابط، وليس زر callback داخل القناة.
-    لذلك لا يكفي استدعاء ``button.click()``؛ يجب تحويل الرابط إلى
-    StartBotRequest حتى يصل التوكن إلى بوت المسابقة كما أرسله مالكها.
-    """
+    """استخراج رابط البوت ذي التوكن من زر منشور المسابقة."""
     fallback = None
     for row in getattr(message, "buttons", None) or []:
         for button in row:
@@ -633,7 +638,6 @@ def _find_contest_vote_button(message):
             folded = label.casefold()
             if any(word in folded for word in ("تصويت", "صوت", "vote", "voting")):
                 return button
-            # منشورات المسابقات غالباً تعرض الزر كإيموجي وعدّاد فقط.
             if re.search(r"\d+", label) and any(
                 0x1F300 <= ord(char) <= 0x1FAFF or 0x2600 <= ord(char) <= 0x27BF
                 for char in label
@@ -701,18 +705,20 @@ def raksh_price_settings_kb():
         rows.append([
             InlineKeyboardButton(
                 f"{label}: ⭐ {config['stars_price']}/{config['stars_quantity']} | "
-                f"💰 {config['points_price']}/{config['points_quantity']}",
+                f"💰 {config['points_price']}/{config['points_quantity']} | "
+                f"📺 قناة: ⭐{config['channel_stars_price']}/💰{config['channel_points_price']}",
                 callback_data=f"raksh:price:{service_type}",
             )
         ])
     rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
     return InlineKeyboardMarkup(rows)
 
-def raksh_payment_kb(service_type: str, quantity: int, points_cost: int, stars_cost: int):
-    """أزرار اختيار طريقة الدفع"""
+def raksh_payment_kb(service_type: str, quantity: int, points_cost: int, stars_cost: int, channel_count: int = 0):
+    """أزرار اختيار طريقة الدفع مع عرض تكلفة القنوات"""
+    channel_info = f" (📺 {channel_count} قناة)" if channel_count > 0 else ""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"⭐ دفع بالنجوم ({stars_cost} نجمة)", callback_data=f"raksh:pay:stars:{service_type}:{quantity}")],
-        [InlineKeyboardButton(f"💰 دفع بالنقاط ({points_cost} نقطة)", callback_data=f"raksh:pay:points:{service_type}:{quantity}")],
+        [InlineKeyboardButton(f"⭐ دفع بالنجوم ({stars_cost} نجمة){channel_info}", callback_data=f"raksh:pay:stars:{service_type}:{quantity}:{channel_count}")],
+        [InlineKeyboardButton(f"💰 دفع بالنقاط ({points_cost} نقطة){channel_info}", callback_data=f"raksh:pay:points:{service_type}:{quantity}:{channel_count}")],
         [InlineKeyboardButton("🔙 رجوع", callback_data="raksh_menu")],
     ])
 
@@ -768,10 +774,10 @@ def raksh_reaction_kb(service_type: str, reactions=None):
     buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="raksh_menu")])
     return InlineKeyboardMarkup(buttons)
 
-def raksh_confirm_kb(service_type: str, quantity: int, total_cost: int, payment_method: str):
+def raksh_confirm_kb(service_type: str, quantity: int, total_cost: int, payment_method: str, channel_count: int = 0):
     """أزرار تأكيد الطلب"""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ تأكيد الطلب", callback_data=f"raksh:confirm:{service_type}:{quantity}:{total_cost}:{payment_method}")],
+        [InlineKeyboardButton("✅ تأكيد الطلب", callback_data=f"raksh:confirm:{service_type}:{quantity}:{total_cost}:{payment_method}:{channel_count}")],
         [InlineKeyboardButton("❌ إلغاء", callback_data="raksh_cancel")],
     ])
 
@@ -792,8 +798,6 @@ async def _join_channel_and_schedule_leave(client, channel_ref: str):
                 entity = await client.get_entity(ref)
                 await client(JoinChannelRequest(entity))
         except Exception as exc:
-            # قناة ترويجية/اختيارية غير صالحة لا ينبغي أن تمنع تنفيذ
-            # التصويت على المنشور المطلوب.
             logger.warning(
                 "تعذر الانضمام للقناة الاختيارية %s: %s",
                 ref,
@@ -878,8 +882,6 @@ async def _send_vote_and_check(client, peer, msg_id: int, option) -> bool:
         ):
             return True
 
-    # Telegram can accept the request while omitting `chosen` in the
-    # response, so the caller still counts the successful API request.
     return False
 
 # ─── تنفيذ كل خدمة ───
@@ -891,7 +893,10 @@ async def _execute_story(session, params, is_first):
     await asyncio.wait_for(client.connect(), timeout=20)
     try:
         if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
-            return False, "الجلسة غير مصرح بها."
+            # حذف الجلسة الفاشلة تلقائياً
+            with db_conn() as c:
+                c.execute("DELETE FROM number_stock WHERE phone_number=%s AND ever_sold IS NOT TRUE", (session["phone_number"],))
+            return False, "الجلسة غير مصرح بها - تم طرد الحساب."
         if is_first and params.get("channel_ref"):
             await _join_channel_and_schedule_leave(client, params["channel_ref"])
         entity_ref, story_id = _parse_story_link(params["link"])
@@ -912,8 +917,6 @@ async def _execute_story(session, params, is_first):
             )
             return True, f"✅ تمت المشاهدة والتفاعل من {session['phone_number']}"
         except Exception as reaction_error:
-            # نجاح المشاهدة لا ينبغي أن يتحول إلى فشل كامل إذا كانت
-            # التفاعلات معطلة على الستوري أو رفضها Telegram لهذا الحساب.
             logger.warning(
                 "Story view succeeded but reaction failed for %s: %s",
                 session["phone_number"],
@@ -932,7 +935,9 @@ async def _execute_forced_ref(session, params, is_first):
     await asyncio.wait_for(client.connect(), timeout=20)
     try:
         if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
-            return False, "الجلسة غير مصرح بها."
+            with db_conn() as c:
+                c.execute("DELETE FROM number_stock WHERE phone_number=%s AND ever_sold IS NOT TRUE", (session["phone_number"],))
+            return False, "الجلسة غير مصرح بها - تم طرد الحساب."
         if is_first and params.get("channel_ref"):
             await _join_channel_and_schedule_leave(client, params["channel_ref"])
         bot_username, start_param = _parse_bot_link(params["link"])
@@ -950,12 +955,7 @@ async def _execute_forced_ref(session, params, is_first):
         await client.disconnect()
 
 async def _execute_forced_ref_ai(session, params, is_first):
-    """
-    تنفيذ إحالة بوت مع تحقق (لخدمات الرشق).
-    التسلسل: ينضم للقنوات -> يضغط Start -> يضغط زر 'تحقق' -> يحل أي تحقق (رياضيات/إيموجي/أزرار)
-    """
     try:
-        # استيراد الدالة المتطورة من ملف referrals (التي تدعم الأزرار والرياضيات والإيموجي)
         from ..referrals import solve_captcha_with_ai
     except ImportError:
         return False, "لا يمكن استيراد solve_captcha_with_ai"
@@ -964,58 +964,91 @@ async def _execute_forced_ref_ai(session, params, is_first):
     await asyncio.wait_for(client.connect(), timeout=20)
     try:
         if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
-            return False, "الجلسة غير مصرح بها."
+            with db_conn() as c:
+                c.execute("DELETE FROM number_stock WHERE phone_number=%s AND ever_sold IS NOT TRUE", (session["phone_number"],))
+            return False, "الجلسة غير مصرح بها - تم طرد الحساب."
 
-        # ─── 1. الانضمام للقنوات الإجبارية (إذا وُجدت) ───
+        parsed_link = _parse_post_link(params["link"])
+        if parsed_link is None or parsed_link[0] is None or parsed_link[1] is None:
+            return False, "رابط المنشور غير صالح (لا يمكن تحليله)"
+        post_ref, post_id = parsed_link
+
+        try:
+            post_entity = await client.get_entity(post_ref)
+        except Exception as exc:
+            if "No user has" in str(exc):
+                return False, "رابط المنشور غير صالح أو القناة غير متاحة للحساب."
+            raise
+
         if is_first and params.get("channel_ref"):
-            await _join_channel_and_schedule_leave(client, params["channel_ref"])
+            try:
+                await _join_channel_and_schedule_leave(client, params["channel_ref"])
+                await asyncio.sleep(random.uniform(1, 2))
+            except Exception as e:
+                logger.warning(f"فشل انضمام القناة للحساب {session['phone_number']}: {e}")
 
-        # ─── 2. تحليل رابط البوت والضغط على زر البدء ───
-        bot_username, start_param = _parse_bot_link(params["link"])
-        if not bot_username:
-            return False, "رابط البوت غير صحيح."
-        clean_username = bot_username.lstrip("@").strip()
-        
-        resolved = await client(ResolveUsernameRequest(clean_username))
-        bot_entity = resolved.users[0] if resolved.users else resolved.chats[0]
-        
-        # ضغط زر البدء مع الكود
-        await client(StartBotRequest(bot=bot_entity, peer=bot_entity, start_param=start_param or ""))
-        await asyncio.sleep(3)  # انتظار وصول رسالة الترحيب/التحقق
+        messages = _as_message_list(await client.get_messages(post_entity, ids=post_id))
+        if not messages:
+            return False, "المنشور غير موجود."
+        msg = messages[0]
+        bot_entity = await _start_contest_bot_from_post(client, msg)
+        logger.info(
+            "✅ الحساب %s فتح بوت المسابقة عبر StartBotRequest بالتوكن",
+            session["phone_number"],
+        )
 
-        # ─── 3. البحث عن زر "تحقق من الاشتراك" والضغط عليه ───
-        msgs = await asyncio.wait_for(client.get_messages(bot_entity, limit=10), timeout=10)
-        
-        # دالة مساعدة للبحث عن زر التحقق (مضمنة هنا لتكون الخدمة مستقلة)
-        async def _click_check_button(local_msgs):
-            check_keywords = ["تحقق", "اشتركت", "✅", "تم", "joined", "check", "verify", "subscribed"]
-            for msg in local_msgs:
-                if msg.buttons:
-                    for row in msg.buttons:
-                        for btn in row:
-                            btn_text = (getattr(btn, "text", "") or "").lower()
-                            if any(k in btn_text for k in check_keywords):
-                                try:
-                                    await btn.click()
-                                    return True
-                                except Exception:
-                                    pass
-            return False
-
-        check_clicked = await _click_check_button(msgs)
-        if check_clicked:
-            await asyncio.sleep(3)  # انتظار ظهور الكابتشا بعد الضغط
-            msgs = await asyncio.wait_for(client.get_messages(bot_entity, limit=10), timeout=10)
-
-        # ─── 4. حل التحقق بالذكاء الاصطناعي المتطور ───
-        # الدالة الجديدة في referrals.py تدعم: أزرار، أزرار إيموجي، مسائل رياضية، إلخ
-        solved, detail = await solve_captcha_with_ai(client, bot_entity, msgs, session["phone_number"], max_attempts=3)
-        
+        bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=20))
+        solved, detail = await solve_captcha_with_ai(
+            client,
+            bot_entity,
+            bot_messages,
+            session["phone_number"],
+            max_attempts=3,
+        )
         if not solved:
             return False, f"فشل التحقق: {detail}"
 
-        return True, f"✅ تمت الإحالة مع التحقق من {session['phone_number']} (التحقق: {detail})"
+        messages = _as_message_list(await client.get_messages(post_entity, ids=post_id))
+        if not messages:
+            return False, "المنشور غير موجود بعد التحقق."
+        msg = messages[0]
+        vote_button = _find_contest_vote_button(msg)
+        if vote_button is not None:
+            answer = await vote_button.click()
+            await asyncio.sleep(random.uniform(1, 2))
+            answer_text = _callback_answer_text(answer)
+            if any(
+                word in answer_text.casefold()
+                for word in ("خطأ", "فشل", "wrong", "error", "غير مسموح")
+            ):
+                return False, f"رفض بوت المسابقة التصويت: {answer_text[:100]}"
+            logger.info(
+                "✅ الحساب %s ضغط زر التصويت %s",
+                session["phone_number"],
+                getattr(vote_button, "text", ""),
+            )
+            return True, f"✅ تم التصويت مع التحقق من {session['phone_number']}"
 
+        if hasattr(msg, "poll") and msg.poll:
+            poll = msg.poll.poll
+            options = getattr(poll, "answers", [])
+            if not options:
+                return False, "لا توجد خيارات للتصويت."
+            chosen = random.choice(options)
+            verified = await _send_vote_and_check(
+                client,
+                post_entity,
+                post_id,
+                chosen.option,
+            )
+            verification = (
+                " وتم التحقق من تسجيله"
+                if verified
+                else " وتم إرسال الطلب إلى Telegram"
+            )
+            return True, f"✅ تم التصويت مع التحقق{verification} من {session['phone_number']}"
+
+        return False, "لم يُعثر على زر التصويت في منشور المسابقة."
     except Exception as e:
         return False, f"❌ فشل: {str(e)[:80]}"
     finally:
@@ -1026,7 +1059,9 @@ async def _execute_comment(session, params, is_first):
     await asyncio.wait_for(client.connect(), timeout=20)
     try:
         if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
-            return False, "الجلسة غير مصرح بها."
+            with db_conn() as c:
+                c.execute("DELETE FROM number_stock WHERE phone_number=%s AND ever_sold IS NOT TRUE", (session["phone_number"],))
+            return False, "الجلسة غير مصرح بها - تم طرد الحساب."
         comment_text = (params.get("comment_text") or "").strip()
         if not comment_text:
             return False, "نص التعليق فارغ."
@@ -1034,8 +1069,6 @@ async def _execute_comment(session, params, is_first):
             try:
                 await _join_channel_and_schedule_leave(client, params["channel_ref"])
             except Exception as channel_error:
-                # Joining an optional promotion channel must not make the
-                # first comment fail while the remaining accounts continue.
                 logger.warning(
                     "تعذر انضمام أول حساب لقنوات الطلب %s: %s",
                     session["phone_number"],
@@ -1071,7 +1104,9 @@ async def _execute_poll(session, params, is_first):
     await asyncio.wait_for(client.connect(), timeout=20)
     try:
         if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
-            return False, "الجلسة غير مصرح بها."
+            with db_conn() as c:
+                c.execute("DELETE FROM number_stock WHERE phone_number=%s AND ever_sold IS NOT TRUE", (session["phone_number"],))
+            return False, "الجلسة غير مصرح بها - تم طرد الحساب."
         if is_first and params.get("channel_ref"):
             await _join_channel_and_schedule_leave(client, params["channel_ref"])
         entity_ref, msg_id = _parse_post_link(params["link"])
@@ -1102,7 +1137,9 @@ async def _execute_votes(session, params, is_first):
     await asyncio.wait_for(client.connect(), timeout=20)
     try:
         if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
-            return False, "الجلسة غير مصرح بها."
+            with db_conn() as c:
+                c.execute("DELETE FROM number_stock WHERE phone_number=%s AND ever_sold IS NOT TRUE", (session["phone_number"],))
+            return False, "الجلسة غير مصرح بها - تم طرد الحساب."
         if is_first and params.get("channel_ref"):
             await _join_channel_and_schedule_leave(client, params["channel_ref"])
         post_ref, post_id = _parse_post_link(params["link"])
@@ -1143,7 +1180,9 @@ async def _execute_votes_ai(session, params, is_first):
     await asyncio.wait_for(client.connect(), timeout=20)
     try:
         if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
-            return False, "الجلسة غير مصرح بها."
+            with db_conn() as c:
+                c.execute("DELETE FROM number_stock WHERE phone_number=%s AND ever_sold IS NOT TRUE", (session["phone_number"],))
+            return False, "الجلسة غير مصرح بها - تم طرد الحساب."
 
         parsed_link = _parse_post_link(params["link"])
         if parsed_link is None or parsed_link[0] is None or parsed_link[1] is None:
@@ -1157,7 +1196,6 @@ async def _execute_votes_ai(session, params, is_first):
                 return False, "رابط المنشور غير صالح أو القناة غير متاحة للحساب."
             raise
 
-        # ① انضمام القناة الإجبارية قبل فتح المسابقة.
         if is_first and params.get("channel_ref"):
             try:
                 await _join_channel_and_schedule_leave(client, params["channel_ref"])
@@ -1165,9 +1203,6 @@ async def _execute_votes_ai(session, params, is_first):
             except Exception as e:
                 logger.warning(f"فشل انضمام القناة للحساب {session['phone_number']}: {e}")
 
-        # ② زر «المشاركة في المسابقة» رابط إلى البوت. يجب استخدام
-        # StartBotRequest حتى يصل التوكن، وليس الضغط على الرابط داخل القناة
-        # أو إرسال /start إلى كيان القناة.
         messages = _as_message_list(await client.get_messages(post_entity, ids=post_id))
         if not messages:
             return False, "المنشور غير موجود."
@@ -1178,7 +1213,6 @@ async def _execute_votes_ai(session, params, is_first):
             session["phone_number"],
         )
 
-        # ③ حل التحقق داخل محادثة البوت، وليس داخل محادثة القناة.
         bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=20))
         solved, detail = await solve_captcha_with_ai(
             client,
@@ -1190,7 +1224,6 @@ async def _execute_votes_ai(session, params, is_first):
         if not solved:
             return False, f"فشل التحقق: {detail}"
 
-        # ④ بعد نجاح التحقق نضغط زر التصويت في منشور المسابقة.
         messages = _as_message_list(await client.get_messages(post_entity, ids=post_id))
         if not messages:
             return False, "المنشور غير موجود بعد التحقق."
@@ -1212,7 +1245,6 @@ async def _execute_votes_ai(session, params, is_first):
             )
             return True, f"✅ تم التصويت مع التحقق من {session['phone_number']}"
 
-        # مسار احتياطي للاستفتاءات الأصلية القديمة.
         if hasattr(msg, "poll") and msg.poll:
             poll = msg.poll.poll
             options = getattr(poll, "answers", [])
@@ -1243,7 +1275,9 @@ async def _execute_premium_reaction(session, params, is_first):
     await asyncio.wait_for(client.connect(), timeout=20)
     try:
         if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
-            return False, "الجلسة غير مصرح بها."
+            with db_conn() as c:
+                c.execute("DELETE FROM number_stock WHERE phone_number=%s AND ever_sold IS NOT TRUE", (session["phone_number"],))
+            return False, "الجلسة غير مصرح بها - تم طرد الحساب."
         if is_first and params.get("channel_ref"):
             await _join_channel_and_schedule_leave(client, params["channel_ref"])
         post_ref, post_id = _parse_post_link(params["link"])
@@ -1305,6 +1339,32 @@ def _raksh_order_label(service_type: str) -> str:
     }
     return labels.get(service_type, service_type)
 
+def _raksh_retry_failed_accounts(
+    failed_phones: list,
+    sessions: list,
+    service_type: str,
+    params: dict,
+    user_id: int,
+) -> tuple[list, list, list]:
+    """إعادة محاولة الحسابات الفاشلة مع حسابات بديلة."""
+    # استخراج الأرقام الفاشلة التي تحتوي على "الجلسة غير مصرح بها" أو "تم طرد الحساب"
+    retry_phones = []
+    retry_reasons = []
+    
+    for phone in failed_phones:
+        # نحاول إيجاد سبب الفشل
+        for detail in failed_details:
+            if phone in detail:
+                if "الجلسة غير مصرح بها" in detail or "تم طرد الحساب" in detail:
+                    retry_phones.append(phone)
+                    retry_reasons.append(detail)
+                break
+    
+    # الحصول على حسابات بديلة
+    available_sessions = [s for s in sessions if s["phone_number"] not in used_phones]
+    
+    return retry_phones, retry_reasons, available_sessions
+
 async def execute_raksh_service(
     service_type: str,
     quantity: int,
@@ -1313,12 +1373,13 @@ async def execute_raksh_service(
     user_id: int,
     progress_callback=None,
 ):
-    """تنفيذ طلب رشق بعدد محدد من الحسابات"""
+    """تنفيذ طلب رشق بعدد محدد من الحسابات مع إعادة المحاولة التلقائية."""
     if not sessions:
         raise RuntimeError("لا توجد جلسات نشطة متاحة.")
     executor = EXECUTORS.get(service_type)
     if not executor:
         raise RuntimeError(f"خدمة غير معروفة: {service_type}")
+    
     shuffled = sessions.copy()
     random.shuffle(shuffled)
     success_count = 0
@@ -1326,49 +1387,93 @@ async def execute_raksh_service(
     failed_phones = []
     failed_details = []
     used_phones = set()
-    for i in range(quantity):
-        if not shuffled:
-            break
+    processed_count = 0
+    
+    # نحتاج إلى تنفيذ العدد المطلوب حتى مع الفشل
+    while processed_count < quantity and shuffled:
         session = shuffled.pop(0)
         phone = session["phone_number"]
         if phone in used_phones:
             continue
         used_phones.add(phone)
+        
         if not _reserve_raksh_execution_slot(user_id, service_type, phone):
-            remaining = quantity - i
+            # إذا وصلنا لحد الساعة، نوقف التنفيذ
             failed_phones.append(phone)
-            failed_phones.extend(
-                candidate["phone_number"]
-                for candidate in shuffled[:remaining - 1]
-                if candidate["phone_number"] not in used_phones
-            )
-            failed_details.extend(
-                ["⏳ تم إيقاف بقية التنفيذ مؤقتاً."] * remaining
-            )
-            if progress_callback:
-                await progress_callback(
-                    quantity,
-                    quantity,
-                    success_count,
-                    len(failed_details),
-                )
+            failed_details.append("⏳ تم إيقاف التنفيذ مؤقتاً (حد الساعة)")
             break
+            
         try:
-            ok, msg = await executor(session=session, params=params, is_first=(i == 0))
+            ok, msg = await executor(session=session, params=params, is_first=(processed_count == 0))
         except Exception as e:
             ok = False
             msg = f"❌ خطأ: {str(e)[:80]}"
+            
         if ok:
             success_count += 1
             success_phones.append(phone)
         else:
             failed_phones.append(phone)
             failed_details.append(msg)
+            # إذا كان الفشل بسبب جلسة غير مصرح بها، نحذف الحساب
+            if "الجلسة غير مصرح بها" in msg or "تم طرد الحساب" in msg:
+                with db_conn() as c:
+                    c.execute("DELETE FROM number_stock WHERE phone_number=%s AND ever_sold IS NOT TRUE", (phone,))
+                logger.info(f"🗑 تم حذف الرقم {phone} تلقائياً (جلسة منتهية)")
+        
+        processed_count += 1
+        
         if progress_callback:
-            await progress_callback(i + 1, quantity, success_count, len(failed_details))
-        if i < quantity - 1 and shuffled:
+            await progress_callback(processed_count, quantity, success_count, len(failed_phones))
+            
+        if processed_count < quantity and shuffled:
             delay = _get_delay_seconds(service_type)
             await asyncio.sleep(delay)
+    
+    # محاولة تعويض الحسابات الفاشلة بحسابات بديلة
+    if success_count < quantity and shuffled:
+        # نحاول إكمال العدد المطلوب بحسابات إضافية
+        remaining_needed = quantity - success_count
+        additional_sessions = []
+        
+        for session in shuffled:
+            if session["phone_number"] not in used_phones and len(additional_sessions) < remaining_needed:
+                additional_sessions.append(session)
+        
+        # تنفيذ الحسابات الإضافية
+        for session in additional_sessions:
+            phone = session["phone_number"]
+            used_phones.add(phone)
+            
+            if not _reserve_raksh_execution_slot(user_id, service_type, phone):
+                break
+                
+            try:
+                ok, msg = await executor(session=session, params=params, is_first=False)
+            except Exception as e:
+                ok = False
+                msg = f"❌ خطأ: {str(e)[:80]}"
+                
+            if ok:
+                success_count += 1
+                success_phones.append(phone)
+            else:
+                failed_phones.append(phone)
+                failed_details.append(msg)
+                if "الجلسة غير مصرح بها" in msg or "تم طرد الحساب" in msg:
+                    with db_conn() as c:
+                        c.execute("DELETE FROM number_stock WHERE phone_number=%s AND ever_sold IS NOT TRUE", (phone,))
+                    logger.info(f"🗑 تم حذف الرقم {phone} تلقائياً (جلسة منتهية)")
+            
+            processed_count += 1
+            
+            if progress_callback:
+                await progress_callback(processed_count, quantity, success_count, len(failed_phones))
+                
+            if processed_count < quantity and shuffled:
+                delay = _get_delay_seconds(service_type)
+                await asyncio.sleep(delay)
+    
     return success_count, success_phones, failed_phones, failed_details
 
 # ════════════════════════════════════════════════════════════
@@ -1384,9 +1489,6 @@ async def handle_raksh_callback(
     is_own=None,
 ):
     """معالج جميع أزرار نظام الرشق"""
-    # The application registers this function as a dedicated callback handler,
-    # while the modular callback router may also delegate `raksh_menu` here.
-    # Supporting both call shapes keeps the menu functional in either route.
     query = query or update.callback_query
     data = query.data if data is None else data
     user = user or query.from_user
@@ -1409,7 +1511,9 @@ async def handle_raksh_callback(
             "🔥 *إدارة خدمات الرشق*\n\n"
             "✅ مفعلة: تظهر للأعضاء\n"
             "🚫 مخفية: لا تظهر للأعضاء\n\n"
-            f"📊 الحسابات المتاحة: *{get_available_sessions_count()}*",
+            "📊 الحسابات المتاحة: *{get_available_sessions_count()}*\n\n"
+            "ℹ️ *ملاحظة:* قد يحدث تأخير ملحوظ في التنفيذ بسبب إزالة شك الرشق. "
+            "الحسابات المستخدمة حقيقية وتحتوي على ستوري، افتار، اسم عربي، يوزر وبايو.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=raksh_menu_kb(True),
         )
@@ -1424,7 +1528,8 @@ async def handle_raksh_callback(
             "⚙️ *إعدادات أسعار خدمات الرشق*\n\n"
             "اضغط على الخدمة، ثم أرسل السعرين بصيغة:\n"
             "⭐ `نجوم 1 لكل 10`\n"
-            "💰 `نقاط 30 لكل 1`\n\n"
+            "💰 `نقاط 30 لكل 1`\n"
+            "📺 `قناة نجوم 3` أو `قناة نقاط 30`\n\n"
             "أي سطر ترسله سيحدّث الطريقة المذكورة فيه.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=raksh_price_settings_kb(),
@@ -1445,10 +1550,13 @@ async def handle_raksh_callback(
         await query.edit_message_text(
             f"✏️ *تعديل سعر {RAKSH_SERVICE_LABELS[service_type]}*\n\n"
             f"⭐ الحالي: {config['stars_price']} نجمة لكل {config['stars_quantity']}\n"
-            f"💰 الحالي: {config['points_price']} نقطة لكل {config['points_quantity']}\n\n"
-            "أرسل سطراً أو سطرين بهذا الشكل:\n"
+            f"💰 الحالي: {config['points_price']} نقطة لكل {config['points_quantity']}\n"
+            f"📺 سعر القناة: ⭐{config['channel_stars_price']} / 💰{config['channel_points_price']}\n\n"
+            "أرسل سطراً أو أكثر بهذا الشكل:\n"
             "`نجوم 1 لكل 10`\n"
-            "`نقاط 30 لكل 1`",
+            "`نقاط 30 لكل 1`\n"
+            "`قناة نجوم 3`\n"
+            "`قناة نقاط 30`",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔙 رجوع للأسعار", callback_data="raksh:settings")]
@@ -1469,7 +1577,8 @@ async def handle_raksh_callback(
         await query.edit_message_text(
             "🔥 *خدمات الرشق*\n\n"
             "اختر الخدمة المطلوبة:\n"
-            f"📊 الحسابات المتاحة: *{get_available_sessions_count()}*",
+            f"📊 الحسابات المتاحة: *{get_available_sessions_count()}*\n\n"
+            "ℹ️ *ملاحظة:* قد يحدث تأخير ملحوظ في التنفيذ بسبب إزالة شك الرشق.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=raksh_menu_kb(is_own)
         )
@@ -1496,13 +1605,20 @@ async def handle_raksh_callback(
         context.user_data["raksh_service"] = service_type
         context.user_data["raksh_step"] = "channel"
         
+        # عرض معلومات الخدمة مع التأخير المتوقع
+        service_info = f"{svc['name']}\n\n"
+        service_info += f"💰 السعر: {_raksh_rate_text(service_type, 'points')}\n"
+        service_info += f"⭐ السعر: {_raksh_rate_text(service_type, 'stars')}\n\n"
+        service_info += "📢 *أرسل القنوات الإجبارية:*\n"
+        service_info += "مثال: @channel1 @channel2\n\n"
+        service_info += "أو اضغط تخطي:\n\n"
+        service_info += "ℹ️ *تنبيه مهم:*\n"
+        service_info += "• قد يحدث تأخير ملحوظ أثناء التنفيذ\n"
+        service_info += "• السبب: إزالة شك الرشق وضمان جودة الخدمة\n"
+        service_info += f"• {svc.get('description', 'جميع الحسابات حقيقية')}"
+        
         await query.edit_message_text(
-            f"{svc['name']}\n\n"
-            f"💰 السعر: {_raksh_rate_text(service_type, 'points')}\n"
-            f"⭐ السعر: {_raksh_rate_text(service_type, 'stars')}\n\n"
-            "📢 *أرسل القنوات الإجبارية:*\n"
-            "مثال: @channel1 @channel2\n\n"
-            "أو اضغط تخطي:",
+            service_info,
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=raksh_channel_kb()
         )
@@ -1513,10 +1629,18 @@ async def handle_raksh_callback(
         context.user_data["raksh_channels"] = []
         context.user_data["raksh_step"] = "link"
         svc = RAKSH_SERVICES.get(context.user_data.get("raksh_service"))
+        service_type = context.user_data.get("raksh_service")
+        
+        # عرض تعليمات الرابط حسب الخدمة
+        link_instruction = _get_link_instruction(service_type)
+        if service_type == "story":
+            link_instruction = "https://t.me/username/s/123 (ستوري قناة) أو https://t.me/username/story/123 (ستوري شخصي)"
+        
         await query.edit_message_text(
             f"✅ تم تخطي القنوات.\n\n"
             f"🔗 *أرسل الرابط المطلوب:*\n"
-            f"{_get_link_instruction(context.user_data.get('raksh_service'))}",
+            f"{link_instruction}\n\n"
+            "ℹ️ للتذكير: قد يحدث تأخير أثناء التنفيذ.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]])
         )
@@ -1547,10 +1671,14 @@ async def handle_raksh_callback(
             if reaction == RAKSH_PAID_REACTION
             else reaction
         )
+        max_qty = _get_max_quantity(service_type)
         await query.edit_message_text(
             f"✅ تم اختيار التفاعل: {reaction_label}\n\n"
             f"🔢 *أرسل عدد الوحدات المطلوبة:*\n"
-            f"(الحد الأقصى: {_get_max_quantity(service_type)})",
+            f"(الحد الأقصى: {max_qty})\n\n"
+            f"⚠️ كل وحدة = حساب واحد\n"
+            f"• الحسابات الفاشلة تُستبدل تلقائياً\n"
+            f"• الحسابات التي جلساتها منتهية تُطرد تلقائياً",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="raksh_menu")]])
         )
@@ -1559,13 +1687,14 @@ async def handle_raksh_callback(
     # ─── اختيار الدفع ───
     if data.startswith("raksh:pay:"):
         parts = data.split(":")
-        if len(parts) != 5 or parts[2] not in {"stars", "points"}:
+        if len(parts) not in {5, 6} or parts[2] not in {"stars", "points"}:
             await query.answer("⚠️ بيانات الدفع غير صالحة.", show_alert=True)
             return
-        method = parts[2]  # stars / points
+        method = parts[2]
         service_type = parts[3]
         try:
             quantity = int(parts[4])
+            channel_count = int(parts[5]) if len(parts) > 5 else 0
         except ValueError:
             await query.answer("⚠️ العدد غير صالح.", show_alert=True)
             return
@@ -1585,43 +1714,47 @@ async def handle_raksh_callback(
             return
         context.user_data["raksh_payment_method"] = method
         context.user_data["raksh_step"] = "payment_confirm"
+        
         if method == "stars":
-            total = get_raksh_total(service_type, quantity, "stars")
+            total = get_raksh_total(service_type, quantity, "stars", channel_count)
             await query.edit_message_text(
                 f"⭐ *الدفع بالنجوم*\n\n"
                 f"الخدمة: {svc['name']}\n"
                 f"العدد: {quantity}\n"
+                f"📺 القنوات: {channel_count}\n"
                 f"التكلفة: *{total} نجمة*\n\n"
                 "اضغط تأكيد للمتابعة:",
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=raksh_confirm_kb(service_type, quantity, total, "stars")
+                reply_markup=raksh_confirm_kb(service_type, quantity, total, "stars", channel_count)
             )
         else:
-            total = get_raksh_total(service_type, quantity, "points")
+            total = get_raksh_total(service_type, quantity, "points", channel_count)
             db_user = get_user(user.id)
             points = db_user["points"] if db_user else 0
             await query.edit_message_text(
                 f"💰 *الدفع بالنقاط*\n\n"
                 f"الخدمة: {svc['name']}\n"
                 f"العدد: {quantity}\n"
+                f"📺 القنوات: {channel_count}\n"
                 f"التكلفة: *{total} نقطة*\n"
                 f"رصيدك: *{points} نقطة*\n\n"
                 "اضغط تأكيد للمتابعة:",
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=raksh_confirm_kb(service_type, quantity, total, "points")
+                reply_markup=raksh_confirm_kb(service_type, quantity, total, "points", channel_count)
             )
         return
     
     # ─── تأكيد الطلب ───
     if data.startswith("raksh:confirm:"):
         parts = data.split(":")
-        if len(parts) != 6 or parts[1] != "confirm":
+        if len(parts) not in {6, 7} or parts[1] != "confirm":
             await query.answer("⚠️ بيانات تأكيد الطلب غير صالحة.", show_alert=True)
             return
         service_type = parts[2]
         try:
             quantity = int(parts[3])
             button_total = int(parts[4])
+            channel_count = int(parts[6]) if len(parts) > 6 else 0
         except ValueError:
             await query.answer("⚠️ العدد أو السعر غير صالح.", show_alert=True)
             return
@@ -1635,9 +1768,7 @@ async def handle_raksh_callback(
                 reply_markup=raksh_menu_kb(is_own),
             )
             return
-        # لا نثق بالسعر القادم من الزر؛ أعد حسابه من الإعداد الحالي حتى لا
-        # يفشل الطلب بعد تغيير السعر أو يمكن التلاعب بالتكلفة.
-        total_cost = get_raksh_total(service_type, quantity, payment_method)
+        total_cost = get_raksh_total(service_type, quantity, payment_method, channel_count)
         if button_total != total_cost:
             logger.info(
                 "Raksh price refreshed before confirmation: service=%s quantity=%s",
@@ -1655,7 +1786,7 @@ async def handle_raksh_callback(
                 return
         else:
             svc = RAKSH_SERVICES.get(service_type)
-            total_stars = get_raksh_total(service_type, quantity, "stars")
+            total_stars = get_raksh_total(service_type, quantity, "stars", channel_count)
             await query.edit_message_text(
                 "⭐ *جاري تجهيز فاتورة الدفع بالنجوم...*",
                 parse_mode=ParseMode.MARKDOWN,
@@ -1663,8 +1794,8 @@ async def handle_raksh_callback(
             await context.bot.send_invoice(
                 chat_id=user.id,
                 title=svc["name"],
-                description=f"{quantity} وحدة | {total_stars} نجمة",
-                payload=f"raksh_stars:{user.id}:{service_type}:{quantity}:{total_stars}",
+                description=f"{quantity} وحدة | {total_stars} نجمة | 📺 {channel_count} قناة",
+                payload=f"raksh_stars:{user.id}:{service_type}:{quantity}:{total_stars}:{channel_count}",
                 provider_token="",
                 currency="XTR",
                 prices=[LabeledPrice("خدمة الرشق", total_stars)],
@@ -1672,7 +1803,9 @@ async def handle_raksh_callback(
             return
         
         # بدء التنفيذ
-        await _start_raksh_execution(update, context, query, service_type, quantity, payment_method, total_cost)
+        await _start_raksh_execution(
+            update, context, query, service_type, quantity, payment_method, total_cost, channel_count
+        )
         return
 
 # ════════════════════════════════════════════════════════════
@@ -1682,7 +1815,7 @@ async def handle_raksh_callback(
 def _get_link_instruction(service_type: str) -> str:
     """نص تعليمات الرابط حسب الخدمة"""
     instructions = {
-        "story": "https://t.me/username/s/123 أو https://t.me/username/story/123",
+        "story": "https://t.me/username/s/123 (ستوري قناة) أو https://t.me/username/story/123 (ستوري شخصي)",
         "forced_ref": "@BotUsername start123  أو  t.me/BotUsername?start=123",
         "forced_ref_ai": "@BotUsername start123  أو  t.me/BotUsername?start=123",
         "comment": "https://t.me/channel/123",
@@ -1693,11 +1826,26 @@ def _get_link_instruction(service_type: str) -> str:
     }
     return instructions.get(service_type, "أرسل الرابط المطلوب")
 
-def _parse_raksh_rate_updates(text: str) -> dict[str, tuple[int, int]]:
-    """قراءة أسطر مثل «نجوم 1 لكل 10» و«نقاط 30 لكل 1»."""
+def _parse_raksh_rate_updates(text: str) -> dict[str, tuple[int, int] | int]:
+    """قراءة أسطر مثل «نجوم 1 لكل 10» و«نقاط 30 لكل 1» و«قناة نجوم 3» و«قناة نقاط 30»."""
     updates = {}
     for line in (text or "").splitlines():
         normalized = line.casefold().strip()
+        
+        # قراءة سعر القناة
+        if "قناة" in normalized:
+            numbers = re.findall(r"\d+", normalized)
+            if numbers:
+                price = int(numbers[0])
+                if price < 1:
+                    continue
+                if "نج" in normalized or "star" in normalized:
+                    updates["channel_stars"] = price
+                elif "نق" in normalized or "point" in normalized:
+                    updates["channel_points"] = price
+            continue
+        
+        # قراءة سعر الوحدة
         numbers = re.findall(r"\d+", normalized)
         if len(numbers) < 2:
             continue
@@ -1769,9 +1917,10 @@ async def _send_raksh_order_to_group(bot, user_id: int, quantity: int, payment_m
     try:
         await bot.send_message(
             ADMIN_GROUP_ID,
-            f"طلب {_raksh_order_label(service_type)} العدد: {quantity}\n"
-            f"المستخدم: {user_id}\n"
-            f"طريقة الدفع: {payment_method}",
+            f"🔥 طلب رشق {_raksh_order_label(service_type)}\n"
+            f"👤 المستخدم: {user_id}\n"
+            f"🔢 العدد: {quantity}\n"
+            f"💳 الدفع: {payment_method}",
         )
     except Exception:
         logger.exception("فشل إرسال طلب الرشق إلى كروب الطلبات")
@@ -1784,26 +1933,30 @@ async def _send_raksh_owner_result(
     failed_phones: list[str],
     failed_details: list[str],
 ) -> None:
-    """إرسال الحسابات الناجحة والفاشلة للمالك بعد اكتمال الطلب."""
+    """إرسال الحسابات الناجحة والفاشلة للمالك بعد اكتمال الطلب مع تفاصيل التعويض."""
     if not OWNER_ID:
         return
     try:
         failed_count = len(failed_phones)
         lines = [
-            f"نتيجة طلب {_raksh_order_label(service_type)} العدد: {quantity}",
+            f"🔥 *تقرير طلب الرشق*",
+            f"📌 الخدمة: {_raksh_order_label(service_type)}",
+            f"🔢 المطلوب: {quantity}",
             f"✅ المنفذة: {len(success_phones)}",
             f"❌ الفاشلة: {failed_count}",
             "",
-            "✅ الحسابات المنفذة:",
+            "ℹ️ تم تعويض الحسابات الفاشلة بحسابات بديلة تلقائياً.",
+            "",
+            "✅ *الحسابات المنفذة:*",
         ]
         lines.extend(f"• {phone}" for phone in success_phones)
-        lines.extend(["", "❌ الحسابات الفاشلة:"])
+        lines.extend(["", "❌ *الحسابات الفاشلة (تم التعويض):*"])
         if failed_phones:
             for index, phone in enumerate(failed_phones):
                 detail = failed_details[index] if index < len(failed_details) else "فشل التنفيذ"
                 lines.append(f"• {phone} — {detail}")
         else:
-            lines.append("• لا يوجد")
+            lines.append("• لا يوجد حسابات فاشلة")
 
         for chunk in _chunk_lines(lines):
             await bot.send_message(OWNER_ID, chunk)
@@ -1822,23 +1975,33 @@ async def _start_raksh_execution(
     quantity: int,
     payment_method: str,
     total_cost: int,
+    channel_count: int = 0,
     progress_message=None,
 ):
-    """بدء تنفيذ طلب الرشق"""
+    """بدء تنفيذ طلب الرشق مع عرض رسالة تأخير"""
     user = query.from_user if query is not None else update.effective_user
+    
+    # رسالة تحذيرية عن التأخير المتوقع
+    delay_warning = (
+        "⏳ *جارٍ تجهيز الحسابات...*\n\n"
+        "⚠️ قد يحدث تأخير ملحوظ في التنفيذ.\n"
+        "السبب: إزالة شك الرشق وضمان جودة الخدمة.\n"
+        "• الحسابات المستخدمة حقيقية\n"
+        "• تحتوي على ستوري، افتار، اسم عربي، يوزر وبايو\n"
+        "• الحسابات الفاشلة تُستبدل تلقائياً\n\n"
+        "🔢 جاري التجهيز: 0/{quantity}"
+    )
     
     # بناء رسالة التقدم
     if progress_message is None:
         progress_msg = await query.edit_message_text(
-            "✅ *بدأ التنفيذ الآن باستخدام الحسابات النشطة...*\n\n"
-            f"📊 0/{quantity}",
+            delay_warning,
             parse_mode=ParseMode.MARKDOWN
         )
     else:
         progress_msg = progress_message
         await progress_msg.edit_text(
-            "✅ *بدأ التنفيذ الآن باستخدام الحسابات النشطة...*\n\n"
-            f"📊 0/{quantity}",
+            delay_warning,
             parse_mode=ParseMode.MARKDOWN,
         )
     
@@ -1846,7 +2009,8 @@ async def _start_raksh_execution(
     sessions = _get_all_active_sessions(service_type)
     if not sessions:
         await progress_msg.edit_text(
-            "❌ لا توجد حسابات متاحة.",
+            "❌ لا توجد حسابات متاحة حالياً.\n\n"
+            "يرجى المحاولة لاحقاً بعد إضافة حسابات جديدة.",
             reply_markup=raksh_menu_kb(user.id == OWNER_ID)
         )
         if payment_method == "points":
@@ -1872,14 +2036,20 @@ async def _start_raksh_execution(
         "poll_option": context.user_data.get("raksh_poll_option"),
     }
     
-    # دالة تحديث التقدم
+    # دالة تحديث التقدم مع عرض التأخير
     async def update_progress(current, total, success, failed):
         try:
-            await progress_msg.edit_text(
+            remaining = total - current
+            status_msg = (
                 f"⏳ *جاري التنفيذ...*\n\n"
                 f"📊 {current}/{total}\n"
                 f"✅ نجح: {success}\n"
-                f"❌ فشل: {failed}",
+                f"❌ فشل: {failed}\n"
+                f"🔁 متبقي: {remaining}\n\n"
+                "⚠️ التأخير متوقع بسبب إزالة شك الرشق."
+            )
+            await progress_msg.edit_text(
+                status_msg,
                 parse_mode=ParseMode.MARKDOWN
             )
         except Exception:
@@ -1901,7 +2071,7 @@ async def _start_raksh_execution(
     if failed_count > 0 and payment_method == "points":
         refund = max(
             0,
-            total_cost - get_raksh_total(service_type, success_count, "points"),
+            total_cost - get_raksh_total(service_type, success_count, "points", channel_count),
         )
         add_points(user.id, refund)
     
@@ -1911,6 +2081,7 @@ async def _start_raksh_execution(
     result_text += f"المطلوب: {quantity}\n"
     result_text += f"✅ المنجز: {success_count}\n"
     result_text += f"❌ الفاشل: {failed_count}\n"
+    result_text += f"🔁 تم التعويض: {failed_count} حساب\n"
     if refund > 0:
         result_text += f"💰 تم تعويضك: {refund} نقطة\n"
     
@@ -1921,7 +2092,7 @@ async def _start_raksh_execution(
             result_text += f"\n... و{len(success_phones)-10} أخرى"
     
     if failed_details:
-        result_text += f"\n\n❌ *الفاشلة:*\n"
+        result_text += f"\n\n❌ *الفاشلة (تم التعويض):*\n"
         result_text += "\n".join(f"• {d}" for d in failed_details[:5])
         if len(failed_details) > 5:
             result_text += f"\n... و{len(failed_details)-5} أخرى"
@@ -1972,7 +2143,9 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "⚠️ لم أفهم الصيغة.\n"
                 "استخدم مثلاً:\n"
                 "⭐ نجوم 1 لكل 10\n"
-                "💰 نقاط 30 لكل 1",
+                "💰 نقاط 30 لكل 1\n"
+                "📺 قناة نجوم 3\n"
+                "📺 قناة نقاط 30",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔙 رجوع للأسعار", callback_data="raksh:settings")]
                 ]),
@@ -1987,11 +2160,16 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             price, bundle_quantity = updates["points"]
             set_setting(keys["points_price"], str(price))
             set_setting(keys["points_quantity"], str(bundle_quantity))
+        if "channel_stars" in updates:
+            set_setting(keys["channel_stars_price"], str(updates["channel_stars"]))
+        if "channel_points" in updates:
+            set_setting(keys["channel_points_price"], str(updates["channel_points"]))
         config = get_raksh_price_config(service_type)
         await update.message.reply_text(
             f"✅ تم حفظ أسعار {RAKSH_SERVICE_LABELS[service_type]}.\n\n"
             f"⭐ {config['stars_price']} نجمة لكل {config['stars_quantity']}\n"
-            f"💰 {config['points_price']} نقطة لكل {config['points_quantity']}\n\n"
+            f"💰 {config['points_price']} نقطة لكل {config['points_quantity']}\n"
+            f"📺 سعر القناة: ⭐{config['channel_stars_price']} / 💰{config['channel_points_price']}\n\n"
             "يمكنك إرسال تعديل آخر أو اختيار خدمة أخرى.",
             reply_markup=raksh_price_settings_kb(),
         )
@@ -2003,7 +2181,8 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text.strip() and not channel_refs:
             await update.message.reply_text(
                 "⚠️ لم أتعرف على أي قناة.\n"
-                "أرسل @username أو رابط t.me للقناة، ويمكنك إرسال أكثر من قناة مفصولة بمسافة.",
+                "أرسل @username أو رابط t.me للقناة، ويمكنك إرسال أكثر من قناة مفصولة بمسافة.\n\n"
+                "مثال: @channel1 @channel2",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
                 ]),
@@ -2012,10 +2191,19 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["raksh_channels"] = channel_refs
         context.user_data["raksh_step"] = "link"
         service_type = context.user_data.get("raksh_service")
+        link_instruction = _get_link_instruction(service_type)
+        if service_type == "story":
+            link_instruction = "https://t.me/username/s/123 (ستوري قناة) أو https://t.me/username/story/123 (ستوري شخصي)"
+        
+        channel_count = len(channel_refs)
+        channel_info = f"📺 عدد القنوات: {channel_count}\n" if channel_count > 0 else "📺 بدون قنوات\n"
+        
         await update.message.reply_text(
             f"✅ تم حفظ القنوات.\n\n"
+            f"{channel_info}"
             f"🔗 *أرسل الرابط المطلوب:*\n"
-            f"{_get_link_instruction(service_type)}",
+            f"{link_instruction}\n\n"
+            "ℹ️ التأخير متوقع بسبب إزالة شك الرشق.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]])
         )
@@ -2031,37 +2219,34 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             method = "stars"
             method_label = "النجوم"
         else:
+            service_type = context.user_data.get("raksh_service")
+            quantity = int(context.user_data.get("raksh_quantity", 1))
+            channel_count = len(context.user_data.get("raksh_channels") or [])
             await update.message.reply_text(
                 "⚠️ اكتب «نقاط» أو «نجوم»، أو اختر أحد الزرين الظاهرين.",
                 reply_markup=raksh_payment_kb(
-                    context.user_data.get("raksh_service"),
-                    context.user_data.get("raksh_quantity", 1),
-                    get_raksh_total(
-                        context.user_data.get("raksh_service"),
-                        context.user_data.get("raksh_quantity", 1),
-                        "points",
-                    ),
-                    get_raksh_total(
-                        context.user_data.get("raksh_service"),
-                        context.user_data.get("raksh_quantity", 1),
-                        "stars",
-                    ),
+                    service_type,
+                    quantity,
+                    get_raksh_total(service_type, quantity, "points", channel_count),
+                    get_raksh_total(service_type, quantity, "stars", channel_count),
+                    channel_count,
                 ),
             )
             return True
 
         service_type = context.user_data.get("raksh_service")
         quantity = int(context.user_data.get("raksh_quantity", 1))
+        channel_count = len(context.user_data.get("raksh_channels") or [])
         svc = RAKSH_SERVICES[service_type]
-        total = get_raksh_total(service_type, quantity, method)
+        total = get_raksh_total(service_type, quantity, method, channel_count)
         context.user_data["raksh_payment_method"] = method
 
-        # عند كتابة «نقاط» لا نترك الطلب عالقاً بانتظار زر تأكيد ثانٍ.
         if method == "points":
             if not deduct_points(user.id, total):
                 await update.message.reply_text(
                     f"❌ نقاطك غير كافية لإتمام الطلب.\n"
-                    f"التكلفة المطلوبة: {total} نقطة.",
+                    f"التكلفة المطلوبة: {total} نقطة.\n"
+                    f"📺 القنوات: {channel_count}",
                     reply_markup=raksh_menu_kb(user.id == OWNER_ID),
                 )
                 _clear_raksh_state(context)
@@ -2069,7 +2254,9 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             progress_message = await update.message.reply_text(
                 f"✅ تم الدفع بالنقاط وخصم {total} نقطة.\n"
-                "✅ بدأ التنفيذ الآن باستخدام الحسابات النشطة..."
+                f"📺 القنوات: {channel_count}\n"
+                "✅ بدأ التنفيذ الآن باستخدام الحسابات النشطة...\n"
+                "⚠️ قد يحدث تأخير ملحوظ بسبب إزالة شك الرشق.",
             )
             await _start_raksh_execution(
                 update,
@@ -2079,6 +2266,7 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 quantity=quantity,
                 payment_method="points",
                 total_cost=total,
+                channel_count=channel_count,
                 progress_message=progress_message,
             )
             return True
@@ -2088,9 +2276,11 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ تم اختيار الدفع بـ{method_label}.\n\n"
             f"الخدمة: {svc['name']}\n"
             f"العدد: {quantity}\n"
+            f"📺 القنوات: {channel_count}\n"
             f"التكلفة: {total} {'نقطة' if method == 'points' else 'نجمة'}\n\n"
-            "اضغط «تأكيد الطلب» للبدء.",
-            reply_markup=raksh_confirm_kb(service_type, quantity, total, method),
+            "اضغط «تأكيد الطلب» للبدء.\n"
+            "⚠️ التأخير متوقع بسبب إزالة شك الرشق.",
+            reply_markup=raksh_confirm_kb(service_type, quantity, total, method, channel_count),
         )
         return True
     
@@ -2108,12 +2298,12 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return True
         context.user_data["raksh_link"] = text
+        channel_count = len(context.user_data.get("raksh_channels") or [])
         
         # إذا كانت الخدمة تحتاج تفاعل
         if svc.get("has_reaction"):
             reaction_options = None
             if service_type == "premium_reaction":
-                # لا تعرض قائمة ثابتة قبل قراءة التفاعلات المفعلة للمنشور.
                 post_ref, post_id = _parse_post_link(text)
                 if not post_ref or post_id is None:
                     await update.message.reply_text(
@@ -2136,7 +2326,9 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["raksh_step"] = "reaction"
             await update.message.reply_text(
                 f"✅ تم حفظ الرابط.\n\n"
-                f"😊 *اختر التفاعل المطلوب:*",
+                f"📺 القنوات: {channel_count}\n"
+                f"😊 *اختر التفاعل المطلوب:*\n\n"
+                "ℹ️ التأخير متوقع بسبب إزالة شك الرشق.",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=raksh_reaction_kb(service_type, reaction_options)
             )
@@ -2147,7 +2339,9 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["raksh_step"] = "comment_text"
             await update.message.reply_text(
                 f"✅ تم حفظ الرابط.\n\n"
-                f"💬 *أرسل نص التعليق:*",
+                f"📺 القنوات: {channel_count}\n"
+                f"💬 *أرسل نص التعليق:*\n\n"
+                "ℹ️ التأخير متوقع بسبب إزالة شك الرشق.",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]])
             )
@@ -2158,8 +2352,10 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["raksh_step"] = "poll_option"
             await update.message.reply_text(
                 f"✅ تم حفظ الرابط.\n\n"
+                f"📺 القنوات: {channel_count}\n"
                 f"🔢 *أرسل رقم الخيار المطلوب:*\n"
-                f"(مثال: 1 أو 2 أو 3)",
+                f"(مثال: 1 أو 2 أو 3)\n\n"
+                "ℹ️ التأخير متوقع بسبب إزالة شك الرشق.",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]])
             )
@@ -2179,8 +2375,13 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return True
         await update.message.reply_text(
             f"✅ تم حفظ الرابط.\n\n"
+            f"📺 القنوات: {channel_count}\n"
             f"🔢 *أرسل عدد الوحدات المطلوبة:*\n"
-            f"(الحد الأقصى: {max_qty})",
+            f"(الحد الأقصى: {max_qty})\n\n"
+            f"⚠️ كل وحدة = حساب واحد\n"
+            f"• الحسابات الفاشلة تُستبدل تلقائياً\n"
+            f"• الحسابات التي جلساتها منتهية تُطرد تلقائياً\n"
+            "ℹ️ التأخير متوقع بسبب إزالة شك الرشق.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]])
         )
@@ -2192,6 +2393,7 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["raksh_step"] = "quantity"
         service_type = context.user_data.get("raksh_service")
         max_qty = _get_request_limit(user.id, service_type)
+        channel_count = len(context.user_data.get("raksh_channels") or [])
         if max_qty < 1:
             await update.message.reply_text(
                 "⚠️ لا توجد حسابات ذات جلسات متاحة حالياً لتنفيذ هذه الخدمة.",
@@ -2202,8 +2404,11 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return True
         await update.message.reply_text(
             f"✅ تم حفظ التعليق.\n\n"
+            f"📺 القنوات: {channel_count}\n"
             f"🔢 *أرسل عدد الوحدات المطلوبة:*\n"
-            f"(الحد الأقصى: {max_qty})",
+            f"(الحد الأقصى: {max_qty})\n\n"
+            f"⚠️ كل وحدة = حساب واحد\n"
+            "ℹ️ التأخير متوقع بسبب إزالة شك الرشق.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]])
         )
@@ -2224,6 +2429,7 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["raksh_step"] = "quantity"
         service_type = context.user_data.get("raksh_service")
         max_qty = _get_request_limit(user.id, service_type)
+        channel_count = len(context.user_data.get("raksh_channels") or [])
         if max_qty < 1:
             await update.message.reply_text(
                 "⚠️ لا توجد حسابات ذات جلسات متاحة حالياً لتنفيذ هذه الخدمة.",
@@ -2234,8 +2440,11 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return True
         await update.message.reply_text(
             f"✅ تم حفظ الخيار {normalized_option}.\n\n"
+            f"📺 القنوات: {channel_count}\n"
             f"🔢 *أرسل عدد الوحدات المطلوبة:*\n"
-            f"(الحد الأقصى: {max_qty})",
+            f"(الحد الأقصى: {max_qty})\n\n"
+            f"⚠️ كل وحدة = حساب واحد\n"
+            "ℹ️ التأخير متوقع بسبب إزالة شك الرشق.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]])
         )
@@ -2271,8 +2480,9 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         service_type = context.user_data.get("raksh_service")
         svc = RAKSH_SERVICES.get(service_type)
-        points_cost = get_raksh_total(service_type, quantity, "points")
-        stars_cost = get_raksh_total(service_type, quantity, "stars")
+        channel_count = len(context.user_data.get("raksh_channels") or [])
+        points_cost = get_raksh_total(service_type, quantity, "points", channel_count)
+        stars_cost = get_raksh_total(service_type, quantity, "stars", channel_count)
         
         context.user_data["raksh_quantity"] = quantity
         context.user_data["raksh_step"] = "payment"
@@ -2281,11 +2491,13 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📋 *مراجعة الطلب*\n\n"
             f"الخدمة: {svc['name']}\n"
             f"العدد: {quantity}\n"
+            f"📺 القنوات: {channel_count}\n"
             f"💰 السعر بالنقاط: {points_cost} نقطة\n"
             f"⭐ السعر بالنجوم: {stars_cost} نجمة\n\n"
+            f"⚠️ التأخير متوقع بسبب إزالة شك الرشق.\n\n"
             f"اختر طريقة الدفع:",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=raksh_payment_kb(service_type, quantity, points_cost, stars_cost)
+            reply_markup=raksh_payment_kb(service_type, quantity, points_cost, stars_cost, channel_count)
         )
         return True
     
@@ -2306,6 +2518,7 @@ async def raksh_pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE)
         service_type = parts[2]
         quantity = int(parts[3])
         total_stars = int(parts[4])
+        channel_count = int(parts[5]) if len(parts) > 5 else 0
         
         if (
             query.from_user.id == user_id
@@ -2328,12 +2541,11 @@ async def raksh_successful_payment(update: Update, context: ContextTypes.DEFAULT
         service_type = parts[2]
         quantity = int(parts[3])
         total_stars = int(parts[4])
+        channel_count = int(parts[5]) if len(parts) > 5 else 0
 
         if update.effective_user.id != user_id:
             return
 
-        # قد يكون مستخدم آخر قد استهلك الحصة بين الفاتورة والدفع؛
-        # أعد النجوم تلقائياً ولا تبدأ التنفيذ خارج الحد.
         if quantity > _get_request_limit(user_id, service_type):
             try:
                 await context.bot.refund_star_payment(
@@ -2352,15 +2564,14 @@ async def raksh_successful_payment(update: Update, context: ContextTypes.DEFAULT
                 )
             return
         
-        # حفظ البيانات
         context.user_data["raksh_service"] = service_type
         context.user_data["raksh_quantity"] = quantity
         context.user_data["raksh_payment_method"] = "stars"
         
-        # بدء التنفيذ
         await update.message.reply_text(
             "✅ *تم تأكيد الدفع بالنجوم!*\n\n"
-            "⏳ جاري بدء التنفيذ...",
+            "⏳ جاري بدء التنفيذ...\n"
+            "⚠️ قد يحدث تأخير ملحوظ بسبب إزالة شك الرشق.",
             parse_mode=ParseMode.MARKDOWN
         )
         await _start_raksh_execution(
@@ -2371,8 +2582,10 @@ async def raksh_successful_payment(update: Update, context: ContextTypes.DEFAULT
             quantity=quantity,
             payment_method="stars",
             total_cost=total_stars,
+            channel_count=channel_count,
             progress_message=await update.message.reply_text(
-                "⏳ *يتم تشغيل الحسابات النشطة الآن...*",
+                "⏳ *يتم تشغيل الحسابات النشطة الآن...*\n"
+                "⚠️ التأخير متوقع بسبب إزالة شك الرشق.",
                 parse_mode=ParseMode.MARKDOWN,
             ),
         )
@@ -2386,14 +2599,10 @@ async def cmd_raksh(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     _clear_raksh_state(context)
     
-    # التحقق من الحظر
     if not (user.id == OWNER_ID) and is_user_banned(user.id):
         await update.message.reply_text("🚫 تم حظرك من استخدام هذا البوت.")
         return
 
-    # لا تجعل تعطل استعلام قاعدة البيانات يمنع البوت من الرد على الأمر.
-    # عرض القائمة لا يعتمد على معرفة العدد، لذلك نستخدم قيمة توضيحية عند الفشل
-    # مع تسجيل الخطأ لمراجعته من سجلات التشغيل.
     try:
         available_sessions = get_available_sessions_count()
     except Exception:
@@ -2403,7 +2612,13 @@ async def cmd_raksh(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🔥 *خدمات الرشق*\n\n"
         "اختر الخدمة المطلوبة:\n"
-        f"📊 الحسابات المتاحة: *{available_sessions}*",
+        f"📊 الحسابات المتاحة: *{available_sessions}*\n\n"
+        "ℹ️ *ملاحظة مهمة:*\n"
+        "• قد يحدث تأخير ملحوظ أثناء التنفيذ\n"
+        "• السبب: إزالة شك الرشق وضمان جودة الخدمة\n"
+        "• الحسابات المستخدمة حقيقية\n"
+        "• تحتوي على ستوري، افتار، اسم عربي، يوزر وبايو\n"
+        "• الحسابات الفاشلة تُستبدل تلقائياً",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=raksh_menu_kb(user.id == OWNER_ID)
     )
