@@ -1365,6 +1365,7 @@ def _raksh_retry_failed_accounts(
     
     return retry_phones, retry_reasons, available_sessions
 
+════════════════════════════════════
 async def execute_raksh_service(
     service_type: str,
     quantity: int,
@@ -1388,9 +1389,18 @@ async def execute_raksh_service(
     failed_details = []
     used_phones = set()
     processed_count = 0
+    retry_pool = []  # حسابات بديلة للتعويض
     
     # نحتاج إلى تنفيذ العدد المطلوب حتى مع الفشل
-    while processed_count < quantity and shuffled:
+    while processed_count < quantity:
+        # إذا نفدت الحسابات، نأخذ من الـ retry_pool
+        if not shuffled and retry_pool:
+            shuffled = retry_pool.copy()
+            retry_pool = []
+            
+        if not shuffled:
+            break
+            
         session = shuffled.pop(0)
         phone = session["phone_number"]
         if phone in used_phones:
@@ -1398,7 +1408,6 @@ async def execute_raksh_service(
         used_phones.add(phone)
         
         if not _reserve_raksh_execution_slot(user_id, service_type, phone):
-            # إذا وصلنا لحد الساعة، نوقف التنفيذ
             failed_phones.append(phone)
             failed_details.append("⏳ تم إيقاف التنفيذ مؤقتاً (حد الساعة)")
             break
@@ -1413,73 +1422,43 @@ async def execute_raksh_service(
             success_count += 1
             success_phones.append(phone)
         else:
-            failed_phones.append(phone)
-            failed_details.append(msg)
-            # إذا كان الفشل بسبب جلسة غير مصرح بها، نحذف الحساب
-            if "الجلسة غير مصرح بها" in msg or "تم طرد الحساب" in msg:
+            # التحقق من سبب الفشل
+            is_session_error = any(keyword in msg for keyword in [
+                "الجلسة غير مصرح بها",
+                "تم طرد الحساب",
+                "session expired",
+                "AuthKeyUnregistered",
+                "SessionRevoked",
+                "UserDeactivated",
+                "AccountBanned",
+            ])
+            
+            if is_session_error:
+                # ✅ طرد الحساب نهائياً (مشكلة جلسة)
                 with db_conn() as c:
                     c.execute("DELETE FROM number_stock WHERE phone_number=%s AND ever_sold IS NOT TRUE", (phone,))
-                logger.info(f"🗑 تم حذف الرقم {phone} تلقائياً (جلسة منتهية)")
+                logger.info(f"🗑 تم حذف الرقم {phone} تلقائياً (جلسة منتهية/ملغاة)")
+                failed_phones.append(phone)
+                failed_details.append(f"🗑 {msg} — تم طرد الحساب")
+            else:
+                # ❌ لا نطرد الحساب، فقط نضيفه للفشل ونستبدله بآخر
+                failed_phones.append(phone)
+                failed_details.append(f"🔄 {msg} — تم التعويض بحساب بديل")
+                
+                # نضيف حساب بديل من المخزون لتعويض هذا الفشل
+                if shuffled:
+                    retry_pool.append(shuffled.pop(0))
         
         processed_count += 1
         
         if progress_callback:
             await progress_callback(processed_count, quantity, success_count, len(failed_phones))
             
-        if processed_count < quantity and shuffled:
+        if processed_count < quantity and (shuffled or retry_pool):
             delay = _get_delay_seconds(service_type)
             await asyncio.sleep(delay)
     
-    # محاولة تعويض الحسابات الفاشلة بحسابات بديلة
-    if success_count < quantity and shuffled:
-        # نحاول إكمال العدد المطلوب بحسابات إضافية
-        remaining_needed = quantity - success_count
-        additional_sessions = []
-        
-        for session in shuffled:
-            if session["phone_number"] not in used_phones and len(additional_sessions) < remaining_needed:
-                additional_sessions.append(session)
-        
-        # تنفيذ الحسابات الإضافية
-        for session in additional_sessions:
-            phone = session["phone_number"]
-            used_phones.add(phone)
-            
-            if not _reserve_raksh_execution_slot(user_id, service_type, phone):
-                break
-                
-            try:
-                ok, msg = await executor(session=session, params=params, is_first=False)
-            except Exception as e:
-                ok = False
-                msg = f"❌ خطأ: {str(e)[:80]}"
-                
-            if ok:
-                success_count += 1
-                success_phones.append(phone)
-            else:
-                failed_phones.append(phone)
-                failed_details.append(msg)
-                if "الجلسة غير مصرح بها" in msg or "تم طرد الحساب" in msg:
-                    with db_conn() as c:
-                        c.execute("DELETE FROM number_stock WHERE phone_number=%s AND ever_sold IS NOT TRUE", (phone,))
-                    logger.info(f"🗑 تم حذف الرقم {phone} تلقائياً (جلسة منتهية)")
-            
-            processed_count += 1
-            
-            if progress_callback:
-                await progress_callback(processed_count, quantity, success_count, len(failed_phones))
-                
-            if processed_count < quantity and shuffled:
-                delay = _get_delay_seconds(service_type)
-                await asyncio.sleep(delay)
-    
     return success_count, success_phones, failed_phones, failed_details
-
-# ════════════════════════════════════════════════════════════
-# ═══ 5. معالج الأزرار الرئيسي ═══
-# ════════════════════════════════════════════════════════════
-
 async def handle_raksh_callback(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
