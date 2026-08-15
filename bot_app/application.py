@@ -7,6 +7,12 @@ domain.
 
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
+from .raksh_system import (
+    cmd_raksh,
+    handle_raksh_callback,
+    raksh_pre_checkout,
+    raksh_successful_payment,
+)
 
 def main():
     # ── إنشاء event loop جديد في كل تشغيل لتفادي RuntimeError: Event loop is closed ──
@@ -63,6 +69,20 @@ def main():
     # 🔥 أمر اختبار AI (للمالك فقط)
     # ════════════════════════════════════════════════════════════════
     app.add_handler(CommandHandler("testai", cmd_test_ai))
+    # ════════════════════════════════════════════════════════════════
+
+    # ════════════════════════════════════════════════════════════════
+    # 🔥 نظام الرشق الجديد (RAKSH SYSTEM)
+    # ════════════════════════════════════════════════════════════════
+    app.add_handler(CommandHandler("raksh", cmd_raksh))
+    app.add_handler(
+        CallbackQueryHandler(
+            handle_raksh_callback,
+            pattern=r"^(?:raksh_menu|raksh_cancel|raksh(?:_|:))",
+        )
+    )
+    app.add_handler(PreCheckoutQueryHandler(raksh_pre_checkout))
+    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, raksh_successful_payment))
     # ════════════════════════════════════════════════════════════════
     
     app.add_handler(MessageHandler(

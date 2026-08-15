@@ -128,6 +128,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as _gate_err:
             logger.warning(f"⚠️ خطأ في فحص القنوات الإجبارية للمستخدم {user.id}: {_gate_err}")
 
+    # ─── نظام الرشق يستخدم نفس مسار استقبال الرسائل لكل خطوات الطلب ───
+    if context.user_data.get("raksh_step"):
+        from .raksh_system import handle_raksh_text
+        if await handle_raksh_text(update, context):
+            return
+
     # ─── الخدمات الأسطورية تستخدم نفس مسار استقبال الرسائل لكل أنواعها ───
     if await legendary_handle_text(update, context, text):
         return
