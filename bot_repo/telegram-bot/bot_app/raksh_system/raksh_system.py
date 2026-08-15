@@ -950,32 +950,72 @@ async def _execute_forced_ref(session, params, is_first):
         await client.disconnect()
 
 async def _execute_forced_ref_ai(session, params, is_first):
-    from telethon.tl.functions.contacts import ResolveUsernameRequest
-    from telethon.tl.functions.messages import StartBotRequest
+    """
+    تنفيذ إحالة بوت مع تحقق (لخدمات الرشق).
+    التسلسل: ينضم للقنوات -> يضغط Start -> يضغط زر 'تحقق' -> يحل أي تحقق (رياضيات/إيموجي/أزرار)
+    """
     try:
+        # استيراد الدالة المتطورة من ملف referrals (التي تدعم الأزرار والرياضيات والإيموجي)
         from ..referrals import solve_captcha_with_ai
     except ImportError:
         return False, "لا يمكن استيراد solve_captcha_with_ai"
+
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     await asyncio.wait_for(client.connect(), timeout=20)
     try:
         if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
             return False, "الجلسة غير مصرح بها."
+
+        # ─── 1. الانضمام للقنوات الإجبارية (إذا وُجدت) ───
         if is_first and params.get("channel_ref"):
             await _join_channel_and_schedule_leave(client, params["channel_ref"])
+
+        # ─── 2. تحليل رابط البوت والضغط على زر البدء ───
         bot_username, start_param = _parse_bot_link(params["link"])
         if not bot_username:
             return False, "رابط البوت غير صحيح."
         clean_username = bot_username.lstrip("@").strip()
+        
         resolved = await client(ResolveUsernameRequest(clean_username))
         bot_entity = resolved.users[0] if resolved.users else resolved.chats[0]
+        
+        # ضغط زر البدء مع الكود
         await client(StartBotRequest(bot=bot_entity, peer=bot_entity, start_param=start_param or ""))
-        await asyncio.sleep(5)
-        msgs = await client.get_messages(bot_entity, limit=15)
+        await asyncio.sleep(3)  # انتظار وصول رسالة الترحيب/التحقق
+
+        # ─── 3. البحث عن زر "تحقق من الاشتراك" والضغط عليه ───
+        msgs = await asyncio.wait_for(client.get_messages(bot_entity, limit=10), timeout=10)
+        
+        # دالة مساعدة للبحث عن زر التحقق (مضمنة هنا لتكون الخدمة مستقلة)
+        async def _click_check_button(local_msgs):
+            check_keywords = ["تحقق", "اشتركت", "✅", "تم", "joined", "check", "verify", "subscribed"]
+            for msg in local_msgs:
+                if msg.buttons:
+                    for row in msg.buttons:
+                        for btn in row:
+                            btn_text = (getattr(btn, "text", "") or "").lower()
+                            if any(k in btn_text for k in check_keywords):
+                                try:
+                                    await btn.click()
+                                    return True
+                                except Exception:
+                                    pass
+            return False
+
+        check_clicked = await _click_check_button(msgs)
+        if check_clicked:
+            await asyncio.sleep(3)  # انتظار ظهور الكابتشا بعد الضغط
+            msgs = await asyncio.wait_for(client.get_messages(bot_entity, limit=10), timeout=10)
+
+        # ─── 4. حل التحقق بالذكاء الاصطناعي المتطور ───
+        # الدالة الجديدة في referrals.py تدعم: أزرار، أزرار إيموجي، مسائل رياضية، إلخ
         solved, detail = await solve_captcha_with_ai(client, bot_entity, msgs, session["phone_number"], max_attempts=3)
+        
         if not solved:
             return False, f"فشل التحقق: {detail}"
-        return True, f"✅ تمت الإحالة مع التحقق من {session['phone_number']}"
+
+        return True, f"✅ تمت الإحالة مع التحقق من {session['phone_number']} (التحقق: {detail})"
+
     except Exception as e:
         return False, f"❌ فشل: {str(e)[:80]}"
     finally:
