@@ -13,6 +13,30 @@ import asyncio
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
+def normalize_owner_contact(raw: str) -> str | None:
+    """يحوّل رابط المالك إلى رابط Telegram صالح لزر Inline."""
+    value = (raw or "").strip()
+    if not value:
+        return ""
+
+    if value.startswith("@"):
+        username = value[1:].strip()
+        if re.fullmatch(r"[A-Za-z0-9_]{5,32}", username):
+            return f"https://t.me/{username}"
+        return None
+
+    telegram_match = re.fullmatch(
+        r"(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)/([A-Za-z0-9_]{5,32})/?",
+        value,
+        flags=re.IGNORECASE,
+    )
+    if telegram_match:
+        return f"https://t.me/{telegram_match.group(1)}"
+
+    if re.match(r"^https://", value, flags=re.IGNORECASE):
+        return value
+    return None
+
 def _normalize_desc(desc: str) -> str:
     """يُطبّع الاختصارات الشائعة في أوصاف خدمات SMM إلى العربية.
     K → ألف  |  /D → /يوم  |  /H → /ساعة  |  /W → /أسبوع  |  /M → /شهر

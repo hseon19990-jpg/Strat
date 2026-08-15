@@ -524,7 +524,8 @@ def init_db():
               ('mandatory_channel_cost', '200'),
               ('internal_channel_cost', '100'),
               ('welcome_message', 'أهلاً وسهلاً بك في البوت!'),
-              ('owner_contact', ''),
+              ('owner_contact', 'https://t.me/Mo07_ed'),
+              ('owner_contact_mo07ed_migration_v1', '0'),
               ('total_bot_orders', '0'),
               ('total_bot_users', '0'),
               ('asiacell_text', '⚠️ الشحن التلقائي عبر اسيا سيل غير متاح حالياً.\nيرجى التواصل مع المالك.'),
@@ -581,6 +582,19 @@ def init_db():
               c.execute(
                   "INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING",
                   (k, v)
+              )
+          migration_row = c.execute(
+              "SELECT value FROM settings WHERE key=%s",
+              ("owner_contact_mo07ed_migration_v1",),
+          ).fetchone()
+          if migration_row and migration_row["value"] != "1":
+              c.execute(
+                  "UPDATE settings SET value=%s WHERE key=%s",
+                  ("https://t.me/Mo07_ed", "owner_contact"),
+              )
+              c.execute(
+                  "UPDATE settings SET value='1' WHERE key=%s",
+                  ("owner_contact_mo07ed_migration_v1",),
               )
       try:
           with db_conn() as c:

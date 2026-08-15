@@ -558,8 +558,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if state == "await_mb_url" and is_own:
-        if not (text.startswith("http://") or text.startswith("https://")):
-            await update.message.reply_text("⚠️ الرابط يجب أن يبدأ بـ http:// أو https://")
+        normalized_url = normalize_owner_contact(text)
+        if not normalized_url:
+            await update.message.reply_text(
+                "⚠️ الرابط غير صحيح. أرسل رابطاً يبدأ بـ `https://` أو رابط Telegram مثل "
+                "`t.me/username` أو `@username`.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
             return
         menu  = context.user_data.get("mb_menu")
         label = context.user_data.get("mb_label")
@@ -568,10 +573,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             max_order = c.execute("SELECT COALESCE(MAX(sort_order),-1) AS m FROM menu_items WHERE menu=?", (menu,)).fetchone()["m"]
             c.execute(
                 "INSERT INTO menu_items (menu,label,action_type,action_value,width,sort_order,enabled) VALUES (?,?,?,?,?,?,1)",
-                (menu, label, "url", text, 2, max_order + 1)
+                (menu, label, "url", normalized_url, 2, max_order + 1)
             )
         if save_as_owner_contact:
-            set_setting("owner_contact", text)
+            set_setting("owner_contact", normalized_url)
         context.user_data["state"] = "main_menu"
         await update.message.reply_text(f"✅ تمت إضافة الزر '{label}'.",
                                          reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع للإدارة", callback_data=f"mb_menu:{menu}")]]))
@@ -3148,15 +3153,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text.strip().lower() == "حذف":
             set_setting("owner_contact", "")
             await update.message.reply_text("✅ تم حذف رابط تواصل المالك.", reply_markup=owner_settings_kb())
-        elif text.strip().startswith("https://t.me/") or text.strip().startswith("https://"):
-            set_setting("owner_contact", text.strip())
-            await update.message.reply_text(f"✅ تم حفظ رابط التواصل:\n{text.strip()}", reply_markup=owner_settings_kb())
         else:
+            normalized_contact = normalize_owner_contact(text)
+            if not normalized_contact:
+                await update.message.reply_text(
+                    "⚠️ الرابط غير صحيح. أرسل رابطاً مثل:\n"
+                    "`https://t.me/username` أو `t.me/username` أو `@username`\n\n"
+                    "أو أرسل *حذف* لإزالة الرابط.",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+                return
+            set_setting("owner_contact", normalized_contact)
             await update.message.reply_text(
-                "⚠️ الرابط غير صحيح. يجب أن يبدأ بـ `https://t.me/` مثال:\n`https://t.me/username`\n\nأو أرسل *حذف* لإزالة الرابط.",
-                parse_mode=ParseMode.MARKDOWN
+                f"✅ تم حفظ رابط التواصل:\n{normalized_contact}",
+                reply_markup=owner_settings_kb(),
             )
-            return
         context.user_data["state"] = "main_menu"
         return
 

@@ -601,7 +601,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             return
 
         if data == "contact_support":
-            contact = get_setting("owner_contact") or ""
+            contact = normalize_owner_contact(get_setting("owner_contact") or "")
             if not contact:
                 await q.edit_message_text(
                     "⚠️ خدمة الدعم غير متاحة حالياً.",

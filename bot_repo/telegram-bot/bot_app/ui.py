@@ -1760,7 +1760,7 @@ def back_kb(target="main_menu"):
 
 def contact_owner_row() -> list:
     """يُرجع صفاً يحتوي زر تواصل مع المالك إن كان رابط التواصل مضبوطاً، وإلا قائمة فارغة."""
-    contact = get_setting("owner_contact") or ""
+    contact = normalize_owner_contact(get_setting("owner_contact") or "")
     if not contact:
         return []
     label = get_setting("owner_contact_label") or "💬 تواصل مع المالك"
