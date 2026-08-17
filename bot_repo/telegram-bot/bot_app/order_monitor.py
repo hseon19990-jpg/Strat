@@ -1,9 +1,10 @@
-"""مراقب الطلبات - يرسل تقرير الطلبات غير المكتملة فور التشغيل"""
+"""مراقب الطلبات - يرسل تقرير الطلبات غير المكتملة فور التشغيل وكل 24 ساعة"""
 
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
 import datetime
+import asyncio
 
 # ==================== دوال مساعدة ====================
 
@@ -108,15 +109,28 @@ async def _send_report_to_owner(bot):
     
     logger.info(f"📊 تم إرسال تقرير: {len(pending_orders)} طلب معلق")
 
-# ==================== التشغيل الفوري ====================
+# ==================== التشغيل الفوري والدوري ====================
 
 async def startup_report(app):
     """إرسال التقرير فور تشغيل البوت"""
-    await asyncio.sleep(3)  # انتظار 3 ثوانٍ لضمان اكتمال الاتصال
+    await asyncio.sleep(3)
     await _send_report_to_owner(app.bot)
+
+async def daily_report_job(context: ContextTypes.DEFAULT_TYPE):
+    """مهمة يومية ترسل تقرير الطلبات غير المكتملة للمالك"""
+    logger.info("📊 بدء إرسال التقرير اليومي...")
+    await _send_report_to_owner(context.bot)
 
 def setup_order_monitor(application):
     """تهيئة مراقب الطلبات"""
-    # إرسال التقرير فوراً عند التشغيل
+    # 1. إرسال التقرير فوراً عند التشغيل
     asyncio.create_task(startup_report(application))
-    logger.info("📊 تم تفعيل تقرير الطلبات غير المكتملة (سيُرسل فوراً)")
+    
+    # 2. جدولة التقرير اليومي (كل 24 ساعة)
+    if application.job_queue:
+        application.job_queue.run_repeating(
+            daily_report_job,
+            interval=86400,  # 24 ساعة
+            first=86400      # أول مرة بعد 24 ساعة (ليس فوراً)
+        )
+        logger.info("📊 تم تفعيل التقرير اليومي للطلبات (كل 24 ساعة)")
