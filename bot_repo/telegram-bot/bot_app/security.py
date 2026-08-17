@@ -881,9 +881,20 @@ def unban_user_db(user_id: int) -> bool:
         return c.rowcount > 0
 
 def lookup_user_by_id_or_username(text: str) -> dict | None:
-    """يبحث عن مستخدم بالـ ID أو بالـ username (بدون أو مع @).
-    يُرجع صف المستخدم كـ dict أو None إن لم يُوجد."""
-    text = text.strip().lstrip("@")
+    """يبحث عن مستخدم بالـ ID أو بالـ username.
+
+    يقبل:
+    - Telegram ID رقمي
+    - username مع أو بدون ``@``
+    - رابط ``t.me/username`` أو ``https://t.me/username``
+
+    البحث باليوزر غير حساس لحالة الأحرف، ويعيد صف المستخدم كـ dict أو None.
+    """
+    text = (text or "").strip()
+    text = re.sub(r"^(?:https?://)?t\.me/", "", text, flags=re.IGNORECASE)
+    text = text.strip().lstrip("@").strip()
+    if not text:
+        return None
     with db_conn() as c:
         if text.isdigit():
             row = c.execute("SELECT * FROM users WHERE user_id=%s", (int(text),)).fetchone()
@@ -1537,3 +1548,7 @@ async def check_pending_orders_job(context: ContextTypes.DEFAULT_TYPE):
                 pass
 
 # ────────────────────────────────────────────────────────────
+# ضع هذا في نهاية ملف security.py
+async def run_referral_tasks_job(context: ContextTypes.DEFAULT_TYPE):
+    """مهمة الإحالة التلقائية (Placeholder)"""
+    logger.info("⚠️ run_referral_tasks_job: الدالة موجودة لمنع انهيار البوت.")
