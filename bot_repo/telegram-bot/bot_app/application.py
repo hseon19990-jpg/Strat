@@ -183,6 +183,13 @@ def main():
             delete_group_service_messages
         ))
 
+    # ════════════════════════════════════════════════════════════════
+    # 🔥 تقرير الطلبات غير المكتملة للمالك فقط
+    # ════════════════════════════════════════════════════════════════
+    from .order_monitor import setup_order_monitor
+    setup_order_monitor(app)
+    # ════════════════════════════════════════════════════════════════
+
     async def post_init(application):
         # ─── معالج عالمي للاستثناءات غير المعالجة في asyncio tasks ────────
         def _handle_asyncio_exception(loop, context):
