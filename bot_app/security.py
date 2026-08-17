@@ -1548,3 +1548,7 @@ async def check_pending_orders_job(context: ContextTypes.DEFAULT_TYPE):
                 pass
 
 # ────────────────────────────────────────────────────────────
+# ضع هذا في نهاية ملف security.py
+async def run_referral_tasks_job(context: ContextTypes.DEFAULT_TYPE):
+    """مهمة الإحالة التلقائية (Placeholder)"""
+    logger.info("⚠️ run_referral_tasks_job: الدالة موجودة لمنع انهيار البوت.")
