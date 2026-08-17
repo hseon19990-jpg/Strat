@@ -4,9 +4,35 @@ This section is loaded with the shared compatibility namespace so existing
 handlers can continue to call each other while the code stays separated by
 domain.
 """
-
+from .security import run_referral_tasks_job
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
+from telegram.ext import ExtBot, Updater
+
+class ResilientExtBot(ExtBot):
+    """Let polling handle Telegram bootstrap retries instead of blocking on getMe()."""
+
+    @property
+    def id(self) -> int:
+        # Application.start() uses bot.id only for asyncio task names. Keep
+        # startup non-blocking until the background getMe() call succeeds.
+        return self._bot_user.id if self._bot_user is not None else 0
+
+    async def initialize(self) -> None:
+        if self._initialized:
+            return
+        if self.rate_limiter:
+            await self.rate_limiter.initialize()
+        await asyncio.gather(self._request[0].initialize(), self._request[1].initialize())
+        self._initialized = True
+
+class ResilientUpdater(Updater):
+    """Start getUpdates immediately; webhook cleanup runs independently."""
+
+    async def _bootstrap(self, *args, **kwargs) -> None:
+        logger.info("ℹ️ Skipping blocking Telegram bootstrap request; polling starts now")
+
+# ─── استيراد نظام الرشق الجديد من داخل حزمة bot_app ────────────────────────
 from .raksh_system import (
     cmd_raksh,
     handle_raksh_callback,
@@ -37,16 +63,35 @@ def main():
     start_health_server()
 
     from telegram.request import HTTPXRequest
+
+    # Railway can occasionally take longer to establish or return a Telegram
+    # API connection. Configure both request clients: get_me() and normal bot
+    # calls use the default client, while long polling uses the updates client.
+    telegram_request = HTTPXRequest(
+        connection_pool_size=8,
+        read_timeout=120,
+        connect_timeout=60,
+        write_timeout=60,
+        pool_timeout=60,
+    )
+    updates_request = HTTPXRequest(
+        connection_pool_size=2,
+        read_timeout=120,
+        connect_timeout=60,
+        write_timeout=60,
+        pool_timeout=60,
+    )
+
+    telegram_bot = ResilientExtBot(
+        token=BOT_TOKEN,
+        request=telegram_request,
+        get_updates_request=updates_request,
+    )
+    polling_updater = ResilientUpdater(telegram_bot, asyncio.Queue())
     app = (
         ApplicationBuilder()
-        .token(BOT_TOKEN)
+        .updater(polling_updater)
         .concurrent_updates(True)
-        .get_updates_request(HTTPXRequest(
-            connection_pool_size=1,
-            read_timeout=60,
-            connect_timeout=30,
-            write_timeout=30,
-        ))
         .build()
     )
 
@@ -70,14 +115,18 @@ def main():
     # ════════════════════════════════════════════════════════════════
     app.add_handler(CommandHandler("testai", cmd_test_ai))
     # ════════════════════════════════════════════════════════════════
-
+    
     # ════════════════════════════════════════════════════════════════
     # 🔥 نظام الرشق الجديد (RAKSH SYSTEM)
     # ════════════════════════════════════════════════════════════════
     app.add_handler(CommandHandler("raksh", cmd_raksh))
+    # لا تلتقط أزرار البوت العامة؛ هذا المعالج مخصص لـ Raksh فقط.
+    # بدون pattern كان يطابق كل CallbackQuery ويمنع handle_callback من العمل.
     app.add_handler(
         CallbackQueryHandler(
             handle_raksh_callback,
+            # Match the menu callback as well as every Raksh step explicitly.
+            # The old catch-all handler below must never consume these queries.
             pattern=r"^(?:raksh_menu|raksh_cancel|raksh(?:_|:))",
         )
     )
@@ -134,6 +183,59 @@ def main():
             delete_group_service_messages
         ))
 
+    # ════════════════════════════════════════════════════════════════
+    # 🔥 أمر الطلبات المتأخرة (للمالك فقط) - مدمج هنا لضمان العمل
+    # ════════════════════════════════════════════════════════════════
+    async def cmd_delayed_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user = update.effective_user
+        if user.id != OWNER_ID:
+            await update.message.reply_text("⛔ هذا الأمر للمالك فقط.")
+            return
+        
+        await update.message.reply_text("⏳ *جاري فحص الطلبات المتأخرة...*", parse_mode=ParseMode.MARKDOWN)
+        
+        threshold = datetime.datetime.now(timezone.utc) - datetime.timedelta(hours=6)
+        
+        with db_conn() as c:
+            rows = c.execute("""
+                SELECT o.order_code, o.user_id, o.created_at, 
+                       s.name_ar AS service_name, s.panel AS panel
+                FROM orders o
+                LEFT JOIN services s ON s.id = o.service_id
+                WHERE o.status = 'pending'
+                  AND o.created_at::timestamptz < %s
+                  AND o.api_order_id IS NOT NULL
+                  AND o.api_order_id != ''
+                ORDER BY o.created_at ASC
+            """, (threshold,)).fetchall()
+        
+        orders = [dict(row) for row in rows]
+        
+        if not orders:
+            await update.message.reply_text("📊 *الطلبات المتأخرة*\n\n✅ لا توجد طلبات مضى عليها أكثر من 6 ساعات.")
+            return
+        
+        from collections import defaultdict
+        orders_by_panel = defaultdict(list)
+        for order in orders:
+            orders_by_panel[order['panel'] or 1].append(order)
+        
+        for panel, order_list in orders_by_panel.items():
+            panel_names = {1: "SMMMAIN", 2: "JustAnotherPanel", 3: "SmmFollows"}
+            panel_name = panel_names.get(panel, "موقع غير معروف")
+            
+            lines = [f"📊 *الطلبات المتأخرة - {panel_name}*", f"📦 عدد الطلبات: {len(order_list)}", ""]
+            for o in order_list:
+                created = o['created_at']
+                date_str = created.strftime("%Y-%m-%d %H:%M") if hasattr(created, 'strftime') else str(created)[:16]
+                delay = round((datetime.datetime.now(timezone.utc) - created).total_seconds() / 3600, 1)
+                lines.append(f"  └ 📌 `{o['order_code']}` — {date_str} (تأخير {delay} ساعة)")
+            
+            await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+    
+    app.add_handler(CommandHandler("delayed_orders", cmd_delayed_orders))
+    # ════════════════════════════════════════════════════════════════
+
     async def post_init(application):
         # ─── معالج عالمي للاستثناءات غير المعالجة في asyncio tasks ────────
         def _handle_asyncio_exception(loop, context):
@@ -150,33 +252,69 @@ def main():
         except Exception:
             pass
 
-        # ─── حذف أي webhook مسجّل مسبقاً حتى يعمل long polling بشكل صحيح ───
-        try:
-            await application.bot.delete_webhook(drop_pending_updates=True)
-            logger.info("✅ Webhook deleted — polling mode active")
-        except Exception as _wh_err:
-            logger.warning(f"⚠️ تعذّر حذف webhook: {_wh_err}")
-
-        await application.bot.set_my_commands([
-            BotCommand("start", "🏠 القائمة الرئيسية"),
-        ])
-        if OWNER_ID:
+        async def _configure_telegram():
+            """Configure optional Telegram metadata without blocking polling startup."""
             try:
-                await application.bot.set_my_commands(
-                    [
-                        BotCommand("start",     "🏠 القائمة الرئيسية"),
-                        BotCommand("admin",     "⚙️ لوحة المالك"),
-                        BotCommand("addpoints", "💰 إضافة/خصم نقاط لمستخدم"),
-                        BotCommand("broadcast",          "📢 إرسال رسالة جماعية"),
-                        BotCommand("status",             "🔍 فحص حالة طلب"),
-                        BotCommand("compensate_partial", "💰 تعويض أصحاب الطلبات الجزئية"),
-                        BotCommand("refund_mandatory", "🔁 استرجاع تمويلات الاشتراك الإجباري"),
-                        BotCommand("testai",             "🧪 اختبار مفاتيح AI"),
-                    ],
-                    scope=BotCommandScopeChat(chat_id=OWNER_ID)
-                )
+                await application.bot.set_my_commands([
+                    BotCommand("start", "🏠 القائمة الرئيسية"),
+                    BotCommand("raksh", "🔥 خدمات الرشق"),
+                ])
+                if OWNER_ID:
+                    try:
+                        await application.bot.set_my_commands(
+                            [
+                                BotCommand("start",     "🏠 القائمة الرئيسية"),
+                                BotCommand("admin",     "⚙️ لوحة المالك"),
+                                BotCommand("addpoints", "💰 إضافة/خصم نقاط لمستخدم"),
+                                BotCommand("broadcast",          "📢 إرسال رسالة جماعية"),
+                                BotCommand("status",             "🔍 فحص حالة طلب"),
+                                BotCommand("compensate_partial", "💰 تعويض أصحاب الطلبات الجزئية"),
+                                BotCommand("refund_mandatory", "🔁 استرجاع تمويلات الاشتراك الإجباري"),
+                                BotCommand("testai",             "🧪 اختبار مفاتيح AI"),
+                                BotCommand("raksh",              "🔥 خدمات الرشق"),
+                            ],
+                            scope=BotCommandScopeChat(chat_id=OWNER_ID)
+                        )
+                    except Exception as e:
+                        logger.warning(f"⚠️ تعذّر تعيين أوامر المالك الخاصة (ربما لم يبدأ المالك محادثة مع البوت بعد): {e}")
+
+                global _OWN_BOT_USERNAME
+                _me = await application.bot.get_me()
+                _OWN_BOT_USERNAME = (_me.username or "").lower().strip()
+                logger.info(f"✅ Telegram API connected — bot username: @{_OWN_BOT_USERNAME}")
+            except (TimedOut, NetworkError) as e:
+                logger.warning(f"⚠️ تعذّر مزامنة إعدادات Telegram مؤقتاً؛ polling مستمر: {e}")
             except Exception as e:
-                logger.warning(f"⚠️ تعذّر تعيين أوامر المالك الخاصة (ربما لم يبدأ المالك محادثة مع البوت بعد): {e}")
+                logger.warning(f"⚠️ تعذّر مزامنة إعدادات Telegram: {e}")
+
+        async def _clear_webhook():
+            retry_delay = 5
+            while True:
+                try:
+                    await application.bot.delete_webhook(
+                        drop_pending_updates=True,
+                        read_timeout=10,
+                        write_timeout=10,
+                        connect_timeout=10,
+                        pool_timeout=10,
+                    )
+                    logger.info("✅ Webhook cleanup completed")
+                    return
+                except (TimedOut, NetworkError) as e:
+                    logger.warning(
+                        f"⚠️ Webhook cleanup مؤجل بسبب اتصال Telegram: {e}; "
+                        f"إعادة المحاولة بعد {retry_delay}ث"
+                    )
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 60)
+                except Exception as e:
+                    logger.warning(f"⚠️ تعذّر تنظيف Webhook: {e}; إعادة المحاولة بعد {retry_delay}ث")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 60)
+
+        asyncio.create_task(_configure_telegram(), name="telegram-metadata-sync")
+        asyncio.create_task(_clear_webhook(), name="telegram-webhook-cleanup")
+        logger.info("✅ Telegram polling startup is non-blocking; webhook cleanup runs in background")
         
         # ════════════════════════════════════════════════════════════════
         # 🔥 سجل حالة مفاتيح AI عند بدء التشغيل
@@ -189,15 +327,7 @@ def main():
             logger.warning("⚠️ لا يوجد مفتاح Groq أو DeepSeek — خدمات التحقق التلقائي لن تعمل.")
         # ════════════════════════════════════════════════════════════════
         
-        logger.info("✅ Bot commands set")
-        # حفظ اسم المستخدم الخاص بهذا البوت لاستخدامه في تخطي الإحالة الذاتية
-        global _OWN_BOT_USERNAME
-        try:
-            _me = await application.bot.get_me()
-            _OWN_BOT_USERNAME = (_me.username or "").lower().strip()
-            logger.info(f"✅ _OWN_BOT_USERNAME = @{_OWN_BOT_USERNAME}")
-        except Exception as _e:
-            logger.warning(f"⚠️ تعذّر جلب username البوت: {_e}")
+        logger.info("ℹ️ Telegram command synchronization scheduled in background")
         # ─── تعويض المبيعات المكررة عند الإقلاع ────
         async def _bg_startup():
             try:
@@ -280,6 +410,10 @@ def main():
     logger.info("🤖 Bot started!")
     app.run_polling(
         drop_pending_updates=True,
+        # Keep Telegram bootstrap failures recoverable. The outer runner also
+        # retries failures from getMe(), which happens before polling starts.
+        timeout=45,
+        bootstrap_retries=-1,
         read_timeout=45,
         write_timeout=45,
         connect_timeout=45,
