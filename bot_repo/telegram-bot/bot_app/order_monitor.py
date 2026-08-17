@@ -1,4 +1,4 @@
-"""مراقب الطلبات - يرسل تقرير الطلبات غير المكتملة فور التشغيل وكل 24 ساعة"""
+"""مراقب الطلبات - يرسل تقرير الطلبات غير المكتملة للمالك فقط"""
 
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
@@ -37,7 +37,7 @@ def _get_panel_name(panel_id: int) -> str:
 # ==================== إرسال التقرير للمالك ====================
 
 async def _send_report_to_owner(bot):
-    """إرسال تقرير الطلبات غير المكتملة للمالك"""
+    """إرسال تقرير الطلبات غير المكتملة للمالك فقط"""
     if not OWNER_ID:
         return
     
