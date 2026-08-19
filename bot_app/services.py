@@ -27,6 +27,14 @@ CATEGORY_MAP = {
     "other":        "خدمات أخرى",
 }
 
+RAKSH_ACCOUNTS_LABEL_SETTING = "raksh_accounts_label"
+DEFAULT_RAKSH_ACCOUNTS_LABEL = "حسابات خدمات الرشق"
+
+def get_raksh_accounts_label() -> str:
+    """يعيد الاسم المخصص لقسم حسابات الرشق مع قيمة افتراضية آمنة."""
+    configured = (get_setting(RAKSH_ACCOUNTS_LABEL_SETTING) or "").strip()
+    return " ".join(configured.split())[:64] or DEFAULT_RAKSH_ACCOUNTS_LABEL
+
 SERVICE_PLATFORMS = [
     ("📱 تيلجرام", "services_menu_tg"),
     ("📸 انستغرام", "services_menu_ig"),

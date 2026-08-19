@@ -3264,6 +3264,19 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
+    if is_own and state == "os_await_raksh_label":
+        new_label = " ".join(text.split())[:64]
+        if not new_label:
+            await update.message.reply_text("⚠️ الاسم لا يمكن أن يكون فارغاً، أعد الإرسال.")
+            return
+        set_setting(RAKSH_ACCOUNTS_LABEL_SETTING, new_label)
+        await update.message.reply_text(
+            f"✅ تم تحديث اسم خدمات الرشق إلى:\n🔥 {new_label}",
+            reply_markup=owner_settings_kb(),
+        )
+        context.user_data["state"] = "main_menu"
+        return
+
     if is_own and state == "os_await_prize_name":
         name = text.strip()
         if not name:

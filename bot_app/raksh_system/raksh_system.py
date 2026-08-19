@@ -693,7 +693,7 @@ def raksh_menu_kb(is_owner: bool = False):
     if is_owner:
         buttons.append([
             InlineKeyboardButton(
-                "🔥 إدارة حسابات خدمات الرشق",
+                f"🔥 إدارة {get_raksh_accounts_label()}",
                 callback_data="os:raksh_accounts",
             )
         ])

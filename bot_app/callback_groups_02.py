@@ -1543,8 +1543,23 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             )
             return
 
+        if data == "os:edit_raksh_label" and is_own:
+            context.user_data["state"] = "os_await_raksh_label"
+            cur = get_raksh_accounts_label()
+            await q.edit_message_text(
+                "✏️ *تغيير اسم خدمات الرشق*\n\n"
+                f"الاسم الحالي: *{md_escape(cur)}*\n\n"
+                "أرسل الاسم الجديد بدون رمز 🔥، وسيبقى الرمز ظاهراً تلقائياً.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 رجوع لإعدادات المالك", callback_data="owner_settings")]
+                ]),
+            )
+            return
+
         if data == "os:raksh_accounts" and is_own:
             context.user_data["state"] = "main_menu"
+            _raksh_label = md_escape(get_raksh_accounts_label())
             with db_conn() as _rc:
                 _raksh_rows = _rc.execute(
                     "SELECT id, phone_number, session_string, last_authorized "
@@ -1552,7 +1567,7 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                     "ORDER BY id ASC"
                 ).fetchall()
             _raksh_lines = [
-                "🔥 *حسابات خدمات الرشق*\n",
+                f"🔥 *{_raksh_label}*\n",
                 "هذه الحسابات مخصصة لتنفيذ خدمات الرشق فقط، ولا تظهر ضمن مخزون بيع أرقام تيلغرام.\n",
                 f"📦 العدد: *{len(_raksh_rows)}* حساب\n",
             ]
@@ -1635,7 +1650,7 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                     "FROM number_stock WHERE raksh_only=TRUE AND deleted_at IS NULL ORDER BY id ASC"
                 ).fetchall()
             _raksh_lines = [
-                "🔥 *حسابات خدمات الرشق*\n",
+                f"🔥 *{md_escape(get_raksh_accounts_label())}*\n",
                 "هذه الحسابات مخصصة لتنفيذ خدمات الرشق فقط، ولا تظهر ضمن مخزون بيع أرقام تيلغرام.\n",
                 f"📦 العدد: *{len(_raksh_rows)}* حساب\n",
             ]
