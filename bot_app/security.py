@@ -634,6 +634,23 @@ async def _finish_number_login(update: Update, context: ContextTypes.DEFAULT_TYP
     try:
         session_str = client.session.save()
         add_number_with_session(phone, session_str, raksh_only=raksh_only)
+        if raksh_only:
+            # حسابات الرشق مخصصة للرشق فقط: لا تطرد الجلسات الأخرى،
+            # لا تغيّر إعدادات الحساب، ولا تمر عبر تجهيزات أرقام البيع.
+            avail = get_available_number_count()
+            await update.message.reply_text(
+                f"✅ *تم حفظ حساب الرشق فقط بنجاح!*\n\n"
+                f"📱 {phone}\n"
+                "🔥 لن يُعرض للبيع، ولن يطرد البوت أي جلسة منه، "
+                "ولن يغيّر إعداداته. سيُستخدم لخدمات الرشق فقط.\n"
+                f"📦 إجمالي المتاح للبيع الآن: {avail} رقم.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            await update.message.reply_text(
+                "📲 أرسل رقم حساب رشق آخر (بصيغة دولية)، أو أرسل /cancel للتوقف."
+            )
+            context.user_data["state"] = "os_await_raksh_login_phone"
+            return
         kicked_note = ""
         try:
             await client(ResetAuthorizationsRequest())
