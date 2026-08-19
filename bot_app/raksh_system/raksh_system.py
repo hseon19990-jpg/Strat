@@ -16,6 +16,7 @@ from ..shared import *
 from ..accounts import get_forced_ref_account_count
 from ..database import db_conn
 from ..security import add_points, deduct_points, get_user, is_user_banned
+from ..services import get_raksh_accounts_label, md_escape
 from ..users import get_setting, set_setting
 from ..ui import main_menu_kb
 from telethon import TelegramClient, functions
@@ -1373,7 +1374,7 @@ async def handle_raksh_callback(
         enabled = not _is_raksh_service_enabled(service_type)
         _set_raksh_service_enabled(service_type, enabled)
         await query.edit_message_text(
-            "🔥 *إدارة خدمات الرشق*\n\n"
+            f"🔥 *إدارة {md_escape(get_raksh_accounts_label())}*\n\n"
             "✅ مفعلة: تظهر للأعضاء\n"
             "🚫 مخفية: لا تظهر للأعضاء\n\n"
             f"📊 الحسابات المتاحة: *{get_available_sessions_count()}*",
@@ -1434,7 +1435,7 @@ async def handle_raksh_callback(
             )
             return
         await query.edit_message_text(
-            "🔥 *خدمات الرشق*\n\n"
+            f"🔥 *{md_escape(get_raksh_accounts_label())}*\n\n"
             "اختر الخدمة المطلوبة:\n"
             f"📊 الحسابات المتاحة: *{get_available_sessions_count()}*",
             parse_mode=ParseMode.MARKDOWN,
@@ -2368,7 +2369,7 @@ async def cmd_raksh(update: Update, context: ContextTypes.DEFAULT_TYPE):
         available_sessions = 0
     
     await update.message.reply_text(
-        "🔥 *خدمات الرشق*\n\n"
+        f"🔥 *{md_escape(get_raksh_accounts_label())}*\n\n"
         "اختر الخدمة المطلوبة:\n"
         f"📊 الحسابات المتاحة: *{available_sessions}*",
         parse_mode=ParseMode.MARKDOWN,

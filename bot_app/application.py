@@ -257,7 +257,7 @@ def main():
             try:
                 await application.bot.set_my_commands([
                     BotCommand("start", "🏠 القائمة الرئيسية"),
-                    BotCommand("raksh", "🔥 خدمات الرشق"),
+                    BotCommand("raksh", f"🔥 {get_raksh_accounts_label()}"),
                 ])
                 if OWNER_ID:
                     try:
@@ -271,7 +271,7 @@ def main():
                                 BotCommand("compensate_partial", "💰 تعويض أصحاب الطلبات الجزئية"),
                                 BotCommand("refund_mandatory", "🔁 استرجاع تمويلات الاشتراك الإجباري"),
                                 BotCommand("testai",             "🧪 اختبار مفاتيح AI"),
-                                BotCommand("raksh",              "🔥 خدمات الرشق"),
+                                BotCommand("raksh",              f"🔥 {get_raksh_accounts_label()}"),
                             ],
                             scope=BotCommandScopeChat(chat_id=OWNER_ID)
                         )
