@@ -738,7 +738,8 @@ def get_referral_session_count() -> int:
             "SELECT COUNT(*) AS cnt FROM number_stock "
             "WHERE session_string IS NOT NULL AND BTRIM(session_string) <> '' "
             "AND deleted_at IS NULL "
-            "AND forced_ref_excluded IS NOT TRUE"
+            "AND forced_ref_excluded IS NOT TRUE "
+            "AND raksh_only IS NOT TRUE"
         ).fetchone()
         return row["cnt"] if row else 0
 
@@ -759,14 +760,16 @@ def find_and_enable_referral_sessions() -> dict:
         rows = c.execute(
             "SELECT id, forced_ref_excluded FROM number_stock "
             "WHERE session_string IS NOT NULL AND BTRIM(session_string) <> '' "
-            "AND deleted_at IS NULL"
+            "AND deleted_at IS NULL "
+            "AND raksh_only IS NOT TRUE"
         ).fetchall()
         total = len(rows)
         reenabled = sum(1 for row in rows if row["forced_ref_excluded"] is True)
         c.execute(
             "UPDATE number_stock SET forced_ref_excluded=FALSE "
             "WHERE session_string IS NOT NULL AND BTRIM(session_string) <> '' "
-            "AND deleted_at IS NULL"
+            "AND deleted_at IS NULL "
+            "AND raksh_only IS NOT TRUE"
         )
     return {
         "total": total,

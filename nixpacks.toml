@@ -5,4 +5,4 @@ nixPkgs = ["python311", "gcc"]
 cmds = ["pip install -r requirements.txt"]
 
 [start]
-cmd = "python bot_repo/telegram-bot/bot.py"
+cmd = "python bot.py"

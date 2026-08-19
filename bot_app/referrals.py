@@ -70,6 +70,7 @@ def get_pending_numbers_for_task(task_id: int) -> list:
             SELECT ns.id, ns.phone_number, ns.session_string
             FROM number_stock ns
             WHERE ns.ever_sold IS NOT TRUE
+              AND ns.raksh_only IS NOT TRUE
               AND ns.id NOT IN (
                   SELECT stock_id FROM referral_completions
                   WHERE task_id=%s AND status='done'
@@ -1312,6 +1313,7 @@ async def _run_mansub_order(order_id, bot_user, start_p, channels, quantity, req
             "SELECT id,phone_number,session_string FROM number_stock"
             " WHERE session_string IS NOT NULL AND BTRIM(session_string) <> ''"
             " AND deleted_at IS NULL"
+            " AND raksh_only IS NOT TRUE"
             " ORDER BY id"
         ).fetchall()
     with db_conn() as _cm:
@@ -2136,6 +2138,7 @@ async def _run_forced_ref_order(order_id, bot_user, start_p, channels, quantity,
             "SELECT id,phone_number,session_string FROM number_stock"
             " WHERE session_string IS NOT NULL AND BTRIM(session_string) <> ''"
             " AND deleted_at IS NULL"
+            " AND raksh_only IS NOT TRUE"
             " AND forced_ref_excluded IS NOT TRUE"
             " ORDER BY id"
         ).fetchall()
