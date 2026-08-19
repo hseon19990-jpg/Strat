@@ -28,7 +28,7 @@ CATEGORY_MAP = {
 }
 
 RAKSH_ACCOUNTS_LABEL_SETTING = "raksh_accounts_label"
-DEFAULT_RAKSH_ACCOUNTS_LABEL = "حسابات خدمات الرشق"
+DEFAULT_RAKSH_ACCOUNTS_LABEL = "خدمات تلي مميزة"
 
 def get_raksh_accounts_label() -> str:
     """يعيد الاسم المخصص لقسم حسابات الرشق مع قيمة افتراضية آمنة."""

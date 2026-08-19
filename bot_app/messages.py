@@ -3312,7 +3312,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as exc:
             logger.warning(f"⚠️ تعذر تحديث اسم أمر الرشق في قائمة تيليجرام: {exc}")
         await update.message.reply_text(
-            f"✅ تم تحديث اسم خدمات الرشق إلى:\n🔥 {new_label}",
+            f"✅ تم تحديث اسم خدمات تلي مميزة إلى:\n🔥 {new_label}",
             reply_markup=owner_settings_kb(),
         )
         context.user_data["state"] = "main_menu"

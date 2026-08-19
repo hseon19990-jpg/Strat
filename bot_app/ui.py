@@ -469,7 +469,7 @@ def owner_settings_kb():
     ])
     rows.append([
         InlineKeyboardButton(
-            "✏️ تغيير اسم خدمات الرشق",
+            "✏️ تغيير اسم خدمات تلي مميزة",
             callback_data="os:edit_raksh_label",
         )
     ])

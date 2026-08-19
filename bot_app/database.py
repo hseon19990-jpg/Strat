@@ -557,6 +557,19 @@ def init_db():
                   "INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING",
                   (k, v)
               )
+          # استبدال الاسم الافتراضي القديم بالاسم الجديد فقط؛
+          # لا نلمس أي اسم مخصص اختاره المالك بنفسه.
+          c.execute(
+              "UPDATE settings SET value=%s "
+              "WHERE key=%s AND value IN (%s, %s, %s)",
+              (
+                  "خدمات تلي مميزة",
+                  "raksh_accounts_label",
+                  "حسابات خدمات الرشق",
+                  "خدمات الرشق",
+                  "خدمات المرتقى",
+              ),
+          )
       try:
           with db_conn() as c:
               c.execute("ALTER TABLE users ADD COLUMN verified INTEGER DEFAULT 0")

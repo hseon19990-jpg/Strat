@@ -1573,7 +1573,7 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             context.user_data["state"] = "os_await_raksh_label"
             cur = get_raksh_accounts_label()
             await q.edit_message_text(
-                "✏️ *تغيير اسم خدمات الرشق*\n\n"
+                "✏️ *تغيير اسم خدمات تلي مميزة*\n\n"
                 f"الاسم الحالي: *{md_escape(cur)}*\n\n"
                 "أرسل الاسم الجديد بدون رمز 🔥، وسيبقى الرمز ظاهراً تلقائياً.",
                 parse_mode=ParseMode.MARKDOWN,
