@@ -30,9 +30,27 @@ class ResilientUpdater(Updater):
     """Start polling without blocking on a temporary Telegram outage."""
 
     async def _bootstrap(self, *args, **kwargs) -> None:
-        # A slow Telegram API must not hold the whole application before
-        # polling starts. Webhook cleanup is retried independently below.
-        logger.info("ℹ️ Skipping blocking Telegram bootstrap request; polling starts now")
+        # Clear the webhook once before polling when Telegram responds quickly.
+        # A slow API must not hold the whole application; the background retry
+        # task in post_init continues cleanup after polling has started.
+        try:
+            await asyncio.wait_for(
+                self.bot.delete_webhook(
+                    drop_pending_updates=True,
+                    read_timeout=8,
+                    write_timeout=8,
+                    connect_timeout=8,
+                    pool_timeout=8,
+                ),
+                timeout=10,
+            )
+            logger.info("✅ Webhook cleanup completed before polling")
+        except asyncio.TimeoutError:
+            logger.warning("⚠️ Webhook cleanup timed out; polling starts and background retry continues")
+        except (TimedOut, NetworkError) as e:
+            logger.warning(f"⚠️ Webhook cleanup delayed: {e}; polling starts and background retry continues")
+        except Exception as e:
+            logger.warning(f"⚠️ Webhook cleanup failed: {e}; polling starts and background retry continues")
 
 async def sync_raksh_bot_commands(bot) -> None:
     """يحدّث اسم أمر الرشق في قائمة تيليجرام فور تغيير الاسم."""
