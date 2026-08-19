@@ -2252,11 +2252,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
-    if is_own and state == "os_await_raksh_mark_numbers":
-        _phones_raw = [item.strip() for chunk in text.split(",") for item in chunk.splitlines() if item.strip()]
+    if is_own and state in {"os_await_raksh_add_accounts", "os_await_raksh_mark_numbers"}:
+        _phones_raw = [
+            item.strip()
+            for chunk in text.replace("،", ",").split(",")
+            for item in chunk.splitlines()
+            if item.strip()
+        ]
         _marked, _not_found = [], []
+        _seen = set()
         for _ph in _phones_raw:
             _clean = _ph.lstrip("+").replace(" ", "")
+            if not _clean or _clean in _seen:
+                continue
+            _seen.add(_clean)
             with db_conn() as _c:
                 _row = _c.execute(
                     "SELECT id, phone_number FROM number_stock "
@@ -2277,7 +2286,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "\n".join(_lines),
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=owner_settings_kb(),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔥 عرض حسابات الرشق", callback_data="os:raksh_accounts")],
+                [InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")],
+            ]),
         )
         return
 
