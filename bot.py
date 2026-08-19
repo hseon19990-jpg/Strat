@@ -10,7 +10,7 @@ from bot_app import Conflict, logger, main, time, traceback
 
 
 def run_forever() -> None:
-    """Run polling with the existing crash-restart policy."""
+    """Keep the bot process alive and recover from polling interruptions."""
     restart_delay = 5
     while True:
         last_start_time = time.monotonic()
@@ -36,7 +36,9 @@ def run_forever() -> None:
             time.sleep(restart_delay)
             restart_delay = min(restart_delay * 2, 30)
         else:
-            logger.warning("⚠️ run_polling انتهى — إعادة التشغيل...")
+            # A clean return from run_polling must not leave Railway with an
+            # apparently healthy but non-polling process.
+            logger.warning("⚠️ انتهى polling بشكل غير متوقع — إعادة التشغيل بعد 3 ثوانٍ...")
             time.sleep(3)
             restart_delay = 5
 

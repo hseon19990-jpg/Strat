@@ -160,21 +160,40 @@ logger = logging.getLogger(__name__)
 # ────────────────────────────────────────────────────────────
 # ────────────────────────────────────────────────────────────
 import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
+        # Railway uses this endpoint as a liveness probe. Keep it independent
+        # from Telegram so a temporary Telegram outage does not make Railway
+        # terminate an otherwise healthy process.
+        if self.path not in {"/", "/health", "/healthz"}:
+            self.send_response(404)
+            self.end_headers()
+            return
+        body = b"OK - Bot process is alive\n"
         self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(b"OK - Bot is running!")
+        self.wfile.write(body)
+
+    def do_HEAD(self):
+        if self.path not in {"/", "/health", "/healthz"}:
+            self.send_response(404)
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", "0")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
     def log_message(self, format, *args):
         pass
 
-def run_health_server():
-    import socket as _hsock
-    port = int(os.getenv("PORT", "8080"))
-    server = HTTPServer(("0.0.0.0", port), HealthHandler)
-    server.socket.setsockopt(_hsock.SOL_SOCKET, _hsock.SO_REUSEADDR, 1)
+def run_health_server(server):
     server.serve_forever()
 
 _health_server_started = False
@@ -182,10 +201,18 @@ def start_health_server():
     global _health_server_started
     if _health_server_started:
         return  # لا تُشغّل مرتين عند إعادة التشغيل الداخلية
+    import socket as _hsock
+    port = int(os.getenv("PORT", "8080"))
+    # Bind before starting the thread. If PORT is invalid or already occupied,
+    # fail startup so the outer supervisor can restart the service instead of
+    # leaving a running bot with no reachable health endpoint.
+    server = ThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
+    server.socket.setsockopt(_hsock.SOL_SOCKET, _hsock.SO_REUSEADDR, 1)
+    server.daemon_threads = True
     _health_server_started = True
-    t = threading.Thread(target=run_health_server, daemon=True)
+    t = threading.Thread(target=run_health_server, args=(server,), daemon=True)
     t.start()
-    logger.info("✅ Health server started")
+    logger.info(f"✅ Health server started on port {port}")
 
 # ────────────────────────────────────────────────────────────
 # ────────────────────────────────────────────────────────────
