@@ -27,10 +27,15 @@ class ResilientExtBot(ExtBot):
         self._initialized = True
 
 class ResilientUpdater(Updater):
-    """Start getUpdates immediately; webhook cleanup runs independently."""
+    """Keep startup recoverable while clearing any old webhook first."""
 
     async def _bootstrap(self, *args, **kwargs) -> None:
-        logger.info("ℹ️ Skipping blocking Telegram bootstrap request; polling starts now")
+        # Telegram refuses getUpdates while a webhook is active. The previous
+        # implementation skipped PTB's bootstrap and raced a background
+        # delete_webhook call against polling, which could leave the bot
+        # apparently running but receiving no updates after a timeout.
+        logger.info("ℹ️ Telegram bootstrap started; webhook cleanup precedes polling")
+        await super()._bootstrap(*args, **kwargs)
 
 async def sync_raksh_bot_commands(bot) -> None:
     """يحدّث اسم أمر الرشق في قائمة تيليجرام فور تغيير الاسم."""
@@ -310,34 +315,8 @@ def main():
             except Exception as e:
                 logger.warning(f"⚠️ تعذّر مزامنة إعدادات Telegram: {e}")
 
-        async def _clear_webhook():
-            retry_delay = 5
-            while True:
-                try:
-                    await application.bot.delete_webhook(
-                        drop_pending_updates=True,
-                        read_timeout=10,
-                        write_timeout=10,
-                        connect_timeout=10,
-                        pool_timeout=10,
-                    )
-                    logger.info("✅ Webhook cleanup completed")
-                    return
-                except (TimedOut, NetworkError) as e:
-                    logger.warning(
-                        f"⚠️ Webhook cleanup مؤجل بسبب اتصال Telegram: {e}; "
-                        f"إعادة المحاولة بعد {retry_delay}ث"
-                    )
-                    await asyncio.sleep(retry_delay)
-                    retry_delay = min(retry_delay * 2, 60)
-                except Exception as e:
-                    logger.warning(f"⚠️ تعذّر تنظيف Webhook: {e}; إعادة المحاولة بعد {retry_delay}ث")
-                    await asyncio.sleep(retry_delay)
-                    retry_delay = min(retry_delay * 2, 60)
-
         asyncio.create_task(_configure_telegram(), name="telegram-metadata-sync")
-        asyncio.create_task(_clear_webhook(), name="telegram-webhook-cleanup")
-        logger.info("✅ Telegram polling startup is non-blocking; webhook cleanup runs in background")
+        logger.info("✅ Telegram metadata synchronization scheduled in background")
         
         # ════════════════════════════════════════════════════════════════
         # 🔥 سجل حالة مفاتيح AI عند بدء التشغيل
