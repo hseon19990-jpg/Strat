@@ -587,7 +587,7 @@ def list_stock_numbers(filter_type: str = "all"):
             "AND twofa_password IS NOT NULL AND twofa_password != ''"
         )
     else:
-        sql = "SELECT id, phone_number, session_string, sessions_reset, force_listed, twofa_password, last_authorized, frozen_at, added_at FROM number_stock WHERE assigned_to IS NULL AND deleted_at IS NULL AND ever_sold IS NOT TRUE"
+        sql = "SELECT id, phone_number, session_string, sessions_reset, force_listed, twofa_password, last_authorized, frozen_at, added_at FROM number_stock WHERE assigned_to IS NULL AND deleted_at IS NULL AND ever_sold IS NOT TRUE AND raksh_only IS NOT TRUE"
         if filter_type == "listed":
             sql += f" AND {_sellable_filter_sql()}"
         elif filter_type == "pending":
@@ -611,7 +611,7 @@ def get_number_counts() -> dict:
             "COUNT(*) FILTER (WHERE last_authorized IS NOT FALSE AND session_string IS NOT NULL "
             "  AND (is_solo IS FALSE OR is_solo IS NULL) AND (can_send_code IS FALSE OR can_send_code IS NULL)) AS unknown_verify, "
             "COUNT(*) FILTER (WHERE last_authorized IS NOT FALSE AND last_device_count > 1) AS multi_device "
-            "FROM number_stock WHERE assigned_to IS NULL AND deleted_at IS NULL AND ever_sold IS NOT TRUE"
+            "FROM number_stock WHERE assigned_to IS NULL AND deleted_at IS NULL AND ever_sold IS NOT TRUE AND raksh_only IS NOT TRUE"
         ).fetchone()
         total = row["total"] if row else 0
         listed = row["listed"] if row else 0
