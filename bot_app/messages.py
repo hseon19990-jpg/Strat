@@ -5127,9 +5127,14 @@ async def _account_fixup_job(context=None):
             with db_conn() as _db:
                 _row = _db.execute(
                     "SELECT session_string, is_solo, twofa_password, auto_2fa_enabled, deleted_at "
-                    "FROM number_stock WHERE id=%s", (sid,)
+                    ", raksh_only FROM number_stock WHERE id=%s", (sid,)
                 ).fetchone()
             if not _row or _row["deleted_at"]:
+                to_remove.append(sid)
+                continue
+            if _row["raksh_only"]:
+                # حسابات الرشق لا تدخل في إصلاحات مخزون البيع:
+                # لا طرد جلسات، ولا تفعيل 2FA، ولا أي تعديل تلقائي.
                 to_remove.append(sid)
                 continue
 
