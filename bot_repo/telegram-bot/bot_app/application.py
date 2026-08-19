@@ -18,6 +18,14 @@ class ResilientExtBot(ExtBot):
         # startup non-blocking until the background getMe() call succeeds.
         return self._bot_user.id if self._bot_user is not None else 0
 
+    @property
+    def username(self) -> str:
+        # Some legacy handlers read bot.username while polling is starting.
+        # ExtBot normally raises until getMe() has populated _bot_user; return
+        # an empty value instead so a temporary Telegram/API delay cannot
+        # crash the update handler.
+        return self._bot_user.username if self._bot_user is not None else ""
+
     async def initialize(self) -> None:
         if self._initialized:
             return
