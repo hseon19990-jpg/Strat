@@ -3270,6 +3270,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ الاسم لا يمكن أن يكون فارغاً، أعد الإرسال.")
             return
         set_setting(RAKSH_ACCOUNTS_LABEL_SETTING, new_label)
+        try:
+            await sync_raksh_bot_commands(context.bot)
+        except Exception as exc:
+            logger.warning(f"⚠️ تعذر تحديث اسم أمر الرشق في قائمة تيليجرام: {exc}")
         await update.message.reply_text(
             f"✅ تم تحديث اسم خدمات الرشق إلى:\n🔥 {new_label}",
             reply_markup=owner_settings_kb(),

@@ -32,6 +32,29 @@ class ResilientUpdater(Updater):
     async def _bootstrap(self, *args, **kwargs) -> None:
         logger.info("ℹ️ Skipping blocking Telegram bootstrap request; polling starts now")
 
+async def sync_raksh_bot_commands(bot) -> None:
+    """يحدّث اسم أمر الرشق في قائمة تيليجرام فور تغيير الاسم."""
+    label = get_raksh_accounts_label()
+    await bot.set_my_commands([
+        BotCommand("start", "🏠 القائمة الرئيسية"),
+        BotCommand("raksh", f"🔥 {label}"),
+    ])
+    if OWNER_ID:
+        await bot.set_my_commands(
+            [
+                BotCommand("start", "🏠 القائمة الرئيسية"),
+                BotCommand("admin", "⚙️ لوحة المالك"),
+                BotCommand("addpoints", "💰 إضافة/خصم نقاط لمستخدم"),
+                BotCommand("broadcast", "📢 إرسال رسالة جماعية"),
+                BotCommand("status", "🔍 فحص حالة طلب"),
+                BotCommand("compensate_partial", "💰 تعويض أصحاب الطلبات الجزئية"),
+                BotCommand("refund_mandatory", "🔁 استرجاع تمويلات الاشتراك الإجباري"),
+                BotCommand("testai", "🧪 اختبار مفاتيح AI"),
+                BotCommand("raksh", f"🔥 {label}"),
+            ],
+            scope=BotCommandScopeChat(chat_id=OWNER_ID),
+        )
+
 # ─── استيراد نظام الرشق الجديد من داخل حزمة bot_app ────────────────────────
 from .raksh_system import (
     cmd_raksh,
