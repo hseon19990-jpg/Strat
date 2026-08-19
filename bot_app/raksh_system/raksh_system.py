@@ -298,13 +298,13 @@ def _get_all_active_sessions(service_type: str | None = None) -> list[dict]:
     """
     with db_conn() as c:
         rows = c.execute(
-            "SELECT id, phone_number, session_string "
+            "SELECT id, phone_number, session_string, raksh_only "
             "FROM number_stock "
             "WHERE session_string IS NOT NULL "
             "AND BTRIM(session_string) <> '' "
             "AND deleted_at IS NULL "
             "AND forced_ref_excluded IS NOT TRUE "
-            "ORDER BY id ASC"
+            "ORDER BY raksh_only DESC, id ASC"
         ).fetchall()
     return [dict(row) for row in rows]
 
@@ -690,6 +690,13 @@ def raksh_menu_kb(is_owner: bool = False):
             ])
         else:
             buttons.append([service_button])
+    if is_owner:
+        buttons.append([
+            InlineKeyboardButton(
+                "🔥 إدارة حسابات خدمات الرشق",
+                callback_data="os:raksh_accounts",
+            )
+        ])
     buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")])
     return InlineKeyboardMarkup(buttons)
 

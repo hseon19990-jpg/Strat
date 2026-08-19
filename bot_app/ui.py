@@ -461,6 +461,7 @@ def owner_settings_kb():
                   InlineKeyboardButton("📋 إدارة المشرفين", callback_data="os:list_supervisors")])
     rows.append([InlineKeyboardButton("👁 حسابات المشرفين", callback_data="os:sv_accounts")])
     rows.append([InlineKeyboardButton("👤 معلومات الحسابات", callback_data="os:account_info")])
+    rows.append([InlineKeyboardButton("🔥 حسابات خدمات الرشق", callback_data="os:raksh_accounts")])
     rows.append([InlineKeyboardButton("📦 الخدمات الجديدة", callback_data="os:new_services")])
     rows.append([InlineKeyboardButton("🧩 إضافة/إزالة خيار", callback_data="mb_menu:owner_settings")])
     rows.append([InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")])

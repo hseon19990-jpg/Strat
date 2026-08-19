@@ -630,9 +630,10 @@ async def _finish_number_login(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     client = pending["client"]
     phone = pending["phone"]
+    raksh_only = bool(pending.get("raksh_only"))
     try:
         session_str = client.session.save()
-        add_number_with_session(phone, session_str)
+        add_number_with_session(phone, session_str, raksh_only=raksh_only)
         kicked_note = ""
         try:
             await client(ResetAuthorizationsRequest())
@@ -690,12 +691,17 @@ async def _finish_number_login(update: Update, context: ContextTypes.DEFAULT_TYP
         except Exception as e2:
             logger.warning(f"⚠️ خطأ في تفعيل 2FA للرقم {phone}: {e2}")
         avail = get_available_number_count()
+        role_note = (
+            "\n🔥 هذا الحساب مخصص لخدمات الرشق فقط، ولن يظهر ضمن أرقام البيع."
+            if raksh_only
+            else "\nعند بيع هذا الرقم، سيُرسَل رمز الجلسة تلقائياً للمشتري ليدخل مباشرة بدون أي كود."
+        )
         await update.message.reply_text(
             f"✅ *تم تسجيل الدخول وحفظ الرقم بالمخزون بنجاح!*\n\n"
-            f"📱 {phone}\n📦 إجمالي المتاح الآن: {avail} رقم.{kicked_note}"
+            f"📱 {phone}\n📦 إجمالي المتاح للبيع الآن: {avail} رقم.{kicked_note}"
             f"{twofa_note}\n\n"
-            "🔔 سيُبلّغك البوت تلقائياً بأي تغيير أمني على هذا الحساب (كلمة مرور، بريد استرجاع، جلسة دخول جديدة).\n\n"
-            "عند بيع هذا الرقم، سيُرسَل رمز الجلسة تلقائياً للمشتري ليدخل مباشرة بدون أي كود.",
+            "🔔 سيُبلّغك البوت تلقائياً بأي تغيير أمني على هذا الحساب."
+            f"{role_note}",
             parse_mode=ParseMode.MARKDOWN,
         )
         # ─── للسرعة: ننتقل مباشرة لطلب الرقم التالي بدون الرجوع لأي قائمة ───
@@ -703,13 +709,19 @@ async def _finish_number_login(update: Update, context: ContextTypes.DEFAULT_TYP
             "📲 أرسل رقم الهاتف التالي (بصيغة دولية، مثل +9647xxxxxxxx) لإضافته، "
             "أو أرسل /cancel للتوقف والرجوع للقائمة."
         )
-        context.user_data["state"] = "os_await_login_phone"
+        context.user_data["state"] = (
+            "os_await_raksh_login_phone" if raksh_only else "os_await_login_phone"
+        )
     except Exception as e:
         logger.error(f"❌ خطأ في حفظ جلسة الرقم {phone}: {e}")
         await update.message.reply_text(
             "❌ حدث خطأ أثناء حفظ الجلسة. أرسل الرقم التالي للمحاولة من جديد، أو /cancel للتوقف.",
         )
-        context.user_data["state"] = "os_await_login_phone"
+        context.user_data["state"] = (
+            "os_await_raksh_login_phone"
+            if bool(pending.get("raksh_only"))
+            else "os_await_login_phone"
+        )
     finally:
         try:
             await client.disconnect()

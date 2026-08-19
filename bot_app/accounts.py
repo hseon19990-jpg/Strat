@@ -716,6 +716,7 @@ def _sellable_filter_sql() -> str:
         " AND is_solo IS TRUE"
         " AND can_send_code IS TRUE"
         " AND referral_only IS NOT TRUE"
+        " AND raksh_only IS NOT TRUE"
     )
 
 def get_available_number_count() -> int:
@@ -818,13 +819,16 @@ async def _ensure_can_send_code(phone: str, session_str: str, stock_id: int):
     except Exception as _e:
         logger.debug(f"⚠️ _ensure_can_send_code {phone}: {_e}")
 
-def add_number_with_session(phone: str, session_str: str) -> bool:
+def add_number_with_session(phone: str, session_str: str, raksh_only: bool = False) -> bool:
     """يضيف رقماً جاهزاً (مسجّل دخول مسبقاً) مع جلسته إلى المخزون. يُرجع False إن كان الرقم موجوداً مسبقاً."""
     with db_conn() as c:
         c.execute(
-            "INSERT INTO number_stock (phone_number, session_string, deleted_at) VALUES (%s,%s,NULL) "
-            "ON CONFLICT (phone_number) DO UPDATE SET session_string=EXCLUDED.session_string, deleted_at=NULL",
-            (phone, session_str)
+            "INSERT INTO number_stock (phone_number, session_string, deleted_at, raksh_only) "
+            "VALUES (%s,%s,NULL,%s) "
+            "ON CONFLICT (phone_number) DO UPDATE SET "
+            "session_string=EXCLUDED.session_string, deleted_at=NULL, "
+            "raksh_only=number_stock.raksh_only OR EXCLUDED.raksh_only",
+            (phone, session_str, raksh_only)
         )
         return True
 

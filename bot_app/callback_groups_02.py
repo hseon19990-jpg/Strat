@@ -1543,6 +1543,125 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             )
             return
 
+        if data == "os:raksh_accounts" and is_own:
+            context.user_data["state"] = "main_menu"
+            with db_conn() as _rc:
+                _raksh_rows = _rc.execute(
+                    "SELECT id, phone_number, session_string, last_authorized "
+                    "FROM number_stock WHERE raksh_only=TRUE AND deleted_at IS NULL "
+                    "ORDER BY id ASC"
+                ).fetchall()
+            _raksh_lines = [
+                "🔥 *حسابات خدمات الرشق*\n",
+                "هذه الحسابات مخصصة لتنفيذ خدمات الرشق فقط، ولا تظهر ضمن مخزون بيع أرقام تيلغرام.\n",
+                f"📦 العدد: *{len(_raksh_rows)}* حساب\n",
+            ]
+            if _raksh_rows:
+                _raksh_lines.append("*الحسابات الحالية:*")
+                _raksh_lines.extend(
+                    f"• `{row['phone_number']}` "
+                    f"{'✅ جلسة جاهزة' if row['session_string'] and row.get('last_authorized') is not False else '⚠️ تحتاج جلسة'}"
+                    for row in _raksh_rows[:40]
+                )
+                if len(_raksh_rows) > 40:
+                    _raksh_lines.append(f"_(+{len(_raksh_rows) - 40} حساباً آخر)_")
+            else:
+                _raksh_lines.append("لا توجد حسابات مخصصة للرشق حالياً.")
+            _raksh_buttons = [
+                [InlineKeyboardButton("🔑 تسجيل دخول حساب للرشق", callback_data="os:raksh_login_number")],
+                [InlineKeyboardButton("📌 تعيين أرقام موجودة للرشق", callback_data="os:raksh_mark_existing")],
+            ]
+            for _raksh_row in _raksh_rows[:30]:
+                _raksh_buttons.append([
+                    InlineKeyboardButton(
+                        f"🚫 إزالة {str(_raksh_row['phone_number'])[-8:]} من الرشق",
+                        callback_data=f"os:raksh_unmark:{_raksh_row['id']}",
+                    )
+                ])
+            _raksh_buttons.append([InlineKeyboardButton("🔙 رجوع لإعدادات المالك", callback_data="owner_settings")])
+            await q.edit_message_text(
+                "\n".join(_raksh_lines),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup(_raksh_buttons),
+            )
+            return
+
+        if data == "os:raksh_login_number" and is_own:
+            if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
+                await q.answer("❌ TELEGRAM_API_ID / TELEGRAM_API_HASH غير مضبوطة.", show_alert=True)
+                return
+            context.user_data["state"] = "os_await_raksh_login_phone"
+            context.user_data.pop("raksh_only_import", None)
+            await q.edit_message_text(
+                "🔥 *تسجيل دخول حساب مخصص للرشق*\n\n"
+                "أرسل رقم الهاتف بصيغة دولية، مثال: `+9647701234567`.\n"
+                "بعد نجاح الدخول سيُحفظ الحساب للرشق فقط ولن يظهر للبيع.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="os:raksh_accounts")]
+                ]),
+            )
+            return
+
+        if data == "os:raksh_mark_existing" and is_own:
+            context.user_data["state"] = "os_await_raksh_mark_numbers"
+            await q.edit_message_text(
+                "📌 *تعيين أرقام موجودة للرشق*\n\n"
+                "أرسل رقماً أو عدة أرقام، كل رقم في سطر مستقل أو مفصول بفاصلة.\n"
+                "سيتم استبعادها من البيع فوراً، ويمكن إزالة التصنيف لاحقاً.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="os:raksh_accounts")]
+                ]),
+            )
+            return
+
+        if data.startswith("os:raksh_unmark:") and is_own:
+            context.user_data["state"] = "main_menu"
+            _raksh_id = data.split(":", 2)[2]
+            with db_conn() as _uc:
+                _uc.execute(
+                    "UPDATE number_stock SET raksh_only=FALSE "
+                    "WHERE id=%s AND deleted_at IS NULL",
+                    (_raksh_id,),
+                )
+            await q.answer("✅ تمت إزالة التصنيف. سيعود الحساب للبيع فقط إذا استوفى شروط الجاهزية.")
+            data = "os:raksh_accounts"
+            # إعادة عرض القائمة بنفس المعالج في الأسفل
+            with db_conn() as _rc:
+                _raksh_rows = _rc.execute(
+                    "SELECT id, phone_number, session_string, last_authorized "
+                    "FROM number_stock WHERE raksh_only=TRUE AND deleted_at IS NULL ORDER BY id ASC"
+                ).fetchall()
+            _raksh_lines = [
+                "🔥 *حسابات خدمات الرشق*\n",
+                "هذه الحسابات مخصصة لتنفيذ خدمات الرشق فقط، ولا تظهر ضمن مخزون بيع أرقام تيلغرام.\n",
+                f"📦 العدد: *{len(_raksh_rows)}* حساب\n",
+            ]
+            if _raksh_rows:
+                _raksh_lines.append("*الحسابات الحالية:*")
+                _raksh_lines.extend(f"• `{row['phone_number']}`" for row in _raksh_rows[:40])
+            else:
+                _raksh_lines.append("لا توجد حسابات مخصصة للرشق حالياً.")
+            _raksh_buttons = [
+                [InlineKeyboardButton("🔑 تسجيل دخول حساب للرشق", callback_data="os:raksh_login_number")],
+                [InlineKeyboardButton("📌 تعيين أرقام موجودة للرشق", callback_data="os:raksh_mark_existing")],
+            ]
+            for _raksh_row in _raksh_rows[:30]:
+                _raksh_buttons.append([
+                    InlineKeyboardButton(
+                        f"🚫 إزالة {str(_raksh_row['phone_number'])[-8:]} من الرشق",
+                        callback_data=f"os:raksh_unmark:{_raksh_row['id']}",
+                    )
+                ])
+            _raksh_buttons.append([InlineKeyboardButton("🔙 رجوع لإعدادات المالك", callback_data="owner_settings")])
+            await q.edit_message_text(
+                "\n".join(_raksh_lines),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup(_raksh_buttons),
+            )
+            return
+
         if data == "os:manage_numbers" and is_own:
             avail = get_available_number_count()
             await q.edit_message_text(

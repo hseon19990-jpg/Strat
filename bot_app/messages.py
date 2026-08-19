@@ -2252,6 +2252,35 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
+    if is_own and state == "os_await_raksh_mark_numbers":
+        _phones_raw = [item.strip() for chunk in text.split(",") for item in chunk.splitlines() if item.strip()]
+        _marked, _not_found = [], []
+        for _ph in _phones_raw:
+            _clean = _ph.lstrip("+").replace(" ", "")
+            with db_conn() as _c:
+                _row = _c.execute(
+                    "SELECT id, phone_number FROM number_stock "
+                    "WHERE phone_number IN (%s, %s) AND deleted_at IS NULL",
+                    (_clean, "+" + _clean),
+                ).fetchone()
+                if _row:
+                    _c.execute("UPDATE number_stock SET raksh_only=TRUE WHERE id=%s", (_row["id"],))
+                    _marked.append(_row["phone_number"])
+                else:
+                    _not_found.append(_ph)
+        context.user_data["state"] = "main_menu"
+        _lines = [f"🔥 *تم تعيين {len(_marked)} حساب للرشق فقط.*"]
+        if _marked:
+            _lines.append("\n✅ " + "\n✅ ".join(f"`{phone}`" for phone in _marked[:30]))
+        if _not_found:
+            _lines.append("\n❌ لم أجد:\n" + "\n".join(f"• {phone}" for phone in _not_found[:20]))
+        await update.message.reply_text(
+            "\n".join(_lines),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=owner_settings_kb(),
+        )
+        return
+
     # ─── إضافة أرقام للإحالة الإجبارية ───
     if is_own and state == "os_await_bot_ref_add":
         context.user_data["state"] = "main_menu"
@@ -2757,7 +2786,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
-    if is_own and state == "os_await_login_phone":
+    if is_own and state in {"os_await_login_phone", "os_await_raksh_login_phone"}:
+        _raksh_login = state == "os_await_raksh_login_phone"
         phone = text.strip()
         # ─── إضافة + تلقائياً إذا أرسل المالك الرقم بدونها ───
         if phone and not phone.startswith("+") and phone.isdigit():
@@ -2780,7 +2810,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ حدث خطأ أثناء الاتصال بتيليجرام. حاول مرة أخرى لاحقاً.")
             return
         _pending_number_logins[user.id] = {
-            "client": client, "phone": phone, "phone_code_hash": sent.phone_code_hash
+            "client": client,
+            "phone": phone,
+            "phone_code_hash": sent.phone_code_hash,
+            "raksh_only": _raksh_login,
         }
         context.user_data["state"] = "os_await_login_code"
         await update.message.reply_text(
