@@ -404,7 +404,9 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
 
         if data == "os:scan_all_numbers" and is_own:
             await q.edit_message_text(
-                "🔍 *بدأ فحص جميع الحسابات...*\n\n"
+                "🔍 *بدأ الفحص التلقائي للحسابات...*\n\n"
+                "سيتم رفع كل حساب يجتاز فحص الجلسة و2FA وعدم التجميد للبيع مباشرة، "
+                "وإزالة العرض عن الحسابات التي تفشل.\n\n"
                 "سيصلك تقرير عند الانتهاء (عادةً أقل من دقيقة).",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:manage_numbers")]])
@@ -553,6 +555,13 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                 for rec in rows:
                     res = await asyncio.wait_for(_scan_one(dict(rec)), timeout=35)
                     st = res["status"]
+                    # الفحص التلقائي يرفع الناجح للبيع مباشرة، ويزيل العرض عن أي فاشل.
+                    with db_conn() as _lc:
+                        _lc.execute(
+                            "UPDATE number_stock SET force_listed=%s "
+                            "WHERE id=%s AND ever_sold IS NOT TRUE",
+                            (st == "ok", res["id"]),
+                        )
         
                     if st == "ok":
                         ok_cnt += 1
