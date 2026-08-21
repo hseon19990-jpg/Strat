@@ -713,7 +713,7 @@ def _sellable_filter_sql() -> str:
         " AND twofa_password <> ''"
         " AND frozen_at IS NULL"
         " AND ever_sold IS NOT TRUE AND can_send_code IS TRUE AND last_authorized IS NOT FALSE"
-        " AND is_solo IS TRUE"
+        " AND (is_solo IS TRUE OR force_listed IS TRUE)"
         " AND can_send_code IS TRUE"
         " AND referral_only IS NOT TRUE"
         " AND raksh_only IS NOT TRUE"
