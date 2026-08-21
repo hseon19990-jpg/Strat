@@ -1715,7 +1715,7 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔑 تسجيل دخول رقم جديد (تلقائي بالكامل)", callback_data="os:login_number")],
                     [InlineKeyboardButton("📋 قائمة الأرقام ومعلوماتها", callback_data="os:list_numbers")],
-                    [InlineKeyboardButton("🔍 فحص جميع الحسابات الآن", callback_data="os:scan_all_numbers")],
+                    [InlineKeyboardButton("🔍 فحص تلقائي ورفع الجاهزة للبيع", callback_data="os:scan_all_numbers")],
                     [InlineKeyboardButton("📊 فحص الحسابات جميعاً (إحصاء + نقل الميتة للمهملات)", callback_data="os:full_audit")],
                     [InlineKeyboardButton("🧹 فحص ذكي شامل (تنظيف + إعادة 2FA + ترتيب للبيع)", callback_data="os:smart_audit")],
                     [InlineKeyboardButton("➕ إضافة أرقام بدون تسجيل دخول (يدوي)", callback_data="os:add_numbers")],
