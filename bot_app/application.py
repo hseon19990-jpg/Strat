@@ -110,8 +110,8 @@ def main():
         logger.critical("❌ أضفها في إعدادات Railway ثم أعد التشغيل.")
         raise SystemExit(1)
 
-    init_db()
     start_health_server()
+    init_db()
 
     from telegram.request import HTTPXRequest
 
