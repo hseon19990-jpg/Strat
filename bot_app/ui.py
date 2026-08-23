@@ -438,6 +438,11 @@ def owner_settings_kb():
     _legendary_suffix = " (ظاهر للأعضاء ✅)" if _legendary_on else " (مخفي عن الأعضاء ❌)"
     _mandatory_active = count_active_mandatory_channels()
     _verify_suffix = f" ({_mandatory_active} قناة ✅)" if _mandatory_active > 0 else " (مغلق ❌)"
+    _phone_verify_on = int(get_setting("phone_verification_enabled") or "1")
+    rows.append([InlineKeyboardButton(
+        f"📱 التحقق برقم الهاتف ({'مفعّل ✅' if _phone_verify_on else 'معطّل ❌'})",
+        callback_data="os:toggle_phone_verification"
+    )])
     for row in rows:
         for i, btn in enumerate(row):
             if btn.callback_data == "os:toggle_maintenance":
