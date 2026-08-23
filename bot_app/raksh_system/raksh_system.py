@@ -227,6 +227,8 @@ except ValueError:
 
 def _get_delay_seconds(service_type: str | None = None) -> int:
     """إرجاع الفاصل بين الحسابات حسب نوع الخدمة."""
+    if service_type in {"forced_ref", "forced_ref_ai"}:
+        return 3
     if service_type in {"votes", "votes_ai"}:
         return RAKSH_VOTE_DELAY_SECONDS
     return random.randint(RAKSH_MIN_DELAY_SECONDS, RAKSH_MAX_DELAY_SECONDS)
