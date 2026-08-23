@@ -931,8 +931,15 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
         # ── الخطوة 1: الانضمام للقنوات الإجبارية المحددة مسبقاً ──
         if mandatory_channels and mandatory_channels.strip():
             cnt = await _join_mandatory_channels(client, mandatory_channels)
+            required_count = len(_parse_channel_tokens(mandatory_channels))
             if cnt:
-                steps.append(f"انضم لـ {cnt} قناة إجبارية")
+                steps.append(f"انضم لـ {cnt}/{required_count} قناة إجبارية")
+            if cnt < required_count:
+                return (
+                    False,
+                    False,
+                    f"فشل الاشتراك الإجباري: انضم إلى {cnt}/{required_count} قناة فقط",
+                )
 
         # ── الخطوة 2: الانضمام للمجلد (إن وُجد) ──
         if folder_link and folder_link.strip():
@@ -1981,7 +1988,8 @@ async def _run_sv_forced_ref_order(bot_user, start_p, channels, quantity, superv
             return 30.0
 
     sv_accounts = get_supervisor_available_accounts(supervisor_id)
-    pool = sv_accounts[:quantity]
+    # استخدم كامل الحسابات المتاحة لتعويض الحسابات الفاشلة تلقائياً.
+    pool = list(sv_accounts)
 
     done = 0
     failed = 0
@@ -2040,8 +2048,8 @@ async def _run_sv_forced_ref_order(bot_user, start_p, channels, quantity, superv
             failed += 1
             _fail_reasons.append(f"`{num['phone_number']}`: {detail[:60]}")
 
-        # تحديث رسالة التقدم كل 3 حسابات
-        if progress_msg_id and idx % 3 == 0:
+        # أظهر الانتقال للحساب البديل مباشرة بعد كل محاولة.
+        if progress_msg_id:
             try:
                 await context.bot.edit_message_text(
                     chat_id=supervisor_id,
@@ -2052,8 +2060,8 @@ async def _run_sv_forced_ref_order(bot_user, start_p, channels, quantity, superv
             except Exception:
                 pass
 
-        # نفس فاصل المالك المستخدم في إحالة البوت الإجبارية المدفوعة.
-        if idx < len(pool):
+        # عند الفشل انتقل للحساب التالي فوراً؛ الانتظار يبقى بعد النجاح فقط.
+        if idx < len(pool) and done + reactivated < quantity and (ok or reactiv):
             await _aio_sv.sleep(_supervisor_ref_delay_seconds())
 
     # ── رسالة النهاية ──
