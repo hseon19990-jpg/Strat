@@ -227,6 +227,16 @@ async def finalize_verification(update: Update, context: ContextTypes.DEFAULT_TY
         except Exception as _e:
             logger.warning(f"⚠️ فشل إرسال إشعار الإحالة للمستخدم {invited_by}: {_e}")
         referral_note = f"\n\n🔗 لقد دخلت إلى رابط دعوة صديقك {inviter_name} وقد حصل على {rp} نقطة."
+        # أصبح التحقق فوريًا ولا نطلب رقم الهاتف، لذلك أرسل إشعار الإحالة
+        # إلى كروب الأرقام من نفس مسار احتساب النقاط.
+        await notify_referral_result_to_numbers_group(
+            context.bot,
+            user.id,
+            "غير متاح — تم التحقق بدون مشاركة رقم الهاتف",
+            accepted=True,
+            credited=credited,
+            details=["تم احتساب الإحالة فور إكمال التحقق"],
+        )
 
     context.user_data["state"] = "main_menu"
     db_user = get_user(user.id)
