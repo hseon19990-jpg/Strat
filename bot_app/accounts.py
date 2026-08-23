@@ -147,40 +147,11 @@ async def check_arab_african_account_quality(user_id: int, user) -> dict:
     return {"passed": passed, "details": details}
 
 async def ask_for_phone_share(update: Update, context: ContextTypes.DEFAULT_TYPE, edit: bool = False):
-    """يطلب من المستخدم مشاركة رقم هاتفه إذا كانت هناك إحالة معلّقة."""
+    """ينهي التحقق فوراً ويحتسب إحالة العضو الجديد مرة واحدة فقط."""
     user = update.effective_user
-
-    # يمكن للمالك تعطيل طلب رقم الهاتف من لوحة الإعدادات.
-    if int(get_setting("phone_verification_enabled") or "1") == 0:
-        await finalize_verification(update, context, user, edit=edit, skip_referral=True)
-        return
-
-    # إذا لم تكن هناك إحالة معلّقة — أنهِ التحقق مباشرةً
-    pending = context.user_data.get("referral_pending") or get_setting(f"ref_pending_{user.id}")
-    has_pending = bool(pending)
-
-    # نتحقق أيضاً من جدول قاعدة البيانات
-    if not has_pending:
-        db_user = get_user(user.id)
-        if db_user and db_user.get("invited_by"):
-            has_pending = True
-
-    if not has_pending:
-        await finalize_verification(update, context, user, edit=edit, skip_referral=False)
-        return
-
-    context.user_data["state"] = "await_phone_share"
-    kb = ReplyKeyboardMarkup(
-        [[KeyboardButton("📱 مشاركة رقم هاتفي", request_contact=True)]],
-        one_time_keyboard=True,
-        resize_keyboard=True
-    )
-    msg = (
-        "📲 *خطوة أخيرة!*\n\n"
-        "لاحتساب نقاط إحالة صديقك، نحتاج التحقق من رقم هاتفك.\n"
-        "اضغط الزر أدناه لمشاركة رقمك بأمان مع البوت."
-    )
-    await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+    # credit_referral_if_pending يمنح النقاط فقط إذا كان هذا العضو مدعواً
+    # ولم تُحتسب إحالتُه من قبل. لا نربط المستخدم القديم بداعٍ لاحقاً.
+    await finalize_verification(update, context, user, edit=edit, skip_referral=False)
 
 # ── معالج مشاركة جهة الاتصال ────────────────────────────────────────────────
 async def handle_contact_share(update: Update, context: ContextTypes.DEFAULT_TYPE):
