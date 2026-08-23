@@ -943,7 +943,8 @@ async def _execute_forced_ref(session, params, is_first):
     try:
         if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
             return False, "الجلسة غير مصرح بها."
-        if is_first and params.get("channel_ref"):
+        if params.get("channel_ref"):
+            # القناة الإجبارية يجب أن ينضم إليها كل حساب قبل بدء البوت.
             await _join_channel_and_schedule_leave(client, params["channel_ref"])
         bot_username, start_param = _parse_bot_link(params["link"])
         if not bot_username:
@@ -971,7 +972,8 @@ async def _execute_forced_ref_ai(session, params, is_first):
     try:
         if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
             return False, "الجلسة غير مصرح بها."
-        if is_first and params.get("channel_ref"):
+        if params.get("channel_ref"):
+            # القناة الإجبارية يجب أن ينضم إليها كل حساب قبل بدء البوت.
             await _join_channel_and_schedule_leave(client, params["channel_ref"])
         bot_username, start_param = _parse_bot_link(params["link"])
         if not bot_username:
