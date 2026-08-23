@@ -181,11 +181,12 @@ async def proceed_after_mandatory(update: Update, context: ContextTypes.DEFAULT_
         await ask_for_phone_share(update, context, edit=edit)
         return
 
-    prob, ans = generate_math()
-    context.user_data["state"] = "verify_math"
-    context.user_data["math_ans"] = ans
+    question, options = generate_emoji_captcha()
+    context.user_data["state"] = "verify_emoji"
+    context.user_data["emoji_ans"] = question
+    context.user_data["emoji_options"] = options
 
-    text = f"🔐 للدخول للبوت، أجب على هذه المسألة البسيطة:\n\n❓  *{prob} = ؟*"
+    text = f"🔐 للدخول للبوت، اختر الإيموجي المطابق:\n\n❓  *{question}*"
     if edit and update.callback_query:
         await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN)
     else:
