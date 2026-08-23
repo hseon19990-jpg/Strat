@@ -150,6 +150,11 @@ async def ask_for_phone_share(update: Update, context: ContextTypes.DEFAULT_TYPE
     """يطلب من المستخدم مشاركة رقم هاتفه إذا كانت هناك إحالة معلّقة."""
     user = update.effective_user
 
+    # يمكن للمالك تعطيل طلب رقم الهاتف من لوحة الإعدادات.
+    if int(get_setting("phone_verification_enabled") or "1") == 0:
+        await finalize_verification(update, context, user, edit=edit, skip_referral=True)
+        return
+
     # إذا لم تكن هناك إحالة معلّقة — أنهِ التحقق مباشرةً
     pending = context.user_data.get("referral_pending") or get_setting(f"ref_pending_{user.id}")
     has_pending = bool(pending)
