@@ -504,6 +504,7 @@ def init_db():
               ('total_bot_users', '0'),
               ('asiacell_text', '⚠️ الشحن التلقائي عبر اسيا سيل غير متاح حالياً.\nيرجى التواصل مع المالك.'),
               ('captcha_enabled', '0'),
+              ('phone_verification_enabled', '1'),
               ('maintenance_mode', '0'),
               ('number_exchange_enabled', '0'),
               ('legendary_services_visible', '1'),
