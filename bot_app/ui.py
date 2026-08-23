@@ -17,6 +17,21 @@ def generate_math():
         return f"{a} - {b}", a - b
     return f"{a} × {b}", a * b
 
+EMOJI_CAPTCHA_SET = ["😀", "😎", "🐶", "🐱", "🦊", "🐼", "🐸", "🦁", "🐵", "🍎", "🍋", "🍉", "⭐", "🔥", "🌈"]
+
+def generate_emoji_captcha():
+    question = random.choice(EMOJI_CAPTCHA_SET)
+    distractors = random.sample([emoji for emoji in EMOJI_CAPTCHA_SET if emoji != question], 5)
+    options = distractors + [question]
+    random.shuffle(options)
+    return question, options
+
+def emoji_captcha_kb(options):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(options[i], callback_data=f"verify_emoji:{i}") for i in range(row, min(row + 2, len(options)))]
+        for row in range(0, len(options), 2)
+    ])
+
 # ────────────────────────────────────────────────────────────
 # ────────────────────────────────────────────────────────────
 def supervisor_panel_kb():
