@@ -330,6 +330,19 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             )
             return
 
+        if data == "os:toggle_phone_verification" and is_own:
+            current = int(get_setting("phone_verification_enabled") or "1")
+            new_val = "0" if current else "1"
+            set_setting("phone_verification_enabled", new_val)
+            status = "مفعّل ✅" if new_val == "1" else "معطّل ❌"
+            await q.edit_message_text(
+                f"📱 *التحقق برقم الهاتف الآن: {status}*\n\n"
+                f"{'سيطلب البوت رقم الهاتف عند وجود إحالة معلّقة' if new_val == '1' else 'لن يطلب البوت رقم الهاتف، ولن تُحتسب مكافأة الإحالة تلقائياً'}",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=owner_settings_kb()
+            )
+            return
+
         if data == "os:toggle_captcha" and is_own:
             current = int(get_setting("captcha_enabled") or "0")
             new_val = "0" if current else "1"
