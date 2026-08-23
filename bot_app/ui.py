@@ -454,6 +454,7 @@ def owner_settings_kb():
     _mandatory_active = count_active_mandatory_channels()
     _verify_suffix = f" ({_mandatory_active} قناة ✅)" if _mandatory_active > 0 else " (مغلق ❌)"
     _phone_verify_on = int(get_setting("phone_verification_enabled") or "1")
+    _captcha_on = int(get_setting("captcha_enabled") or "0")
     rows.append([InlineKeyboardButton(
         f"📱 التحقق برقم الهاتف ({'مفعّل ✅' if _phone_verify_on else 'معطّل ❌'})",
         callback_data="os:toggle_phone_verification"
@@ -474,6 +475,11 @@ def owner_settings_kb():
                 row[i] = InlineKeyboardButton(
                     base_label + _legendary_suffix,
                     callback_data="os:toggle_legendary_services",
+                )
+            elif btn.callback_data == "os:toggle_captcha":
+                row[i] = InlineKeyboardButton(
+                    f"🔐 التحقق ({'مفعّل ✅' if _captcha_on else 'معطّل ❌'})",
+                    callback_data="os:toggle_captcha",
                 )
     # Add legendary settings button
     rows.append([InlineKeyboardButton("👑 إعدادات الخدمات الأسطورية", callback_data="legendary:settings")])
