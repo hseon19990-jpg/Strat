@@ -497,12 +497,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await prog.edit_text("\n".join(result_lines), parse_mode=ParseMode.MARKDOWN)
         return
 
+    if state == "verify_emoji":
+        await update.message.reply_text("⚠️ استخدم أزرار الإيموجي الموجودة في رسالة التحقق.")
+        return
+
     if state == "verify_math":
+        # توافق مع الجلسات القديمة التي كانت تنتظر إجابة رقمية.
         correct = context.user_data.get("math_ans")
         try:
             ans = int(text)
         except ValueError:
-            await update.message.reply_text("⚠️ أرسل رقماً فقط.")
+            await update.message.reply_text("⚠️ استخدم أزرار التحقق.")
             return
         if ans == correct:
             await ask_for_phone_share(update, context, edit=False)
