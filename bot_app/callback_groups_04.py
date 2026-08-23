@@ -9,6 +9,31 @@ globals().update({key: value for key, value in vars(_shared).items() if not key.
 
 async def _handle_callback_group_04(update, context, q, data, user, is_own, is_supervisor_cb, _gmail_verification_done):
     if True:
+        if data.startswith("verify_emoji:"):
+            if context.user_data.get("state") != "verify_emoji":
+                await q.answer("⚠️ انتهت جلسة التحقق.", show_alert=True)
+                return
+            try:
+                selected_index = int(data.split(":", 1)[1])
+                options = context.user_data.get("emoji_options") or []
+                selected = options[selected_index]
+            except (ValueError, IndexError, TypeError):
+                await q.answer("⚠️ زر تحقق غير صالح.", show_alert=True)
+                return
+            if selected == context.user_data.get("emoji_ans"):
+                await q.answer("✅ إجابة صحيحة")
+                await ask_for_phone_share(update, context, edit=True)
+            else:
+                question, new_options = generate_emoji_captcha()
+                context.user_data["emoji_ans"] = question
+                context.user_data["emoji_options"] = new_options
+                await q.answer("❌ إجابة خاطئة", show_alert=True)
+                await q.edit_message_text(
+                    f"🔐 للدخول للبوت، اختر الإيموجي المطابق:\n\n❓  *{question}*",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=emoji_captcha_kb(new_options)
+                )
+            return
         if data == "os:cancel_order" and is_own:
             context.user_data["state"] = "os_await_cancel_order"
             await q.edit_message_text("❌ *إلغاء طلب:*\n\nأرسل كود الطلب المراد إلغاؤه:", parse_mode=ParseMode.MARKDOWN)
