@@ -223,6 +223,20 @@ def credit_referral_if_pending(user_id: int, context=None):
         already = row["referral_credited"]
         if not invited_by or invited_by == 0 or invited_by == user_id or already:
             return None
+
+        # إذا قُيّد الداعي بسبب الاشتباه برشق الإحالات، تُوقَف أي إحالات جديدة
+        # حتى يراجعها المالك ويرفع التقييد.
+        inviter_status = c.execute(
+            "SELECT referral_points_blocked FROM users WHERE user_id=%s FOR UPDATE",
+            (invited_by,),
+        ).fetchone()
+        if inviter_status and inviter_status.get("referral_points_blocked"):
+            logger.info(
+                "Referral skipped: inviter %s is blocked pending owner review",
+                invited_by,
+            )
+            return None
+
         rp = int(get_setting("referral_points") or "30")
         c.execute(
             "UPDATE users SET referral_credited=1, credited_at=NOW() WHERE user_id=%s AND referral_credited=0",
