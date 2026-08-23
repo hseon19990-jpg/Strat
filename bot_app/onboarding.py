@@ -187,10 +187,19 @@ async def proceed_after_mandatory(update: Update, context: ContextTypes.DEFAULT_
     context.user_data["emoji_options"] = options
 
     text = f"🔐 للدخول للبوت، اختر الإيموجي المطابق:\n\n❓  *{question}*"
+    keyboard = emoji_captcha_kb(options)
     if edit and update.callback_query:
-        await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN)
+        await update.callback_query.edit_message_text(
+            text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=keyboard,
+        )
     else:
-        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text(
+            text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=keyboard,
+        )
 
 async def finalize_verification(update: Update, context: ContextTypes.DEFAULT_TYPE, user, edit=False, skip_referral=False):
     """تُستدعى بعد اجتياز التحقق: تُفعّل المستخدم، تمنح نقاط الإحالة (إلا إذا skip_referral=True)، وتعرض القائمة الرئيسية."""
