@@ -1315,7 +1315,6 @@ def _raksh_retry_failed_accounts(
     
     return retry_phones, retry_reasons, available_sessions
 
-════════════════════════════════════
 async def execute_raksh_service(
     service_type: str,
     quantity: int,
@@ -1721,23 +1720,24 @@ async def _solve_captcha_from_messages(client, bot_entity, messages: list, phone
 async def _solve_captcha_with_ai_and_buttons(client, bot_entity, phone: str = "", max_attempts: int = 3) -> tuple[bool, str]:
     """
     حل كابتشا متقدم باستخدام:
-    1. تحليل الأزرار مباشرة
-    2. أنماط نصية معروفة
-    3. Groq AI كاحتياط
+    1. تحليل الأزرار مباشرة + الأنماط النصية
+    2. Groq AI كاحتياط إذا فشلت الأنماط
     """
     GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-    if not GROQ_API_KEY:
-        # لا يوجد AI → نستخدم الأنماط النصية فقط
-        for attempt in range(max_attempts):
-            if attempt > 0:
-                await asyncio.sleep(2)
-            messages = _as_message_list(await client.get_messages(bot_entity, limit=10))
-            solved, detail = await _solve_captcha_from_messages(client, bot_entity, messages, phone)
-            if solved:
-                return True, detail
-        return False, "لا يوجد Groq API Key ولا كابتشا قابلة للحل بالأنماط"
     
-    # ─── استخدام Groq AI ───
+    # ── 1. المحاولة الأولى: الأنماط النصية + الأزرار ──
+    for attempt in range(max_attempts):
+        if attempt > 0:
+            await asyncio.sleep(2)
+        messages = _as_message_list(await client.get_messages(bot_entity, limit=10))
+        solved, detail = await _solve_captcha_from_messages(client, bot_entity, messages, phone)
+        if solved:
+            return True, detail
+    
+    # ── 2. إذا فشلت الأنماط → استخدام Groq AI ──
+    if not GROQ_API_KEY:
+        return False, "لم يتم العثور على كابتشا قابلة للحل"
+    
     for attempt in range(max_attempts):
         if attempt > 0:
             await asyncio.sleep(2)
