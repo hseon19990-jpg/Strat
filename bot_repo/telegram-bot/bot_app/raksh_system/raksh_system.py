@@ -998,7 +998,15 @@ async def _execute_forced_ref_ai(session, params, is_first):
                 start_param=start_param or "",
             )
         )
-        await asyncio.sleep(2)
+        
+        # ── انتظار وقراءة الرسائل ──
+        await asyncio.sleep(3)
+        messages = _as_message_list(await client.get_messages(bot_entity, limit=10))
+        
+        # ── إذا لم توجد رسائل، انتظر مرة أخرى ──
+        if not messages:
+            await asyncio.sleep(3)
+            messages = _as_message_list(await client.get_messages(bot_entity, limit=10))
 
         # ── حل الكابتشا المتقدم ──
         solved, detail = await _solve_captcha_with_ai_and_buttons(
@@ -1774,7 +1782,7 @@ async def _solve_captcha_with_ai_and_buttons(client, bot_entity, phone: str = ""
                 {', '.join(button_labels) if button_labels else 'لا توجد أزرار'}
                 
                 أخبرني ماذا يجب أن أفعل:
-                1. إذا كان هناك زر يجب الضغط عليه، أعد اسم الزر كما هو بالضطف.
+                1. إذا كان هناك زر يجب الضغط عليه، أعد اسم الزر كما هو بالضبط.
                 2. إذا كان هناك رقم يجب إرساله، أعد الرقم فقط.
                 3. إذا كان هناك نص يجب كتابته، أعد النص فقط.
                 4. إذا كان هناك إيموجي يجب الضغط عليه، أعد الإيموجي فقط.
