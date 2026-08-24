@@ -999,15 +999,16 @@ async def _execute_forced_ref_ai(session, params, is_first):
             )
         )
         
-        # ── انتظار وقراءة الرسائل ──
-        await asyncio.sleep(3)
-        messages = _as_message_list(await client.get_messages(bot_entity, limit=10))
-        
-        # ── إذا لم توجد رسائل، انتظر مرة أخرى ──
-        if not messages:
-            await asyncio.sleep(3)
+        # ── انتظار وقراءة الرسائل (5 محاولات) ──
+        for _ in range(5):
+            await asyncio.sleep(2)
             messages = _as_message_list(await client.get_messages(bot_entity, limit=10))
-
+            if messages:
+                break
+        
+        if not messages:
+            return False, "لم تصل أي رسالة من البوت بعد /start"
+        
         # ── حل الكابتشا المتقدم ──
         solved, detail = await _solve_captcha_with_ai_and_buttons(
             client,
