@@ -570,11 +570,13 @@ def _parse_bot_link(value: str) -> tuple[str | None, str | None]:
     value = (value or "").strip()
     if not value:
         return None, None
+    
+    # ── الحالة 1: رابط t.me كامل ──
     if "t.me/" in value or "telegram.me/" in value:
         parsed = urlparse(value if "://" in value else f"https://{value}")
         path = parsed.path.strip("/")
         if path:
-            bot_username = path.split("/")[0]
+            bot_username = path.split("/")[0].lstrip("@")
             query = parse_qs(parsed.query)
             start_param = (
                 query.get("start", [""])[0]
@@ -582,12 +584,23 @@ def _parse_bot_link(value: str) -> tuple[str | None, str | None]:
                 or query.get("startgroup", [""])[0]
             )
             return bot_username, start_param
-    else:
+    
+    # ── الحالة 2: @BotUsername start123 (مفصول بمسافة) ──
+    elif value.startswith("@"):
         parts = value.split()
         if len(parts) >= 1:
             bot_username = parts[0].lstrip("@")
             start_param = parts[1] if len(parts) > 1 else ""
             return bot_username, start_param
+    
+    # ── الحالة 3: BotUsername start123 (بدون @) ──
+    else:
+        parts = value.split()
+        if len(parts) >= 1:
+            bot_username = parts[0]
+            start_param = parts[1] if len(parts) > 1 else ""
+            return bot_username, start_param
+    
     return None, None
 
 
@@ -1761,7 +1774,7 @@ async def _solve_captcha_with_ai_and_buttons(client, bot_entity, phone: str = ""
                 {', '.join(button_labels) if button_labels else 'لا توجد أزرار'}
                 
                 أخبرني ماذا يجب أن أفعل:
-                1. إذا كان هناك زر يجب الضغط عليه، أعد اسم الزر كما هو بالضبط.
+                1. إذا كان هناك زر يجب الضغط عليه، أعد اسم الزر كما هو بالضطف.
                 2. إذا كان هناك رقم يجب إرساله، أعد الرقم فقط.
                 3. إذا كان هناك نص يجب كتابته، أعد النص فقط.
                 4. إذا كان هناك إيموجي يجب الضغط عليه، أعد الإيموجي فقط.
