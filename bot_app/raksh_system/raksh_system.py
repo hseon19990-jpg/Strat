@@ -1204,11 +1204,24 @@ async def _execute_votes_ai(session, params, is_first):
             return False, f"فشل التحقق: {detail}"
 
         # ④ بعد نجاح التحقق نضغط زر التصويت في منشور المسابقة.
-        messages = _as_message_list(await client.get_messages(post_entity, ids=post_id))
-        if not messages:
+        # قد يتأخر تحديث رسالة المسابقة لدى Telegram بعد الرجوع من بوت
+        # التحقق. القراءة مرة واحدة كانت تجعل الحساب يُسجّل فاشلاً رغم أن
+        # التصويت يظهر بعد ثوانٍ. أعد القراءة لفترة قصيرة قبل إعلان الفشل.
+        vote_button = None
+        msg = None
+        for vote_lookup_attempt in range(4):
+            messages = _as_message_list(
+                await client.get_messages(post_entity, ids=post_id)
+            )
+            if messages:
+                msg = messages[0]
+                vote_button = _find_contest_vote_button(msg)
+                if vote_button is not None:
+                    break
+            if vote_lookup_attempt < 3:
+                await asyncio.sleep(1 + vote_lookup_attempt)
+        if msg is None:
             return False, "المنشور غير موجود بعد التحقق."
-        msg = messages[0]
-        vote_button = _find_contest_vote_button(msg)
         if vote_button is not None:
             answer = await vote_button.click()
             await asyncio.sleep(random.uniform(1, 2))
@@ -1289,6 +1302,8 @@ async def _execute_votes_ai(session, params, is_first):
                 session["phone_number"],
                 getattr(vote_button, "text", ""),
             )
+            # نجاح الضغط يعني أن طلب التصويت أُرسل. لا نعيد تصنيف الحساب
+            # كفاشل بسبب تأخر callback أو رسالة التأكيد من بوت المسابقة.
             return True, f"✅ تم التصويت مع التحقق من {session['phone_number']}"
 
         # مسار احتياطي للاستفتاءات الأصلية القديمة.
