@@ -289,12 +289,46 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
         if GROQ_API_KEY:
             def _groq_request():
                 # اسم النموذج القديم قد لا يكون متاحاً لكل مفاتيح Groq.
-                # يمكن تخصيصه من GROQ_TEXT_MODEL، ثم نجرب نموذجاً خفيفاً
-                # معروفاً كاحتياط عند model_not_found فقط.
+                # يمكن تخصيصه من GROQ_TEXT_MODEL. وإذا رفضه المفتاح،
+                # نقرأ /models لاختيار نموذج متاح فعلياً لهذا المفتاح.
                 configured = os.environ.get("GROQ_TEXT_MODEL", "").strip()
-                models = [configured or "llama-3.1-8b-instant"]
-                if "llama-3.3-70b-versatile" not in models:
-                    models.append("llama-3.3-70b-versatile")
+                models = [configured] if configured else []
+                models.extend([
+                    "llama-3.1-8b-instant",
+                    "openai/gpt-oss-20b",
+                    "qwen/qwen3-32b",
+                    "llama-3.3-70b-versatile",
+                ])
+                try:
+                    available = requests.get(
+                        "https://api.groq.com/openai/v1/models",
+                        headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+                        timeout=10,
+                    )
+                    if available.status_code == 200:
+                        ids = [
+                            item.get("id", "") for item in
+                            available.json().get("data", [])
+                        ]
+                        # استبعد نماذج الصوت/التضمين، وفضّل نماذج النص
+                        # الشائعة. نضيفها بعد القائمة اليدوية للحفاظ على
+                        # ترتيب التفضيل إن كان المفتاح يتيح أحدها.
+                        discovered = [
+                            mid for mid in ids
+                            if mid and not any(
+                                part in mid.lower()
+                                for part in ("whisper", "embedding", "guard")
+                            )
+                        ]
+                        models.extend(discovered)
+                        logger.info(
+                            f"🤖 Groq models available={len(discovered)}"
+                        )
+                except Exception as model_exc:
+                    logger.warning(f"⚠️ تعذر جلب قائمة نماذج Groq: {model_exc}")
+
+                # إزالة التكرار مع المحافظة على الأولوية.
+                models = list(dict.fromkeys(model for model in models if model))
                 for model in models:
                     try:
                         r = requests.post(
