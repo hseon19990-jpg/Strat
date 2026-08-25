@@ -722,7 +722,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
             # ════════════════════════════════════════════════════
             # 4. أزرار اختيار (كابتشا أزرار / إيموجي / خيارات)
             # ════════════════════════════════════════════════════
-            if has_btns and msg_text:
+            if has_btns:
                 try:
                     btn_labels  = []
                     btn_objects = {}
@@ -748,6 +748,8 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                         or "click" in msg_text_lower
                         or "press" in msg_text_lower
                         or "pick" in msg_text_lower
+                        # بعض كابتشا الإيموجي المدفوعة تصل بأزرار فقط بلا نص دال.
+                        or (len(btn_labels) >= 2 and all(bool(_extract_emojis_from_text(lbl)) for lbl in btn_labels))
                     )
                     if not is_verif:
                         continue
