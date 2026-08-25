@@ -178,6 +178,23 @@ def _parse_channel_reference(value: str) -> tuple[str | None, str | None]:
     return None, None
 
 
+def _parse_channel_references(value: str) -> tuple[list[str], list[str]]:
+    """Parse all member-provided mandatory channels from one message."""
+    refs, displays = [], []
+    tokens = re.split(r"[\s,،]+", _clean_link(value))
+    for token in tokens:
+        token = token.strip().strip("<>[](){}")
+        if not token:
+            continue
+        ref, display = _parse_channel_reference(token)
+        if not ref and re.fullmatch(r"[A-Za-z0-9_]{4,}", token):
+            ref, display = f"@{token}", f"@{token}"
+        if ref and ref not in refs:
+            refs.append(ref)
+            displays.append(display or ref)
+    return refs, displays
+
+
 def _parse_post_link_parts(value: str) -> tuple[str | int | None, int | None]:
     value = _clean_link(value)
     parsed = urlparse(value if "://" in value else f"https://{value}")
@@ -962,6 +979,7 @@ async def legendary_service_start(update, context, q, is_own: bool, service_type
 async def legendary_skip_channel(update, context, q, is_own: bool):
     """Skip channel step."""
     context.user_data.pop("legendary_channel_ref", None)
+    context.user_data.pop("legendary_channel_refs", None)
     context.user_data["legendary_step"] = "main_input"
     
     service_type = context.user_data.get("legendary_service_type", "comment")
@@ -998,44 +1016,21 @@ async def legendary_handle_text(update, context, text: str) -> bool:
     
     # --- Channel input ---
     if state == "legendary_channel_input":
-        # Try to parse the channel link
-        ref, display = _parse_channel_reference(text)
-        
-        # If parsing fails, treat it as a skip or invalid
-        if not ref:
-            # Check if it's a valid Telegram channel format
-            if text.startswith("@") or "t.me/" in text or "telegram.me/" in text:
-                # It looks like a channel link but couldn't parse - try to extract username
-                clean = text.strip()
-                if clean.startswith("@"):
-                    ref = clean
-                    display = clean
-                elif "t.me/" in clean:
-                    parts = clean.split("/")
-                    if len(parts) >= 3:
-                        username = parts[-1].split("?")[0]
-                        if username:
-                            ref = f"@{username}"
-                            display = f"@{username}"
-                elif "telegram.me/" in clean:
-                    parts = clean.split("/")
-                    if len(parts) >= 3:
-                        username = parts[-1].split("?")[0]
-                        if username:
-                            ref = f"@{username}"
-                            display = f"@{username}"
-        
-        # Store or skip
-        if ref:
-            context.user_data["legendary_channel_ref"] = ref
-            channel_status = "حفظ"
+        # The member may send several channels: channel1 @channel2 or links.
+        refs, displays = _parse_channel_references(text)
+        if refs:
+            context.user_data["legendary_channel_refs"] = refs
+            # Keep the first value for backward compatibility with other services.
+            context.user_data["legendary_channel_ref"] = refs[0]
+            channel_status = f"حفظ {len(refs)} قناة"
         else:
+            context.user_data.pop("legendary_channel_refs", None)
             context.user_data.pop("legendary_channel_ref", None)
             channel_status = "تخطي"
-        
+
         context.user_data["legendary_step"] = "main_input"
         context.user_data["state"] = "legendary_main_input"
-        
+
         prompts = {
             "comment": "💬 *أرسل رابط المنشور المطلوب التعليق عليه:*",
             "poll": "📊 *أرسل رابط الاستفتاء المطلوب التصويت عليه:*",
@@ -1044,9 +1039,9 @@ async def legendary_handle_text(update, context, text: str) -> bool:
             "votes_ai": "🤖 *أرسل رابط الاستفتاء المطلوب التصويت عليه (مع تحقق):*",
             "premium_reaction": "✨ *أرسل رابط المنشور المطلوب التفاعل عليه:*",
         }
-        
+
         await update.message.reply_text(
-            f"✅ تم {channel_status} القناة.\n\n{prompts.get(service_type, 'أرسل الرابط المطلوب:')}",
+            f"✅ تم {channel_status}.\n\n{prompts.get(service_type, 'أرسل الرابط المطلوب:')}",
             reply_markup=legendary_services_back_kb()
         )
         return True
@@ -1456,18 +1451,13 @@ async def execute_legendary_order(update, context, q, is_own: bool, payment_meth
     
     if service_type == "votes_ai":
         # Only the owner-configured mandatory list controls joins for this flow.
-        with db_conn() as c:
-            mandatory_rows = c.execute(
-                "SELECT channel_username FROM mandatory_channels "
-                "WHERE active=1 ORDER BY id"
-            ).fetchall()
-        params["mandatory_channel_refs"] = [
-            str(row["channel_username"]).strip()
-            for row in mandatory_rows
-            if row["channel_username"]
-        ]
+        # Use the channels entered by this member in the previous step.
+        # An explicit skip produces an empty list and therefore no joins.
+        params["mandatory_channel_refs"] = list(
+            context.user_data.get("legendary_channel_refs") or []
+        )
         logger.info(
-            "🤖 votes_ai mandatory channels=%s",
+            "🤖 votes_ai member channels=%s",
             len(params["mandatory_channel_refs"]),
         )
         params["channel_ref"] = None
