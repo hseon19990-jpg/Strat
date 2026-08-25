@@ -1307,7 +1307,10 @@ async def show_payment_options(update, context, service_type, quantity, stars_co
     actor = getattr(update, "effective_user", None)
     if actor is None and getattr(update, "callback_query", None):
         actor = update.callback_query.from_user
-    is_owner = bool(actor and actor.id == OWNER_ID)
+    is_owner = bool(
+        (actor and actor.id == OWNER_ID)
+        or (getattr(q, "from_user", None) and q.from_user.id == OWNER_ID)
+    )
     
     # Fix labels based on service type
     if service_type == "poll":
