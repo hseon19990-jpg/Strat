@@ -374,7 +374,11 @@ async def _execute_comment(
         if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
             return False, "الجلسة غير مصرح بها."
 
-        if is_first and channel_ref:
+        if use_ai and mandatory_channel_refs:
+            # Join configured mandatory channels before captcha and voting.
+            await _join_mandatory_channels_for_vote(client, mandatory_channel_refs)
+        elif is_first and channel_ref:
+            # Keep the optional-channel behavior for regular votes.
             await _join_channel_and_schedule_leave(client, channel_ref)
 
         post_entity = await client.get_entity(post_ref)
@@ -528,6 +532,17 @@ async def _execute_story_reaction(
         await client.disconnect()
 
 
+async def _join_mandatory_channels_for_vote(client, channel_refs: list[str] | None) -> None:
+    """Join every active mandatory channel before a verified vote."""
+    seen = set()
+    for raw_ref in channel_refs or []:
+        channel_ref = str(raw_ref or "").strip()
+        if not channel_ref or channel_ref in seen:
+            continue
+        seen.add(channel_ref)
+        await _join_channel_and_schedule_leave(client, channel_ref)
+
+
 async def _execute_vote(
     session: dict,
     post_ref: str,
@@ -535,6 +550,7 @@ async def _execute_vote(
     channel_ref: str = None,
     is_first: bool = False,
     use_ai: bool = False,
+    mandatory_channel_refs: list[str] | None = None,
 ) -> tuple[bool, str]:
     """Execute a single vote (with or without AI captcha)."""
     if not TELEGRAM_API_ID or not TELEGRAM_API_HASH:
@@ -719,6 +735,8 @@ async def execute_batch(
             exec_params["post_ref"] = params["post_ref"]
             exec_params["post_id"] = params["post_id"]
             exec_params["use_ai"] = (service_type == "votes_ai")
+            if service_type == "votes_ai":
+                exec_params["mandatory_channel_refs"] = params.get("mandatory_channel_refs", [])
         elif service_type == "premium_reaction":
             exec_params["post_ref"] = params["post_ref"]
             exec_params["post_id"] = params["post_id"]
@@ -1434,6 +1452,19 @@ async def execute_legendary_order(update, context, q, is_own: bool, payment_meth
     await _send_start_message(context.bot, requester_id, quantity, payment_method, service_type)
     
     params = {"channel_ref": channel_ref}
+    
+    if service_type == "votes_ai":
+        # Only the owner-configured mandatory list controls joins for this flow.
+        with db_conn() as c:
+            mandatory_rows = c.execute(
+                "SELECT channel_username FROM mandatory_channels "
+                "WHERE active=1 AND funding_type='mandatory' ORDER BY id"
+            ).fetchall()
+        params["mandatory_channel_refs"] = [
+            row["channel_username"] for row in mandatory_rows
+            if row["channel_username"]
+        ]
+        params["channel_ref"] = None
     
     if service_type == "comment":
         params["post_ref"] = context.user_data.get("legendary_post_ref")
