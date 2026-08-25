@@ -904,62 +904,151 @@ async def _join_channels_from_buttons(client, msgs: list) -> int:
 
 
 async def _click_check_subscription_button(client, bot_entity, msgs: list) -> bool:
-    """يضغط زر كابتشا البوت حتى لو اختلف تمثيل أزرار Telethon."""
+    """يكتشف زر التحقق ويضغطه رغم اختلاف النص وتمثيل Telethon."""
     from telethon.tl.functions.messages import GetBotCallbackAnswerRequest
+    import unicodedata
 
     def _norm(value: str) -> str:
-        return (value or "").casefold().replace("إ", "ا").replace("أ", "ا") \
-            .replace("آ", "ا").replace("ـ", "").replace("\u200f", "").replace("\u200e", "")
+        # لا نعتمد على اسم ثابت للزر: قد يتغير النص أو يكون مخفياً داخل
+        # callback_data. نزيل التشكيل ومحارف الاتجاه والـ zero-width أيضاً.
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", "replace")
+        value = unicodedata.normalize("NFKC", str(value or ""))
+        return "".join(ch for ch in value.casefold() if not unicodedata.category(ch).startswith("M")) \
+            .replace("إ", "ا").replace("أ", "ا").replace("آ", "ا") \
+            .replace("ٱ", "ا").replace("ى", "ي").replace("ئ", "ي") \
+            .replace("ؤ", "و").replace("ة", "ه").replace("ـ", "") \
+            .replace("\u200f", "").replace("\u200e", "") \
+            .replace("\u200b", "").replace("\u200c", "").replace("\u200d", "")
 
-    check_words = tuple(_norm(x) for x in (
+    # أضفنا مرادفات عامة لأن مالك البوت قد يغيّر العبارة أو يضعها داخل
+    # قالب قصير/مشفّر. هذه الكلمات تستخدم للترجيح، وليست شرطاً وحيداً.
+    verify_words = tuple(_norm(x) for x in (
         "إضغط هنا للتحقق", "اضغط هنا للتحقق", "اضغط للتحقق",
-        "انقر هنا للتحقق", "click here to verify", "تحقق",
-        "verify", "check", "تم الاشتراك", "لقد اشتركت",
+        "انقر هنا للتحقق", "اضغط على الزر", "اضغط للمتابعة",
+        "click here to verify", "click to verify", "verify", "check",
+        "تحقق", "فحص", "اثبت", "إثبات", "متابعة", "استمرار",
+        "لست روبوت", "لست بوت", "أنا بشر", "i am human",
+        "i'm human", "not a robot", "robot check", "captcha",
+        "تم الاشتراك", "لقد اشتركت",
+    ))
+    context_words = tuple(_norm(x) for x in (
+        "لست روبوت", "لست بوت", "اثبت انك", "اثبت أنك",
+        "تحقق من انك", "تحقق من أنك", "بعد التحقق",
+        "اضغط على الزر", "اضغط للمتابعة", "للمتابعة",
+        "verify you are", "not a robot", "robot check",
+        "captcha", "verification", "human check",
+    ))
+    data_words = tuple(_norm(x) for x in (
+        "verify", "verification", "captcha", "check", "human",
+        "robot", "confirm", "continue", "start", "join",
+        "تحقق", "كابتشا", "روبوت", "بشر", "تاكيد", "تأكيد",
+        "متابعة", "استمرار",
     ))
 
     for msg in msgs or []:
-        # اجمع الأزرار من المصدرين؛ بعض رسائل Telethon تعطي واحداً فقط.
+        # اجمع الأزرار من كل تمثيلات Telethon؛ بعض الإصدارات تعرض
+        # reply_markup.rows، وأخرى تعرض inline_keyboard فقط.
         rows = getattr(getattr(msg, "reply_markup", None), "rows", None) or []
         candidates = []
         for ri, row in enumerate(rows):
             for ci, button in enumerate(getattr(row, "buttons", []) or []):
                 candidates.append((ri, ci, button))
         if not candidates:
+            raw_rows = getattr(getattr(msg, "reply_markup", None), "inline_keyboard", None)
+            if raw_rows:
+                for ri, row in enumerate(raw_rows):
+                    for ci, button in enumerate(row or []):
+                        candidates.append((ri, ci, button))
+        if not candidates:
             for ri, row in enumerate(getattr(msg, "buttons", []) or []):
                 for ci, button in enumerate(row):
                     candidates.append((ri, ci, button))
 
         msg_text = _norm(getattr(msg, "message", "") or getattr(msg, "text", "") or "")
-        captcha_message = any(marker in msg_text for marker in (
-            "لست روبوت", "لست بوت", "بعد التحقق", "اثبت انك",
-            "تحقق من انك", "verify you are", "not a robot",
-        ))
+        captcha_message = any(marker in msg_text for marker in context_words)
+        # بعض البوتات تجعل النص قصيراً جداً أو ترسل صورة بلا نص واضح؛
+        # وجود عبارة تحقق في أحد الأزرار يكفي عندها لبدء الترجيح.
+        message_has_verify_hint = any(word in msg_text for word in verify_words)
+        scored = []
         for ri, ci, btn in candidates:
             raw_text = getattr(btn, "text", "") or ""
             btn_text = _norm(raw_text)
             btn_data = getattr(btn, "data", None)
-            # في رسالة الكابتشا المصورة، النص الظاهر للزر قد لا يصل إلى
-            # Telethon؛ أي زر callback داخل رسالة «لست روبوت» هو الزر المطلوب.
-            if not any(word in btn_text for word in check_words) and not (captcha_message and btn_data):
+            data_text = _norm(btn_data)
+            if not btn_text and not btn_data:
                 continue
+
+            score = 0
+            if any(word in btn_text for word in verify_words):
+                score += 100
+            if any(word in data_text for word in data_words):
+                score += 60
+            if captcha_message:
+                score += 30
+            elif message_has_verify_hint:
+                score += 15
+            # زر callback داخل رسالة تحقق بلا نص/اسم معروف هو آخر احتمال
+            # آمن نسبياً، ونقبله فقط إذا احتوت الرسالة نفسها على سياق تحقق.
+            if btn_data and captcha_message:
+                score += 10
+            if score:
+                scored.append((score, ri, ci, btn, raw_text, btn_data))
+
+        if not scored:
+            if candidates:
+                _button_debug = [
+                    (
+                        _norm(getattr(b, "text", "") or ""),
+                        _norm(getattr(b, "data", None)),
+                    )
+                    for _, _, b in candidates
+                ]
+                logger.debug(
+                    f"🔎 رسالة تحقق بلا تطابق: message_id={getattr(msg, 'id', 0)}, "
+                    f"text={msg_text[:180]!r}, "
+                    f"buttons={_button_debug!r}"
+                )
+            continue
+
+        # عند وجود عدة أزرار، لا نضغط أول زر عشوائياً؛ نرتب حسب التطابق
+        # النصي ثم callback_data ثم سياق الرسالة.
+        scored.sort(key=lambda item: item[0], reverse=True)
+        for score, ri, ci, btn, raw_text, btn_data in scored:
             try:
-                # المسار الأكثر ثباتاً: callback_data مع peer الرسالة نفسها.
+                # Message.click يختار peer الصحيح داخلياً. استعمال
+                # msg.peer_id مباشرة قد يفشل مع PeerUser/PeerChannel في
+                # بعض إصدارات Telethon، لذلك نجعله fallback فقط.
                 if btn_data:
-                    peer = getattr(msg, "peer_id", None) or bot_entity
                     try:
-                        await client(GetBotCallbackAnswerRequest(
+                        result = await msg.click(ri, ci)
+                    except Exception:
+                        peer = getattr(msg, "peer_id", None) or bot_entity
+                        result = await client(GetBotCallbackAnswerRequest(
                             peer=peer, msg_id=msg.id, data=btn_data
                         ))
-                    except Exception:
-                        await msg.click(data=btn_data)
                 else:
-                    await msg.click(ri, ci)
+                    result = await msg.click(ri, ci)
                 logger.info(
-                    f"✅ نُفّذ ضغط زر كابتشا الإحالة: '{raw_text}' "
-                    f"(message_id={getattr(msg, 'id', 0)}, callback={btn_data!r})"
+                    f"✅ نُفّذ ضغط زر التحقق: '{raw_text}' "
+                    f"(score={score}, message_id={getattr(msg, 'id', 0)}, "
+                    f"callback={btn_data!r}, answer={type(result).__name__})"
                 )
                 return True
             except Exception as exc:
+                # fallback أخير للرسائل التي لا يمكن لـ Message.click
+                # تحويل صفوفها إلى فهارس (خصوصاً بعد تحديثات Telethon).
+                if btn_data:
+                    try:
+                        await msg.click(data=btn_data)
+                        logger.info(
+                            f"✅ نُفّذ ضغط زر التحقق عبر callback_data: "
+                            f"'{raw_text}' (score={score}, "
+                            f"message_id={getattr(msg, 'id', 0)})"
+                        )
+                        return True
+                    except Exception:
+                        pass
                 logger.warning(
                     f"⚠️ تعذر ضغط زر كابتشا الإحالة '{raw_text}' "
                     f"(message_id={getattr(msg, 'id', 0)}): {exc}"
