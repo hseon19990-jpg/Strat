@@ -926,8 +926,14 @@ async def _click_check_subscription_button(client, bot_entity, msgs: list) -> bo
                 raw_text = (getattr(btn, "text", "") or "")
                 btn_text = raw_text.casefold()
                 normalized = (btn_text.replace("إ", "ا").replace("أ", "ا")
-                              .replace("آ", "ا").replace("ـ", ""))
-                if not any(k in btn_text or k in normalized for k in CHECK_KW):
+                              .replace("آ", "ا").replace("ـ", "")
+                              .replace("\u200f", "").replace("\u200e", ""))
+                normalized_keywords = [
+                    k.casefold().replace("إ", "ا").replace("أ", "ا")
+                     .replace("آ", "ا").replace("ـ", "")
+                for k in CHECK_KW]
+                if not any(k in btn_text or k in normalized or k in normalized_keywords
+                           for k in CHECK_KW):
                     continue
                 try:
                     # هذه أزرار Callback وليست روابط؛ اضغط نفس الصف/العمود
@@ -938,13 +944,14 @@ async def _click_check_subscription_button(client, bot_entity, msgs: list) -> bo
                             await msg.click(row_index, col_index)
                         except Exception:
                             await client(GetBotCallbackAnswerRequest(
-                                peer=bot_entity, msg_id=msg.id, data=btn_data
+                                peer=getattr(msg, "peer_id", None) or bot_entity,
+                                msg_id=msg.id, data=btn_data
                             ))
                     else:
                         await btn.click()
                     logger.info(
                         f"✅ ضغط زر تحقق الكابتشا: '{raw_text}' "
-                        f"(message_id={getattr(msg, 'id', 0)})"
+                        f"(message_id={getattr(msg, 'id', 0)}, callback={btn_data!r})"
                     )
                     return True
                 except Exception as _e:
