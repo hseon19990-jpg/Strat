@@ -1001,16 +1001,65 @@ async def _click_check_subscription_button(client, bot_entity, msgs: list) -> bo
         "متابعة", "استمرار",
     ))
 
+    def _collect_strings(value, output=None, seen=None, depth=0):
+        """يجمع كل النصوص من كائن Telethon، بما فيها الحقول المتداخلة."""
+        if output is None:
+            output = []
+        if seen is None:
+            seen = set()
+        if value is None or depth > 8 or len(output) >= 500:
+            return output
+        if isinstance(value, bytes):
+            # callback_data قد تكون bytes، لكن لا نحاول تحويل الصور أو
+            # الملفات الكبيرة إلى نص.
+            if len(value) <= 4096:
+                output.append(value.decode("utf-8", "replace"))
+            return output
+        if isinstance(value, str):
+            if value.strip():
+                output.append(value)
+            return output
+        if isinstance(value, (int, float, bool)):
+            return output
+        identity = id(value)
+        if identity in seen:
+            return output
+        seen.add(identity)
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if isinstance(key, str):
+                    output.append(key)
+                _collect_strings(item, output, seen, depth + 1)
+            return output
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                _collect_strings(item, output, seen, depth + 1)
+            return output
+        try:
+            to_dict = getattr(value, "to_dict", None)
+            if callable(to_dict):
+                _collect_strings(to_dict(), output, seen, depth + 1)
+        except Exception:
+            pass
+        return output
+
     def _message_text(msg) -> str:
-        """يقرأ نص أول رسالة مهما كان نوع Message/Media في Telethon."""
-        for attr in ("raw_text", "message", "text", "caption"):
+        """يقرأ كل نصوص Message/Media/Markup وليس أول حقل فقط."""
+        values = []
+        for attr in ("raw_text", "message", "text", "caption", "reply_markup"):
             try:
-                value = getattr(msg, attr, None)
-                if value:
-                    return _norm(value)
+                _collect_strings(getattr(msg, attr, None), values)
             except Exception:
                 pass
-        return ""
+        try:
+            _collect_strings(msg.to_dict(), values)
+        except Exception:
+            pass
+        # إزالة التكرار مع إبقاء الترتيب، ثم توحيد النص العربي.
+        unique = list(dict.fromkeys(
+            item for item in values if isinstance(item, str) and item.strip()
+        ))
+        return _norm("\n".join(unique))
 
     def _button_parts(btn) -> tuple[str, object]:
         """يدعم Button wrapper و KeyboardButtonCallback الخام معاً."""
