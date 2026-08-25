@@ -1205,6 +1205,25 @@ async def _execute_votes_ai(session, params, is_first):
             answer = await vote_button.click()
             await asyncio.sleep(random.uniform(1, 2))
             answer_text = _callback_answer_text(answer)
+            # ردود بعض بوتات المسابقات قد تحتوي على تحذير/نص قديم مع
+            # عبارة النجاح. الأولوية دائماً لعبارة «تم التصويت» لأن
+            # Telegram يكون قد سجّل التصويت فعلياً عند ظهورها.
+            vote_success_words = (
+                "تم التصويت",
+                "تم تسجيل التصويت",
+                "شكرا لتصويتك",
+                "شكراً لتصويتك",
+                "vote submitted",
+                "vote recorded",
+                "you voted",
+            )
+            if any(word in answer_text.casefold() for word in vote_success_words):
+                logger.info(
+                    "✅ الحساب %s أكد البوت تسجيل التصويت: %s",
+                    session["phone_number"],
+                    answer_text[:120],
+                )
+                return True, f"✅ تم التصويت مع التحقق من {session['phone_number']}"
             if any(
                 word in answer_text.casefold()
                 for word in ("خطأ", "فشل", "wrong", "error", "غير مسموح")
