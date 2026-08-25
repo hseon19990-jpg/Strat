@@ -263,11 +263,14 @@ def get_available_sessions_count() -> int:
     return len(_get_all_active_sessions())
 
 
-def get_delay_seconds(is_owner: bool, custom_delay: str = None) -> int:
+def get_delay_seconds(
+    is_owner: bool, custom_delay: str = None, service_type: str = None
+) -> int:
     """
     Get delay between accounts.
-    - Owner: can set custom delay (e.g., "5", "30-60")
-    - Non-owner: 1-8 minutes random
+    - Owner: can set custom delay (e.g., "120", "60-180")
+    - Members using votes_ai: 1-3 minutes random
+    - Other members: 1-8 minutes random
     """
     if is_owner and custom_delay:
         try:
@@ -281,7 +284,11 @@ def get_delay_seconds(is_owner: bool, custom_delay: str = None) -> int:
         except (ValueError, TypeError):
             pass
     
-    # Default: 1-8 minutes
+    # votes_ai is intentionally slower by default: 1-3 minutes per vote.
+    if service_type == "votes_ai":
+        return random.randint(60, 180)
+
+    # Default for the remaining legendary services: 1-8 minutes.
     return random.randint(MIN_DELAY_MINUTES * 60, MAX_DELAY_MINUTES * 60)
 
 
@@ -781,7 +788,7 @@ async def execute_batch(
             await progress_callback(i + 1, quantity, success_count, len(failed_details))
         
         if i < quantity - 1 and fallback_pool:
-            delay = get_delay_seconds(is_owner, custom_delay)
+            delay = get_delay_seconds(is_owner, custom_delay, service_type)
             logger.info(f"⏳ انتظار {delay} ثانية قبل التالي...")
             await asyncio.sleep(delay)
     
@@ -1349,7 +1356,7 @@ async def legendary_set_delay(update, context, q, is_own: bool):
     await q.edit_message_text(
         "⏱️ *تخصيص الفاصل بين الحسابات*\n\n"
         "أرسل رقماً بالثواني مثل `5`، أو نطاقاً مثل `30-60`.\n"
-        "اكتب `تخطي` للعودة للفاصل التلقائي (1-8 دقائق).",
+        "اكتب `تخطي` للعودة للفاصل التلقائي. للعضو: تصويت بتحقق 60-180 ثانية، وباقي الخدمات 1-8 دقائق.",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=legendary_services_back_kb(),
     )
