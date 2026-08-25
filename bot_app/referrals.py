@@ -288,29 +288,42 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
         # ── المحاولة 1: Groq (الأسرع والأفضل) ──
         if GROQ_API_KEY:
             def _groq_request():
-                try:
-                    r = requests.post(
-                        "https://api.groq.com/openai/v1/chat/completions",
-                        headers={
-                            "Authorization": f"Bearer {GROQ_API_KEY}",
-                            "Content-Type": "application/json"
-                        },
-                        json={
-                            "model": "llama-3.3-70b-versatile",
-                            "messages": [{"role": "user", "content": prompt}],
-                            "max_tokens": 20,
-                            "temperature": 0
-                        },
-                        timeout=15
-                    )
-                    if r.status_code == 200:
-                        data = r.json()
-                        if data.get("choices"):
-                            return data["choices"][0]["message"]["content"].strip()
-                    else:
-                        logger.warning(f"⚠️ Groq error: {r.status_code} - {r.text[:200]}")
-                except Exception as e:
-                    logger.warning(f"⚠️ Groq exception: {e}")
+                # اسم النموذج القديم قد لا يكون متاحاً لكل مفاتيح Groq.
+                # يمكن تخصيصه من GROQ_TEXT_MODEL، ثم نجرب نموذجاً خفيفاً
+                # معروفاً كاحتياط عند model_not_found فقط.
+                configured = os.environ.get("GROQ_TEXT_MODEL", "").strip()
+                models = [configured or "llama-3.1-8b-instant"]
+                if "llama-3.3-70b-versatile" not in models:
+                    models.append("llama-3.3-70b-versatile")
+                for model in models:
+                    try:
+                        r = requests.post(
+                            "https://api.groq.com/openai/v1/chat/completions",
+                            headers={
+                                "Authorization": f"Bearer {GROQ_API_KEY}",
+                                "Content-Type": "application/json"
+                            },
+                            json={
+                                "model": model,
+                                "messages": [{"role": "user", "content": prompt}],
+                                "max_tokens": 20,
+                                "temperature": 0
+                            },
+                            timeout=15
+                        )
+                        if r.status_code == 200:
+                            data = r.json()
+                            if data.get("choices"):
+                                return data["choices"][0]["message"]["content"].strip()
+                        else:
+                            logger.warning(
+                                f"⚠️ Groq model={model} error: "
+                                f"{r.status_code} - {r.text[:200]}"
+                            )
+                            if r.status_code not in (400, 404):
+                                break
+                    except Exception as e:
+                        logger.warning(f"⚠️ Groq model={model} exception: {e}")
                 return None
             
             result = await asyncio.to_thread(_groq_request)
