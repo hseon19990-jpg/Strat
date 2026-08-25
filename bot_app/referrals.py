@@ -440,6 +440,30 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
     all_details: list[str] = []
     processed_ids: set[int] = set()
 
+    def _extract_numeric_code(messages: list) -> str | None:
+        """يستخرج رمز التحقق الرقمي الذي يرسله البوت بعد زر التحقق."""
+        code_markers = ("رقم التحقق", "رمز التحقق", "verification code", "verify code", "code is", "code:")
+        trans = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+        for item in messages or []:
+            text = getattr(item, "message", "") or getattr(item, "text", "") or ""
+            if not any(marker in text.casefold() for marker in code_markers):
+                continue
+            normalized = text.translate(trans)
+            found = re.findall(r"(?<!\d)\d{4,8}(?!\d)", normalized)
+            if found:
+                return found[-1]
+        return None
+
+    async def _reply_to_numeric_code(messages: list):
+        code = _extract_numeric_code(messages)
+        if not code:
+            return None, messages
+        logger.info(f"🔢 تم اكتشاف رمز تحقق رقمي ({phone})")
+        await asyncio.sleep(1)
+        await client.send_message(bot_entity, code)
+        return await _wait_and_check()
+
+
     # ── حلقة المحاولات (تدعم تحقق متعدد المراحل) ─────────────
     for _round in range(max_attempts):
         logger.info(f"🔄 محاولة حل الكابتشا {_round+1}/{max_attempts} للرقم {phone}")
@@ -487,6 +511,10 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                         await asyncio.sleep(1)
                         await client.send_message(bot_entity, answer)
                         result, msgs = await _wait_and_check()
+                        if result == "unknown":
+                            numeric_result, numeric_msgs = await _reply_to_numeric_code(msgs)
+                            if numeric_result is not None:
+                                result, msgs = numeric_result, numeric_msgs()
                         detail = f"كابتشا صورة: {answer}"
                         all_details.append(detail)
                         if result == "success":
@@ -524,6 +552,10 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                         ),
                     )
                     result, msgs = await _wait_and_check()
+                        if result == "unknown":
+                            numeric_result, numeric_msgs = await _reply_to_numeric_code(msgs)
+                            if numeric_result is not None:
+                                result, msgs = numeric_result, numeric_msgs()
                     detail = "شارك ملفه الشخصي (Contact)"
                     all_details.append(detail)
                     if result == "success":
@@ -566,6 +598,10 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                         processed_ids.add(msg_id)
                         await msg.click(chosen_idx)
                         result, msgs = await _wait_and_check()
+                        if result == "unknown":
+                            numeric_result, numeric_msgs = await _reply_to_numeric_code(msgs)
+                            if numeric_result is not None:
+                                result, msgs = numeric_result, numeric_msgs()
                         detail = f"أجاب Poll: {answers[chosen_idx]}"
                         all_details.append(detail)
                         logger.info(f"🤖 AI Poll → '{answers[chosen_idx]}' ({phone})")
@@ -641,6 +677,10 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             processed_ids.add(msg_id)
                             await direct_chosen.click()
                             result, msgs = await _wait_and_check()
+                        if result == "unknown":
+                            numeric_result, numeric_msgs = await _reply_to_numeric_code(msgs)
+                            if numeric_result is not None:
+                                result, msgs = numeric_result, numeric_msgs()
                             detail = f"ضغط إيموجي مباشر: {getattr(direct_chosen, 'text', '')}"
                             all_details.append(detail)
                             if result == "success":
@@ -698,6 +738,10 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             processed_ids.add(msg_id)
                             await chosen.click()
                             result, msgs = await _wait_and_check()
+                        if result == "unknown":
+                            numeric_result, numeric_msgs = await _reply_to_numeric_code(msgs)
+                            if numeric_result is not None:
+                                result, msgs = numeric_result, numeric_msgs()
                             detail = f"ضغط زر: {getattr(chosen, 'text', '')}"
                             all_details.append(detail)
                             if result == "success":
@@ -733,6 +777,10 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                         await asyncio.sleep(1)
                         await client.send_message(bot_entity, answer)
                         result, msgs = await _wait_and_check()
+                        if result == "unknown":
+                            numeric_result, numeric_msgs = await _reply_to_numeric_code(msgs)
+                            if numeric_result is not None:
+                                result, msgs = numeric_result, numeric_msgs()
                         detail = f"أجاب: {answer}"
                         all_details.append(detail)
                         if result == "success":
@@ -768,6 +816,10 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             reaction=[ReactionEmoji(emoticon=emoji_clean)],
                         ))
                         result, msgs = await _wait_and_check()
+                        if result == "unknown":
+                            numeric_result, numeric_msgs = await _reply_to_numeric_code(msgs)
+                            if numeric_result is not None:
+                                result, msgs = numeric_result, numeric_msgs()
                         detail = f"تفاعل: {emoji_clean}"
                         all_details.append(detail)
                         logger.info(f"🤖 AI Reaction → '{emoji_clean}' ({phone})")
