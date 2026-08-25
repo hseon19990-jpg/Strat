@@ -648,8 +648,6 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             elif result == "fail":
                                 break  # حاول مجدداً
                     else:
-                            return True, f"ضغط الإيموجي | {' | '.join(all_details)}"
-                    else:
                         # ── الوضع الاحتياطي: استخدم Groq أو DeepSeek ─────────
                         # إذا كانت الأزرار كلها إيموجيات، وضّح ذلك للنموذج
                         all_emoji_btns = all(
