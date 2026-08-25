@@ -839,7 +839,11 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                                         chosen = btn
                                         break
                             if not chosen:
-                                chosen = list(btn_objects.values())[0]
+                                # Never guess: paid/custom-emoji captchas need a confirmed visual/ID match.
+                                logger.warning(f"⚠️ لا يوجد تطابق مؤكد لزر الكابتشا — لن يتم الضغط ({phone})")
+                                all_details.append("لم يتم الضغط: لا يوجد تطابق مؤكد")
+                                processed_ids.add(msg_id)
+                                continue
                             processed_ids.add(msg_id)
                             await chosen.click()
                             result, msgs = await _wait_and_check()
