@@ -153,8 +153,20 @@ async def _handle_confirm_mansub(update, context, user, q, is_own, data):
     if _dbu and _dbu.get('referral_points_blocked'):
         await q.edit_message_text('🔒 حسابك موقوف. تواصل مع المالك.', reply_markup=main_menu_kb(is_own))
         return
+    # إعادة قراءة الرصيد لحظة التأكيد، مع التفريق بين نقص الرصيد وتقييد الحساب
+    _balance_now = int((get_user(user.id) or {}).get('points') or 0)
+    if _balance_now < total:
+        await q.edit_message_text(
+            f'❌ نقاطك غير كافية.\n\n💰 التكلفة: {total:,} نقطة\n💎 رصيدك الحالي: {_balance_now:,} نقطة',
+            reply_markup=main_menu_kb(is_own)
+        )
+        context.user_data['state'] = 'main_menu'
+        return
     if not deduct_points(user.id, total):
-        await q.edit_message_text('❌ نقاطك غير كافية.', reply_markup=main_menu_kb(is_own))
+        await q.edit_message_text(
+            '🔒 لا يمكن استخدام نقاط هذا الحساب حالياً بسبب تقييد الإحالات. تواصل مع المالك.',
+            reply_markup=main_menu_kb(is_own)
+        )
         context.user_data['state'] = 'main_menu'
         return
     code = next_order_code(user.id)
@@ -601,8 +613,8 @@ async def _handle_confirm_forced_ref(update, context, user, q, is_own, data):
     start_p     = draft.get('start_p', '')
     channels    = draft.get('channels', '')
     qty         = draft.get('qty', 0)
-    total       = draft.get('cost', 0)
-    total_stars = draft.get('cost_stars', 0)
+    total       = int(draft.get('cost', 0) or 0)
+    total_stars = int(draft.get('cost_stars', 0) or 0)
     if not bot_user or qty < 1:
         context.user_data['state'] = 'main_menu'
         await q.edit_message_text('⚠️ بيانات غير مكتملة.', reply_markup=main_menu_kb(is_own))
