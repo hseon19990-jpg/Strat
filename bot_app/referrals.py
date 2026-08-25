@@ -1001,6 +1001,26 @@ async def _click_check_subscription_button(client, bot_entity, msgs: list) -> bo
         "متابعة", "استمرار",
     ))
 
+    def _message_text(msg) -> str:
+        """يقرأ نص أول رسالة مهما كان نوع Message/Media في Telethon."""
+        for attr in ("raw_text", "message", "text", "caption"):
+            try:
+                value = getattr(msg, attr, None)
+                if value:
+                    return _norm(value)
+            except Exception:
+                pass
+        return ""
+
+    def _button_parts(btn) -> tuple[str, object]:
+        """يدعم Button wrapper و KeyboardButtonCallback الخام معاً."""
+        raw = getattr(btn, "button", None) or btn
+        text = getattr(raw, "text", None) or getattr(btn, "text", None) or ""
+        data = getattr(raw, "data", None)
+        if data is None:
+            data = getattr(btn, "data", None)
+        return _norm(text), data
+
     for msg in msgs or []:
         # اجمع الأزرار من كل تمثيلات Telethon؛ بعض الإصدارات تعرض
         # reply_markup.rows، وأخرى تعرض inline_keyboard فقط.
@@ -1020,7 +1040,7 @@ async def _click_check_subscription_button(client, bot_entity, msgs: list) -> bo
                 for ci, button in enumerate(row):
                     candidates.append((ri, ci, button))
 
-        msg_text = _norm(getattr(msg, "message", "") or getattr(msg, "text", "") or "")
+        msg_text = _message_text(msg)
         captcha_message = (
             any(marker in msg_text for marker in context_words)
             or any(marker in msg_text for marker in flow_words)
@@ -1030,9 +1050,10 @@ async def _click_check_subscription_button(client, bot_entity, msgs: list) -> bo
         message_has_verify_hint = any(word in msg_text for word in verify_words)
         scored = []
         for ri, ci, btn in candidates:
-            raw_text = getattr(btn, "text", "") or ""
-            btn_text = _norm(raw_text)
-            btn_data = getattr(btn, "data", None)
+            btn_text, btn_data = _button_parts(btn)
+            raw_text = getattr(btn, "text", "") or getattr(
+                getattr(btn, "button", None), "text", ""
+            ) or btn_text
             data_text = _norm(btn_data)
             if not btn_text and not btn_data:
                 continue
