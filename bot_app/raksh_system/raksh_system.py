@@ -1621,8 +1621,19 @@ async def handle_raksh_callback(
         
         if payment_method == "points":
             if not deduct_points(user.id, total_cost):
+                # deduct_points also rejects accounts temporarily restricted
+                # from using referral-earned points. Do not report that as a
+                # balance problem when the user actually has enough points.
+                current_user = get_user(user.id)
+                if current_user and current_user.get("referral_points_blocked"):
+                    error_text = (
+                        "🔒 *تم إيقاف استخدام النقاط في حسابك مؤقتاً.*\n\n"
+                        "تواصل مع الدعم لمراجعة حالة الإحالات وإعادة تفعيل الرصيد."
+                    )
+                else:
+                    error_text = "❌ *نقاطك غير كافية!*"
                 await query.edit_message_text(
-                    "❌ *نقاطك غير كافية!*",
+                    error_text,
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=raksh_menu_kb(is_own)
                 )
