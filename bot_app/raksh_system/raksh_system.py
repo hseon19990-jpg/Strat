@@ -1131,8 +1131,10 @@ async def _execute_votes_ai(session, params, is_first):
                 return False, "رابط المنشور غير صالح أو القناة غير متاحة للحساب."
             raise
 
-        # ① انضمام القناة الإجبارية قبل فتح المسابقة.
-        if is_first and params.get("channel_ref"):
+        # ① انضمام كل حساب بالقنوات التي أدخلها العضو قبل فتح المسابقة.
+        # لا نستخدم is_first هنا: كل جلسة مستقلة تحتاج عضوية خاصة بها
+        # حتى تُقبل مشاركتها في التصويت الذي يشترط الاشتراك.
+        if params.get("channel_ref"):
             try:
                 await _join_channel_and_schedule_leave(client, params["channel_ref"])
                 await asyncio.sleep(random.uniform(1, 2))
