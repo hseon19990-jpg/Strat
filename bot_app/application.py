@@ -503,7 +503,8 @@ async def cmd_test_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return f"⚠️ {name}: استجابة غير متوقعة | HTTP {status_code}"
 
     for name, key, url, model in [
-        ("Groq", GROQ_API_KEY, "https://api.groq.com/openai/v1/chat/completions", "llama-3.3-70b-versatile"),
+        ("Groq", GROQ_API_KEY, "https://api.groq.com/openai/v1/chat/completions",
+         os.environ.get("GROQ_TEXT_MODEL", "llama-3.1-8b-instant")),
         ("DeepSeek", DEEPSEEK_API_KEY, "https://api.deepseek.com/chat/completions", "deepseek-chat"),
     ]:
         if not key:
