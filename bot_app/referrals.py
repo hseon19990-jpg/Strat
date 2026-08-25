@@ -1289,7 +1289,7 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
                 if _ai_attempt > 0:
                     await asyncio.sleep(4)
                 msgs = await asyncio.wait_for(
-                    client.get_messages(bot_entity, limit=15), timeout=10
+                    client.get_messages(bot_entity, limit=50), timeout=10
                 )
                 logger.info(
                     f"🤖 محاولة حل الكابتشا للرقم {phone} "
@@ -1316,6 +1316,25 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
                 # الحساب ناجحاً قبل اجتياز التحقق المطلوب.
                 return False, False, f"فشل حل الكابتشا بعد 3 محاولات: {_ai_detail}"
             else:
+                # محاولة أخيرة مستقلة عن AI: قد تصل رسالة الزر بعد انتهاء
+                # polling السابق أو تكون خارج أول 15 رسالة.
+                try:
+                    _late_msgs = await asyncio.wait_for(
+                        client.get_messages(bot_entity, limit=50), timeout=10
+                    )
+                    if await _click_check_subscription_button(
+                        client, bot_entity, _late_msgs
+                    ):
+                        _any_verify_clicked = True
+                        await asyncio.sleep(4)
+                        steps.append("تم ضغط زر التحقق في الفحص المتأخر")
+                        logger.info(
+                            f"✅ تم العثور على زر التحقق في الفحص المتأخر للرقم {phone}"
+                        )
+                except Exception as _late_exc:
+                    logger.warning(
+                        f"⚠️ فشل فحص زر التحقق المتأخر للرقم {phone}: {_late_exc}"
+                    )
                 # إذا ضغطنا زر التحقق فعلاً ثم لم يظهر تحدٍ جديد، فهذه
                 # نتيجة ناجحة حتى لو لم يرسل البوت كلمة "تم التحقق".
                 # سابقاً كان هذا المسار يسجل الحساب فاشلاً برسالة مضللة.
