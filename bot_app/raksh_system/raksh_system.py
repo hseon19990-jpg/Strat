@@ -638,20 +638,31 @@ async def _start_contest_bot_from_post(client, post_message):
 def _find_contest_vote_button(message):
     """العثور على زر التصويت، مثل «❤️ 0»، مع تجاهل أزرار الروابط."""
     candidates = []
+    callback_candidates = []
     for row in getattr(message, "buttons", None) or []:
         for button in row:
             label = (getattr(button, "text", None) or "").strip()
-            if not label or getattr(button, "url", None):
+            callback_data = str(getattr(button, "data", None) or "").casefold()
+            if getattr(button, "url", None):
+                continue
+            if callback_data and any(
+                word in callback_data
+                for word in ("vote", "voting", "poll", "option", "contest", "صوت", "تصويت")
+            ):
+                callback_candidates.append(button)
+            if not label:
                 continue
             folded = label.casefold()
             if any(word in folded for word in ("تصويت", "صوت", "vote", "voting")):
                 return button
-            # منشورات المسابقات غالباً تعرض الزر كإيموجي وعدّاد فقط.
-            if re.search(r"\d+", label) and any(
+            # منشورات المسابقات تعرض الزر أحياناً كإيموجي فقط، دون عدّاد.
+            if any(
                 0x1F300 <= ord(char) <= 0x1FAFF or 0x2600 <= ord(char) <= 0x27BF
                 for char in label
             ):
                 candidates.append(button)
+    if callback_candidates:
+        return callback_candidates[0]
     return candidates[0] if candidates else None
 
 
