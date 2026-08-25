@@ -439,10 +439,15 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
 
     all_details: list[str] = []
     processed_ids: set[int] = set()
+    replied_numeric_codes: set[str] = set()
 
     def _extract_numeric_code(messages: list) -> str | None:
         """يستخرج رمز التحقق الرقمي الذي يرسله البوت بعد زر التحقق."""
-        code_markers = ("رقم التحقق", "رمز التحقق", "verification code", "verify code", "code is", "code:")
+        code_markers = (
+            "رقم التحقق", "رمز التحقق", "أرسل الكود", "ارسل الكود",
+            "أدخل الكود", "ادخل الكود", "الكود", "رمز",
+            "verification code", "verify code", "code is", "code:",
+        )
         trans = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
         for item in messages or []:
             text = getattr(item, "message", "") or getattr(item, "text", "") or ""
@@ -456,9 +461,10 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
 
     async def _reply_to_numeric_code(messages: list):
         code = _extract_numeric_code(messages)
-        if not code:
+        if not code or code in replied_numeric_codes:
             return None, messages
-        logger.info(f"🔢 تم اكتشاف رمز تحقق رقمي ({phone})")
+        replied_numeric_codes.add(code)
+        logger.info(f"🔢 تم اكتشاف رمز تحقق رقمي ({phone}) — سيتم إرساله للبوت")
         await asyncio.sleep(1)
         await client.send_message(bot_entity, code)
         # التسلسل المطلوب لبعض بوتات التحقق: زر التحقق ثم الرمز ثم /start مجدداً.
@@ -474,7 +480,16 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
     # ── حلقة المحاولات (تدعم تحقق متعدد المراحل) ─────────────
     for _round in range(max_attempts):
         logger.info(f"🔄 محاولة حل الكابتشا {_round+1}/{max_attempts} للرقم {phone}")
-        
+
+        # بعض البوتات ترسل رمزاً فور ضغط زر «إضغط هنا للتحقق».
+        # افحص الرمز قبل تحليل أي كابتشا أخرى، ثم أعد إرساله لنفس البوت.
+        _numeric_result, _numeric_msgs = await _reply_to_numeric_code(msgs)
+        if _numeric_result is not None:
+            msgs = _numeric_msgs
+            all_details.append("إعادة إرسال رمز التحقق")
+            if _numeric_result == "success":
+                return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
+
         if _round > 0:
             await asyncio.sleep(4)
             msgs = await client.get_messages(bot_entity, limit=15)
@@ -894,8 +909,9 @@ async def _click_check_subscription_button(client, bot_entity, msgs: list) -> bo
     يُرجع True إذا وُجد الزر وتم ضغطه.
     """
     CHECK_KW = [
-        "تحقق", "اشتركت", "✅", "تم", "joined", "check", "verify",
-        "تم الاشتراك", "لقد اشتركت", "متابع", "اشتراك", "انضممت",
+        "تحقق من الاشتراك", "إضغط هنا للتحقق", "اضغط هنا للتحقق",
+        "اضغط للتحقق", "تحقق", "✅", "joined", "check", "verify",
+        "تم الاشتراك", "لقد اشتركت", "متابع", "انضممت",
         "i've joined", "i joined", "subscribed",
     ]
     for msg in msgs:
