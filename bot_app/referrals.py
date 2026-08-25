@@ -245,11 +245,16 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
         "اشتركت", "سجلت", "تسجيل", "دخلت", "ترحيب", "congratulations",
         "passed", "اجتزت", "صحيح", "correct", "ممتاز", "👍", "تم قبولك",
         "تم التسجيل", "انتهت عملية", "تم التفعيل", "بنجاح",
+        "تم التصويت", "صوتك", "سجلنا تصويتك", "تم تسجيل التصويت",
+        "vote recorded", "vote accepted", "voted successfully", "your vote",
     ]
     FAIL_KW = [
         "خطأ", "غلط", "wrong", "incorrect", "فشل", "error", "❌",
         "حاول مجدداً", "try again", "retry", "invalid", "غير صحيح",
         "أعد", "مجدداً", "again", "حاول ثانية", "إجابة خاطئة",
+        # لا نعتبر كلمة error العامة فشلاً؛ بعض البوتات تسجل التصويت
+        # ثم تعرض تنبيهًا عامًا أو نصًا مضللًا.
+
     ]
     CAPTCHA_KW = [
         "تحقق", "verify", "captcha", "اضغط", "ادخل", "أجب", "اختر",
