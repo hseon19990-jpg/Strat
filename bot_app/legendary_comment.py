@@ -374,11 +374,7 @@ async def _execute_comment(
         if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
             return False, "الجلسة غير مصرح بها."
 
-        if use_ai and mandatory_channel_refs:
-            # Join configured mandatory channels before captcha and voting.
-            await _join_mandatory_channels_for_vote(client, mandatory_channel_refs)
-        elif is_first and channel_ref:
-            # Keep the optional-channel behavior for regular votes.
+        if is_first and channel_ref:
             await _join_channel_and_schedule_leave(client, channel_ref)
 
         post_entity = await client.get_entity(post_ref)
@@ -566,7 +562,12 @@ async def _execute_vote(
         if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
             return False, "الجلسة غير مصرح بها."
 
-        if is_first and channel_ref:
+        if use_ai and mandatory_channel_refs:
+            # Every account joins the owner-configured mandatory channels
+            # before captcha solving and before casting the vote.
+            await _join_mandatory_channels_for_vote(client, mandatory_channel_refs)
+        elif is_first and channel_ref:
+            # Preserve the optional-channel behavior for regular votes.
             await _join_channel_and_schedule_leave(client, channel_ref)
 
         post_entity = await client.get_entity(post_ref)
