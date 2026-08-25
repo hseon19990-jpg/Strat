@@ -904,63 +904,61 @@ async def _join_channels_from_buttons(client, msgs: list) -> int:
 
 
 async def _click_check_subscription_button(client, bot_entity, msgs: list) -> bool:
-    """
-    بعد الانضمام لقنوات البوت، يبحث عن زر "تحقق من الاشتراك" ويضغطه.
-    يُرجع True إذا وُجد الزر وتم ضغطه.
-    """
+    """يضغط زر كابتشا البوت حتى لو اختلف تمثيل أزرار Telethon."""
     from telethon.tl.functions.messages import GetBotCallbackAnswerRequest
 
-    CHECK_KW = [
-        "إضغط هنا للتحقق", "اضغط هنا للتحقق", "اضغط للتحقق",
-        "انقر هنا للتحقق", "click here to verify", "verify",
-        "تحقق من الاشتراك", "تم الاشتراك", "لقد اشتركت",
-        "joined", "check", "متابع", "انضممت", "i've joined",
-        "i joined", "subscribed",
-    ]
-    for msg in msgs:
-        # استخدم reply_markup مباشرة أيضاً؛ بعض نسخ Telethon لا تبني
-        # msg.buttons بشكل ثابت عند جلب الرسائل القديمة.
-        rows = getattr(getattr(msg, "reply_markup", None), "rows", None) or []
-        for row_index, row in enumerate(rows):
-            for col_index, btn in enumerate(getattr(row, "buttons", []) or []):
-                raw_text = (getattr(btn, "text", "") or "")
-                btn_text = raw_text.casefold()
-                normalized = (btn_text.replace("إ", "ا").replace("أ", "ا")
-                              .replace("آ", "ا").replace("ـ", "")
-                              .replace("\u200f", "").replace("\u200e", ""))
-                normalized_keywords = [
-                    k.casefold().replace("إ", "ا").replace("أ", "ا")
-                     .replace("آ", "ا").replace("ـ", "")
-                for k in CHECK_KW]
-                if not any(k in btn_text or k in normalized or k in normalized_keywords
-                           for k in CHECK_KW):
-                    continue
-                try:
-                    # هذه أزرار Callback وليست روابط؛ اضغط نفس الصف/العمود
-                    # أولاً، ثم استخدم callback_data كمسار احتياطي صريح.
-                    btn_data = getattr(btn, "data", None)
-                    if btn_data:
-                        try:
-                            await msg.click(row_index, col_index)
-                        except Exception:
-                            await client(GetBotCallbackAnswerRequest(
-                                peer=getattr(msg, "peer_id", None) or bot_entity,
-                                msg_id=msg.id, data=btn_data
-                            ))
-                    else:
-                        await btn.click()
-                    logger.info(
-                        f"✅ ضغط زر تحقق الكابتشا: '{raw_text}' "
-                        f"(message_id={getattr(msg, 'id', 0)}, callback={btn_data!r})"
-                    )
-                    return True
-                except Exception as _e:
-                    logger.warning(
-                        f"⚠️ فشل ضغط زر تحقق الكابتشا '{raw_text}' "
-                        f"(message_id={getattr(msg, 'id', 0)}): {_e}"
-                    )
-    return False
+    def _norm(value: str) -> str:
+        return (value or "").casefold().replace("إ", "ا").replace("أ", "ا") \
+            .replace("آ", "ا").replace("ـ", "").replace("\u200f", "").replace("\u200e", "")
 
+    check_words = tuple(_norm(x) for x in (
+        "إضغط هنا للتحقق", "اضغط هنا للتحقق", "اضغط للتحقق",
+        "انقر هنا للتحقق", "click here to verify", "تحقق",
+        "verify", "check", "تم الاشتراك", "لقد اشتركت",
+    ))
+
+    for msg in msgs or []:
+        # اجمع الأزرار من المصدرين؛ بعض رسائل Telethon تعطي واحداً فقط.
+        rows = getattr(getattr(msg, "reply_markup", None), "rows", None) or []
+        candidates = []
+        for ri, row in enumerate(rows):
+            for ci, button in enumerate(getattr(row, "buttons", []) or []):
+                candidates.append((ri, ci, button))
+        if not candidates:
+            for ri, row in enumerate(getattr(msg, "buttons", []) or []):
+                for ci, button in enumerate(row):
+                    candidates.append((ri, ci, button))
+
+        for ri, ci, btn in candidates:
+            raw_text = getattr(btn, "text", "") or ""
+            btn_text = _norm(raw_text)
+            if not any(word in btn_text for word in check_words):
+                continue
+            btn_data = getattr(btn, "data", None)
+            try:
+                # المسار الأكثر ثباتاً: callback_data مع peer الرسالة نفسها.
+                if btn_data:
+                    peer = getattr(msg, "peer_id", None) or bot_entity
+                    try:
+                        await client(GetBotCallbackAnswerRequest(
+                            peer=peer, msg_id=msg.id, data=btn_data
+                        ))
+                    except Exception:
+                        await msg.click(data=btn_data)
+                else:
+                    await msg.click(ri, ci)
+                logger.info(
+                    f"✅ نُفّذ ضغط زر كابتشا الإحالة: '{raw_text}' "
+                    f"(message_id={getattr(msg, 'id', 0)}, callback={btn_data!r})"
+                )
+                return True
+            except Exception as exc:
+                logger.warning(
+                    f"⚠️ تعذر ضغط زر كابتشا الإحالة '{raw_text}' "
+                    f"(message_id={getattr(msg, 'id', 0)}): {exc}"
+                )
+    logger.warning("⚠️ لم يُعثر على زر كابتشا مطابق في رسائل البوت")
+    return False
 
 async def do_referral_for_number(phone: str, session_str: str, bot_username: str, start_param: str,
                                   mandatory_channels: str = "", folder_link: str = "",
