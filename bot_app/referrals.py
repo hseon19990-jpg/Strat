@@ -292,13 +292,14 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                 # يمكن تخصيصه من GROQ_TEXT_MODEL. وإذا رفضه المفتاح،
                 # نقرأ /models لاختيار نموذج متاح فعلياً لهذا المفتاح.
                 configured = os.environ.get("GROQ_TEXT_MODEL", "").strip()
-                models = [configured] if configured else []
-                models.extend([
-                    "llama-3.1-8b-instant",
+                configured_models = [configured] if configured else []
+                fallback_models = [
                     "openai/gpt-oss-20b",
                     "qwen/qwen3-32b",
                     "llama-3.3-70b-versatile",
-                ])
+                    "llama-3.1-8b-instant",
+                ]
+                discovered = []
                 try:
                     available = requests.get(
                         "https://api.groq.com/openai/v1/models",
@@ -327,6 +328,18 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                 except Exception as model_exc:
                     logger.warning(f"⚠️ تعذر جلب قائمة نماذج Groq: {model_exc}")
 
+                # نماذج /models هي المصدر الحقيقي لصلاحية المفتاح. لا نضع
+                # نموذجاً ثابتاً غير موجود أمامها، لأن ذلك كان يسبب
+                # model_not_found قبل الوصول إلى النماذج الصالحة.
+                if discovered:
+                    discovered_set = set(discovered)
+                    models = [
+                        model for model in configured_models + fallback_models
+                        if model in discovered_set
+                    ]
+                    models.extend(discovered)
+                else:
+                    models = configured_models + fallback_models
                 # إزالة التكرار مع المحافظة على الأولوية.
                 models = list(dict.fromkeys(model for model in models if model))
                 for model in models:
@@ -354,7 +367,11 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                                 f"⚠️ Groq model={model} error: "
                                 f"{r.status_code} - {r.text[:200]}"
                             )
-                            if r.status_code not in (400, 404):
+                            # حدّ الطلبات يخص هذا النموذج فقط أحياناً؛
+                            # جرّب نموذجاً متاحاً آخر بدلاً من إيقاف الحلقة.
+                            # أما 401/403 فالمفتاح نفسه غير صالح، ولا فائدة
+                            # من تكرار الطلبات.
+                            if r.status_code in (401, 403):
                                 break
                     except Exception as e:
                         logger.warning(f"⚠️ Groq model={model} exception: {e}")
