@@ -461,6 +461,13 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
         logger.info(f"🔢 تم اكتشاف رمز تحقق رقمي ({phone})")
         await asyncio.sleep(1)
         await client.send_message(bot_entity, code)
+        # التسلسل المطلوب لبعض بوتات التحقق: زر التحقق ثم الرمز ثم /start مجدداً.
+        await asyncio.sleep(1)
+        await client(StartBotRequest(
+            bot=bot_entity,
+            peer=bot_entity,
+            start_param='',
+        ))
         return await _wait_and_check()
 
 
@@ -1028,6 +1035,12 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
         # جلب عدد أكبر من الرسائل هنا مهم لأن رسالة التحقق قد لا تكون الأخيرة.
         await asyncio.sleep(5)
         msgs = await asyncio.wait_for(client.get_messages(bot_entity, limit=15), timeout=10)
+
+        # قد يظهر زر التحقق مباشرة بعد /start من دون أزرار قنوات.
+        _initial_verify_clicked = await _click_check_subscription_button(client, bot_entity, msgs)
+        if _initial_verify_clicked:
+            await asyncio.sleep(3)
+            msgs = await asyncio.wait_for(client.get_messages(bot_entity, limit=15), timeout=10)
 
         # ── الخطوة 4: التعامل مع اشتراط البوت الانضمام لقنواته (حلقة متكررة) ──
         # يكرر: انضم للقنوات من ردود البوت → تحقق من الاشتراك → رسائل جديدة
