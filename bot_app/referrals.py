@@ -973,6 +973,7 @@ async def _click_check_subscription_button(client, bot_entity, msgs: list) -> bo
     verify_words = tuple(_norm(x) for x in (
         "إضغط هنا للتحقق", "اضغط هنا للتحقق", "اضغط للتحقق",
         "انقر هنا للتحقق", "اضغط على الزر", "اضغط للمتابعة",
+        "إضغط", "اضغط", "انقر", "زر",
         "click here to verify", "click to verify", "verify", "check",
         "تحقق", "فحص", "اثبت", "إثبات", "متابعة", "استمرار",
         "لست روبوت", "لست بوت", "أنا بشر", "i am human",
@@ -985,6 +986,13 @@ async def _click_check_subscription_button(client, bot_entity, msgs: list) -> bo
         "اضغط على الزر", "اضغط للمتابعة", "للمتابعة",
         "verify you are", "not a robot", "robot check",
         "captcha", "verification", "human check",
+    ))
+    # سياق الرسالة الظاهر في تدفق البوت الحالي. قد لا تذكر الرسالة
+    # كلمة captcha إطلاقاً، لكنها تكون بوضوح شاشة فتح الهدية/الميزات.
+    flow_words = tuple(_norm(x) for x in (
+        "للحصول على الهدية", "افتح كل ميزات البوت",
+        "ستفتح كل ميزات البوت", "اضغط على الزر للمتابعة",
+        "الهدية", "ميزات البوت",
     ))
     data_words = tuple(_norm(x) for x in (
         "verify", "verification", "captcha", "check", "human",
@@ -1013,7 +1021,10 @@ async def _click_check_subscription_button(client, bot_entity, msgs: list) -> bo
                     candidates.append((ri, ci, button))
 
         msg_text = _norm(getattr(msg, "message", "") or getattr(msg, "text", "") or "")
-        captcha_message = any(marker in msg_text for marker in context_words)
+        captcha_message = (
+            any(marker in msg_text for marker in context_words)
+            or any(marker in msg_text for marker in flow_words)
+        )
         # بعض البوتات تجعل النص قصيراً جداً أو ترسل صورة بلا نص واضح؛
         # وجود عبارة تحقق في أحد الأزرار يكفي عندها لبدء الترجيح.
         message_has_verify_hint = any(word in msg_text for word in verify_words)
