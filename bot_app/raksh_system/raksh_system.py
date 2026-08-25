@@ -1205,6 +1205,25 @@ async def _execute_votes_ai(session, params, is_first):
             answer = await vote_button.click()
             await asyncio.sleep(random.uniform(1, 2))
             answer_text = _callback_answer_text(answer)
+            # بعض بوتات المسابقات لا تضع نتيجة التصويت في callback answer،
+            # بل ترسل رسالة جديدة داخل محادثة البوت مثل «تم التصويت بنجاح».
+            # اجمع المصدرين قبل الحكم على النتيجة.
+            confirmation_texts = [answer_text]
+            try:
+                confirmation_messages = _as_message_list(
+                    await client.get_messages(bot_entity, limit=10)
+                )
+                confirmation_texts.extend(
+                    getattr(item, "message", "") or getattr(item, "text", "") or ""
+                    for item in confirmation_messages
+                )
+            except Exception as confirmation_error:
+                logger.debug(
+                    "تعذر قراءة رسالة تأكيد التصويت للحساب %s: %s",
+                    session["phone_number"],
+                    str(confirmation_error)[:120],
+                )
+            confirmation_text = "\n".join(confirmation_texts).casefold()
             # ردود بعض بوتات المسابقات قد تحتوي على تحذير/نص قديم مع
             # عبارة النجاح. الأولوية دائماً لعبارة «تم التصويت» لأن
             # Telegram يكون قد سجّل التصويت فعلياً عند ظهورها.
@@ -1246,11 +1265,10 @@ async def _execute_votes_ai(session, params, is_first):
                 "voto registrato",
                 "voto enviado",
             )
-            if any(word in answer_text.casefold() for word in vote_success_words):
+            if any(word in confirmation_text for word in vote_success_words):
                 logger.info(
-                    "✅ الحساب %s أكد البوت تسجيل التصويت: %s",
+                    "✅ الحساب %s أكد البوت تسجيل التصويت",
                     session["phone_number"],
-                    answer_text[:120],
                 )
                 return True, f"✅ تم التصويت مع التحقق من {session['phone_number']}"
             if any(
