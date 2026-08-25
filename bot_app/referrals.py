@@ -294,10 +294,10 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                 configured = os.environ.get("GROQ_TEXT_MODEL", "").strip()
                 configured_models = [configured] if configured else []
                 fallback_models = [
+                    "llama-3.1-8b-instant",
                     "openai/gpt-oss-20b",
                     "qwen/qwen3-32b",
                     "llama-3.3-70b-versatile",
-                    "llama-3.1-8b-instant",
                 ]
                 discovered = []
                 try:
