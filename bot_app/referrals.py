@@ -339,8 +339,12 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                     models.extend(discovered)
                 else:
                     models = configured_models + fallback_models
-                # إزالة التكرار مع المحافظة على الأولوية.
-                models = list(dict.fromkeys(model for model in models if model))
+                # لا تسمح قيمة GROQ_TEXT_MODEL القديمة بإجبار البوت على
+                # نموذج وصل إلى حد الطلبات (خصوصاً gpt-oss-20b). ابدأ
+                # بالنموذج الخفيف، ثم جرّب النموذج المخصص وبقية البدائل.
+                # بهذا يستمر fallback حتى لو بقي المتغير القديم في Railway.
+                ordered_models = fallback_models + configured_models + discovered
+                models = list(dict.fromkeys(model for model in ordered_models if model))
                 for model in models:
                     try:
                         r = requests.post(
