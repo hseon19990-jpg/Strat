@@ -200,6 +200,7 @@ def _clear_raksh_state(context: ContextTypes.DEFAULT_TYPE) -> None:
         "raksh_available_reactions",
         "raksh_comment",
         "raksh_poll_option",
+        "raksh_delay_seconds",
         "raksh_quantity",
         "raksh_payment_method",
         "raksh_price_edit_service",
@@ -231,7 +232,14 @@ def _get_delay_seconds(service_type: str | None = None, custom_delay: int | None
         if custom_delay is not None:
             return custom_delay
         return 180
-    if service_type in {"votes", "votes_ai"}:
+    # التصويت مع التحقق يحتاج فاصلاً أطول لتقليل تكرار التصويت من نفس
+    # الحسابات. المالك يستطيع تحديده أثناء إنشاء الطلب، بينما يحصل العضو
+    # على فاصل عشوائي آمن بين دقيقة وثلاث دقائق.
+    if service_type == "votes_ai":
+        if custom_delay is not None:
+            return custom_delay
+        return random.randint(RAKSH_MIN_DELAY_SECONDS, RAKSH_MAX_DELAY_SECONDS)
+    if service_type == "votes":
         return RAKSH_VOTE_DELAY_SECONDS
     return random.randint(RAKSH_MIN_DELAY_SECONDS, RAKSH_MAX_DELAY_SECONDS)
 
@@ -2324,10 +2332,10 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return True
     
-    # ─── خطوة تأخير المالك لإحالة البوت الإجباري ───
+    # ─── خطوة الفاصل الزمني المخصص للمالك ───
     if state == "delay":
         service_type = context.user_data.get("raksh_service")
-        if service_type not in {"forced_ref", "forced_ref_ai"} or user.id != OWNER_ID:
+        if service_type not in {"forced_ref", "forced_ref_ai", "votes_ai"} or user.id != OWNER_ID:
             context.user_data["raksh_step"] = "quantity"
             return True
         try:
@@ -2345,7 +2353,7 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         stars_cost = get_raksh_total(service_type, quantity, "stars")
         context.user_data["raksh_step"] = "payment"
         await update.message.reply_text(
-            f"✅ تم ضبط الفاصل: {delay_seconds} ثانية.\n\n"
+            f"✅ تم ضبط الفاصل بين الحسابات: {delay_seconds} ثانية.\n\n"
             f"📋 *مراجعة الطلب*\n\n"
             f"الخدمة: {svc['name']}\n"
             f"العدد: {quantity}\n"
@@ -2391,13 +2399,18 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         stars_cost = get_raksh_total(service_type, quantity, "stars")
         
         context.user_data["raksh_quantity"] = quantity
-        if user.id == OWNER_ID and service_type in {"forced_ref", "forced_ref_ai"}:
+        if user.id == OWNER_ID and service_type in {"forced_ref", "forced_ref_ai", "votes_ai"}:
             context.user_data["raksh_step"] = "delay"
+            delay_hint = (
+                "للأعضاء يُطبّق فاصل تلقائي عشوائي بين 60 و180 ثانية."
+                if service_type == "votes_ai"
+                else "للأعضاء يبقى الوقت ثابتاً: 180 ثانية (3 دقائق)."
+            )
             await update.message.reply_text(
-                "⏱️ *إعداد وقت الإحالة للمالك*\n\n"
+                "⏱️ *إعداد الفاصل الزمني للمالك*\n\n"
                 "أرسل عدد الثواني بين تفعيل حساب وآخر.\n"
                 "مثال: 3\n"
-                "للأعضاء يبقى الوقت ثابتاً: 180 ثانية (3 دقائق).",
+                f"{delay_hint}",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]])
             )
