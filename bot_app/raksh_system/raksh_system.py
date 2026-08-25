@@ -1109,7 +1109,11 @@ async def _execute_votes(session, params, is_first):
 
 async def _execute_votes_ai(session, params, is_first):
     try:
-        from ..referrals import solve_captcha_with_ai
+        from ..referrals import (
+            _click_check_subscription_button,
+            _join_channels_from_buttons,
+            solve_captcha_with_ai,
+        )
     except ImportError:
         return False, "لا يمكن استيراد solve_captcha_with_ai"
 
@@ -1154,8 +1158,33 @@ async def _execute_votes_ai(session, params, is_first):
             session["phone_number"],
         )
 
-        # ③ حل التحقق داخل محادثة البوت، وليس داخل محادثة القناة.
+        # ③ نفس تسلسل «إحالة بوت إجباري مع تحقق»:
+        # بعض بوتات المسابقات ترسل قناة الاشتراك وزر التحقق داخل محادثة
+        # البوت، لذلك يجب الانضمام من أزرار الرسالة ثم الضغط على زر التحقق
+        # قبل تشغيل حل الكابتشا. solve_captcha_with_ai وحدها تتجاوز أزرار
+        # روابط القنوات ولا تنضم إليها.
         bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=20))
+        for _sub_round in range(6):
+            joined_channels = await _join_channels_from_buttons(client, bot_messages)
+            if joined_channels == 0:
+                break
+            logger.info(
+                "🔗 الحساب %s انضم إلى %s قناة مطلوبة من رد المسابقة",
+                session["phone_number"],
+                joined_channels,
+            )
+            await asyncio.sleep(2)
+            if await _click_check_subscription_button(client, bot_entity, bot_messages):
+                logger.info(
+                    "✅ الحساب %s ضغط زر التحقق من الاشتراك",
+                    session["phone_number"],
+                )
+            await asyncio.sleep(4)
+            bot_messages = _as_message_list(
+                await client.get_messages(bot_entity, limit=20)
+            )
+
+        # ④ حل التحقق داخل محادثة البوت، وليس داخل محادثة القناة.
         solved, detail = await solve_captcha_with_ai(
             client,
             bot_entity,
