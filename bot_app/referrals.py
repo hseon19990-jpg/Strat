@@ -489,16 +489,23 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
         return result
 
     async def _wait_and_check(limit: int = 5) -> tuple:
-        """ينتظر رد البوت ويُرجع ('success'|'fail'|'unknown', new_msgs)."""
-        await asyncio.sleep(3)
-        new_msgs = await client.get_messages(bot_entity, limit=limit)
-        for m in new_msgs:
-            t = getattr(m, "message", "") or ""
-            if _is_success(t):
-                return "success", new_msgs
-            if _is_fail(t):
-                return "fail", new_msgs
-        return "unknown", new_msgs
+        """ينتظر الرد الجديد فقط لتجنب اعتبار رسائل التحقق القديمة فشلاً."""
+        last_msgs = []
+        for _ in range(5):
+            await asyncio.sleep(2)
+            last_msgs = await client.get_messages(bot_entity, limit=limit)
+            # تيليغرام يعيد الأحدث أولاً؛ افحص أحدث 3 رسائل فقط.
+            # الرسائل الأقدم قد تحتوي كلمات "فشل" من تعليمات كابتشا سابقة.
+            recent_msgs = last_msgs[:3]
+            for m in recent_msgs:
+                t = getattr(m, "message", "") or getattr(m, "text", "") or ""
+                if _is_success(t):
+                    return "success", last_msgs
+            for m in recent_msgs:
+                t = getattr(m, "message", "") or getattr(m, "text", "") or ""
+                if _is_fail(t):
+                    return "fail", last_msgs
+        return "unknown", last_msgs
 
     all_details: list[str] = []
     processed_ids: set[int] = set()
@@ -667,19 +674,25 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             "أي خيار هو الصحيح؟ أجب برقم الخيار فقط (1، 2، 3...)."
                         )
                         ai_ans = await _solve_text(prompt)
-                        chosen_idx = 0
+                        chosen_idx = None
                         if ai_ans:
-                            # حاول استخراج رقم
+                            # لا تضغط خياراً افتراضياً إذا لم تكن إجابة الذكاء واضحة.
                             nums = re.findall(r"\d+", ai_ans)
                             if nums:
-                                chosen_idx = max(0, int(nums[0]) - 1)
+                                candidate = int(nums[0]) - 1
+                                if 0 <= candidate < len(answers):
+                                    chosen_idx = candidate
                             else:
-                                # مطابقة نصية
+                                # مطابقة نصية بعد تنظيف الإجابة.
+                                answer_text = ai_ans.strip().lower()
                                 for i, a in enumerate(answers):
-                                    if ai_ans.strip().lower() in a.lower():
+                                    if answer_text == a.strip().lower() or answer_text in a.lower():
                                         chosen_idx = i
                                         break
-                        chosen_idx = min(chosen_idx, len(answers) - 1)
+                        if chosen_idx is None:
+                            all_details.append("تعذر تحديد إجابة الاختبار")
+                            logger.warning(f"⚠️ لم يحدد الذكاء إجابة Poll صالحة ({phone})")
+                            continue
                         processed_ids.add(msg_id)
                         await msg.click(chosen_idx)
                         result, msgs = await _wait_and_check()
@@ -695,6 +708,9 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
                         elif result != "fail":
                             return True, f"أجاب على اختبار | {' | '.join(all_details)}"
+                        else:
+                            # اسمح بإعادة معالجة نفس الاختبار بعد إجابة خاطئة.
+                            processed_ids.discard(msg_id)
                         continue
                 except Exception as _e:
                     logger.warning(f"⚠️ AI poll captcha ({phone}): {_e}")
