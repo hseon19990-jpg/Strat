@@ -631,7 +631,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                                 break
                         msg_emojis = _extract_emojis_from_text(target_text)
                         if msg_emojis:
-                            target_emoji = msg_emojis[0]
+                            target_emoji = msg_emojis[-1]  # تجاهل ❓ واستخدم الإيموجي المطلوب الظاهر أخيراً
                             for lbl, btn in btn_objects.items():
                                 if target_emoji in lbl or target_emoji in _extract_emojis_from_text(lbl):
                                     direct_chosen = btn
