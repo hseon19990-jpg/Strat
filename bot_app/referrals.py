@@ -929,12 +929,19 @@ async def _click_check_subscription_button(client, bot_entity, msgs: list) -> bo
                 for ci, button in enumerate(row):
                     candidates.append((ri, ci, button))
 
+        msg_text = _norm(getattr(msg, "message", "") or getattr(msg, "text", "") or "")
+        captcha_message = any(marker in msg_text for marker in (
+            "لست روبوت", "لست بوت", "بعد التحقق", "اثبت انك",
+            "تحقق من انك", "verify you are", "not a robot",
+        ))
         for ri, ci, btn in candidates:
             raw_text = getattr(btn, "text", "") or ""
             btn_text = _norm(raw_text)
-            if not any(word in btn_text for word in check_words):
-                continue
             btn_data = getattr(btn, "data", None)
+            # في رسالة الكابتشا المصورة، النص الظاهر للزر قد لا يصل إلى
+            # Telethon؛ أي زر callback داخل رسالة «لست روبوت» هو الزر المطلوب.
+            if not any(word in btn_text for word in check_words) and not (captcha_message and btn_data):
+                continue
             try:
                 # المسار الأكثر ثباتاً: callback_data مع peer الرسالة نفسها.
                 if btn_data:
