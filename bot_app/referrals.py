@@ -918,26 +918,40 @@ async def _click_check_subscription_button(client, bot_entity, msgs: list) -> bo
         "i joined", "subscribed",
     ]
     for msg in msgs:
-        if not msg.buttons:
-            continue
-        for row in msg.buttons:
-            for btn in row:
-                btn_text = (getattr(btn, "text", "") or "").lower()
-                if any(k in btn_text for k in CHECK_KW):
-                    try:
-                        # بعض أزرار البوت لا يستجيب لها btn.click() عبر جلسة Telethon؛
-                        # استخدم callback_data مباشرة، مع fallback للطريقة المعتادة.
-                        btn_data = getattr(btn, "data", None)
-                        if btn_data:
+        # استخدم reply_markup مباشرة أيضاً؛ بعض نسخ Telethon لا تبني
+        # msg.buttons بشكل ثابت عند جلب الرسائل القديمة.
+        rows = getattr(getattr(msg, "reply_markup", None), "rows", None) or []
+        for row_index, row in enumerate(rows):
+            for col_index, btn in enumerate(getattr(row, "buttons", []) or []):
+                raw_text = (getattr(btn, "text", "") or "")
+                btn_text = raw_text.casefold()
+                normalized = (btn_text.replace("إ", "ا").replace("أ", "ا")
+                              .replace("آ", "ا").replace("ـ", ""))
+                if not any(k in btn_text or k in normalized for k in CHECK_KW):
+                    continue
+                try:
+                    # هذه أزرار Callback وليست روابط؛ اضغط نفس الصف/العمود
+                    # أولاً، ثم استخدم callback_data كمسار احتياطي صريح.
+                    btn_data = getattr(btn, "data", None)
+                    if btn_data:
+                        try:
+                            await msg.click(row_index, col_index)
+                        except Exception:
                             await client(GetBotCallbackAnswerRequest(
                                 peer=bot_entity, msg_id=msg.id, data=btn_data
                             ))
-                        else:
-                            await btn.click()
-                        logger.info(f"✅ ضغط زر تحقق الكابتشا مباشرة: '{btn.text}'")
-                        return True
-                    except Exception as _e:
-                        logger.warning(f"⚠️ فشل ضغط زر تحقق الكابتشا '{btn_text}': {_e}")
+                    else:
+                        await btn.click()
+                    logger.info(
+                        f"✅ ضغط زر تحقق الكابتشا: '{raw_text}' "
+                        f"(message_id={getattr(msg, 'id', 0)})"
+                    )
+                    return True
+                except Exception as _e:
+                    logger.warning(
+                        f"⚠️ فشل ضغط زر تحقق الكابتشا '{raw_text}' "
+                        f"(message_id={getattr(msg, 'id', 0)}): {_e}"
+                    )
     return False
 
 
