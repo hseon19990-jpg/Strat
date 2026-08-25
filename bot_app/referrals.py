@@ -908,11 +908,14 @@ async def _click_check_subscription_button(client, bot_entity, msgs: list) -> bo
     بعد الانضمام لقنوات البوت، يبحث عن زر "تحقق من الاشتراك" ويضغطه.
     يُرجع True إذا وُجد الزر وتم ضغطه.
     """
+    from telethon.tl.functions.messages import GetBotCallbackAnswerRequest
+
     CHECK_KW = [
-        "تحقق من الاشتراك", "إضغط هنا للتحقق", "اضغط هنا للتحقق",
-        "اضغط للتحقق", "تحقق", "✅", "joined", "check", "verify",
-        "تم الاشتراك", "لقد اشتركت", "متابع", "انضممت",
-        "i've joined", "i joined", "subscribed",
+        "إضغط هنا للتحقق", "اضغط هنا للتحقق", "اضغط للتحقق",
+        "انقر هنا للتحقق", "click here to verify", "verify",
+        "تحقق من الاشتراك", "تم الاشتراك", "لقد اشتركت",
+        "joined", "check", "متابع", "انضممت", "i've joined",
+        "i joined", "subscribed",
     ]
     for msg in msgs:
         if not msg.buttons:
@@ -922,11 +925,19 @@ async def _click_check_subscription_button(client, bot_entity, msgs: list) -> bo
                 btn_text = (getattr(btn, "text", "") or "").lower()
                 if any(k in btn_text for k in CHECK_KW):
                     try:
-                        await btn.click()
-                        logger.info(f"✅ ضغط زر التحقق من الاشتراك: '{btn.text}'")
+                        # بعض أزرار البوت لا يستجيب لها btn.click() عبر جلسة Telethon؛
+                        # استخدم callback_data مباشرة، مع fallback للطريقة المعتادة.
+                        btn_data = getattr(btn, "data", None)
+                        if btn_data:
+                            await client(GetBotCallbackAnswerRequest(
+                                peer=bot_entity, msg_id=msg.id, data=btn_data
+                            ))
+                        else:
+                            await btn.click()
+                        logger.info(f"✅ ضغط زر تحقق الكابتشا مباشرة: '{btn.text}'")
                         return True
                     except Exception as _e:
-                        logger.debug(f"_click_check_subscription_button: {_e}")
+                        logger.warning(f"⚠️ فشل ضغط زر تحقق الكابتشا '{btn_text}': {_e}")
     return False
 
 
@@ -1052,11 +1063,17 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
         await asyncio.sleep(5)
         msgs = await asyncio.wait_for(client.get_messages(bot_entity, limit=15), timeout=10)
 
-        # قد يظهر زر التحقق مباشرة بعد /start من دون أزرار قنوات.
-        _initial_verify_clicked = await _click_check_subscription_button(client, bot_entity, msgs)
-        if _initial_verify_clicked:
-            await asyncio.sleep(3)
-            msgs = await asyncio.wait_for(client.get_messages(bot_entity, limit=15), timeout=10)
+        # زر كابتشا بوت رشق العرب قد يصل في رسالة متأخرة؛ أعد الفحص عدة مرات.
+        # هذا مستقل عن أزرار القنوات وعن مسار الإحالة بدون تحقق.
+        _initial_verify_clicked = False
+        for _verify_poll in range(5):
+            _initial_verify_clicked = await _click_check_subscription_button(client, bot_entity, msgs)
+            if _initial_verify_clicked:
+                await asyncio.sleep(4)
+                msgs = await asyncio.wait_for(client.get_messages(bot_entity, limit=20), timeout=10)
+                break
+            await asyncio.sleep(2)
+            msgs = await asyncio.wait_for(client.get_messages(bot_entity, limit=20), timeout=10)
 
         # ── الخطوة 4: التعامل مع اشتراط البوت الانضمام لقنواته (حلقة متكررة) ──
         # يكرر: انضم للقنوات من ردود البوت → تحقق من الاشتراك → رسائل جديدة
