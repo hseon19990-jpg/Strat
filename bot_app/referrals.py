@@ -1194,9 +1194,11 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
         # زر كابتشا بوت رشق العرب قد يصل في رسالة متأخرة؛ أعد الفحص عدة مرات.
         # هذا مستقل عن أزرار القنوات وعن مسار الإحالة بدون تحقق.
         _initial_verify_clicked = False
+        _any_verify_clicked = False
         for _verify_poll in range(5):
             _initial_verify_clicked = await _click_check_subscription_button(client, bot_entity, msgs)
             if _initial_verify_clicked:
+                _any_verify_clicked = True
                 await asyncio.sleep(4)
                 msgs = await asyncio.wait_for(client.get_messages(bot_entity, limit=20), timeout=10)
                 break
@@ -1217,6 +1219,7 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
             # بعد الانضمام، ابحث عن زر التحقق من الاشتراك واضغطه
             _clicked = await _click_check_subscription_button(client, bot_entity, msgs)
             if _clicked:
+                _any_verify_clicked = True
                 steps.append(f"ضغط زر التحقق من الاشتراك (جولة {_sub_round + 1})")
             await asyncio.sleep(4)
             # احصل على رسائل جديدة — قد تحتوي على قنوات إضافية تطلبها
@@ -1268,9 +1271,18 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
                 # الحساب ناجحاً قبل اجتياز التحقق المطلوب.
                 return False, False, f"فشل حل الكابتشا بعد 3 محاولات: {_ai_detail}"
             else:
-                # عدم وجود تحدٍ ليس فشلاً: بعض البوتات لا تعرض تحققاً لكل
-                # إحالة، لكننا تأكدنا من أحدث الرسائل عدة مرات قبل المتابعة.
-                logger.info(f"ℹ️ لم يطلب البوت تحققاً للرقم {phone}")
+                # إذا ضغطنا زر التحقق فعلاً ثم لم يظهر تحدٍ جديد، فهذه
+                # نتيجة ناجحة حتى لو لم يرسل البوت كلمة "تم التحقق".
+                # سابقاً كان هذا المسار يسجل الحساب فاشلاً برسالة مضللة.
+                if _any_verify_clicked:
+                    steps.append("تم ضغط زر التحقق ولم يظهر تحدٍ إضافي")
+                    logger.info(
+                        f"✅ اعتُبر التحقق ناجحاً بعد تنفيذ الضغط للرقم {phone}"
+                    )
+                else:
+                    # عدم وجود تحدٍ ليس فشلاً: بعض البوتات لا تعرض تحققاً
+                    # لكل إحالة، لكننا تأكدنا من أحدث الرسائل عدة مرات.
+                    logger.info(f"ℹ️ لم يطلب البوت تحققاً للرقم {phone}")
 
         # سجّل أول رسالة وصلت من البوت للتشخيص
         if msgs:
