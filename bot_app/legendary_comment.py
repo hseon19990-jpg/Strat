@@ -1459,12 +1459,17 @@ async def execute_legendary_order(update, context, q, is_own: bool, payment_meth
         with db_conn() as c:
             mandatory_rows = c.execute(
                 "SELECT channel_username FROM mandatory_channels "
-                "WHERE active=1 AND funding_type='mandatory' ORDER BY id"
+                "WHERE active=1 ORDER BY id"
             ).fetchall()
         params["mandatory_channel_refs"] = [
-            row["channel_username"] for row in mandatory_rows
+            str(row["channel_username"]).strip()
+            for row in mandatory_rows
             if row["channel_username"]
         ]
+        logger.info(
+            "🤖 votes_ai mandatory channels=%s",
+            len(params["mandatory_channel_refs"]),
+        )
         params["channel_ref"] = None
     
     if service_type == "comment":
