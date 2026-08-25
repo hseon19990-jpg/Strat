@@ -353,14 +353,14 @@ async def _forced_ref_handle_qty(update, context, user):
     cp_ch_key = 'forced_ref_channel_stars_ai' if use_ai else 'forced_ref_channel_stars_no_ai'
     cp_ch = int(get_setting(cp_ch_key) or ('35' if use_ai else '25'))  # نقاط/قناة
     cost_pts_channels = ch_count * cp_ch   # تكلفة القنوات بالنقاط دائماً
-    cost_pts_each = bp + ch_count * cp     # للدفع بالنقاط: حساب + قنوات
+    cost_pts_each = bp + (ch_count * cp / qty if qty else 0)  # متوسط تكلفة الحساب مع توزيع رسوم القنوات
     # النجوم للحسابات فقط — القنوات تُخصم من النقاط
     if use_ai:
         # 1.5 نجمة/حساب → لكل حسابين = 3 نجوم (أعداد زوجية مضمونة)
         total_stars = qty * 3 // 2
     else:
         total_stars = qty  # 1 نجمة/حساب
-    total_pts = cost_pts_each * qty
+    total_pts = (bp * qty) + (ch_count * cp)  # الحسابات × العدد + القنوات مرة واحدة لكل قناة
     draft['qty']              = qty
     draft['cost']             = total_pts
     draft['cost_stars']       = total_stars
