@@ -321,7 +321,6 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                                 for part in ("whisper", "embedding", "guard")
                             )
                         ]
-                        models.extend(discovered)
                         logger.info(
                             f"🤖 Groq models available={len(discovered)}"
                         )
