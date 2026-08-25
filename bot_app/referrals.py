@@ -296,7 +296,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             "Content-Type": "application/json"
                         },
                         json={
-                            "model": "llama3-70b-8192",
+                            "model": "llama-3.3-70b-versatile",
                             "messages": [{"role": "user", "content": prompt}],
                             "max_tokens": 20,
                             "temperature": 0
@@ -376,7 +376,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             "Content-Type": "application/json"
                         },
                         json={
-                            "model": "llama-3.2-90b-vision-preview",
+                            "model": "meta-llama/llama-4-scout-17b-16e-instruct",
                             "messages": [{
                                 "role": "user",
                                 "content": [
@@ -623,34 +623,31 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                         or "الإيموجي الصحيح" in msg_text
                     )
                     if is_emoji_select:
-                        msg_emojis = _extract_emojis_from_text(msg_text)
+                        # تجاهل رموز الزينة في بداية النص واستخرج الإيموجي المطلوب فقط.
+                        target_text = msg_text
+                        for marker in ('correct emoji:', 'select emoji', 'choose emoji', 'pick emoji', 'اختر الإيموجي', 'الإيموجي الصحيح'):
+                            if marker in target_text.lower():
+                                target_text = target_text[target_text.lower().find(marker.lower()) + len(marker):]
+                                break
+                        msg_emojis = _extract_emojis_from_text(target_text)
                         if msg_emojis:
                             target_emoji = msg_emojis[0]
-                            # ابحث عن الزر المطابق
                             for lbl, btn in btn_objects.items():
-                                if target_emoji in lbl:
+                                if target_emoji in lbl or target_emoji in _extract_emojis_from_text(lbl):
                                     direct_chosen = btn
-                                    logger.info(f"🎯 كشف مباشر للإيموجي '{target_emoji}' ({phone})")
                                     break
-                            # إذا لم نجد مطابقة مباشرة، حاول باستخراج إيموجيات الأزرار
-                            if not direct_chosen:
-                                for lbl, btn in btn_objects.items():
-                                    btn_emojis = _extract_emojis_from_text(lbl)
-                                    if btn_emojis and btn_emojis[0] == target_emoji:
-                                        direct_chosen = btn
-                                        logger.info(f"🎯 كشف إيموجي بمطابقة الكود '{target_emoji}' ({phone})")
-                                        if direct_chosen: break
-                        processed_ids.add(msg_id)
-                        await direct_chosen.click()
-                        result, msgs = await _wait_and_check()
-                        detail = f"ضغط إيموجي مباشر: {getattr(direct_chosen, 'text', '')}"
-                        all_details.append(detail)
-                        if result == "success":
-                            logger.info(f"✅ تم حل الكابتشا للرقم {phone} في المحاولة {_round+1}")
-                            return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
-                        elif result == "fail":
-                            break  # حاول مجدداً
-                        else:
+                        # لا تضغط على None؛ عند غياب التطابق يكمل المسار الاحتياطي.
+                        if direct_chosen:
+                            processed_ids.add(msg_id)
+                            await direct_chosen.click()
+                            result, msgs = await _wait_and_check()
+                            detail = f"ضغط إيموجي مباشر: {getattr(direct_chosen, 'text', '')}"
+                            all_details.append(detail)
+                            if result == "success":
+                                return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
+                            elif result == "fail":
+                                break  # حاول مجدداً
+                    else:
                             return True, f"ضغط الإيموجي | {' | '.join(all_details)}"
                     else:
                         # ── الوضع الاحتياطي: استخدم Groq أو DeepSeek ─────────
