@@ -38,6 +38,20 @@ RAKSH_REACTION_LOOKUP_MAX_SESSIONS = 3
 RAKSH_REACTION_LOOKUP_TIMEOUT_SECONDS = 8
 RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS = 5
 
+# يمنع تشغيل نفس جلسة Telegram بالتوازي داخل نفس العملية. لا يغني هذا
+# عن إيقاف نسخة قديمة من التطبيق على خادم آخر؛ Telegram لا يسمح باستخدام
+# authorization key نفسه من عمليتين/عنواني IP مختلفين.
+_RAKSH_SESSION_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _get_raksh_session_lock(phone_number: str) -> asyncio.Lock:
+    key = str(phone_number or "").strip()
+    lock = _RAKSH_SESSION_LOCKS.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _RAKSH_SESSION_LOCKS[key] = lock
+    return lock
+
 # ════════════════════════════════════════════════════════════
 # ═══ 1. ثوابت الخدمات ═══
 # ════════════════════════════════════════════════════════════
@@ -1212,7 +1226,15 @@ async def _execute_votes_ai(session, params, is_first):
             max_attempts=3,
         )
         if not solved:
-            return False, f"فشل التحقق: {detail}"
+            # عدم اكتشاف كابتشا يعني أن هذا الحساب لم يُطلب منه تحقق؛
+            # لا ينبغي تحويل هذه الحالة إلى فشل قبل فحص زر التصويت.
+            # أما فشل المزود أو وجود كابتشا لم تُحل فيظل فشلاً صريحاً.
+            if detail != "لم يُكتشف تحقق":
+                return False, f"فشل التحقق: {detail}"
+            logger.info(
+                "ℹ️ الحساب %s لم يُطلب منه تحقق؛ متابعة فحص التصويت",
+                session["phone_number"],
+            )
 
         # ④ بعد نجاح التحقق نضغط زر التصويت في منشور المسابقة.
         # قد يتأخر تحديث رسالة المسابقة لدى Telegram بعد الرجوع من بوت
@@ -1458,11 +1480,19 @@ async def execute_raksh_service(
                     len(failed_details),
                 )
             break
-        try:
-            ok, msg = await executor(session=session, params=params, is_first=(i == 0))
-        except Exception as e:
+        session_lock = _get_raksh_session_lock(phone)
+        if session_lock.locked():
             ok = False
-            msg = f"❌ خطأ: {str(e)[:80]}"
+            msg = "الجلسة قيد الاستخدام من تنفيذ آخر؛ لم يتم تشغيلها بالتوازي"
+        else:
+            async with session_lock:
+                try:
+                    ok, msg = await executor(
+                        session=session, params=params, is_first=(i == 0)
+                    )
+                except Exception as e:
+                    ok = False
+                    msg = f"❌ خطأ: {str(e)[:80]}"
         if ok:
             success_count += 1
             success_phones.append(phone)

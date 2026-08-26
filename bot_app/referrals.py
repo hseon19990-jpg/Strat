@@ -238,6 +238,14 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
     if not GROQ_API_KEY and not DEEPSEEK_API_KEY:
         return False, "لا يوجد مفتاح API للتحقق (Groq أو DeepSeek)"
 
+    # ميّز بين عدم وجود كابتشا وبين تعذر الوصول إلى مزود الذكاء
+    # الاصطناعي. مسار التصويت يستطيع المتابعة عندما لا يطلب البوت تحققاً،
+    # لكنه يجب أن يتوقف عندما تكون الكابتشا موجودة والمزود غير متاح.
+    provider_failures: list[str] = []
+    groq_blocked = False
+    deepseek_blocked = False
+    ai_request_attempted = False
+
     # ── كلمات دلالية ──────────────────────────────────────────
     SUCCESS_KW = [
         "✅", "تم", "نجح", "مبروك", "أهلاً", "مرحباً", "welcome", "success",
@@ -287,12 +295,16 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
         في حال فشل Groq، يستخدم DeepSeek كاحتياطي.
         """
         
+        nonlocal groq_blocked, deepseek_blocked, ai_request_attempted
+
         GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
         DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
         
         # ── المحاولة 1: Groq (الأسرع والأفضل) ──
-        if GROQ_API_KEY:
+        if GROQ_API_KEY and not groq_blocked:
             def _groq_request():
+                nonlocal groq_blocked, ai_request_attempted
+                ai_request_attempted = True
                 # اسم النموذج القديم قد لا يكون متاحاً لكل مفاتيح Groq.
                 # يمكن تخصيصه من GROQ_TEXT_MODEL. وإذا رفضه المفتاح،
                 # نقرأ /models لاختيار نموذج متاح فعلياً لهذا المفتاح.
@@ -329,6 +341,10 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                         logger.info(
                             f"🤖 Groq models available={len(discovered)}"
                         )
+                    elif available.status_code == 429:
+                        groq_blocked = True
+                        provider_failures.append("تجاوز حد Groq")
+                        return None
                 except Exception as model_exc:
                     logger.warning(f"⚠️ تعذر جلب قائمة نماذج Groq: {model_exc}")
 
@@ -381,11 +397,17 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                                 f"⚠️ Groq model={model} error: "
                                 f"{r.status_code} - {r.text[:200]}"
                             )
-                            # حدّ الطلبات يخص هذا النموذج فقط أحياناً؛
-                            # جرّب نموذجاً متاحاً آخر بدلاً من إيقاف الحلقة.
-                            # أما 401/403 فالمفتاح نفسه غير صالح، ولا فائدة
-                            # من تكرار الطلبات.
+                            # لا نكرر الطلب على بقية النماذج بعد 429؛
+                            # الحد غالباً يخص المؤسسة/المفتاح وليس النموذج.
+                            if r.status_code == 429:
+                                groq_blocked = True
+                                provider_failures.append("تجاوز حد Groq")
+                                return None
                             if r.status_code in (401, 403):
+                                groq_blocked = True
+                                provider_failures.append(
+                                    "مفتاح Groq غير صالح أو غير مصرح"
+                                )
                                 break
                     except Exception as e:
                         logger.warning(f"⚠️ Groq model={model} exception: {e}")
@@ -398,8 +420,10 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
             logger.warning("⚠️ Groq فشل، جارٍ الانتقال إلى DeepSeek...")
         
         # ── المحاولة 2: DeepSeek (احتياطي) ──
-        if DEEPSEEK_API_KEY:
+        if DEEPSEEK_API_KEY and not deepseek_blocked:
             def _deepseek_request():
+                nonlocal deepseek_blocked, ai_request_attempted
+                ai_request_attempted = True
                 try:
                     r = requests.post(
                         "https://api.deepseek.com/v1/chat/completions",
@@ -421,6 +445,14 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             return data["choices"][0]["message"]["content"].strip()
                     else:
                         logger.warning(f"⚠️ DeepSeek error: {r.status_code} - {r.text[:200]}")
+                        if r.status_code == 429:
+                            deepseek_blocked = True
+                            provider_failures.append("تجاوز حد DeepSeek")
+                        elif r.status_code in (401, 403):
+                            deepseek_blocked = True
+                            provider_failures.append(
+                                "مفتاح DeepSeek غير صالح أو غير مصرح"
+                            )
                 except Exception as e:
                     logger.warning(f"⚠️ DeepSeek exception: {e}")
                 return None
@@ -442,8 +474,10 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
         GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
         
         # Groq يدعم الرؤية عبر llama-3.2-90b-vision
-        if GROQ_API_KEY:
+        if GROQ_API_KEY and not groq_blocked:
             def _groq_vision_request():
+                nonlocal groq_blocked, ai_request_attempted
+                ai_request_attempted = True
                 try:
                     import base64
                     img_b64 = base64.b64encode(img_bytes).decode()
@@ -473,6 +507,14 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             return data["choices"][0]["message"]["content"].strip()
                     else:
                         logger.warning(f"⚠️ Groq Vision error: {r.status_code}")
+                        if r.status_code == 429:
+                            groq_blocked = True
+                            provider_failures.append("تجاوز حد Groq")
+                        elif r.status_code in (401, 403):
+                            groq_blocked = True
+                            provider_failures.append(
+                                "مفتاح Groq غير صالح أو غير مصرح"
+                            )
                 except Exception as e:
                     logger.warning(f"⚠️ Groq Vision exception: {e}")
                 return None
@@ -975,7 +1017,20 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
         logger.info(f"ℹ️ تم حل الكابتشا جزئياً للرقم {phone}: {all_details}")
         return True, f"حُلّ جزئياً | {' | '.join(all_details)}"
     
-    logger.warning(f"❌ لم يتم حل الكابتشا للرقم {phone} بعد {max_attempts} محاولات")
+    if provider_failures:
+        reason = provider_failures[0]
+        logger.warning(
+            f"❌ تعذر استخدام مزود التحقق للرقم {phone}: {reason}"
+        )
+        return False, f"مزود التحقق غير متاح: {reason}"
+    if ai_request_attempted:
+        logger.warning(
+            f"❌ لم يُرجع مزود التحقق إجابة للرقم {phone} "
+            f"بعد {max_attempts} محاولات"
+        )
+        return False, "تعذر الحصول على إجابة من مزود التحقق"
+
+    logger.info(f"ℹ️ لم يُكتشف تحقق للرقم {phone}")
     return False, "لم يُكتشف تحقق"
 
 
