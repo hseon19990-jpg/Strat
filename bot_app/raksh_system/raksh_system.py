@@ -317,6 +317,46 @@ def _reserve_raksh_execution_slot(user_id: int, service_type: str, phone_number:
         )
         return False
 
+def _quarantine_raksh_session(phone_number: str, reason: str = "") -> None:
+    """استبعاد جلسة الرشق التي ثبت أنها غير صالحة أو غير مصرح بها."""
+    phone = str(phone_number or "").strip()
+    if not phone:
+        return
+    try:
+        with db_conn() as c:
+            c.execute(
+                """
+                UPDATE number_stock
+                SET last_authorized=FALSE, can_send_code=FALSE, force_listed=FALSE
+                WHERE phone_number=%s AND ever_sold IS NOT TRUE
+                """,
+                (phone,),
+            )
+        logger.warning(
+            "🔴 استُبعدت جلسة الرشق غير الصالحة %s%s",
+            phone,
+            f" ({reason})" if reason else "",
+        )
+    except Exception:
+        logger.exception("فشل استبعاد جلسة الرشق %s", phone)
+
+
+def _is_invalid_raksh_session_result(message: str) -> bool:
+    text = str(message or "").casefold()
+    return any(
+        marker in text
+        for marker in (
+            "الجلسة غير مصرح بها",
+            "جلسة منتهية أو مُلغاة",
+            "authkeyunregistered",
+            "sessionrevoked",
+            "sessionexpired",
+            "authkeyduplicated",
+            "userdeactivated",
+            "phonenumberbanned",
+        )
+    )
+
 def _get_all_active_sessions(service_type: str | None = None) -> list[dict]:
     """جلب كل الجلسات المخزنة التي يمكن استخدامها لخدمات الرشق.
 
@@ -330,6 +370,7 @@ def _get_all_active_sessions(service_type: str | None = None) -> list[dict]:
             "WHERE session_string IS NOT NULL "
             "AND BTRIM(session_string) <> '' "
             "AND deleted_at IS NULL "
+            "AND COALESCE(last_authorized, TRUE) IS NOT FALSE "
             "AND forced_ref_excluded IS NOT TRUE "
             "ORDER BY raksh_only DESC, id ASC"
         ).fetchall()
@@ -1575,6 +1616,8 @@ async def execute_raksh_service(
             success_count += 1
             success_phones.append(phone)
         else:
+            if _is_invalid_raksh_session_result(msg):
+                _quarantine_raksh_session(phone, str(msg)[:160])
             failed_phones.append(phone)
             failed_details.append(msg)
         if progress_callback:
