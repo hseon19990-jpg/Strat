@@ -473,7 +473,9 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
         
         GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
         
-        # Groq يدعم الرؤية عبر llama-3.2-90b-vision
+        # لا تثبّت موديل الرؤية على اسم واحد؛ أسماء/توافر موديلات Groq
+        # تختلف بين المفاتيح، وكان هذا سبباً في أن مسار الصورة لا يرجع
+        # إجابة حتى مع وجود GROQ_API_KEY.
         if GROQ_API_KEY and not groq_blocked:
             def _groq_vision_request():
                 nonlocal groq_blocked, ai_request_attempted
@@ -481,40 +483,95 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                 try:
                     import base64
                     img_b64 = base64.b64encode(img_bytes).decode()
-                    r = requests.post(
-                        "https://api.groq.com/openai/v1/chat/completions",
-                        headers={
-                            "Authorization": f"Bearer {GROQ_API_KEY}",
-                            "Content-Type": "application/json"
-                        },
-                        json={
-                            "model": "meta-llama/llama-4-scout-17b-16e-instruct",
-                            "messages": [{
-                                "role": "user",
-                                "content": [
-                                    {"type": "text", "text": prompt},
-                                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
-                                ]
-                            }],
-                            "max_tokens": 20,
-                            "temperature": 0
-                        },
-                        timeout=35
-                    )
-                    if r.status_code == 200:
-                        data = r.json()
-                        if data.get("choices"):
-                            return data["choices"][0]["message"]["content"].strip()
+                    headers = {
+                        "Authorization": f"Bearer {GROQ_API_KEY}",
+                        "Content-Type": "application/json",
+                    }
+
+                    configured = os.environ.get("GROQ_VISION_MODEL", "").strip()
+                    preferred = [
+                        "meta-llama/llama-4-scout-17b-16e-instruct",
+                        "meta-llama/llama-4-maverick-17b-128e-instruct",
+                        "llama-3.2-90b-vision-preview",
+                        "llama-3.2-11b-vision-preview",
+                    ]
+                    discovered = []
+                    try:
+                        model_response = requests.get(
+                            "https://api.groq.com/openai/v1/models",
+                            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+                            timeout=10,
+                        )
+                        if model_response.status_code == 200:
+                            discovered = [
+                                item.get("id", "")
+                                for item in model_response.json().get("data", [])
+                                if item.get("id")
+                            ]
+                    except Exception as model_error:
+                        logger.debug(f"تعذر اكتشاف موديلات Groq للرؤية: {model_error}")
+
+                    # نرسل فقط إلى موديلات الرؤية المتاحة فعلياً إن نجح
+                    # /models، مع إبقاء الاسم المخصص للمستخدم في البداية.
+                    if discovered:
+                        discovered_set = set(discovered)
+                        available_vision = [
+                            model for model in discovered
+                            if any(token in model.lower() for token in ("vision", "scout", "maverick"))
+                        ]
+                        models = [
+                            model for model in [configured] + preferred + available_vision
+                            if model and (model == configured or model in discovered_set)
+                        ]
                     else:
-                        logger.warning(f"⚠️ Groq Vision error: {r.status_code}")
+                        models = [model for model in [configured] + preferred if model]
+                    models = list(dict.fromkeys(models))
+
+                    for model in models:
+                        r = requests.post(
+                            "https://api.groq.com/openai/v1/chat/completions",
+                            headers=headers,
+                            json={
+                                "model": model,
+                                "messages": [{
+                                    "role": "user",
+                                    "content": [
+                                        {"type": "text", "text": prompt},
+                                        {
+                                            "type": "image_url",
+                                            "image_url": {
+                                                "url": f"data:image/jpeg;base64,{img_b64}"
+                                            },
+                                        },
+                                    ],
+                                }],
+                                "max_tokens": 40,
+                                "temperature": 0,
+                            },
+                            timeout=35,
+                        )
+                        if r.status_code == 200:
+                            data = r.json()
+                            if data.get("choices"):
+                                return (
+                                    data["choices"][0]["message"].get("content", "")
+                                    .strip()
+                                )
+
+                        logger.warning(
+                            f"⚠️ Groq Vision model={model} error: "
+                            f"{r.status_code} - {r.text[:200]}"
+                        )
                         if r.status_code == 429:
                             groq_blocked = True
                             provider_failures.append("تجاوز حد Groq")
-                        elif r.status_code in (401, 403):
+                            return None
+                        if r.status_code in (401, 403):
                             groq_blocked = True
                             provider_failures.append(
                                 "مفتاح Groq غير صالح أو غير مصرح"
                             )
+                            return None
                 except Exception as e:
                     logger.warning(f"⚠️ Groq Vision exception: {e}")
                 return None
@@ -534,16 +591,214 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
         return any(k.lower() in t for k in FAIL_KW)
 
     def _extract_emojis_from_text(text: str) -> list:
-        """يستخرج جميع الإيموجيات من النص."""
+        """يستخرج الإيموجيات كعناقيد، لا كحروف منفردة.
+
+        ``FE0F`` (variation selector) وskin-tone modifier ليسا إيموجي
+        مستقلين. إرجاعهما كعنصر مستقل كان يجعل ``❤️`` يُقرأ أحياناً على
+        أنه ``️``، وبالتالي يفشل التطابق مع زر الإيموجي.
+        """
         result = []
-        for ch in text:
+        current = []
+
+        def _flush():
+            if current:
+                result.append("".join(current))
+                current.clear()
+
+        for ch in str(text or ""):
             cp = ord(ch)
-            if (0x1F300 <= cp <= 0x1FFFF or  # إيموجي ورموز متنوعة
-                0x2600 <= cp <= 0x27BF or    # رموز متنوعة
-                0x1F900 <= cp <= 0x1F9FF or  # رموز تكميلية
-                0x1FA00 <= cp <= 0x1FAFF):   # رموز موسعة
-                result.append(ch)
+            is_base = (
+                0x1F000 <= cp <= 0x1FAFF
+                or 0x2600 <= cp <= 0x27BF
+                or cp in {0x3030, 0x303D, 0x3297, 0x3299}
+            ) and not (0x1F3FB <= cp <= 0x1F3FF)
+            is_extend = (
+                cp in {0xFE0E, 0xFE0F, 0x200D, 0x20E3}
+                or 0x1F3FB <= cp <= 0x1F3FF
+            )
+            if is_base:
+                if current and current[-1] != "\u200d":
+                    _flush()
+                current.append(ch)
+            elif is_extend and current:
+                current.append(ch)
+            else:
+                _flush()
+        _flush()
         return result
+
+    def _emoji_signatures(text: str) -> set[str]:
+        """يبني بصمات للإيموجي مع وبدون variation selector/modifier.
+
+        أزرار تيليغرام قد تصل بصيغة مختلفة عن النص الذي يرجعه النموذج:
+        مثلاً ``👍`` مقابل ``👍️`` أو ``👍🏻``. المقارنة بحرف واحد فقط
+        كانت تفشل مع هذه الحالات وتضغط أحياناً على زر غير مقصود.
+        """
+        raw = "".join(_extract_emojis_from_text(text or ""))
+        if not raw:
+            return set()
+        signatures = {raw}
+        stripped = "".join(
+            ch for ch in raw
+            if ord(ch) not in {0xFE0E, 0xFE0F, 0x200D}
+            and not (0x1F3FB <= ord(ch) <= 0x1F3FF)
+        )
+        if stripped:
+            signatures.add(stripped)
+        signatures.update(_extract_emojis_from_text(text or ""))
+        return signatures
+
+    def _custom_emoji_ids(value) -> list[int]:
+        """يستخرج document_id للإيموجيات المدفوعة من كائن تيليغرام."""
+        result = []
+        for entity in getattr(value, "entities", None) or []:
+            document_id = getattr(entity, "document_id", None)
+            if document_id is None:
+                continue
+            # لا نعتمد على اسم الصنف فقط حتى يعمل الكود مع إصدارات
+            # Telethon التي تضيف حقولاً جديدة أو تغيّر طريقة العرض.
+            if "CustomEmoji" in type(entity).__name__:
+                try:
+                    result.append(int(document_id))
+                except (TypeError, ValueError):
+                    pass
+        return result
+
+    def _button_custom_emoji_id(button) -> int | None:
+        """يقرأ أيقونة custom emoji المدفوعة من KeyboardButtonStyle."""
+        candidates = [button, getattr(button, "button", None)]
+        for candidate in candidates:
+            style = getattr(candidate, "style", None)
+            icon = getattr(style, "icon", None)
+            if icon is not None:
+                try:
+                    return int(icon)
+                except (TypeError, ValueError):
+                    return None
+        return None
+
+    def _choose_button_by_custom_emoji(
+        custom_ids: list[int],
+        entries: list[tuple[str, object]],
+    ):
+        """يطابق target document_id مع أيقونة الزر، دون الاعتماد على Unicode."""
+        wanted = {int(value) for value in (custom_ids or []) if value is not None}
+        if not wanted:
+            return None
+        matches = [
+            button for _label, button in entries
+            if _button_custom_emoji_id(button) in wanted
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    def _normalise_button_label(value: str) -> str:
+        import unicodedata
+        value = unicodedata.normalize("NFKC", str(value or "")).casefold()
+        value = "".join(
+            ch for ch in value
+            if not unicodedata.category(ch).startswith(("C", "M"))
+        )
+        return " ".join(value.split()).strip()
+
+    def _button_entries(message) -> list[tuple[str, object]]:
+        """يُرجع أزرار الرسالة مع الحفاظ على التكرار وترتيبها."""
+        entries = []
+        for row in getattr(message, "buttons", None) or []:
+            for button in row or []:
+                label = getattr(button, "text", "") or ""
+                url = getattr(button, "url", "") or ""
+                # روابط القنوات/الدعوات ليست إجابات كابتشا.
+                if url and ("t.me/" in url or "telegram.me/" in url):
+                    continue
+                # Custom emoji buttons may have an empty text label; their
+                # actual visible icon is stored in KeyboardButtonStyle.icon.
+                if label or _button_custom_emoji_id(button) is not None:
+                    entries.append((str(label).strip(), button))
+        return entries
+
+    def _choose_button(answer: str, entries: list[tuple[str, object]]):
+        """يطابق إجابة AI مع زر واحد فقط، مع دعم emoji المركب."""
+        answer = str(answer or "").strip()
+        if not answer or answer.casefold() in {"none", "null", "no match", "لا يوجد"}:
+            return None
+
+        answer_norm = _normalise_button_label(answer)
+        exact = [
+            button for label, button in entries
+            if _normalise_button_label(label) == answer_norm
+        ]
+        if len(exact) == 1:
+            return exact[0]
+
+        answer_emojis = _emoji_signatures(answer)
+        if answer_emojis:
+            emoji_matches = [
+                button for label, button in entries
+                if answer_emojis.intersection(_emoji_signatures(label))
+            ]
+            if len(emoji_matches) == 1:
+                return emoji_matches[0]
+            # إذا وُجدت بصمة كاملة، استخدمها قبل بصمات الحروف المفردة.
+            for signature in answer_emojis:
+                complete = [
+                    button for label, button in entries
+                    if signature in _emoji_signatures(label)
+                ]
+                if len(complete) == 1:
+                    return complete[0]
+
+        # For icon-only paid buttons the vision/text provider may return the
+        # button number instead of an empty label.
+        import re as _re
+        number_match = _re.fullmatch(
+            r"(?:button|option|زر|خيار)?\s*([1-9]\d*)",
+            answer.casefold(),
+        )
+        if number_match:
+            index = int(number_match.group(1)) - 1
+            if 0 <= index < len(entries):
+                return entries[index][1]
+
+        # المطابقة النصية الاحتياطية لا تُستخدم إلا إذا كانت النتيجة وحيدة؛
+        # هذا يمنع اختيار أول زر عندما يعيد النموذج شرحاً طويلاً.
+        partial = [
+            button for label, button in entries
+            if answer_norm
+            and (answer_norm in _normalise_button_label(label)
+                 or _normalise_button_label(label) in answer_norm)
+        ]
+        return partial[0] if len(partial) == 1 else None
+
+    def _caption_target_emoji(text: str) -> str | None:
+        """يستخرج الإيموجي المطلوب عندما يكون مذكوراً صراحة في الكابتشن."""
+        lowered = (text or "").casefold()
+        markers = (
+            "correct emoji:", "select emoji", "choose emoji", "pick emoji",
+            "اختر الإيموجي", "الإيموجي الصحيح", "الإيموجي المطابق",
+            "الصورة المطابقة",
+        )
+        for marker in markers:
+            position = lowered.find(marker.casefold())
+            if position >= 0:
+                emojis = _extract_emojis_from_text(text[position + len(marker):])
+                if emojis:
+                    return emojis[-1]
+        return None
+
+    def _target_custom_emoji_ids(message, text: str) -> list[int]:
+        """يحدد custom emoji المطلوب من نص التحقق، وغالباً يكون آخر entity."""
+        custom_ids = _custom_emoji_ids(message)
+        if not custom_ids:
+            return []
+        lowered = (text or "").casefold()
+        target_markers = (
+            "الرمز", "الإيموجي الصحيح", "الإيموجي المطابق",
+            "correct emoji", "select emoji", "choose emoji",
+            "pick emoji", "matching emoji",
+        )
+        if any(marker.casefold() in lowered for marker in target_markers):
+            return [custom_ids[-1]]
+        return custom_ids[-1:]
 
     async def _wait_and_check(limit: int = 5) -> tuple:
         """ينتظر الرد الجديد فقط لتجنب اعتبار رسائل التحقق القديمة فشلاً."""
@@ -659,6 +914,114 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
             # ════════════════════════════════════════════════════
             # 1. كابتشا صورة (CAPTCHA بصورة مشوّهة)
             # ════════════════════════════════════════════════════
+            # إذا احتوت الصورة على سؤال بصري وأزرار إجابة، فلا ترسل
+            # الصورة إلى OCR كنص. هذا هو شكل كابتشا الإيموجي/الصورة
+            # المطابقة: الصورة هي السؤال والأزرار هي الإجابات.
+            if has_media and has_btns:
+                button_entries = _button_entries(msg)
+                button_labels = [label for label, _button in button_entries]
+                button_text = " ".join(button_labels).casefold()
+                icon_button_count = sum(
+                    _button_custom_emoji_id(button) is not None
+                    for _label, button in button_entries
+                )
+                all_emoji_buttons = bool(button_labels) and all(
+                    bool(_emoji_signatures(label)) for label in button_labels
+                )
+                is_visual_button_captcha = (
+                    bool(button_entries)
+                    and (
+                        any(k in msg_text_lower for k in CAPTCHA_KW)
+                        or any(k in msg_text_lower for k in REACTION_KW)
+                        or "select" in msg_text_lower
+                        or "choose" in msg_text_lower
+                        or "click" in msg_text_lower
+                        or "press" in msg_text_lower
+                        or "pick" in msg_text_lower
+                        or all_emoji_buttons
+                        or icon_button_count >= 2
+                        or any(k in button_text for k in ("emoji", "إيموجي", "صورة"))
+                    )
+                )
+                if is_visual_button_captcha:
+                    try:
+                        target_custom_ids = _target_custom_emoji_ids(msg, msg_text)
+                        target_emoji = _caption_target_emoji(msg_text)
+                        answer = target_emoji
+                        chosen = _choose_button_by_custom_emoji(
+                            target_custom_ids, button_entries
+                        )
+                        if not chosen:
+                            chosen = _choose_button(answer, button_entries)
+
+                        img_bytes = await client.download_media(msg, bytes)
+                        if img_bytes and not chosen:
+                            button_descriptions = []
+                            for index, (label, button) in enumerate(button_entries, 1):
+                                icon_id = _button_custom_emoji_id(button)
+                                suffix = (
+                                    f"custom emoji icon id={icon_id}"
+                                    if icon_id is not None else "text button"
+                                )
+                                button_descriptions.append(
+                                    f"{index}. {label or '(icon only)'} [{suffix}]"
+                                )
+                            prompt = (
+                                "This is a visual Telegram CAPTCHA. "
+                                "The image is the challenge and the following are "
+                                "the exact answer-button labels:\n"
+                                + "\n".join(button_descriptions)
+                                + "\n\n"
+                                "Inspect the image and select the one button that "
+                                "matches the emoji, symbol, object, or picture shown. "
+                                "If the image shows an emoji, compare it with the "
+                                "emoji buttons. Do not solve it as OCR. "
+                                "Return ONLY the exact button label, with no explanation. "
+                                "Return NONE if no button can be matched.\n"
+                                f"Message text: {msg_text or '(none)'}"
+                            )
+                            answer = await _solve_image(prompt, img_bytes)
+                            chosen = _choose_button(answer, button_entries)
+
+                        if not chosen:
+                            logger.warning(
+                                f"⚠️ لم يُعثر على زر يطابق الصورة/الإيموجي "
+                                f"({phone}) — إجابة AI: {answer!r}"
+                            )
+                            all_details.append("لم يتم الضغط: لا يوجد زر مطابق للصورة")
+                            continue
+
+                        processed_ids.add(msg_id)
+                        await chosen.click()
+                        result, msgs = await _wait_and_check()
+                        if result == "unknown":
+                            numeric_result, numeric_msgs = await _reply_to_numeric_code(msgs)
+                            if numeric_result is not None:
+                                result, msgs = numeric_result, numeric_msgs
+                        detail = (
+                            f"ضغط زر الصورة/الإيموجي: "
+                            f"{getattr(chosen, 'text', '')}"
+                        )
+                        all_details.append(detail)
+                        logger.info(
+                            f"🤖 AI visual button → {getattr(chosen, 'text', '')!r} "
+                            f"({phone})"
+                        )
+                        if result == "success":
+                            logger.info(
+                                f"✅ تم حل الكابتشا للرقم {phone} "
+                                f"في المحاولة {_round+1}"
+                            )
+                            return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
+                        if result == "fail":
+                            break
+                        return True, f"ضغط الزر | {' | '.join(all_details)}"
+                    except Exception as _e:
+                        logger.warning(
+                            f"⚠️ AI visual image/button captcha ({phone}): {_e}"
+                        )
+                    continue
+
             if has_media:
                 try:
                     img_bytes = await client.download_media(msg, bytes)
@@ -794,19 +1157,13 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
             # ════════════════════════════════════════════════════
             if has_btns:
                 try:
-                    btn_labels  = []
-                    btn_objects = {}
-                    for row in msg.buttons:
-                        for btn in row:
-                            label = getattr(btn, "text", "") or ""
-                            url   = getattr(btn, "url",  None) or ""
-                            # تخطي أزرار روابط القنوات — تُعالج لاحقاً في do_referral_for_number
-                            if url and ("t.me/" in url or "telegram.me/" in url):
-                                continue
-                            if label:
-                                btn_labels.append(label)
-                                btn_objects[label] = btn
-                    if not btn_labels:
+                    button_entries = _button_entries(msg)
+                    btn_labels = [label for label, _button in button_entries]
+                    icon_button_count = sum(
+                        _button_custom_emoji_id(button) is not None
+                        for _label, button in button_entries
+                    )
+                    if not button_entries:
                         continue
                     # هل تبدو رسالة تحقق؟ (تحقق، رياضيات، إيموجي...)
                     is_verif = (
@@ -819,13 +1176,23 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                         or "press" in msg_text_lower
                         or "pick" in msg_text_lower
                         # بعض كابتشا الإيموجي المدفوعة تصل بأزرار فقط بلا نص دال.
-                        or (len(btn_labels) >= 2 and all(bool(_extract_emojis_from_text(lbl)) for lbl in btn_labels))
+                        or (
+                            len(btn_labels) >= 2
+                            and all(bool(_emoji_signatures(lbl)) for lbl in btn_labels)
+                        )
+                        or icon_button_count >= 2
                     )
                     if not is_verif:
                         continue
 
                     # ── كشف مباشر: نمط "select the correct emoji: X" ──────
-                    direct_chosen = None
+                    target_custom_ids = _target_custom_emoji_ids(msg, msg_text)
+                    target_emoji = _caption_target_emoji(msg_text)
+                    direct_chosen = _choose_button_by_custom_emoji(
+                        target_custom_ids, button_entries
+                    )
+                    if not direct_chosen:
+                        direct_chosen = _choose_button(target_emoji, button_entries)
                     # نمط: "correct emoji: X" أو "اختر الإيموجي: X" أو "select emoji X"
                     is_emoji_select = (
                         "correct emoji" in msg_text_lower
@@ -834,21 +1201,10 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                         or "pick emoji" in msg_text_lower
                         or "اختر الإيموجي" in msg_text
                         or "الإيموجي الصحيح" in msg_text
+                        or "الإيموجي المطابق" in msg_text
+                        or "الصورة المطابقة" in msg_text
                     )
                     if is_emoji_select:
-                        # تجاهل رموز الزينة في بداية النص واستخرج الإيموجي المطلوب فقط.
-                        target_text = msg_text
-                        for marker in ('correct emoji:', 'select emoji', 'choose emoji', 'pick emoji', 'اختر الإيموجي', 'الإيموجي الصحيح'):
-                            if marker in target_text.lower():
-                                target_text = target_text[target_text.lower().find(marker.lower()) + len(marker):]
-                                break
-                        msg_emojis = _extract_emojis_from_text(target_text)
-                        if msg_emojis:
-                            target_emoji = msg_emojis[-1]  # تجاهل ❓ واستخدم الإيموجي المطلوب الظاهر أخيراً
-                            for lbl, btn in btn_objects.items():
-                                if target_emoji in lbl or target_emoji in _extract_emojis_from_text(lbl):
-                                    direct_chosen = btn
-                                    break
                         # لا تضغط على None؛ عند غياب التطابق يكمل المسار الاحتياطي.
                         if direct_chosen:
                             processed_ids.add(msg_id)
@@ -867,54 +1223,57 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                     else:
                         # ── الوضع الاحتياطي: استخدم Groq أو DeepSeek ─────────
                         # إذا كانت الأزرار كلها إيموجيات، وضّح ذلك للنموذج
+                        button_descriptions = []
+                        for index, (label, button) in enumerate(button_entries, 1):
+                            icon_id = _button_custom_emoji_id(button)
+                            suffix = (
+                                f"custom emoji icon id={icon_id}"
+                                if icon_id is not None else "text button"
+                            )
+                            button_descriptions.append(
+                                f"{index}. {label or '(icon only)'} [{suffix}]"
+                            )
                         all_emoji_btns = all(
-                            bool(_extract_emojis_from_text(lbl)) for lbl in btn_labels
+                            bool(_emoji_signatures(lbl)) for lbl in btn_labels
+                        ) and bool(btn_labels)
+                        all_paid_icon_btns = all(
+                            _button_custom_emoji_id(button) is not None
+                            for _label, button in button_entries
                         )
                         if all_emoji_btns:
                             prompt = (
                                 f"Telegram bot verification:\n{msg_text}\n\n"
                                 "Available emoji buttons:\n"
-                                + "\n".join(f"- {b}" for b in btn_labels)
+                                + "\n".join(button_descriptions)
                                 + "\n\nWhich emoji button should be clicked? "
-                                "Reply with ONLY the exact emoji character, nothing else."
+                                "Reply with ONLY the exact emoji character or its "
+                                "button number, nothing else."
+                            )
+                        elif all_paid_icon_btns:
+                            prompt = (
+                                f"Telegram bot verification:\n{msg_text}\n\n"
+                                "Available paid custom-emoji buttons:\n"
+                                + "\n".join(button_descriptions)
+                                + "\n\nChoose the button whose custom emoji matches "
+                                "the custom emoji in the verification text. Reply with "
+                                "ONLY its button number, nothing else."
                             )
                         else:
                             prompt = (
                                 f"بوت تيليغرام يطلب التحقق:\n{msg_text}\n\n"
                                 "الأزرار المتاحة:\n"
-                                + "\n".join(f"- {b}" for b in btn_labels)
-                                + "\n\nأي زر يجب الضغط عليه؟ أجب بنص الزر فقط كما هو بالضبط."
+                                + "\n".join(button_descriptions)
+                                + "\n\nأي زر يجب الضغط عليه؟ أجب برقم الزر أو نصه "
+                                "فقط كما هو بالضبط."
                             )
                         answer = await _solve_text(prompt)
                         if answer:
                             logger.info(f"🤖 AI اختار زر → '{answer}' ({phone})")
-                            chosen = None
-                            a_clean = answer.strip()
-                            a_lower = a_clean.lower()
-                            # مطابقة دقيقة أولاً
-                            for label, btn in btn_objects.items():
-                                if label.strip() == a_clean:
-                                    chosen = btn
-                                    break
-                            # مطابقة بالإيموجي إذا أرجع النموذج نصاً يحتوي إيموجي
-                            if not chosen:
-                                ans_emojis = _extract_emojis_from_text(a_clean)
-                                if ans_emojis:
-                                    for label, btn in btn_objects.items():
-                                        if ans_emojis[0] in label:
-                                            chosen = btn
-                                            break
-                            # مطابقة نصية احتياطية
-                            if not chosen:
-                                for label, btn in btn_objects.items():
-                                    if a_lower in label.lower() or label.lower() in a_lower:
-                                        chosen = btn
-                                        break
+                            chosen = _choose_button(answer, button_entries)
                             if not chosen:
                                 # Never guess: paid/custom-emoji captchas need a confirmed visual/ID match.
                                 logger.warning(f"⚠️ لا يوجد تطابق مؤكد لزر الكابتشا — لن يتم الضغط ({phone})")
                                 all_details.append("لم يتم الضغط: لا يوجد تطابق مؤكد")
-                                processed_ids.add(msg_id)
                                 continue
                             processed_ids.add(msg_id)
                             await chosen.click()
