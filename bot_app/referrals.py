@@ -426,7 +426,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                 ai_request_attempted = True
                 try:
                     r = requests.post(
-                        "https://api.deepseek.com/v1/chat/completions",
+                        "https://api.deepseek.com/chat/completions",
                         headers={
                             "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
                             "Content-Type": "application/json"

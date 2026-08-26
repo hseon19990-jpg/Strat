@@ -502,22 +502,66 @@ async def cmd_test_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return f"❌ {name}: عطل مؤقت في خادم الخدمة | HTTP {status_code}"
         return f"⚠️ {name}: استجابة غير متوقعة | HTTP {status_code}"
 
-    for name, key, url, model in [
+    providers = [
         ("Groq", GROQ_API_KEY, "https://api.groq.com/openai/v1/chat/completions",
          os.environ.get("GROQ_TEXT_MODEL", "llama-3.1-8b-instant")),
         ("DeepSeek", DEEPSEEK_API_KEY, "https://api.deepseek.com/chat/completions", "deepseek-chat"),
-    ]:
+    ]
+    for name, key, url, model in providers:
         if not key:
             msg += f"❌ {name}: المفتاح مفقود | HTTP —\n"
             continue
         try:
+            # لا نعتمد على اسم نموذج قديم في GROQ_TEXT_MODEL؛ Groq قد
+            # يزيل نموذجاً أو لا يتيحه لهذا المفتاح، وعندها يظهر 404 رغم
+            # أن المفتاح نفسه صحيح. نختار نموذجاً نصياً متاحاً فعلياً.
+            if name == "Groq":
+                models_response = requests.get(
+                    "https://api.groq.com/openai/v1/models",
+                    headers={"Authorization": f"Bearer {key}"},
+                    timeout=10,
+                )
+                if models_response.status_code != 200:
+                    msg += (
+                        _http_status_message("Groq", models_response.status_code)
+                        + "\n"
+                    )
+                    continue
+                available_models = [
+                    item.get("id", "")
+                    for item in models_response.json().get("data", [])
+                ]
+                text_models = [
+                    item for item in available_models
+                    if item and not any(
+                        part in item.lower()
+                        for part in ("whisper", "embedding", "guard")
+                    )
+                ]
+                if model not in text_models:
+                    preferred = [
+                        "llama-3.1-8b-instant",
+                        "openai/gpt-oss-20b",
+                        "qwen/qwen3-32b",
+                        "llama-3.3-70b-versatile",
+                    ]
+                    model = next(
+                        (candidate for candidate in preferred if candidate in text_models),
+                        text_models[0] if text_models else "",
+                    )
+                if not model:
+                    msg += "❌ Groq: لا يوجد نموذج نصي متاح | HTTP 200\n"
+                    continue
             r = requests.post(
                 url,
                 headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
                 json={"model": model, "messages": [{"role": "user", "content": "قل مرحباً"}], "max_tokens": 5},
                 timeout=10,
             )
-            msg += _http_status_message(name, r.status_code) + "\n"
+            status = _http_status_message(name, r.status_code)
+            if name == "Groq" and r.status_code == 200:
+                status += f" | model={model}"
+            msg += status + "\n"
         except Exception as e:
             msg += f"❌ {name}: لم يصل رد من الخدمة | HTTP — | {type(e).__name__}: {e}\n"
     
