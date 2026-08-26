@@ -402,6 +402,55 @@ def _as_message_list(value) -> list:
     return [value]
 
 
+def _latest_message_id(messages) -> int:
+    """إرجاع آخر رقم رسالة مع تجاهل الكائنات غير المكتملة."""
+    ids = [
+        int(getattr(message, "id", 0) or 0)
+        for message in messages or []
+        if getattr(message, "id", None) is not None
+    ]
+    return max(ids, default=0)
+
+
+async def _get_fresh_bot_messages(
+    client,
+    bot_entity,
+    *,
+    after_id: int = 0,
+    limit: int = 30,
+    attempts: int = 6,
+    delay: float = 1.0,
+) -> list:
+    """قراءة ردود بوت المسابقة من الشبكة بعد تنفيذ خطوة تفاعلية.
+
+    ``get_messages`` يعيد أحدث الرسائل، لكنه لا يضمن أن الرد الناتج عن
+    ``/start`` أو callback وصل قبل لحظة القراءة. نعيد القراءة عدة مرات
+    ونفضّل مجموعة تحتوي على رسالة أحدث من آخر رسالة معروفة. إذا كان البوت
+    يحرر نفس الرسالة بدلاً من إرسال رسالة جديدة، نعيد آخر نسخة متاحة بعد
+    انتهاء المحاولات بدلاً من إسقاطها.
+    """
+    latest = []
+    for attempt in range(max(1, attempts)):
+        try:
+            latest = _as_message_list(
+                await client.get_messages(bot_entity, limit=limit)
+            )
+        except Exception as exc:
+            logger.warning(
+                "تعذر تحديث رسائل بوت المسابقة (محاولة %s/%s): %s",
+                attempt + 1,
+                attempts,
+                str(exc)[:120],
+            )
+            latest = []
+
+        if latest and _latest_message_id(latest) > int(after_id or 0):
+            return latest
+        if attempt < attempts - 1:
+            await asyncio.sleep(delay)
+    return latest
+
+
 def _reaction_emoticons(reactions) -> list[str]:
     """تحويل نتائج Telethon إلى قيم قابلة للاختيار والإرسال بدون تكرار.
 
@@ -1185,6 +1234,17 @@ async def _execute_votes_ai(session, params, is_first):
         if not messages:
             return False, "المنشور غير موجود."
         msg = messages[0]
+        bot_username, _ = _find_bot_start_link(msg)
+        if not bot_username:
+            return False, "لم يُعثر على رابط بوت المسابقة داخل زر المنشور."
+        try:
+            bot_entity = await client.get_entity(bot_username)
+            previous_bot_messages = _as_message_list(
+                await client.get_messages(bot_entity, limit=5)
+            )
+        except Exception:
+            previous_bot_messages = []
+        previous_bot_message_id = _latest_message_id(previous_bot_messages)
         bot_entity = await _start_contest_bot_from_post(client, msg)
         logger.info(
             "✅ الحساب %s فتح بوت المسابقة عبر StartBotRequest بالتوكن",
@@ -1196,7 +1256,16 @@ async def _execute_votes_ai(session, params, is_first):
         # البوت، لذلك يجب الانضمام من أزرار الرسالة ثم الضغط على زر التحقق
         # قبل تشغيل حل الكابتشا. solve_captcha_with_ai وحدها تتجاوز أزرار
         # روابط القنوات ولا تنضم إليها.
-        bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=20))
+        bot_messages = await _get_fresh_bot_messages(
+            client,
+            bot_entity,
+            after_id=previous_bot_message_id,
+            limit=30,
+            attempts=8,
+            delay=0.75,
+        )
+        if not bot_messages:
+            return False, "لم يصل رد من بوت المسابقة بعد إرسال رابط البدء."
         for _sub_round in range(6):
             joined_channels = await _join_channels_from_buttons(client, bot_messages)
             if joined_channels == 0:
@@ -1213,8 +1282,13 @@ async def _execute_votes_ai(session, params, is_first):
                     session["phone_number"],
                 )
             await asyncio.sleep(4)
-            bot_messages = _as_message_list(
-                await client.get_messages(bot_entity, limit=20)
+            bot_messages = await _get_fresh_bot_messages(
+                client,
+                bot_entity,
+                after_id=_latest_message_id(bot_messages),
+                limit=30,
+                attempts=8,
+                delay=0.75,
             )
 
         # ④ حل التحقق داخل محادثة البوت، وليس داخل محادثة القناة.
@@ -1226,6 +1300,10 @@ async def _execute_votes_ai(session, params, is_first):
             max_attempts=3,
         )
         if not solved:
+            if detail == "لا يوجد مفتاح API للتحقق (Groq أو DeepSeek)":
+                return False, (
+                    "خدمة التحقق غير مهيأة: أضف مزود تحقق معتمد ثم أعد المحاولة."
+                )
             # عدم اكتشاف كابتشا يعني أن هذا الحساب لم يُطلب منه تحقق؛
             # لا ينبغي تحويل هذه الحالة إلى فشل قبل فحص زر التصويت.
             # أما فشل المزود أو وجود كابتشا لم تُحل فيظل فشلاً صريحاً.
