@@ -55,7 +55,13 @@ def mandatory_terms_text_html() -> str:
     )
 
 async def get_unjoined_mandatory_channels(context: ContextTypes.DEFAULT_TYPE, user_id: int):
-    """يُرجع قائمة القنوات الإجبارية التي لم ينضم لها المستخدم بعد."""
+    """يُرجع قائمة القنوات الإجبارية التي لم ينضم لها المستخدم بعد.
+
+    المالك مستثنى دائماً من بوابة الاشتراك حتى يستطيع إدارة القنوات،
+    بما فيها حذف قناة غير صالحة أو لم يعد بالإمكان الانضمام إليها.
+    """
+    if user_id == OWNER_ID:
+        return []
     with db_conn() as c:
         channels = c.execute(
             "SELECT * FROM mandatory_channels WHERE active=1 AND funding_type='mandatory'"
