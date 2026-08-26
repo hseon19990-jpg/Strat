@@ -1452,9 +1452,33 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
             if _ai_solved:
                 steps.append(f"🤖 AI: {_ai_detail}")
             elif _ai_detail != "لم يُكتشف تحقق":
-                # فشل حقيقي مثل غياب مفاتيح AI أو تعذر الإجابة؛ لا نسجل
-                # الحساب ناجحاً قبل اجتياز التحقق المطلوب.
-                return False, False, f"فشل حل الكابتشا بعد 3 محاولات: {_ai_detail}"
+                # إذا ضغطنا زر التحقق الأول ثم تبدلت الرسالة ولم تبقَ
+                # كابتشا واضحة أو فشل صريح، فالـ AI اللاحق ليس شرطاً
+                # للنجاح؛ بعض البوتات تسجل التصويت وتعرض تنبيهاً عاماً.
+                _post_verify_text = " ".join(
+                    (getattr(_m, "message", "") or getattr(_m, "text", "") or "")
+                    for _m in (msgs or [])
+                ).casefold()
+                _explicit_fail = any(_x in _post_verify_text for _x in (
+                    "إجابة خاطئة", "غير صحيح", "حاول مجدداً",
+                    "wrong answer", "try again", "captcha failed"
+                ))
+                _pending_controls = any(
+                    getattr(_m, "buttons", None)
+                    and any(
+                        _k in ((getattr(_m, "message", "") or getattr(_m, "text", "") or "").casefold())
+                        for _k in ("captcha", "verification", "تحقق", "كابتشا", "اختر", "اضغط")
+                    )
+                    for _m in (msgs or [])
+                )
+                if _initial_verify_clicked and not _explicit_fail and not _pending_controls:
+                    steps.append("تم قبول التحقق بعد تبدّل رسالة البوت")
+                    logger.info(
+                        f"✅ {phone}: تم التصويت وتبدلت رسالة التحقق؛ "
+                        "تجاوز فشل AI اللاحق"
+                    )
+                else:
+                    return False, False, f"فشل حل الكابتشا بعد 3 محاولات: {_ai_detail}"
             else:
                 # محاولة أخيرة مستقلة عن AI: قد تصل رسالة الزر بعد انتهاء
                 # polling السابق أو تكون خارج أول 15 رسالة.
