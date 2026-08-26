@@ -509,17 +509,34 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
         for _ in range(5):
             await asyncio.sleep(2)
             last_msgs = await client.get_messages(bot_entity, limit=limit)
-            # تيليغرام يعيد الأحدث أولاً؛ افحص أحدث 3 رسائل فقط.
-            # الرسائل الأقدم قد تحتوي كلمات "فشل" من تعليمات كابتشا سابقة.
-            recent_msgs = last_msgs[:3]
+            # تيليغرام يعيد الأحدث أولاً؛ افحص أحدث الرسائل فقط.
+            recent_msgs = last_msgs[:5]
             for m in recent_msgs:
                 t = getattr(m, "message", "") or getattr(m, "text", "") or ""
                 if _is_success(t):
                     return "success", last_msgs
+            # الفشل لا يُستنتج من غياب كلمة نجاح؛ لا نعتمده إلا بعبارة صريحة.
             for m in recent_msgs:
                 t = getattr(m, "message", "") or getattr(m, "text", "") or ""
                 if _is_fail(t):
                     return "fail", last_msgs
+            # بعض بوتات التحقق تعدّل/تحذف رسالة الزر وتستبدلها برسالة
+            # إتمام بلا كلمة نجاح. إذا اختفت أزرار رسالة التحقق التي عالجناها،
+            # فهذا هو دليل الانتقال المطلوب ويُحسب نجاحًا.
+            for m in recent_msgs:
+                mid = getattr(m, "id", None)
+                t = getattr(m, "message", "") or getattr(m, "text", "") or ""
+                if mid in processed_ids and not getattr(m, "buttons", None):
+                    return "success", last_msgs
+            # إذا حُذفت رسالة الزر وظهرت رسالة جديدة من البوت بلا أزرار،
+            # نعدّ تبدّل التدفق نجاحًا ما لم توجد عبارة فشل صريحة.
+            if processed_ids and any(
+                getattr(m, "id", None) not in processed_ids
+                and (getattr(m, "message", "") or getattr(m, "text", ""))
+                and not getattr(m, "buttons", None)
+                for m in recent_msgs
+            ):
+                return "success", last_msgs
         return "unknown", last_msgs
 
     all_details: list[str] = []
