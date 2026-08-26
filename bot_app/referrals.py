@@ -235,8 +235,6 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
     logger.info(f"🔑 DEEPSEEK_API_KEY موجود: {bool(DEEPSEEK_API_KEY)} | طوله: {len(DEEPSEEK_API_KEY)}")
     # ════════════════════════════════════════════════════════════
 
-    if not GROQ_API_KEY and not DEEPSEEK_API_KEY:
-        return False, "لا يوجد مفتاح API للتحقق (Groq أو DeepSeek)"
 
     # ميّز بين عدم وجود كابتشا وبين تعذر الوصول إلى مزود الذكاء
     # الاصطناعي. مسار التصويت يستطيع المتابعة عندما لا يطلب البوت تحققاً،
@@ -284,6 +282,39 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
         "أرسل إيموجي", "انقر", "إيموجي", "emoji", "رد بـ", "reply with",
         "أرسل رد", "ارسل رد",
     ]
+
+    def _messages_need_ai_verification(messages) -> bool:
+        """تمييز الكابتشا قبل طلب مزود الذكاء الاصطناعي."""
+        explicit_words = (
+            "captcha", "كابتشا", "لست روبوت", "لست بوت", "not a robot",
+            "prove you are human", "أجب", "الإجابة", "الجواب", "احسب",
+            "ناتج", "حاصل", "calculate", "solve", "answer", "emoji",
+            "إيموجي", "reaction", "تفاعل", "الزر الصحيح", "correct button",
+        )
+        for msg in messages or []:
+            text = (getattr(msg, "message", "") or getattr(msg, "text", "") or "").casefold()
+            has_buttons = bool(getattr(msg, "buttons", None))
+            has_media = bool(getattr(msg, "photo", None) or getattr(msg, "document", None))
+            if has_media and has_buttons:
+                return True
+            if any(word in text for word in explicit_words):
+                return True
+            if has_buttons and any(
+                word in text for word in ("اضغط", "press", "choose", "pick", "اختر")
+            ) and not any(
+                word in text
+                for word in ("اشتراك", "اشترك", "قناة", "channel", "join")
+            ):
+                return True
+            if "=" in text and any(char.isdigit() for char in text):
+                return True
+        return False
+
+    if not GROQ_API_KEY and not DEEPSEEK_API_KEY:
+        if not _messages_need_ai_verification(msgs):
+            logger.info(f"ℹ️ لم يُكتشف تحقق، لا حاجة لمزود AI للرقم {phone}")
+            return False, "لم يُكتشف تحقق"
+        return False, "لا يوجد مفتاح API للتحقق (Groq أو DeepSeek)"
 
     # ── دوال مساعدة ───────────────────────────────────────────
     # ════════════════════════════════════════════════════════════
@@ -400,6 +431,23 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             # لا نكرر الطلب على بقية النماذج بعد 429؛
                             # الحد غالباً يخص المؤسسة/المفتاح وليس النموذج.
                             if r.status_code == 429:
+                                rate_limit_text = r.text.casefold()
+                                model_specific_limit = any(
+                                    marker in rate_limit_text
+                                    for marker in (
+                                        "tokens per day", "token per day", "tpd",
+                                        "limit reached for model", "per model",
+                                    )
+                                )
+                                if model_specific_limit:
+                                    provider_failures.append(
+                                        f"تجاوز حد Groq للنموذج {model}"
+                                    )
+                                    logger.warning(
+                                        "⚠️ تم تجاوز حد النموذج %s؛ تجربة نموذج Groq آخر",
+                                        model,
+                                    )
+                                    continue
                                 groq_blocked = True
                                 provider_failures.append("تجاوز حد Groq")
                                 return None
@@ -563,6 +611,23 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             f"{r.status_code} - {r.text[:200]}"
                         )
                         if r.status_code == 429:
+                            rate_limit_text = r.text.casefold()
+                            model_specific_limit = any(
+                                marker in rate_limit_text
+                                for marker in (
+                                    "tokens per day", "token per day", "tpd",
+                                    "limit reached for model", "per model",
+                                )
+                            )
+                            if model_specific_limit:
+                                provider_failures.append(
+                                    f"تجاوز حد Groq للنموذج المرئي {model}"
+                                )
+                                logger.warning(
+                                    "⚠️ تم تجاوز حد نموذج الرؤية %s؛ تجربة نموذج آخر",
+                                    model,
+                                )
+                                continue
                             groq_blocked = True
                             provider_failures.append("تجاوز حد Groq")
                             return None
