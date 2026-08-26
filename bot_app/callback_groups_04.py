@@ -83,8 +83,8 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
         if data.startswith("os_del_ch:") and is_own:
             ch_id = int(data.split(":")[1])
             with db_conn() as c:
-                _deleted_ch = c.execute("SELECT funding_type FROM mandatory_channels WHERE id=?", (ch_id,)).fetchone()
-                c.execute("UPDATE mandatory_channels SET active=0, queued=0 WHERE id=?", (ch_id,))
+                _deleted_ch = c.execute("SELECT funding_type FROM mandatory_channels WHERE id=%s", (ch_id,)).fetchone()
+                c.execute("UPDATE mandatory_channels SET active=0, queued=0 WHERE id=%s", (ch_id,))
             if _deleted_ch and _deleted_ch.get("funding_type") == "mandatory":
                 await promote_queued_mandatory_channel(context, app=context.application)
             await q.answer("🗑 تم حذف القناة")
