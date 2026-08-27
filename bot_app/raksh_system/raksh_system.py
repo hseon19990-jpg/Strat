@@ -44,7 +44,7 @@ RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS = 4
 _RAKSH_SESSION_LOCKS: dict[str, asyncio.Lock] = {}
 
 # عدد الحسابات التي ستعمل بالتوازي في قسم "تصويت يحتوي تحقق"
-RAKSH_VOTE_CONCURRENT = 10
+RAKSH_VOTE_CONCURRENT = 5
 
 def _get_raksh_session_lock(phone_number: str) -> asyncio.Lock:
     key = str(phone_number or "").strip()
@@ -1139,7 +1139,7 @@ async def _execute_votes(session, params, is_first):
         await client.disconnect()
 
 async def _execute_votes_ai(session, params, is_first):
-    """تنفيذ تصويت مع تحقق - إرسال /start للبوت ثم الضغط على الإيموجي"""
+    """تنفيذ تصويت مع تحقق - إرسال /start ثم الضغط على أي زر إيموجي"""
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     await asyncio.wait_for(client.connect(), timeout=10)
     try:
@@ -1228,37 +1228,24 @@ async def _execute_votes_ai(session, params, is_first):
             start_command = "/start" + (f" {start_param}" if start_param else "")
             await client.send_message(bot_entity, start_command)
             logger.info(f"✅ الحساب {session['phone_number']} أرسل: {start_command}")
-            await asyncio.sleep(2)
+            await asyncio.sleep(2)  # ⚡ انتظار وصول رسالة التحقق
         except Exception as e:
             logger.warning(f"فشل إرسال /start للحساب {session['phone_number']}: {e}")
             return False, f"فشل إرسال /start: {str(e)[:80]}"
 
         # ═══════════════════════════════════════════════════════════
-        # ═══ 5. قراءة رسائل البوت ═══
+        # ═══ 5. الضغط على أي زر إيموجي في آخر رسائل البوت ═══
         # ═══════════════════════════════════════════════════════════
-        bot_messages = await _get_fresh_bot_messages(
-            client, bot_entity,
-            after_id=previous_bot_message_id,
-            limit=15,
-            attempts=3,
-            delay=0.5
-        )
-
-        if not bot_messages:
-            return False, "لم يصل رد من البوت"
-
-        # ═══════════════════════════════════════════════════════════
-        # ═══ 6. الضغط على أي زر إيموجي في رسالة التحقق ═══
-        # ═══════════════════════════════════════════════════════════
-        # البحث عن أي رسالة تحتوي أزرار إيموجي
-        found_emoji_button = False
+        # نقرأ آخر 10 رسائل من البوت ونبحث عن أي زر إيموجي
+        bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=10))
+        
+        pressed = False
         for msg in bot_messages:
-            text = getattr(msg, "message", "") or getattr(msg, "text", "") or ""
-            
-            # البحث عن أي رسالة بها أزرار إيموجي
+            # البحث عن أزرار في الرسالة
             for row in getattr(msg, "buttons", None) or []:
                 for button in row:
                     button_text = getattr(button, "text", "") or ""
+                    # الضغط على أي زر يحتوي إيموجي
                     if button_text and any(
                         0x1F300 <= ord(char) <= 0x1FAFF or 0x2600 <= ord(char) <= 0x27BF
                         for char in button_text
@@ -1266,18 +1253,21 @@ async def _execute_votes_ai(session, params, is_first):
                         try:
                             await button.click()
                             logger.info(f"✅ الحساب {session['phone_number']} ضغط على إيموجي: {button_text}")
-                            found_emoji_button = True
+                            pressed = True
                             await asyncio.sleep(1.5)
                             break
                         except Exception as e:
                             logger.warning(f"فشل الضغط على إيموجي {button_text}: {e}")
-                if found_emoji_button:
+                if pressed:
                     break
-            if found_emoji_button:
+            if pressed:
                 break
+        
+        if not pressed:
+            return False, "لم يتم العثور على زر إيموجي للضغط"
 
         # ═══════════════════════════════════════════════════════════
-        # ═══ 7. انتظار رسالة "تم التصويت بنجاح" ═══
+        # ═══ 6. انتظار رسالة "تم التصويت بنجاح" ═══
         # ═══════════════════════════════════════════════════════════
         success_keywords = (
             "تم التصويت", "تم تسجيل التصويت", "صوتك مسجل",
@@ -1289,13 +1279,7 @@ async def _execute_votes_ai(session, params, is_first):
         
         for attempt in range(5):
             await asyncio.sleep(1)
-            bot_messages = await _get_fresh_bot_messages(
-                client, bot_entity,
-                after_id=previous_bot_message_id,
-                limit=10,
-                attempts=2,
-                delay=0.3
-            )
+            bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=10))
             
             for msg in bot_messages:
                 text = getattr(msg, "message", "") or getattr(msg, "text", "") or ""
