@@ -417,8 +417,8 @@ async def _get_fresh_bot_messages(
     *,
     after_id: int = 0,
     limit: int = 30,
-    attempts: int = 3,
-    delay: float = 0.5,
+    attempts: int = 5,
+    delay: float = 1.0,
 ) -> list:
     """قراءة ردود بوت المسابقة من الشبكة بعد تنفيذ خطوة تفاعلية."""
     latest = []
@@ -1228,7 +1228,7 @@ async def _execute_votes_ai(session, params, is_first):
             start_command = "/start" + (f" {start_param}" if start_param else "")
             await client.send_message(bot_entity, start_command)
             logger.info(f"✅ الحساب {session['phone_number']} أرسل: {start_command}")
-            await asyncio.sleep(3)  # ⚡ انتظار أطول حتى تصل رسالة التحقق
+            await asyncio.sleep(4)  # ⚡ انتظار 4 ثوانٍ حتى تصل رسالة التحقق
         except Exception as e:
             logger.warning(f"فشل إرسال /start للحساب {session['phone_number']}: {e}")
             return False, f"فشل إرسال /start: {str(e)[:80]}"
@@ -1236,8 +1236,8 @@ async def _execute_votes_ai(session, params, is_first):
         # ═══════════════════════════════════════════════════════════
         # ═══ 5. الضغط على أي زر إيموجي في آخر رسائل البوت ═══
         # ═══════════════════════════════════════════════════════════
-        # نقرأ آخر 20 رسالة من البوت ونبحث عن أي زر إيموجي
-        bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=20))
+        # نقرأ آخر 30 رسالة من البوت ونبحث عن أي زر إيموجي
+        bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=30))
         
         pressed = False
         for msg in bot_messages:
