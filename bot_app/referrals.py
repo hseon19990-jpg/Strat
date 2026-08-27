@@ -812,8 +812,8 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
     async def _wait_and_check(limit: int = 3) -> tuple:
         """ينتظر الرد الجديد فقط لتجنب اعتبار رسائل التحقق القديمة فشلاً."""
         last_msgs = []
-        for _ in range(3):  # ⚡ تقليل المحاولات من 5 إلى 3
-            await asyncio.sleep(0.5)  # ⚡ تقليل الانتظار من 2 إلى 0.5
+        for _ in range(3):
+            await asyncio.sleep(0.5)
             last_msgs = await client.get_messages(bot_entity, limit=limit)
             recent_msgs = last_msgs[:limit]
             for m in recent_msgs:
@@ -861,9 +861,9 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
             return None, messages
         replied_numeric_codes.add(code)
         logger.info(f"🔢 تم اكتشاف رمز تحقق رقمي ({phone}) — سيتم إرساله للبوت")
-        await asyncio.sleep(0.3)  # ⚡ تقليل الانتظار من 1 إلى 0.3
+        await asyncio.sleep(0.3)
         await client.send_message(bot_entity, code)
-        await asyncio.sleep(0.3)  # ⚡ تقليل الانتظار من 1 إلى 0.3
+        await asyncio.sleep(0.3)
         await client(StartBotRequest(
             bot=bot_entity,
             peer=bot_entity,
@@ -884,7 +884,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                 return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
 
         if _round > 0:
-            await asyncio.sleep(1.5)  # ⚡ تقليل الانتظار من 4 إلى 1.5
+            await asyncio.sleep(1.5)
             msgs = await client.get_messages(bot_entity, limit=15)
 
         for msg in msgs:
@@ -1457,6 +1457,7 @@ async def _click_check_subscription_button(client, bot_entity, msgs: list) -> bo
     ))
 
     def _collect_strings(value, output=None, seen=None, depth=0):
+        """يجمع كل النصوص من كائن Telethon، بما فيها الحقول المتداخلة."""
         if output is None:
             output = []
         if seen is None:
@@ -1496,6 +1497,7 @@ async def _click_check_subscription_button(client, bot_entity, msgs: list) -> bo
         return output
 
     def _message_text(msg) -> str:
+        """يقرأ كل نصوص Message/Media/Markup وليس أول حقل فقط."""
         values = []
         for attr in ("raw_text", "message", "text", "caption", "reply_markup"):
             try:
@@ -1512,6 +1514,7 @@ async def _click_check_subscription_button(client, bot_entity, msgs: list) -> bo
         return _norm("\n".join(unique))
 
     def _button_parts(btn) -> tuple[str, object]:
+        """يدعم Button wrapper و KeyboardButtonCallback الخام معاً."""
         raw = getattr(btn, "button", None) or btn
         text = getattr(raw, "text", None) or getattr(btn, "text", None) or ""
         data = getattr(raw, "data", None)
@@ -1766,7 +1769,7 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
             _ai_solved = False
             _ai_detail = "لم يتم حل الكابتشا"
 
-            for _ai_attempt in range(2):  # ⚡ تقليل المحاولات من 3 إلى 2
+            for _ai_attempt in range(2):
                 if _ai_attempt > 0:
                     await asyncio.sleep(1.5)
                 msgs = await asyncio.wait_for(
