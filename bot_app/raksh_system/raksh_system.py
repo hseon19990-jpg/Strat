@@ -1139,7 +1139,7 @@ async def _execute_votes(session, params, is_first):
         await client.disconnect()
 
 async def _execute_votes_ai(session, params, is_first):
-    """تنفيذ تصويت مع تحقق - إرسال /start للبوت ثم حل التحقق"""
+    """تنفيذ تصويت مع تحقق - إرسال /start للبوت ثم الضغط على الإيموجي"""
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     await asyncio.wait_for(client.connect(), timeout=10)
     try:
@@ -1188,7 +1188,6 @@ async def _execute_votes_ai(session, params, is_first):
                 url = (getattr(button, "url", None) or "").strip()
                 label = (getattr(button, "text", None) or "").strip()
                 
-                # البحث عن زر رابط بوت
                 if url and ("t.me/" in url or "telegram.me/" in url):
                     parsed = _parse_bot_link(url)
                     if parsed[0]:
@@ -1196,7 +1195,6 @@ async def _execute_votes_ai(session, params, is_first):
                         start_param = parsed[1]
                         break
                 
-                # البحث عن زر "المشاركة في المسابقة"
                 if "المشاركة في المسابقة" in label or "شارك" in label:
                     if hasattr(button, "url") and button.url:
                         parsed = _parse_bot_link(button.url)
@@ -1207,7 +1205,6 @@ async def _execute_votes_ai(session, params, is_first):
             if bot_username:
                 break
 
-        # إذا لم نجد بوت في المنشور، نبحث في نص المنشور
         if not bot_username:
             text = getattr(post_message, "message", "") or getattr(post_message, "text", "") or ""
             bot_matches = re.findall(r'@([A-Za-z0-9_]+bot)', text) or re.findall(r't\.me/([A-Za-z0-9_]+bot)', text)
@@ -1251,42 +1248,13 @@ async def _execute_votes_ai(session, params, is_first):
             return False, "لم يصل رد من البوت"
 
         # ═══════════════════════════════════════════════════════════
-        # ═══ 6. الضغط على زر "تحقق من الاشتراك" إن وجد ═══
+        # ═══ 6. الضغط على أي زر إيموجي في رسالة التحقق ═══
         # ═══════════════════════════════════════════════════════════
-        for msg in bot_messages:
-            text = getattr(msg, "message", "") or getattr(msg, "text", "") or ""
-            if "الاشتراك" in text or "اشترك" in text or "تحقق" in text:
-                for row in getattr(msg, "buttons", None) or []:
-                    for button in row:
-                        button_text = getattr(button, "text", "") or ""
-                        if "تحقق" in button_text or "اشتراك" in button_text:
-                            try:
-                                await button.click()
-                                logger.info(f"✅ الحساب {session['phone_number']} ضغط على زر: {button_text}")
-                                await asyncio.sleep(1)
-                                break
-                            except Exception as e:
-                                logger.warning(f"فشل الضغط على زر {button_text}: {e}")
-                    else:
-                        continue
-                    break
-                break
-
-        # ═══════════════════════════════════════════════════════════
-        # ═══ 7. حل التحقق: "اضغط على الرمز لإكمال التحقق" ═══
-        # ═══════════════════════════════════════════════════════════
-        bot_messages = await _get_fresh_bot_messages(
-            client, bot_entity,
-            after_id=previous_bot_message_id,
-            limit=15,
-            attempts=3,
-            delay=0.5
-        )
-
         for msg in bot_messages:
             text = getattr(msg, "message", "") or getattr(msg, "text", "") or ""
             
             if "اضغط على الرمز" in text or "اختر" in text or "لست روبوت" in text or "التحقق" in text:
+                # البحث عن أزرار تحتوي إيموجيات
                 for row in getattr(msg, "buttons", None) or []:
                     for button in row:
                         button_text = getattr(button, "text", "") or ""
@@ -1294,6 +1262,7 @@ async def _execute_votes_ai(session, params, is_first):
                             0x1F300 <= ord(char) <= 0x1FAFF or 0x2600 <= ord(char) <= 0x27BF
                             for char in button_text
                         ):
+                            # الضغط على أول زر يحتوي إيموجي
                             try:
                                 await button.click()
                                 logger.info(f"✅ الحساب {session['phone_number']} اختار الإيموجي: {button_text}")
@@ -1307,7 +1276,7 @@ async def _execute_votes_ai(session, params, is_first):
                 break
 
         # ═══════════════════════════════════════════════════════════
-        # ═══ 8. انتظار رسالة "تم التصويت بنجاح" ═══
+        # ═══ 7. انتظار رسالة "تم التصويت بنجاح" ═══
         # ═══════════════════════════════════════════════════════════
         success_keywords = (
             "تم التصويت", "تم تسجيل التصويت", "صوتك مسجل",
@@ -1421,7 +1390,6 @@ async def execute_raksh_service(
     if not executor:
         raise RuntimeError(f"خدمة غير معروفة: {service_type}")
 
-    # ⚡ قسم "تصويت يحتوي تحقق" يعمل بالتوازي (دفعات كبيرة) ليكون أسرع
     if service_type == "votes_ai":
         shuffled = sessions.copy()
         random.shuffle(shuffled)
@@ -1430,7 +1398,6 @@ async def execute_raksh_service(
         failed_phones = []
         failed_details = []
 
-        # تقسيم الجلسات إلى دفعات كبيرة متوازية
         for batch_start in range(0, min(quantity, len(shuffled)), RAKSH_VOTE_CONCURRENT):
             batch = shuffled[batch_start:batch_start + RAKSH_VOTE_CONCURRENT]
             tasks = []
@@ -1476,7 +1443,6 @@ async def execute_raksh_service(
 
         return success_count, success_phones, failed_phones, failed_details
 
-    # باقي الخدمات تعمل بالتسلسل كما هو
     shuffled = sessions.copy()
     random.shuffle(shuffled)
     success_count = 0
