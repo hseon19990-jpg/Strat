@@ -1228,7 +1228,7 @@ async def _execute_votes_ai(session, params, is_first):
             start_command = "/start" + (f" {start_param}" if start_param else "")
             await client.send_message(bot_entity, start_command)
             logger.info(f"✅ الحساب {session['phone_number']} أرسل: {start_command}")
-            await asyncio.sleep(2)  # ⚡ انتظار وصول رسالة التحقق
+            await asyncio.sleep(3)  # ⚡ انتظار أطول حتى تصل رسالة التحقق
         except Exception as e:
             logger.warning(f"فشل إرسال /start للحساب {session['phone_number']}: {e}")
             return False, f"فشل إرسال /start: {str(e)[:80]}"
@@ -1236,8 +1236,8 @@ async def _execute_votes_ai(session, params, is_first):
         # ═══════════════════════════════════════════════════════════
         # ═══ 5. الضغط على أي زر إيموجي في آخر رسائل البوت ═══
         # ═══════════════════════════════════════════════════════════
-        # نقرأ آخر 10 رسائل من البوت ونبحث عن أي زر إيموجي
-        bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=10))
+        # نقرأ آخر 20 رسالة من البوت ونبحث عن أي زر إيموجي
+        bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=20))
         
         pressed = False
         for msg in bot_messages:
@@ -1254,7 +1254,7 @@ async def _execute_votes_ai(session, params, is_first):
                             await button.click()
                             logger.info(f"✅ الحساب {session['phone_number']} ضغط على إيموجي: {button_text}")
                             pressed = True
-                            await asyncio.sleep(1.5)
+                            await asyncio.sleep(2)
                             break
                         except Exception as e:
                             logger.warning(f"فشل الضغط على إيموجي {button_text}: {e}")
@@ -1263,6 +1263,30 @@ async def _execute_votes_ai(session, params, is_first):
             if pressed:
                 break
         
+        if not pressed:
+            # ⚡ إعادة المحاولة بعد قراءة أعمق للرسائل
+            bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=50))
+            for msg in bot_messages:
+                for row in getattr(msg, "buttons", None) or []:
+                    for button in row:
+                        button_text = getattr(button, "text", "") or ""
+                        if button_text and any(
+                            0x1F300 <= ord(char) <= 0x1FAFF or 0x2600 <= ord(char) <= 0x27BF
+                            for char in button_text
+                        ):
+                            try:
+                                await button.click()
+                                logger.info(f"✅ الحساب {session['phone_number']} ضغط على إيموجي (متابعة): {button_text}")
+                                pressed = True
+                                await asyncio.sleep(2)
+                                break
+                            except Exception as e:
+                                logger.warning(f"فشل الضغط على إيموجي {button_text}: {e}")
+                    if pressed:
+                        break
+                if pressed:
+                    break
+
         if not pressed:
             return False, "لم يتم العثور على زر إيموجي للضغط"
 
