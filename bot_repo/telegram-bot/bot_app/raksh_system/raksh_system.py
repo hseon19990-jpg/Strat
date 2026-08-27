@@ -10,6 +10,11 @@
 6. رشق أصوات
 7. رشق تصويت مع تحقق
 8. رشق تفاعل مميز
+
+ملاحظة: قد يحدث تأخير ملحوظ في التنفيذ بسبب:
+- إزالة شك الرشق (Anti-Spam)
+- الحسابات تحتوي على ستوري، افتار، اسم عربي، يوزر وبايو
+- التأخير طبيعي لضمان جودة الخدمة
 """
 
 from ..shared import *
@@ -29,6 +34,13 @@ from urllib.parse import parse_qs, urlparse
 import random
 import asyncio
 import re
+
+RAKSH_PAID_REACTION = "__raksh_paid_reaction__"
+RAKSH_PAID_REACTION_LABEL = "⭐ تفاعل مدفوع"
+RAKSH_CUSTOM_REACTION_PREFIX = "__raksh_custom_reaction__:"
+RAKSH_REACTION_LOOKUP_MAX_SESSIONS = 3
+RAKSH_REACTION_LOOKUP_TIMEOUT_SECONDS = 8
+RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS = 5
 
 # ════════════════════════════════════════════════════════════
 # ═══ 1. ثوابت الخدمات ═══
@@ -398,7 +410,6 @@ def _as_message_list(value) -> list:
         return list(value)
     return [value]
 
-
 def _reaction_emoticons(reactions) -> list[str]:
     """تحويل نتائج Telethon إلى قيم قابلة للاختيار والإرسال بدون تكرار."""
     result = []
@@ -420,7 +431,6 @@ def _reaction_emoticons(reactions) -> list[str]:
             result.append(emoticon)
     return result
 
-
 def _custom_reaction_document_id(value: str) -> int | None:
     """Extract the Telegram custom-emoji document id from our safe UI value."""
     if not isinstance(value, str) or not value.startswith(RAKSH_CUSTOM_REACTION_PREFIX):
@@ -428,10 +438,7 @@ def _custom_reaction_document_id(value: str) -> int | None:
     raw_id = value[len(RAKSH_CUSTOM_REACTION_PREFIX):]
     return int(raw_id) if raw_id.isdigit() else None
 
-
-async def _fetch_raksh_reactions(
-    session: dict, post_ref: str, post_id: int
-) -> list[str]:
+async def _fetch_raksh_reactions(session: dict, post_ref: str, post_id: int) -> list[str]:
     """قراءة التفاعلات المسموحة فعلياً في قناة المنشور."""
     client = TelegramClient(
         StringSession(session["session_string"]),
@@ -495,7 +502,6 @@ async def _fetch_raksh_reactions(
     finally:
         await client.disconnect()
 
-
 async def _fetch_raksh_reactions_from_pool(
     sessions: list[dict], post_ref: str, post_id: int
 ) -> list[str]:
@@ -531,7 +537,6 @@ async def _fetch_raksh_reactions_from_pool(
             if not task.done():
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-
 
 def _parse_story_link(value: str) -> tuple[str | None, int | None]:
     """تحليل روابط الستوري العامة والخاصة بصيغتي /s/ و /story/."""
@@ -590,7 +595,6 @@ def _parse_bot_link(value: str) -> tuple[str | None, str | None]:
     
     return None, None
 
-
 def _find_bot_start_link(message) -> tuple[str | None, str | None]:
     """استخراج رابط البوت ذي التوكن من زر منشور المسابقة."""
     fallback = None
@@ -605,7 +609,6 @@ def _find_bot_start_link(message) -> tuple[str | None, str | None]:
                     return bot_username, start_param
                 fallback = fallback or (bot_username, start_param)
     return fallback or (None, None)
-
 
 async def _start_contest_bot_from_post(client, post_message):
     """يفتح بوت المسابقة من زر المنشور باستخدام رابط البدء الموقّع."""
@@ -626,7 +629,6 @@ async def _start_contest_bot_from_post(client, post_message):
     await asyncio.sleep(random.uniform(1.5, 2.5))
     return bot_entity
 
-
 def _find_contest_vote_button(message):
     """العثور على زر التصويت، مثل «❤️ 0»، مع تجاهل أزرار الروابط."""
     candidates = []
@@ -645,7 +647,6 @@ def _find_contest_vote_button(message):
                 candidates.append(button)
     return candidates[0] if candidates else None
 
-
 def _callback_answer_text(answer) -> str:
     """قراءة رسالة جواب callback إن أعادها Telegram."""
     return (
@@ -662,17 +663,14 @@ def _callback_answer_text(answer) -> str:
 def _raksh_setting_key(service_type: str) -> str:
     return f"raksh_service_enabled_{service_type}"
 
-
 def _is_raksh_service_enabled(service_type: str) -> bool:
     """الخدمات مفعلة افتراضياً حتى لا يتغير السلوك الحالي بعد التحديث."""
     return get_setting(_raksh_setting_key(service_type)).strip().lower() not in {
         "0", "false", "off", "hidden", "disabled"
     }
 
-
 def _set_raksh_service_enabled(service_type: str, enabled: bool) -> None:
     set_setting(_raksh_setting_key(service_type), "1" if enabled else "0")
-
 
 def raksh_menu_kb(is_owner: bool = False):
     """قائمة الخدمات؛ المالك يرى زر التحكم، والأعضاء يرون المفعّل فقط."""
@@ -826,11 +824,9 @@ async def _join_discussion_group(client, discussion):
             raise
     return discussion_chat
 
-
 def _normalize_digits(value: str) -> str:
     """توحيد الأرقام العربية قبل تحليل أرقام خيارات الاستفتاء."""
     return (value or "").translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
-
 
 def _select_poll_option(options, requested: str):
     """اختيار خيار الاستفتاء بالرقم أو بالنص."""
@@ -850,7 +846,6 @@ def _select_poll_option(options, requested: str):
         None,
     )
 
-
 def _same_poll_option(left, right) -> bool:
     """مقارنة خيارات Telethon سواء كانت bytes أو كائنات قابلة للمقارنة."""
     if left is None or right is None:
@@ -859,7 +854,6 @@ def _same_poll_option(left, right) -> bool:
         return bytes(left) == bytes(right)
     except (TypeError, ValueError):
         return left == right
-
 
 async def _send_vote_and_check(client, peer, msg_id: int, option) -> bool:
     """إرسال التصويت ثم محاولة التأكد من ظهور علامة chosen في النتائج."""
@@ -996,7 +990,7 @@ async def _execute_forced_ref_ai(session, params, is_first):
             return False, "لم تصل أي رسالة من البوت بعد /start"
         
         # ── حل الكابتشا المتقدم ──
-        solved, detail = await _solve_captcha_with_ai_and_buttons(
+        solved, detail = await _solve_captcha_smart_with_buttons(
             client,
             bot_entity,
             session["phone_number"],
@@ -1121,12 +1115,7 @@ async def _execute_votes(session, params, is_first):
         if not options:
             return False, "لا توجد خيارات."
         chosen = random.choice(options)
-        verified = await _send_vote_and_check(
-            client,
-            post_entity,
-            post_id,
-            chosen.option,
-        )
+        verified = await _send_vote_and_check(client, post_entity, post_id, chosen.option)
         verification = " وتم التحقق من تسجيله" if verified else " وتم إرسال الطلب إلى Telegram"
         return True, f"✅ تم التصويت{verification} من {session['phone_number']}"
     except Exception as e:
@@ -1135,7 +1124,7 @@ async def _execute_votes(session, params, is_first):
         await client.disconnect()
 
 async def _execute_votes_ai(session, params, is_first):
-    """تنفيذ تصويت مع حل الكابتشا المتقدم."""
+    """تنفيذ تصويت مع حل الكابتشا المتقدم - سيناريو بوت المسابقة"""
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     await asyncio.wait_for(client.connect(), timeout=20)
     try:
@@ -1149,77 +1138,87 @@ async def _execute_votes_ai(session, params, is_first):
             return False, "رابط المنشور غير صالح"
         post_ref, post_id = parsed_link
 
+        post_entity = None
         try:
             post_entity = await client.get_entity(post_ref)
         except Exception as exc:
             if "No user has" in str(exc):
-                return False, "رابط المنشور غير صالح أو القناة غير متاحة للحساب."
-            raise
+                try:
+                    channel_link = post_ref.replace("@", "")
+                    await client.join_chat(channel_link)
+                    await asyncio.sleep(1)
+                    post_entity = await client.get_entity(post_ref)
+                except Exception as join_exc:
+                    return False, "رابط المنشور غير صالح أو القناة غير متاحة للحساب"
+            else:
+                return False, "رابط المنشور غير صالح أو القناة غير متاحة للحساب"
 
-        if is_first and params.get("channel_ref"):
-            try:
-                await _join_channel_and_schedule_leave(client, params["channel_ref"])
-                await asyncio.sleep(random.uniform(1, 2))
-            except Exception as e:
-                logger.warning(f"فشل انضمام القناة للحساب {session['phone_number']}: {e}")
-
-        # ── قراءة المنشور ──
         messages = _as_message_list(await client.get_messages(post_entity, ids=post_id))
         if not messages:
-            return False, "المنشور غير موجود."
+            return False, "المنشور غير موجود"
         msg = messages[0]
 
-        # ── فتح بوت المسابقة من زر المنشور (إن وجد) ──
+        # الضغط على زر "المشاركة في المسابقة" في المنشور
         bot_entity = None
-        try:
-            bot_entity = await _start_contest_bot_from_post(client, msg)
-            logger.info("الحساب %s فتح بوت المسابقة", session["phone_number"])
-        except Exception as start_error:
-            logger.warning(f"فشل فتح بوت المسابقة للحساب {session['phone_number']}: {start_error}")
-            bot_entity = None
+        if msg.buttons:
+            for row in msg.buttons:
+                for btn in row:
+                    btn_text = (btn.text or "").strip()
+                    if "مشاركة" in btn_text or "اشتراك" in btn_text or "join" in btn_text.lower():
+                        try:
+                            await btn.click()
+                            await asyncio.sleep(2)
+                            break
+                        except Exception:
+                            pass
+            try:
+                bot_entity = await _start_contest_bot_from_post(client, msg)
+                logger.info("✅ الحساب %s فتح بوت المسابقة", session["phone_number"])
+            except Exception:
+                bot_entity = None
 
-        # ── إذا كان هناك بوت مسابقة → حل الكابتشا ──
+        # إذا كان هناك بوت مسابقة → الضغط على زر "انضمام" ثم حل الكابتشا
         if bot_entity is not None:
-            solved, detail = await _solve_captcha_with_ai_and_buttons(
-                client,
-                bot_entity,
-                session["phone_number"],
-                max_attempts=RAKSH_CAPTCHA_MAX_ATTEMPTS,
-            )
-            if not solved:
-                return False, f"فشل حل الكابتشا: {detail}"
+            for _ in range(5):
+                bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=5))
+                for b_msg in bot_messages:
+                    if b_msg.buttons:
+                        for row in b_msg.buttons:
+                            for btn in row:
+                                btn_text = btn.text or ""
+                                if "انضمام" in btn_text or "join" in btn_text.lower():
+                                    try:
+                                        await btn.click()
+                                        await asyncio.sleep(1)
+                                        break
+                                    except:
+                                        pass
+                solved, detail = await _solve_captcha_smart_with_buttons(client, bot_entity, session["phone_number"])
+                if solved:
+                    break
 
-        # ── المحاولة الأولى: زر التصويت ──
+        # الضغط على زر التصويت في المنشور
         try:
             messages = _as_message_list(await client.get_messages(post_entity, ids=post_id))
             if messages:
                 msg = messages[0]
                 vote_button = _find_contest_vote_button(msg)
                 if vote_button is not None:
-                    answer = await vote_button.click()
+                    await vote_button.click()
                     await asyncio.sleep(random.uniform(1, 2))
-                    answer_text = _callback_answer_text(answer)
-                    if any(word in answer_text.casefold() for word in ("خطأ", "فشل", "wrong", "error", "غير مسموح")):
-                        return False, f"رفض بوت المسابقة التصويت: {answer_text[:100]}"
                     return True, f"✅ تم التصويت مع التحقق من {session['phone_number']}"
         except Exception as e:
             logger.warning(f"فشل الضغط على زر التصويت للحساب {session['phone_number']}: {e}")
 
-        # ── المحاولة الثانية: تصويت مباشر ──
-        if hasattr(msg, "poll") and msg.poll:
-            poll = msg.poll.poll
-            options = getattr(poll, "answers", [])
-            if not options:
-                return False, "لا توجد خيارات للتصويت."
-            chosen = random.choice(options)
-            verified = await _send_vote_and_check(
-                client,
-                post_entity,
-                post_id,
-                chosen.option,
-            )
-            verification = " وتم التحقق من تسجيله" if verified else " وتم إرسال الطلب إلى Telegram"
-            return True, f"✅ تم التصويت مع التحقق{verification} من {session['phone_number']}"
+        # الضغط على زر التصويت في البوت إذا لم نجده في المنشور
+        if bot_entity is not None:
+            bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=10))
+            for b_msg in bot_messages:
+                vote_button = _find_contest_vote_button(b_msg)
+                if vote_button is not None:
+                    await vote_button.click()
+                    await asyncio.sleep(1)
+                    return True, f"✅ تم التصويت مع التحقق من {session['phone_number']}"
 
         return False, "لم يُعثر على زر التصويت في منشور المسابقة."
     except Exception as e:
@@ -1327,7 +1326,7 @@ async def execute_raksh_service(
     user_id: int,
     progress_callback=None,
 ):
-    """تنفيذ طلب رشق بعدد محدد من الحسابات مع إعادة المحاولة التلقائية."""
+    """تنفيذ طلب رشق بعدد محدد من الحسابات مع إعادة المحاولة التلقائية - نسخة سريعة جداً."""
     if not sessions:
         raise RuntimeError("لا توجد جلسات نشطة متاحة.")
     executor = EXECUTORS.get(service_type)
@@ -1341,30 +1340,19 @@ async def execute_raksh_service(
     failed_phones = []
     failed_details = []
     used_phones = set()
-    processed_count = 0
-    retry_pool = []
     
-    while processed_count < quantity:
-        if not shuffled and retry_pool:
-            shuffled = retry_pool.copy()
-            retry_pool = []
-            
-        if not shuffled:
-            break
-            
-        session = shuffled.pop(0)
+    batch_size = 10
+    tasks = []
+    
+    async def run_single(session):
+        nonlocal success_count, failed_phones, failed_details, used_phones
         phone = session["phone_number"]
         if phone in used_phones:
-            continue
+            return
         used_phones.add(phone)
         
-        if not _reserve_raksh_execution_slot(user_id, service_type, phone):
-            failed_phones.append(phone)
-            failed_details.append("⏳ تم إيقاف التنفيذ مؤقتاً (حد الساعة)")
-            break
-            
         try:
-            ok, msg = await executor(session=session, params=params, is_first=(processed_count == 0))
+            ok, msg = await executor(session=session, params=params, is_first=(success_count == 0))
         except Exception as e:
             ok = False
             msg = f"❌ خطأ: {str(e)[:80]}"
@@ -1386,36 +1374,32 @@ async def execute_raksh_service(
             if is_session_error:
                 with db_conn() as c:
                     c.execute("DELETE FROM number_stock WHERE phone_number=%s AND ever_sold IS NOT TRUE", (phone,))
-                logger.info(f"🗑 تم حذف الرقم {phone} تلقائياً (جلسة منتهية/ملغاة)")
                 failed_phones.append(phone)
                 failed_details.append(f"🗑 {msg} — تم طرد الحساب")
             else:
                 failed_phones.append(phone)
-                failed_details.append(f"🔄 {msg} — تم التعويض بحساب بديل")
-                
-                if shuffled:
-                    retry_pool.append(shuffled.pop(0))
-        
-        processed_count += 1
+                failed_details.append(f"🔄 {msg}")
         
         if progress_callback:
-            await progress_callback(processed_count, quantity, success_count, len(failed_phones))
-            
-        if processed_count < quantity and (shuffled or retry_pool):
-            delay = _get_delay_seconds(service_type)
-            await asyncio.sleep(delay)
+            await progress_callback(success_count + len(failed_phones), quantity, success_count, len(failed_phones))
+    
+    for i in range(0, min(quantity, len(shuffled)), batch_size):
+        batch = shuffled[i:i + batch_size]
+        tasks = [asyncio.create_task(run_single(session)) for session in batch]
+        await asyncio.gather(*tasks)
+        
+        await asyncio.sleep(0.1)
     
     return success_count, success_phones, failed_phones, failed_details
 
 # ════════════════════════════════════════════════════════════
-# ═══ 5. حل الكابتشا المتقدم (معتمداً على الصور) ═══
+# ═══ 5. نظام حل الكابتشا المتقدم (يعتمد على الأزرار فقط بدون AI) ═══
 # ════════════════════════════════════════════════════════════
 
 RAKSH_CAPTCHA_SOLVE_TIMEOUT = 20
 RAKSH_CAPTCHA_MAX_ATTEMPTS = 5
 RAKSH_CAPTCHA_BUTTON_WAIT = 0.7
 
-# ─── أنماط الكابتشا ───
 RAKSH_CAPTCHA_PATTERNS = {
     "math": [
         r'كم ناتج[:\s]*(\d+)\s*([+\-*x×])\s*(\d+)',
@@ -1468,9 +1452,7 @@ def _extract_emoji_from_captcha(text: str) -> str | None:
         match = re.search(pattern, text)
         if match:
             emoji = match.group(1).strip()
-            if any('\U0001F000' <= char <= '\U0001FAFF' or 
-                   '\u2600' <= char <= '\u27BF' or
-                   '\u2B00' <= char <= '\u2BFF' for char in emoji):
+            if any('\U0001F000' <= char <= '\U0001FAFF' or '\u2600' <= char <= '\u27BF' or '\u2B00' <= char <= '\u2BFF' for char in emoji):
                 return emoji
     return None
 
@@ -1508,7 +1490,9 @@ def _extract_rewrite_text(text: str) -> str | None:
         match = re.search(pattern, text)
         if match:
             return match.group(1).strip()
-    return Nonedef _button_matches_target(button_text: str, target: str) -> bool:
+    return None
+
+def _button_matches_target(button_text: str, target: str) -> bool:
     if not button_text or not target:
         return False
     clean_button = _normalize_captcha_text(button_text)
@@ -1538,63 +1522,65 @@ async def _click_button_by_text(client, message, target_text: str) -> bool:
                     logger.warning(f"فشل الضغط على الزر {button.text}: {e}")
     return False
 
-# ════════════════════════════════════════════════════════════
-# 🔥 التعديل الحاسم: دوال حل كابتشا الأزرار بالضغط عليها (من الصور)
-# ════════════════════════════════════════════════════════════
-
-def _extract_target_emoji_advanced(text: str) -> str | None:
-    """استخراج الإيموجي المطلوب بدقة من نص مثل: 'اضغط على الرمز: 🦄'."""
+# ─── استخراج الإيموجي المطلوب من الرسالة ───
+def _extract_target_emoji_from_message(text: str) -> str | None:
     if not text:
         return None
-    m = re.search(r'الرمز\s*[:：]?\s*([\U0001F000-\U0001FAFF\u2600-\u27BF\u2190-\u21FF\u2B00-\u2BFF])', text)
-    if m:
-        return m.group(1)
-    m = re.search(r'على\s+([\U0001F000-\U0001FAFF\u2600-\u27BF\u2190-\u21FF\u2B00-\u2BFF])', text)
-    if m:
-        return m.group(1)
-    emojis = re.findall(r'[\U0001F000-\U0001FAFF\u2600-\u27BF\u2190-\u21FF\u2B00-\u2BFF]', text)
-    if emojis:
-        return emojis[0]
+    emojis_in_text = re.findall(r'[\U0001F000-\U0001FAFF\u2600-\u27BF]', text)
+    if len(emojis_in_text) == 1:
+        return emojis_in_text[0]
+    if emojis_in_text:
+        match = re.search(r'[؟?]\s*([\U0001F000-\U0001FAFF\u2600-\u27BF])', text)
+        if match:
+            return match.group(1)
+        return emojis_in_text[0]
     return None
 
-async def _click_callback_button_by_emoji(client, message, target_emoji: str) -> bool:
-    """الضغط على الزر الذي يحمل نفس الإيموجي المطلوب (طريقة الأزرار الصحيحة)."""
-    if not message or not message.reply_markup:
+# ─── الضغط على الزر الذي يحتوي على الإيموجي المطلوب ───
+async def _click_button_with_emoji(client, message, target_emoji: str) -> bool:
+    if not message or not message.buttons:
         return False
-    keyboard = message.reply_markup.inline_keyboard
-    for row in keyboard:
+    for row in message.buttons:
         for button in row:
-            button_text = button.text or ""
+            button_text = getattr(button, "text", "") or ""
             if target_emoji in button_text:
                 try:
                     await button.click()
-                    await asyncio.sleep(0.8)
+                    await asyncio.sleep(RAKSH_CAPTCHA_BUTTON_WAIT)
                     return True
                 except Exception as e:
-                    logger.warning(f"فشل الضغط على زر {button_text}: {e}")
+                    logger.warning(f"فشل الضغط على الزر {button_text}: {e}")
     return False
 
-async def _solve_captcha_smart_with_buttons(client, bot_entity, phone: str = "") -> tuple[bool, str]:
+# ─── الحل الذكي الجديد المعتمد على الأزرار فقط (بدون AI) ───
+async def _solve_captcha_smart_with_buttons(client, bot_entity, phone: str = "", max_attempts: int = 3) -> tuple[bool, str]:
     """حل كابتشا 'اضغط على الرمز' عن طريق الضغط على الزر الحقيقي."""
-    for attempt in range(5):
+    for attempt in range(max_attempts):
         if attempt > 0:
             await asyncio.sleep(2)
-        
         messages = _as_message_list(await client.get_messages(bot_entity, limit=10))
         for msg in messages:
             text = msg.text or msg.caption or ""
             if not text:
                 continue
             
-            # 1) البحث عن الإيموجي المطلوب في النص
-            target_emoji = _extract_target_emoji_advanced(text)
+            target_emoji = _extract_target_emoji_from_message(text)
             if target_emoji:
-                if await _click_callback_button_by_emoji(client, msg, target_emoji):
+                if await _click_button_with_emoji(client, msg, target_emoji):
                     return True, f"✅ ضغطنا على الزر {target_emoji}"
             
-            # 2) إذا لم نجد إيموجي، نبحث عن أزرار عشوائية (زر وحيد)
-            if msg.reply_markup:
-                flat_buttons = [btn for row in msg.reply_markup.inline_keyboard for btn in row]
+            if msg.buttons:
+                flat_buttons = [btn for row in msg.buttons for btn in row]
+                for btn in flat_buttons:
+                    btn_lower = (btn.text or "").lower()
+                    if any(word in btn_lower for word in ['انضمام', 'join', 'تحقق', 'verify', 'التالي', 'تخطي', 'استمرار']):
+                        try:
+                            await btn.click()
+                            await asyncio.sleep(1)
+                            break
+                        except:
+                            pass
+                
                 if len(flat_buttons) == 1:
                     try:
                         await flat_buttons[0].click()
@@ -1602,20 +1588,5 @@ async def _solve_captcha_smart_with_buttons(client, bot_entity, phone: str = "")
                         return True, f"✅ ضغطنا على الزر الوحيد: {flat_buttons[0].text}"
                     except:
                         pass
-                
-                for btn in flat_buttons:
-                    btn_lower = (btn.text or "").lower()
-                    if any(word in btn_lower for word in ['تحقق', 'verify', 'انضمام', 'join', 'التالي', 'تخطي', 'استمرار', 'متابعة']):
-                        try:
-                            await btn.click()
-                            await asyncio.sleep(1)
-                            break
-                        except:
-                            pass
         await asyncio.sleep(1)
-    
     return False, "فشل: لم نعثر على زر الإيموجي المطلوب"
-
-async def _solve_captcha_with_ai_and_buttons(client, bot_entity, phone: str = "", max_attempts: int = 3) -> tuple[bool, str]:
-    # نستدعي النسخة الذكية الجديدة التي تعتمد على الأزرار فقط
-    return await _solve_captcha_smart_with_buttons(client, bot_entity, phone)
