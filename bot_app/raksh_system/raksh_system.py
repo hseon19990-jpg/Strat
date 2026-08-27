@@ -43,6 +43,8 @@ RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS = 5
 # authorization key نفسه من عمليتين/عنواني IP مختلفين.
 _RAKSH_SESSION_LOCKS: dict[str, asyncio.Lock] = {}
 
+# عدد الحسابات التي ستعمل بالتوازي في قسم "تصويت يحتوي تحقق"
+RAKSH_VOTE_CONCURRENT = 3  # عادةً 3-4 حساب بالتوازي كافية لسرعة جيدة بدون تسبب حظر
 
 def _get_raksh_session_lock(phone_number: str) -> asyncio.Lock:
     key = str(phone_number or "").strip()
@@ -250,9 +252,9 @@ def _get_delay_seconds(service_type: str | None = None, custom_delay: int | None
     # الحسابات. المالك يستطيع تحديده أثناء إنشاء الطلب، بينما يحصل العضو
     # على فاصل عشوائي آمن بين دقيقة وثلاث دقائق.
     if service_type == "votes_ai":
-        if custom_delay is not None:
-            return custom_delay
-        return random.randint(RAKSH_MIN_DELAY_SECONDS, RAKSH_MAX_DELAY_SECONDS)
+        # ⚡ تم تعديله: بدون فاصل زمني بين الحسابات ليتم تنفيذ 30 حساب خلال دقيقة تقريباً.
+        # سيتم إدارة التنفيذ بشكل متوازٍ عبر execute_raksh_service
+        return 0
     if service_type == "votes":
         return RAKSH_VOTE_DELAY_SECONDS
     return random.randint(RAKSH_MIN_DELAY_SECONDS, RAKSH_MAX_DELAY_SECONDS)
@@ -590,7 +592,7 @@ async def _fetch_raksh_reactions_from_pool(
                 timeout=RAKSH_REACTION_LOOKUP_TIMEOUT_SECONDS,
             )
         except Exception:
-            return []
+        return []
 
     tasks = [asyncio.create_task(lookup(session)) for session in candidates]
     try:
@@ -1524,6 +1526,65 @@ async def execute_raksh_service(
     executor = EXECUTORS.get(service_type)
     if not executor:
         raise RuntimeError(f"خدمة غير معروفة: {service_type}")
+
+    # ⚡ قسم "تصويت يحتوي تحقق" يعمل بالتوازي (دفعات صغيرة) ليكون أسرع
+    if service_type == "votes_ai":
+        shuffled = sessions.copy()
+        random.shuffle(shuffled)
+        success_count = 0
+        success_phones = []
+        failed_phones = []
+        failed_details = []
+
+        # تقسيم الجلسات إلى دفعات صغيرة متوازية
+        for batch_start in range(0, min(quantity, len(shuffled)), RAKSH_VOTE_CONCURRENT):
+            batch = shuffled[batch_start:batch_start + RAKSH_VOTE_CONCURRENT]
+            tasks = []
+            for session in batch:
+                phone = session["phone_number"]
+                if phone in success_phones or phone in failed_phones:
+                    continue
+                # حجز مقعد التنفيذ
+                if not _reserve_raksh_execution_slot(user_id, service_type, phone):
+                    continue
+
+                session_lock = _get_raksh_session_lock(phone)
+                if session_lock.locked():
+                    continue
+
+                async def _run_one(session=session, session_lock=session_lock):
+                    async with session_lock:
+                        try:
+                            return await executor(session=session, params=params, is_first=True)
+                        except Exception as e:
+                            return False, f"❌ خطأ: {str(e)[:80]}"
+                tasks.append(asyncio.create_task(_run_one()))
+
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for session, result in zip(batch, results):
+                phone = session["phone_number"]
+                if isinstance(result, BaseException):
+                    ok, msg = False, f"❌ فشل: {str(result)[:80]}"
+                else:
+                    ok, msg = result
+                if ok:
+                    success_count += 1
+                    success_phones.append(phone)
+                else:
+                    failed_phones.append(phone)
+                    failed_details.append(msg)
+
+            if progress_callback:
+                await progress_callback(min(batch_start + RAKSH_VOTE_CONCURRENT, quantity),
+                                        quantity,
+                                        success_count,
+                                        len(failed_details))
+            # بدون انتظار طويل بين الدفعات - تم إلغاء الفاصل الزمني
+            await asyncio.sleep(0.1)
+
+        return success_count, success_phones, failed_phones, failed_details
+
+    # باقي الخدمات تعمل بالتسلسل كما هو
     shuffled = sessions.copy()
     random.shuffle(shuffled)
     success_count = 0
