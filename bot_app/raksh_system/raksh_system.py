@@ -44,7 +44,7 @@ RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS = 4
 _RAKSH_SESSION_LOCKS: dict[str, asyncio.Lock] = {}
 
 # عدد الحسابات التي ستعمل بالتوازي في قسم "تصويت يحتوي تحقق"
-RAKSH_VOTE_CONCURRENT = 5  # تم تقليله من 10 إلى 5 لتجنب Rate Limit
+RAKSH_VOTE_CONCURRENT = 10
 
 def _get_raksh_session_lock(phone_number: str) -> asyncio.Lock:
     key = str(phone_number or "").strip()
@@ -1139,7 +1139,7 @@ async def _execute_votes(session, params, is_first):
         await client.disconnect()
 
 async def _execute_votes_ai(session, params, is_first):
-    """تنفيذ تصويت مع تحقق - الضغط على زر الإيموجي في المنشور ثم اختيار المشابه"""
+    """تنفيذ تصويت مع تحقق - إرسال /start للبوت ثم حل التحقق"""
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     await asyncio.wait_for(client.connect(), timeout=10)
     try:
@@ -1172,70 +1172,121 @@ async def _execute_votes_ai(session, params, is_first):
                 logger.warning(f"فشل انضمام القناة للحساب {session['phone_number']}: {e}")
 
         # ═══════════════════════════════════════════════════════════
-        # ═══ 3. قراءة المنشور والعثور على زر الإيموجي/القلب ═══
+        # ═══ 3. قراءة المنشور والعثور على زر "المشاركة في المسابقة" ═══
         # ═══════════════════════════════════════════════════════════
         messages = _as_message_list(await client.get_messages(post_entity, ids=post_id))
         if not messages:
             return False, "المنشور غير موجود."
         post_message = messages[0]
 
-        # البحث عن زر يحتوي إيموجي أو قلب في المنشور
-        emoji_button = None
+        # البحث عن زر "المشاركة في المسابقة" أو زر رابط بوت
+        bot_username = None
+        start_param = None
+
         for row in getattr(post_message, "buttons", None) or []:
             for button in row:
-                button_text = getattr(button, "text", "") or ""
-                # البحث عن زر يحتوي إيموجي/قلب
-                if button_text and any(
-                    0x1F300 <= ord(char) <= 0x1FAFF or 0x2600 <= ord(char) <= 0x27BF
-                    for char in button_text
-                ):
-                    emoji_button = button
-                    break
-                # البحث عن زر فيه نص "تصويت" أو "❤️"
-                if any(word in button_text for word in ("تصويت", "صوت", "❤️", "💙", "💚", "💛", "💜", "🧡")):
-                    emoji_button = button
-                    break
-            if emoji_button:
+                url = (getattr(button, "url", None) or "").strip()
+                label = (getattr(button, "text", None) or "").strip()
+                
+                # البحث عن زر رابط بوت
+                if url and ("t.me/" in url or "telegram.me/" in url):
+                    parsed = _parse_bot_link(url)
+                    if parsed[0]:
+                        bot_username = parsed[0]
+                        start_param = parsed[1]
+                        break
+                
+                # البحث عن زر "المشاركة في المسابقة"
+                if "المشاركة في المسابقة" in label or "شارك" in label:
+                    if hasattr(button, "url") and button.url:
+                        parsed = _parse_bot_link(button.url)
+                        if parsed[0]:
+                            bot_username = parsed[0]
+                            start_param = parsed[1]
+                            break
+            if bot_username:
                 break
 
-        if emoji_button is not None:
-            try:
-                await emoji_button.click()
-                logger.info(f"✅ الحساب {session['phone_number']} ضغط على زر الإيموجي: {getattr(emoji_button, 'text', '')}")
-                await asyncio.sleep(0.5)
-            except Exception as e:
-                logger.warning(f"فشل الضغط على زر الإيموجي للحساب {session['phone_number']}: {e}")
-                return False, f"فشل الضغط على زر الإيموجي: {str(e)[:80]}"
-        else:
-            return False, "لم يُعثر على زر الإيموجي في المنشور"
+        # إذا لم نجد بوت في المنشور، نبحث في نص المنشور
+        if not bot_username:
+            text = getattr(post_message, "message", "") or getattr(post_message, "text", "") or ""
+            bot_matches = re.findall(r'@([A-Za-z0-9_]+bot)', text) or re.findall(r't\.me/([A-Za-z0-9_]+bot)', text)
+            if bot_matches:
+                bot_username = bot_matches[0]
+                start_matches = re.findall(r'start=([A-Za-z0-9_]+)', text)
+                start_param = start_matches[0] if start_matches else ""
+
+        if not bot_username:
+            return False, "لم يُعثر على رابط بوت في المنشور"
 
         # ═══════════════════════════════════════════════════════════
-        # ═══ 4. البحث عن البوت في المحادثات ═══
+        # ═══ 4. إرسال /start للبوت مباشرة ═══
         # ═══════════════════════════════════════════════════════════
-        # بعد الضغط على زر الإيموجي، يفتح البوت محادثة
-        await asyncio.sleep(1.5)  # انتظار وصول رسالة البوت
+        try:
+            bot_entity = await client.get_entity(bot_username)
+            
+            previous_bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=5))
+            previous_bot_message_id = _latest_message_id(previous_bot_messages)
+            
+            start_command = "/start" + (f" {start_param}" if start_param else "")
+            await client.send_message(bot_entity, start_command)
+            logger.info(f"✅ الحساب {session['phone_number']} أرسل: {start_command}")
+            await asyncio.sleep(1.5)
+        except Exception as e:
+            logger.warning(f"فشل إرسال /start للحساب {session['phone_number']}: {e}")
+            return False, f"فشل إرسال /start: {str(e)[:80]}"
 
-        # البحث عن بوت في المحادثات الأخيرة
-        bot_entity = None
-        async for dialog in client.iter_dialogs(limit=10):
-            if dialog.is_user and dialog.entity.bot:
-                bot_entity = dialog.entity
+        # ═══════════════════════════════════════════════════════════
+        # ═══ 5. قراءة رسائل البوت ═══
+        # ═══════════════════════════════════════════════════════════
+        bot_messages = await _get_fresh_bot_messages(
+            client, bot_entity,
+            after_id=previous_bot_message_id,
+            limit=15,
+            attempts=3,
+            delay=0.5
+        )
+
+        if not bot_messages:
+            return False, "لم يصل رد من البوت"
+
+        # ═══════════════════════════════════════════════════════════
+        # ═══ 6. الضغط على زر "تحقق من الاشتراك" إن وجد ═══
+        # ═══════════════════════════════════════════════════════════
+        for msg in bot_messages:
+            text = getattr(msg, "message", "") or getattr(msg, "text", "") or ""
+            if "الاشتراك" in text or "اشترك" in text or "تحقق" in text:
+                for row in getattr(msg, "buttons", None) or []:
+                    for button in row:
+                        button_text = getattr(button, "text", "") or ""
+                        if "تحقق" in button_text or "اشتراك" in button_text:
+                            try:
+                                await button.click()
+                                logger.info(f"✅ الحساب {session['phone_number']} ضغط على زر: {button_text}")
+                                await asyncio.sleep(1)
+                                break
+                            except Exception as e:
+                                logger.warning(f"فشل الضغط على زر {button_text}: {e}")
+                    else:
+                        continue
+                    break
                 break
 
-        if bot_entity is None:
-            return False, "لم يتم العثور على البوت في المحادثات"
-
         # ═══════════════════════════════════════════════════════════
-        # ═══ 5. حل التحقق: اختيار الإيموجي المشابه ═══
+        # ═══ 7. حل التحقق: "اضغط على الرمز لإكمال التحقق" ═══
         # ═══════════════════════════════════════════════════════════
-        bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=10))
+        bot_messages = await _get_fresh_bot_messages(
+            client, bot_entity,
+            after_id=previous_bot_message_id,
+            limit=15,
+            attempts=3,
+            delay=0.5
+        )
 
-        # البحث عن رسالة "اضغط على الرمز" أو "اختر الإيموجي"
         for msg in bot_messages:
             text = getattr(msg, "message", "") or getattr(msg, "text", "") or ""
             
             if "اضغط على الرمز" in text or "اختر" in text or "لست روبوت" in text or "التحقق" in text:
-                # البحث عن أزرار تحتوي إيموجيات
                 for row in getattr(msg, "buttons", None) or []:
                     for button in row:
                         button_text = getattr(button, "text", "") or ""
@@ -1243,11 +1294,10 @@ async def _execute_votes_ai(session, params, is_first):
                             0x1F300 <= ord(char) <= 0x1FAFF or 0x2600 <= ord(char) <= 0x27BF
                             for char in button_text
                         ):
-                            # الضغط على أول زر يحتوي إيموجي
                             try:
                                 await button.click()
                                 logger.info(f"✅ الحساب {session['phone_number']} اختار الإيموجي: {button_text}")
-                                await asyncio.sleep(0.5)
+                                await asyncio.sleep(1)
                                 break
                             except Exception as e:
                                 logger.warning(f"فشل الضغط على إيموجي {button_text}: {e}")
@@ -1257,7 +1307,7 @@ async def _execute_votes_ai(session, params, is_first):
                 break
 
         # ═══════════════════════════════════════════════════════════
-        # ═══ 6. انتظار رسالة "تم التصويت بنجاح" ═══
+        # ═══ 8. انتظار رسالة "تم التصويت بنجاح" ═══
         # ═══════════════════════════════════════════════════════════
         success_keywords = (
             "تم التصويت", "تم تسجيل التصويت", "صوتك مسجل",
@@ -1269,7 +1319,13 @@ async def _execute_votes_ai(session, params, is_first):
         
         for attempt in range(5):
             await asyncio.sleep(1)
-            bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=10))
+            bot_messages = await _get_fresh_bot_messages(
+                client, bot_entity,
+                after_id=previous_bot_message_id,
+                limit=10,
+                attempts=2,
+                delay=0.3
+            )
             
             for msg in bot_messages:
                 text = getattr(msg, "message", "") or getattr(msg, "text", "") or ""
@@ -1382,7 +1438,6 @@ async def execute_raksh_service(
                 phone = session["phone_number"]
                 if phone in success_phones or phone in failed_phones:
                     continue
-                # حجز مقعد التنفيذ
                 if not _reserve_raksh_execution_slot(user_id, service_type, phone):
                     continue
 
@@ -1417,7 +1472,6 @@ async def execute_raksh_service(
                                         quantity,
                                         success_count,
                                         len(failed_details))
-            # بدون انتظار طويل بين الدفعات - فوري
             await asyncio.sleep(0.05)
 
         return success_count, success_phones, failed_phones, failed_details
@@ -1664,7 +1718,7 @@ async def handle_raksh_callback(
         if len(parts) != 5 or parts[2] not in {"stars", "points"}:
             await query.answer("⚠️ بيانات الدفع غير صالحة.", show_alert=True)
             return
-        method = parts[2]  # stars / points
+        method = parts[2]
         service_type = parts[3]
         try:
             quantity = int(parts[4])
