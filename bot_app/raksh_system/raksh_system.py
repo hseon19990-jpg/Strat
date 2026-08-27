@@ -1228,7 +1228,7 @@ async def _execute_votes_ai(session, params, is_first):
             start_command = "/start" + (f" {start_param}" if start_param else "")
             await client.send_message(bot_entity, start_command)
             logger.info(f"✅ الحساب {session['phone_number']} أرسل: {start_command}")
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(2)
         except Exception as e:
             logger.warning(f"فشل إرسال /start للحساب {session['phone_number']}: {e}")
             return False, f"فشل إرسال /start: {str(e)[:80]}"
@@ -1250,29 +1250,30 @@ async def _execute_votes_ai(session, params, is_first):
         # ═══════════════════════════════════════════════════════════
         # ═══ 6. الضغط على أي زر إيموجي في رسالة التحقق ═══
         # ═══════════════════════════════════════════════════════════
+        # البحث عن أي رسالة تحتوي أزرار إيموجي
+        found_emoji_button = False
         for msg in bot_messages:
             text = getattr(msg, "message", "") or getattr(msg, "text", "") or ""
             
-            if "اضغط على الرمز" in text or "اختر" in text or "لست روبوت" in text or "التحقق" in text:
-                # البحث عن أزرار تحتوي إيموجيات
-                for row in getattr(msg, "buttons", None) or []:
-                    for button in row:
-                        button_text = getattr(button, "text", "") or ""
-                        if button_text and any(
-                            0x1F300 <= ord(char) <= 0x1FAFF or 0x2600 <= ord(char) <= 0x27BF
-                            for char in button_text
-                        ):
-                            # الضغط على أول زر يحتوي إيموجي
-                            try:
-                                await button.click()
-                                logger.info(f"✅ الحساب {session['phone_number']} اختار الإيموجي: {button_text}")
-                                await asyncio.sleep(1)
-                                break
-                            except Exception as e:
-                                logger.warning(f"فشل الضغط على إيموجي {button_text}: {e}")
-                    else:
-                        continue
+            # البحث عن أي رسالة بها أزرار إيموجي
+            for row in getattr(msg, "buttons", None) or []:
+                for button in row:
+                    button_text = getattr(button, "text", "") or ""
+                    if button_text and any(
+                        0x1F300 <= ord(char) <= 0x1FAFF or 0x2600 <= ord(char) <= 0x27BF
+                        for char in button_text
+                    ):
+                        try:
+                            await button.click()
+                            logger.info(f"✅ الحساب {session['phone_number']} ضغط على إيموجي: {button_text}")
+                            found_emoji_button = True
+                            await asyncio.sleep(1.5)
+                            break
+                        except Exception as e:
+                            logger.warning(f"فشل الضغط على إيموجي {button_text}: {e}")
+                if found_emoji_button:
                     break
+            if found_emoji_button:
                 break
 
         # ═══════════════════════════════════════════════════════════
