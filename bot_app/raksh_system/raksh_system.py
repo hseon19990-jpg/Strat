@@ -592,7 +592,7 @@ async def _fetch_raksh_reactions_from_pool(
                 timeout=RAKSH_REACTION_LOOKUP_TIMEOUT_SECONDS,
             )
         except Exception:
-        return []
+            return []
 
     tasks = [asyncio.create_task(lookup(session)) for session in candidates]
     try:
