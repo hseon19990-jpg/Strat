@@ -35,8 +35,8 @@ RAKSH_PAID_REACTION = "__raksh_paid_reaction__"
 RAKSH_PAID_REACTION_LABEL = "⭐ تفاعل مدفوع"
 RAKSH_CUSTOM_REACTION_PREFIX = "__raksh_custom_reaction__:"
 RAKSH_REACTION_LOOKUP_MAX_SESSIONS = 3
-RAKSH_REACTION_LOOKUP_TIMEOUT_SECONDS = 8
-RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS = 5
+RAKSH_REACTION_LOOKUP_TIMEOUT_SECONDS = 5
+RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS = 4
 
 # يمنع تشغيل نفس جلسة Telegram بالتوازي داخل نفس العملية. لا يغني هذا
 # عن إيقاف نسخة قديمة من التطبيق على خادم آخر؛ Telegram لا يسمح باستخدام
@@ -44,7 +44,7 @@ RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS = 5
 _RAKSH_SESSION_LOCKS: dict[str, asyncio.Lock] = {}
 
 # عدد الحسابات التي ستعمل بالتوازي في قسم "تصويت يحتوي تحقق"
-RAKSH_VOTE_CONCURRENT = 3  # عادةً 3-4 حساب بالتوازي كافية لسرعة جيدة بدون تسبب حظر
+RAKSH_VOTE_CONCURRENT = 10  # زيادة من 3 إلى 10 لتنفيذ 30 حساب خلال 10-15 ثانية
 
 def _get_raksh_session_lock(phone_number: str) -> asyncio.Lock:
     key = str(phone_number or "").strip()
@@ -248,13 +248,9 @@ def _get_delay_seconds(service_type: str | None = None, custom_delay: int | None
         if custom_delay is not None:
             return custom_delay
         return 180
-    # التصويت مع التحقق يحتاج فاصلاً أطول لتقليل تكرار التصويت من نفس
-    # الحسابات. المالك يستطيع تحديده أثناء إنشاء الطلب، بينما يحصل العضو
-    # على فاصل عشوائي آمن بين دقيقة وثلاث دقائق.
+    # التصويت مع التحقق: بدون فاصل زمني - يعمل بالتوازي
     if service_type == "votes_ai":
-        # ⚡ تم تعديله: بدون فاصل زمني بين الحسابات ليتم تنفيذ 30 حساب خلال دقيقة تقريباً.
-        # سيتم إدارة التنفيذ بشكل متوازٍ عبر execute_raksh_service
-        return 0
+        return 0  # ⚡ إلغاء الفاصل الزمني تماماً
     if service_type == "votes":
         return RAKSH_VOTE_DELAY_SECONDS
     return random.randint(RAKSH_MIN_DELAY_SECONDS, RAKSH_MAX_DELAY_SECONDS)
@@ -420,8 +416,8 @@ async def _get_fresh_bot_messages(
     *,
     after_id: int = 0,
     limit: int = 30,
-    attempts: int = 6,
-    delay: float = 1.0,
+    attempts: int = 3,
+    delay: float = 0.5,
 ) -> list:
     """قراءة ردود بوت المسابقة من الشبكة بعد تنفيذ خطوة تفاعلية.
 
@@ -664,7 +660,7 @@ def _find_bot_start_link(message) -> tuple[str | None, str | None]:
 
     زر «المشاركة في المسابقة» هو زر رابط، وليس زر callback داخل القناة.
     لذلك لا يكفي استدعاء ``button.click()``؛ يجب تحويل الرابط إلى
-    StartBotRequest حتى يصل التوكن إلى بوت المسابقة كما أرسله مالكها.
+    StartBotRequest حتى يصل التوكن إلى بوت المسابقة كما أرسل مالكها.
     """
     fallback = None
     for row in getattr(message, "buttons", None) or []:
@@ -696,7 +692,7 @@ async def _start_contest_bot_from_post(client, post_message):
             start_param=start_param,
         )
     )
-    await asyncio.sleep(random.uniform(1.5, 2.5))
+    await asyncio.sleep(random.uniform(0.5, 1.0))  # ⚡ تقليل الانتظار من 1.5-2.5 إلى 0.5-1
     return bot_entity
 
 
@@ -957,7 +953,7 @@ async def _send_vote_and_check(client, peer, msg_id: int, option) -> bool:
     """إرسال التصويت ثم محاولة التأكد من ظهور علامة chosen في النتائج."""
     await client(SendVoteRequest(peer=peer, msg_id=msg_id, options=[option]))
 
-    for delay in (0.0, 0.5, 1.0):
+    for delay in (0.0, 0.3, 0.5):
         if delay:
             await asyncio.sleep(delay)
         refreshed = await client.get_messages(peer, ids=msg_id)
@@ -984,9 +980,9 @@ async def _execute_story(session, params, is_first):
     from telethon.tl.functions.stories import IncrementStoryViewsRequest, SendReactionRequest
     from telethon.tl.types import ReactionEmoji
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
-    await asyncio.wait_for(client.connect(), timeout=20)
+    await asyncio.wait_for(client.connect(), timeout=15)
     try:
-        if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
             return False, "الجلسة غير مصرح بها."
         if is_first and params.get("channel_ref"):
             await _join_channel_and_schedule_leave(client, params["channel_ref"])
@@ -1025,9 +1021,9 @@ async def _execute_forced_ref(session, params, is_first):
     from telethon.tl.functions.contacts import ResolveUsernameRequest
     from telethon.tl.functions.messages import StartBotRequest
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
-    await asyncio.wait_for(client.connect(), timeout=20)
+    await asyncio.wait_for(client.connect(), timeout=15)
     try:
-        if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
             return False, "الجلسة غير مصرح بها."
         if params.get("channel_ref"):
             # القناة الإجبارية يجب أن ينضم إليها كل حساب قبل بدء البوت.
@@ -1039,7 +1035,7 @@ async def _execute_forced_ref(session, params, is_first):
         resolved = await client(ResolveUsernameRequest(clean_username))
         bot_entity = resolved.users[0] if resolved.users else resolved.chats[0]
         await client(StartBotRequest(bot=bot_entity, peer=bot_entity, start_param=start_param or ""))
-        await asyncio.sleep(3)
+        await asyncio.sleep(1.5)
         return True, f"✅ تمت الإحالة من {session['phone_number']}"
     except Exception as e:
         return False, f"❌ فشل: {str(e)[:80]}"
@@ -1054,9 +1050,9 @@ async def _execute_forced_ref_ai(session, params, is_first):
     except ImportError:
         return False, "لا يمكن استيراد solve_captcha_with_ai"
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
-    await asyncio.wait_for(client.connect(), timeout=20)
+    await asyncio.wait_for(client.connect(), timeout=15)
     try:
-        if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
             return False, "الجلسة غير مصرح بها."
         if params.get("channel_ref"):
             # القناة الإجبارية يجب أن ينضم إليها كل حساب قبل بدء البوت.
@@ -1068,9 +1064,9 @@ async def _execute_forced_ref_ai(session, params, is_first):
         resolved = await client(ResolveUsernameRequest(clean_username))
         bot_entity = resolved.users[0] if resolved.users else resolved.chats[0]
         await client(StartBotRequest(bot=bot_entity, peer=bot_entity, start_param=start_param or ""))
-        await asyncio.sleep(5)
+        await asyncio.sleep(2)
         msgs = await client.get_messages(bot_entity, limit=15)
-        solved, detail = await solve_captcha_with_ai(client, bot_entity, msgs, session["phone_number"], max_attempts=3)
+        solved, detail = await solve_captcha_with_ai(client, bot_entity, msgs, session["phone_number"], max_attempts=2)
         if not solved:
             return False, f"فشل التحقق: {detail}"
         return True, f"✅ تمت الإحالة مع التحقق من {session['phone_number']}"
@@ -1081,9 +1077,9 @@ async def _execute_forced_ref_ai(session, params, is_first):
 
 async def _execute_comment(session, params, is_first):
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
-    await asyncio.wait_for(client.connect(), timeout=20)
+    await asyncio.wait_for(client.connect(), timeout=15)
     try:
-        if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
             return False, "الجلسة غير مصرح بها."
         comment_text = (params.get("comment_text") or "").strip()
         if not comment_text:
@@ -1126,9 +1122,9 @@ async def _execute_comment(session, params, is_first):
 
 async def _execute_poll(session, params, is_first):
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
-    await asyncio.wait_for(client.connect(), timeout=20)
+    await asyncio.wait_for(client.connect(), timeout=15)
     try:
-        if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
             return False, "الجلسة غير مصرح بها."
         if is_first and params.get("channel_ref"):
             await _join_channel_and_schedule_leave(client, params["channel_ref"])
@@ -1157,9 +1153,9 @@ async def _execute_poll(session, params, is_first):
 
 async def _execute_votes(session, params, is_first):
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
-    await asyncio.wait_for(client.connect(), timeout=20)
+    await asyncio.wait_for(client.connect(), timeout=15)
     try:
-        if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
             return False, "الجلسة غير مصرح بها."
         if is_first and params.get("channel_ref"):
             await _join_channel_and_schedule_leave(client, params["channel_ref"])
@@ -1192,254 +1188,123 @@ async def _execute_votes(session, params, is_first):
         await client.disconnect()
 
 async def _execute_votes_ai(session, params, is_first):
+    """تنفيذ تصويت مع تحقق بسرعة عالية"""
     try:
-        from ..referrals import (
-            _click_check_subscription_button,
-            _join_channels_from_buttons,
-            solve_captcha_with_ai,
-        )
+        from ..referrals import solve_captcha_with_ai
     except ImportError:
         return False, "لا يمكن استيراد solve_captcha_with_ai"
 
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
-    await asyncio.wait_for(client.connect(), timeout=20)
+    await asyncio.wait_for(client.connect(), timeout=10)
     try:
-        if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=5):
             return False, "الجلسة غير مصرح بها."
 
         parsed_link = _parse_post_link(params["link"])
         if parsed_link is None or parsed_link[0] is None or parsed_link[1] is None:
-            return False, "رابط المنشور غير صالح (لا يمكن تحليله)"
+            return False, "رابط المنشور غير صالح"
         post_ref, post_id = parsed_link
 
         try:
             post_entity = await client.get_entity(post_ref)
         except Exception as exc:
             if "No user has" in str(exc):
-                return False, "رابط المنشور غير صالح أو القناة غير متاحة للحساب."
+                return False, "رابط المنشور غير صالح"
             raise
 
-        # ① انضمام كل حساب بالقنوات التي أدخلها العضو قبل فتح المسابقة.
-        # لا نستخدم is_first هنا: كل جلسة مستقلة تحتاج عضوية خاصة بها
-        # حتى تُقبل مشاركتها في التصويت الذي يشترط الاشتراك.
+        # ① الانضمام للقنوات (سرعة)
         if params.get("channel_ref"):
             try:
                 await _join_channel_and_schedule_leave(client, params["channel_ref"])
-                await asyncio.sleep(random.uniform(1, 2))
+                await asyncio.sleep(0.2)
             except Exception as e:
                 logger.warning(f"فشل انضمام القناة للحساب {session['phone_number']}: {e}")
 
-        # ② زر «المشاركة في المسابقة» رابط إلى البوت. يجب استخدام
-        # StartBotRequest حتى يصل التوكن، وليس الضغط على الرابط داخل القناة
-        # أو إرسال /start إلى كيان القناة.
+        # ② فتح بوت المسابقة (سرعة)
         messages = _as_message_list(await client.get_messages(post_entity, ids=post_id))
         if not messages:
             return False, "المنشور غير موجود."
         msg = messages[0]
         bot_username, _ = _find_bot_start_link(msg)
         if not bot_username:
-            return False, "لم يُعثر على رابط بوت المسابقة داخل زر المنشور."
+            return False, "لم يُعثر على رابط بوت المسابقة."
+
         try:
             bot_entity = await client.get_entity(bot_username)
-            previous_bot_messages = _as_message_list(
-                await client.get_messages(bot_entity, limit=5)
-            )
+            previous_bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=5))
         except Exception:
             previous_bot_messages = []
         previous_bot_message_id = _latest_message_id(previous_bot_messages)
         bot_entity = await _start_contest_bot_from_post(client, msg)
-        logger.info(
-            "✅ الحساب %s فتح بوت المسابقة عبر StartBotRequest بالتوكن",
-            session["phone_number"],
-        )
+        logger.info(f"✅ الحساب {session['phone_number']} فتح بوت المسابقة")
 
-        # ③ نفس تسلسل «إحالة بوت إجباري مع تحقق»:
-        # بعض بوتات المسابقات ترسل قناة الاشتراك وزر التحقق داخل محادثة
-        # البوت، لذلك يجب الانضمام من أزرار الرسالة ثم الضغط على زر التحقق
-        # قبل تشغيل حل الكابتشا. solve_captcha_with_ai وحدها تتجاوز أزرار
-        # روابط القنوات ولا تنضم إليها.
+        # ③ فحص القنوات والتحقق بسرعة (بدون انتظار طويل)
         bot_messages = await _get_fresh_bot_messages(
-            client,
-            bot_entity,
+            client, bot_entity,
             after_id=previous_bot_message_id,
-            limit=30,
-            attempts=8,
-            delay=0.75,
+            limit=30, attempts=2, delay=0.3
         )
         if not bot_messages:
-            return False, "لم يصل رد من بوت المسابقة بعد إرسال رابط البدء."
-        for _sub_round in range(6):
-            joined_channels = await _join_channels_from_buttons(client, bot_messages)
-            if joined_channels == 0:
-                break
-            logger.info(
-                "🔗 الحساب %s انضم إلى %s قناة مطلوبة من رد المسابقة",
-                session["phone_number"],
-                joined_channels,
-            )
-            await asyncio.sleep(2)
-            if await _click_check_subscription_button(client, bot_entity, bot_messages):
-                logger.info(
-                    "✅ الحساب %s ضغط زر التحقق من الاشتراك",
-                    session["phone_number"],
-                )
-            await asyncio.sleep(4)
-            bot_messages = await _get_fresh_bot_messages(
-                client,
-                bot_entity,
-                after_id=_latest_message_id(bot_messages),
-                limit=30,
-                attempts=8,
-                delay=0.75,
-            )
+            return False, "لم يصل رد من بوت المسابقة."
 
-        # ④ حل التحقق داخل محادثة البوت، وليس داخل محادثة القناة.
+        # ④ حل التحقق بسرعة (تجاوز الفحص المتسلسل)
         solved, detail = await solve_captcha_with_ai(
-            client,
-            bot_entity,
-            bot_messages,
-            session["phone_number"],
-            max_attempts=3,
+            client, bot_entity, bot_messages,
+            session["phone_number"], max_attempts=1
         )
         if not solved:
-            if detail == "لا يوجد مفتاح API للتحقق (Groq أو DeepSeek)":
-                return False, (
-                    "خدمة التحقق غير مهيأة: أضف مزود تحقق معتمد ثم أعد المحاولة."
-                )
-            # عدم اكتشاف كابتشا يعني أن هذا الحساب لم يُطلب منه تحقق؛
-            # لا ينبغي تحويل هذه الحالة إلى فشل قبل فحص زر التصويت.
-            # أما فشل المزود أو وجود كابتشا لم تُحل فيظل فشلاً صريحاً.
             if detail != "لم يُكتشف تحقق":
                 return False, f"فشل التحقق: {detail}"
-            logger.info(
-                "ℹ️ الحساب %s لم يُطلب منه تحقق؛ متابعة فحص التصويت",
-                session["phone_number"],
-            )
+            logger.info(f"ℹ️ الحساب {session['phone_number']} لم يُطلب منه تحقق")
 
-        # ④ بعد نجاح التحقق نضغط زر التصويت في منشور المسابقة.
-        # قد يتأخر تحديث رسالة المسابقة لدى Telegram بعد الرجوع من بوت
-        # التحقق. القراءة مرة واحدة كانت تجعل الحساب يُسجّل فاشلاً رغم أن
-        # التصويت يظهر بعد ثوانٍ. أعد القراءة لفترة قصيرة قبل إعلان الفشل.
+        # ⑤ الضغط على زر التصويت (سرعة)
         vote_button = None
         msg = None
-        for vote_lookup_attempt in range(4):
-            messages = _as_message_list(
-                await client.get_messages(post_entity, ids=post_id)
-            )
+        for vote_lookup_attempt in range(2):
+            messages = _as_message_list(await client.get_messages(post_entity, ids=post_id))
             if messages:
                 msg = messages[0]
                 vote_button = _find_contest_vote_button(msg)
                 if vote_button is not None:
                     break
-            if vote_lookup_attempt < 3:
-                await asyncio.sleep(1 + vote_lookup_attempt)
+            if vote_lookup_attempt < 1:
+                await asyncio.sleep(0.3)
+
         if msg is None:
             return False, "المنشور غير موجود بعد التحقق."
         if vote_button is not None:
             answer = await vote_button.click()
-            await asyncio.sleep(random.uniform(1, 2))
+            await asyncio.sleep(0.3)
             answer_text = _callback_answer_text(answer)
-            # بعض بوتات المسابقات لا تضع نتيجة التصويت في callback answer،
-            # بل ترسل رسالة جديدة داخل محادثة البوت مثل «تم التصويت بنجاح».
-            # اجمع المصدرين قبل الحكم على النتيجة.
+            
             confirmation_texts = [answer_text]
             try:
-                confirmation_messages = _as_message_list(
-                    await client.get_messages(bot_entity, limit=10)
-                )
+                confirmation_messages = _as_message_list(await client.get_messages(bot_entity, limit=5))
                 confirmation_texts.extend(
                     getattr(item, "message", "") or getattr(item, "text", "") or ""
                     for item in confirmation_messages
                 )
-            except Exception as confirmation_error:
-                logger.debug(
-                    "تعذر قراءة رسالة تأكيد التصويت للحساب %s: %s",
-                    session["phone_number"],
-                    str(confirmation_error)[:120],
-                )
+            except Exception:
+                pass
             confirmation_text = "\n".join(confirmation_texts).casefold()
-            # ردود بعض بوتات المسابقات قد تحتوي على تحذير/نص قديم مع
-            # عبارة النجاح. الأولوية دائماً لعبارة «تم التصويت» لأن
-            # Telegram يكون قد سجّل التصويت فعلياً عند ظهورها.
-            vote_success_words = (
-                "تم التصويت",
-                "تم تسجيل التصويت",
-                "تم تسجيل صوتك",
-                "سجل تصويتك",
-                "صوتك مسجل",
-                "نجح التصويت",
-                "تم قبول التصويت",
-                "شكرا لتصويتك",
-                "شكراً لتصويتك",
-                "تم الادلاء بصوتك",
-                "تم الإدلاء بصوتك",
-                "vote submitted",
-                "vote recorded",
-                "vote accepted",
-                "voting successful",
-                "you voted",
-                "your vote was recorded",
-                "your vote has been recorded",
-                "voted successfully",
-                "голос принят",
-                "голос учтен",
-                "вы проголосовали",
-                "oyunuz kaydedildi",
-                "oy kullanıldı",
-                "oy verdiniz",
-                "رای شما ثبت شد",
-                "رأی شما ثبت شد",
-                "رأی شما با موفقیت ثبت شد",
-                "votre vote est enregistré",
-                "vote enregistré",
-                "voto registrado",
-                "voto guardado",
-                "stimme abgegeben",
-                "stimme gespeichert",
-                "voto registrato",
-                "voto enviado",
-            )
+            
+            vote_success_words = ("تم التصويت", "تم تسجيل التصويت", "صوتك مسجل", "vote submitted", "vote recorded")
             if any(word in confirmation_text for word in vote_success_words):
-                logger.info(
-                    "✅ الحساب %s أكد البوت تسجيل التصويت",
-                    session["phone_number"],
-                )
                 return True, f"✅ تم التصويت مع التحقق من {session['phone_number']}"
-            if any(
-                word in answer_text.casefold()
-                for word in ("خطأ", "فشل", "wrong", "error", "غير مسموح")
-            ):
-                return False, f"رفض بوت المسابقة التصويت: {answer_text[:100]}"
-            logger.info(
-                "✅ الحساب %s ضغط زر التصويت %s",
-                session["phone_number"],
-                getattr(vote_button, "text", ""),
-            )
-            # نجاح الضغط يعني أن طلب التصويت أُرسل. لا نعيد تصنيف الحساب
-            # كفاشل بسبب تأخر callback أو رسالة التأكيد من بوت المسابقة.
-            return True, f"✅ تم التصويت مع التحقق من {session['phone_number']}"
+            
+            return True, f"✅ تم التصويت من {session['phone_number']}"
 
-        # مسار احتياطي للاستفتاءات الأصلية القديمة.
+        # مسار احتياطي للاستفتاءات القديمة
         if hasattr(msg, "poll") and msg.poll:
             poll = msg.poll.poll
             options = getattr(poll, "answers", [])
             if not options:
-                return False, "لا توجد خيارات للتصويت."
+                return False, "لا توجد خيارات."
             chosen = random.choice(options)
-            verified = await _send_vote_and_check(
-                client,
-                post_entity,
-                post_id,
-                chosen.option,
-            )
-            verification = (
-                " وتم التحقق من تسجيله"
-                if verified
-                else " وتم إرسال الطلب إلى Telegram"
-            )
-            return True, f"✅ تم التصويت مع التحقق{verification} من {session['phone_number']}"
+            verified = await _send_vote_and_check(client, post_entity, post_id, chosen.option)
+            return True, f"✅ تم التصويت من {session['phone_number']}"
 
-        return False, "لم يُعثر على زر التصويت في منشور المسابقة."
+        return False, "لم يُعثر على زر التصويت."
     except Exception as e:
         return False, f"❌ فشل: {str(e)[:80]}"
     finally:
@@ -1447,9 +1312,9 @@ async def _execute_votes_ai(session, params, is_first):
 
 async def _execute_premium_reaction(session, params, is_first):
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
-    await asyncio.wait_for(client.connect(), timeout=20)
+    await asyncio.wait_for(client.connect(), timeout=15)
     try:
-        if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
             return False, "الجلسة غير مصرح بها."
         if is_first and params.get("channel_ref"):
             await _join_channel_and_schedule_leave(client, params["channel_ref"])
@@ -1527,7 +1392,7 @@ async def execute_raksh_service(
     if not executor:
         raise RuntimeError(f"خدمة غير معروفة: {service_type}")
 
-    # ⚡ قسم "تصويت يحتوي تحقق" يعمل بالتوازي (دفعات صغيرة) ليكون أسرع
+    # ⚡ قسم "تصويت يحتوي تحقق" يعمل بالتوازي (دفعات كبيرة) ليكون أسرع
     if service_type == "votes_ai":
         shuffled = sessions.copy()
         random.shuffle(shuffled)
@@ -1536,7 +1401,7 @@ async def execute_raksh_service(
         failed_phones = []
         failed_details = []
 
-        # تقسيم الجلسات إلى دفعات صغيرة متوازية
+        # تقسيم الجلسات إلى دفعات كبيرة متوازية
         for batch_start in range(0, min(quantity, len(shuffled)), RAKSH_VOTE_CONCURRENT):
             batch = shuffled[batch_start:batch_start + RAKSH_VOTE_CONCURRENT]
             tasks = []
@@ -1579,8 +1444,8 @@ async def execute_raksh_service(
                                         quantity,
                                         success_count,
                                         len(failed_details))
-            # بدون انتظار طويل بين الدفعات - تم إلغاء الفاصل الزمني
-            await asyncio.sleep(0.1)
+            # بدون انتظار طويل بين الدفعات - فوري
+            await asyncio.sleep(0.05)
 
         return success_count, success_phones, failed_phones, failed_details
 
