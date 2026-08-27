@@ -11,7 +11,7 @@ Services included:
 All services support:
 - Payment by points or stars
 - Channel join (optional, with skip)
-- Random delay between accounts (1-8 min default, owner can customize)
+- Random delay between regular accounts (1-8 min default, owner can customize)
 - No duplicate accounts
 """
 
@@ -51,6 +51,12 @@ STARS_PRICES = {
 LEGENDARY_STAY_HOURS = 24
 MIN_DELAY_MINUTES = 1
 MAX_DELAY_MINUTES = 8
+# The verification vote flow used to process one account at a time and then
+# sleep for 60-180 seconds.  A 30-account test could therefore take 15+
+# minutes even when Telegram and the captcha provider were healthy.
+VOTES_AI_MAX_CONCURRENCY = 30
+VOTES_AI_BATCH_TIMEOUT_SECONDS = 60
+VOTES_AI_ACCOUNT_TIMEOUT_SECONDS = 55
 
 # ==================== LEGENDARY SERVICES MESSAGE ====================
 LEGENDARY_SERVICES_MESSAGE = (
@@ -269,7 +275,7 @@ def get_delay_seconds(
     """
     Get delay between accounts.
     - Owner: can set custom delay (e.g., "120", "60-180")
-    - Members using votes_ai: 1-3 minutes random
+    - votes_ai: no artificial delay (it runs in bounded parallel waves)
     - Other members: 1-8 minutes random
     """
     if is_owner and custom_delay:
@@ -284,9 +290,10 @@ def get_delay_seconds(
         except (ValueError, TypeError):
             pass
     
-    # votes_ai is intentionally slower by default: 1-3 minutes per vote.
+    # Verification votes are launched concurrently by execute_batch. Keep this
+    # fallback at zero for any legacy caller that still asks for a delay.
     if service_type == "votes_ai":
-        return random.randint(60, 180)
+        return 0
 
     # Default for the remaining legendary services: 1-8 minutes.
     return random.randint(MIN_DELAY_MINUTES * 60, MAX_DELAY_MINUTES * 60)
@@ -704,6 +711,20 @@ async def execute_batch(
     """
     if not sessions:
         raise RuntimeError("لا توجد جلسات نشطة متاحة.")
+
+    # Verification votes are intentionally handled as bounded waves.  This
+    # keeps the requested quantity exact (a fully parallel replacement queue
+    # could overshoot after several in-flight successes) while allowing the
+    # normal 30-account test to run concurrently.
+    if service_type == "votes_ai":
+        return await _execute_parallel_votes_ai_batch(
+            quantity=quantity,
+            sessions=sessions,
+            params=params,
+            is_owner=is_owner,
+            custom_delay=custom_delay,
+            progress_callback=progress_callback,
+        )
     
     shuffled = sessions.copy()
     random.shuffle(shuffled)
@@ -793,6 +814,139 @@ async def execute_batch(
             await asyncio.sleep(delay)
     
     return success_count, success_phones, failed_details
+
+
+async def _execute_parallel_votes_ai_batch(
+    quantity: int,
+    sessions: list,
+    params: dict,
+    is_owner: bool = False,
+    custom_delay: str = None,
+    progress_callback=None,
+) -> tuple[int, list[str], list[str]]:
+    """Run verification votes concurrently in bounded waves.
+
+    The old implementation made the captcha flow strictly serial and applied
+    a 1-3 minute delay between every account.  One wave contains at most 30
+    accounts; failed accounts are replaced in a later wave without adding an
+    artificial delay.  The one-minute deadline is a guardrail for the test
+    flow, not a promise that Telegram or an exhausted AI provider will answer
+    within that time.
+    """
+    del is_owner, custom_delay  # Kept in the signature for caller compatibility.
+
+    shuffled = sessions.copy()
+    random.shuffle(shuffled)
+    pool = list(shuffled)
+    success_count = 0
+    success_phones: list[str] = []
+    failed_details: list[str] = []
+    attempted_phones: set[str] = set()
+
+    async def _run_one(session: dict, is_first: bool) -> tuple[bool, str]:
+        exec_params = {
+            "session": session,
+            "channel_ref": None,
+            "is_first": is_first,
+            "post_ref": params["post_ref"],
+            "post_id": params["post_id"],
+            "use_ai": True,
+            "mandatory_channel_refs": params.get("mandatory_channel_refs", []),
+        }
+        try:
+            return await asyncio.wait_for(
+                _execute_vote(**exec_params),
+                timeout=VOTES_AI_ACCOUNT_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            return False, f"❌ فشل من {session['phone_number']}: انتهت مهلة الحساب (55ث)"
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            return False, f"❌ فشل من {session['phone_number']}: {str(exc)[:80]}"
+
+    async def _run_waves():
+        nonlocal success_count
+        wave_number = 0
+        while pool and success_count < quantity:
+            remaining = quantity - success_count
+            wave_size = min(
+                remaining,
+                VOTES_AI_MAX_CONCURRENCY,
+                len(pool),
+            )
+            wave = []
+            while pool and len(wave) < wave_size:
+                candidate = pool.pop(0)
+                phone = candidate.get("phone_number")
+                if not phone or phone in attempted_phones:
+                    continue
+                attempted_phones.add(phone)
+                wave.append(candidate)
+
+            if not wave:
+                break
+
+            wave_number += 1
+            logger.info(
+                "⚡ votes_ai wave=%s accounts=%s success=%s/%s",
+                wave_number,
+                len(wave),
+                success_count,
+                quantity,
+            )
+            results = await asyncio.gather(
+                *(
+                    _run_one(account, wave_number == 1 and index == 0)
+                    for index, account in enumerate(wave)
+                ),
+                return_exceptions=True,
+            )
+
+            for account, result in zip(wave, results):
+                phone = account["phone_number"]
+                if isinstance(result, BaseException):
+                    if isinstance(result, asyncio.CancelledError):
+                        raise result
+                    ok, detail = False, f"❌ فشل من {phone}: {str(result)[:80]}"
+                else:
+                    ok, detail = result
+                if ok:
+                    success_count += 1
+                    success_phones.append(phone)
+                else:
+                    failed_details.append(detail)
+
+            if progress_callback:
+                try:
+                    attempted = min(quantity, success_count + len(failed_details))
+                    await progress_callback(
+                        attempted,
+                        quantity,
+                        success_count,
+                        len(failed_details),
+                    )
+                except Exception:
+                    pass
+
+        return success_count, success_phones, failed_details
+
+    try:
+        return await asyncio.wait_for(
+            _run_waves(),
+            timeout=VOTES_AI_BATCH_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "⏱️ votes_ai batch reached the %ss deadline: success=%s/%s",
+            VOTES_AI_BATCH_TIMEOUT_SECONDS,
+            success_count,
+            quantity,
+        )
+        failed_details.append(
+            f"❌ انتهت مهلة دفعة التصويت بعد {VOTES_AI_BATCH_TIMEOUT_SECONDS} ثانية."
+        )
+        return success_count, success_phones, failed_details
 
 
 # ==================== UI HELPERS ====================
@@ -1359,7 +1513,8 @@ async def legendary_set_delay(update, context, q, is_own: bool):
     await q.edit_message_text(
         "⏱️ *تخصيص الفاصل بين الحسابات*\n\n"
         "أرسل رقماً بالثواني مثل `5`، أو نطاقاً مثل `30-60`.\n"
-        "اكتب `تخطي` للعودة للفاصل التلقائي. للعضو: تصويت بتحقق 60-180 ثانية، وباقي الخدمات 1-8 دقائق.",
+        "اكتب `تخطي` للعودة للفاصل التلقائي. تصويت التحقق يعمل بدفعات متوازية، "
+        "وباقي الخدمات تستخدم 1-8 دقائق تلقائياً.",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=legendary_services_back_kb(),
     )
