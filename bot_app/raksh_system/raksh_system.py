@@ -1154,7 +1154,7 @@ async def _execute_votes(session, params, is_first):
         await client.disconnect()
 
 async def _execute_votes_ai(session, params, is_first):
-    """تنفيذ تصويت مع تحقق بسرعة عالية - يدعم الضغط على ملصق واختيار ملصق مشابه"""
+    """تنفيذ تصويت مع تحقق بسرعة عالية - يدعم الضغط على زر المشاركة والتحقق بملصق"""
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     await asyncio.wait_for(client.connect(), timeout=10)
     try:
@@ -1175,7 +1175,7 @@ async def _execute_votes_ai(session, params, is_first):
             raise
 
         # ═══════════════════════════════════════════════════════════
-        # ═══ الخطوة 1: الانضمام للقناة الإجبارية ═══
+        # ═══ 1. الانضمام للقناة الإجبارية ═══
         # ═══════════════════════════════════════════════════════════
         if params.get("channel_ref"):
             try:
@@ -1185,67 +1185,73 @@ async def _execute_votes_ai(session, params, is_first):
                 logger.warning(f"فشل انضمام القناة للحساب {session['phone_number']}: {e}")
 
         # ═══════════════════════════════════════════════════════════
-        # ═══ الخطوة 2: فتح رابط التصويت ═══
+        # ═══ 2. الضغط على زر "المشاركة في المسابقة" ═══
         # ═══════════════════════════════════════════════════════════
         messages = _as_message_list(await client.get_messages(post_entity, ids=post_id))
         if not messages:
             return False, "المنشور غير موجود."
         post_message = messages[0]
 
-        # ═══════════════════════════════════════════════════════════
-        # ═══ الخطوة 3: الضغط على الملصق (الستيكر/الإيموجي المطلوب) ═══
-        # ═══════════════════════════════════════════════════════════
-        # أولاً نبحث عن زر الملصق داخل المنشور
-        sticker_button = None
+        # البحث عن زر "المشاركة في المسابقة" أو أي زر رابط
+        join_button = None
+        bot_username = None
+        start_param = None
+
         for row in getattr(post_message, "buttons", None) or []:
             for button in row:
-                # البحث عن زر يحتوي ملصق أو إيموجي
-                button_text = getattr(button, "text", "") or ""
-                if button_text and any(
-                    0x1F300 <= ord(char) <= 0x1FAFF or 0x2600 <= ord(char) <= 0x27BF
-                    for char in button_text
-                ):
-                    sticker_button = button
+                url = (getattr(button, "url", None) or "").strip()
+                label = (getattr(button, "text", None) or "").strip()
+                
+                # البحث عن زر يحتوي رابط بوت
+                if url and ("t.me/" in url or "telegram.me/" in url):
+                    parsed_bot = _parse_bot_link(url)
+                    if parsed_bot[0]:
+                        bot_username = parsed_bot[0]
+                        start_param = parsed_bot[1]
+                        join_button = button
+                        break
+                
+                # البحث عن زر "المشاركة في المسابقة"
+                if "المشاركة في المسابقة" in label or "شارك في المسابقة" in label:
+                    join_button = button
                     break
-            if sticker_button:
+            if join_button:
                 break
 
-        if sticker_button is not None:
+        # إذا وجدنا زر المشاركة، نضغط عليه
+        if join_button is not None:
             try:
-                await sticker_button.click()
-                logger.info(f"✅ الحساب {session['phone_number']} ضغط على الملصق")
+                await join_button.click()
+                logger.info(f"✅ الحساب {session['phone_number']} ضغط على زر المشاركة في المسابقة")
                 await asyncio.sleep(0.5)
             except Exception as e:
-                logger.warning(f"فشل الضغط على الملصق للحساب {session['phone_number']}: {e}")
+                logger.warning(f"فشل الضغط على زر المشاركة للحساب {session['phone_number']}: {e}")
 
         # ═══════════════════════════════════════════════════════════
-        # ═══ الخطوة 4: الدخول للبوت (تلقائي بعد ضغط الملصق) ═══
+        # ═══ 3. الدخول للبوت عبر "Start Bot" ═══
         # ═══════════════════════════════════════════════════════════
-        # نبحث عن رابط البوت في المنشور
-        bot_username, start_param = _find_bot_start_link(post_message)
         if bot_username:
             try:
                 bot_entity = await client.get_entity(bot_username)
-                # حفظ آخر رسالة من البوت قبل البدء
+                
                 previous_bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=5))
                 previous_bot_message_id = _latest_message_id(previous_bot_messages)
                 
-                # إرسال StartBotRequest
                 await client(StartBotRequest(
                     bot=bot_entity,
                     peer=bot_entity,
                     start_param=start_param or "",
                 ))
-                logger.info(f"✅ الحساب {session['phone_number']} دخل للبوت")
+                logger.info(f"✅ الحساب {session['phone_number']} بدأ محادثة البوت")
                 await asyncio.sleep(0.5)
             except Exception as e:
-                logger.warning(f"فشل الدخول للبوت للحساب {session['phone_number']}: {e}")
-                return False, f"فشل الدخول للبوت: {str(e)[:80]}"
+                logger.warning(f"فشل بدء محادثة البوت للحساب {session['phone_number']}: {e}")
+                return False, f"فشل بدء محادثة البوت: {str(e)[:80]}"
         else:
             return False, "لم يُعثر على رابط بوت في المنشور"
 
         # ═══════════════════════════════════════════════════════════
-        # ═══ الخطوة 5: الضغط على /start داخل البوت ═══
+        # ═══ 4. الضغط على /start داخل البوت ═══
         # ═══════════════════════════════════════════════════════════
         try:
             await client.send_message(bot_entity, "/start")
@@ -1255,11 +1261,9 @@ async def _execute_votes_ai(session, params, is_first):
             logger.warning(f"فشل إرسال /start للحساب {session['phone_number']}: {e}")
 
         # ═══════════════════════════════════════════════════════════
-        # ═══ الخطوة 6: اختيار الملصق المشابه ═══
+        # ═══ 5. اختيار الملصق الصحيح للتحقق ═══
         # ═══════════════════════════════════════════════════════════
-        # بعد /start سيظهر ملصقات - نبحث عن زر المشابه
         try:
-            # قراءة رسائل البوت الجديدة
             bot_messages = await _get_fresh_bot_messages(
                 client, bot_entity,
                 after_id=previous_bot_message_id,
@@ -1268,30 +1272,45 @@ async def _execute_votes_ai(session, params, is_first):
                 delay=0.5
             )
             
-            # البحث عن زر الملصق المشابه
+            # البحث عن رسالة التحقق واختيار الملصق الصحيح
             for msg in bot_messages:
-                for row in getattr(msg, "buttons", None) or []:
-                    for button in row:
-                        button_text = getattr(button, "text", "") or ""
-                        # البحث عن أي زر يحتوي إيموجي أو ملصق
-                        if button_text and any(
-                            0x1F300 <= ord(char) <= 0x1FAFF or 0x2600 <= ord(char) <= 0x27BF
-                            for char in button_text
-                        ):
-                            # الضغط على أول زر يحتوي إيموجي كاختيار صحيح
-                            await button.click()
-                            logger.info(f"✅ الحساب {session['phone_number']} اختار الملصق المشابه: {button_text}")
-                            await asyncio.sleep(0.5)
-                            return True, f"✅ تم التصويت مع التحقق من {session['phone_number']}"
+                text = getattr(msg, "message", "") or getattr(msg, "text", "") or ""
+                
+                # البحث عن رسالة "اضغط على الرمز"
+                if "اضغط على الرمز" in text or "لست روبوت" in text or "التحقق" in text:
+                    # البحث عن أزرار تحتوي ملصقات/ستيكرات
+                    for row in getattr(msg, "buttons", None) or []:
+                        for button in row:
+                            button_text = getattr(button, "text", "") or ""
+                            # البحث عن أي زر يحتوي إيموجي أو ملصق
+                            if button_text and any(
+                                0x1F300 <= ord(char) <= 0x1FAFF or 0x2600 <= ord(char) <= 0x27BF
+                                for char in button_text
+                            ):
+                                # اختيار زر يحتوي رمز الحماية أو أي ملصق مشابه
+                                await button.click()
+                                logger.info(f"✅ الحساب {session['phone_number']} اختار الملصق: {button_text}")
+                                await asyncio.sleep(0.5)
+                                break
+                        else:
+                            continue
+                        break
+                    break
         except Exception as e:
-            logger.warning(f"فشل اختيار الملصق المشابه للحساب {session['phone_number']}: {e}")
+            logger.warning(f"فشل اختيار الملصق للحساب {session['phone_number']}: {e}")
 
         # ═══════════════════════════════════════════════════════════
-        # ═══ الخطوة 7: التحقق من نجاح التصويت ═══
+        # ═══ 6. التحقق من نجاح التصويت ═══
         # ═══════════════════════════════════════════════════════════
-        # البحث عن رسالة نجاح
         try:
-            bot_messages = await client.get_messages(bot_entity, limit=10)
+            bot_messages = await _get_fresh_bot_messages(
+                client, bot_entity,
+                after_id=_latest_message_id(bot_messages),
+                limit=10,
+                attempts=3,
+                delay=0.5
+            )
+            
             for msg in bot_messages:
                 text = getattr(msg, "message", "") or getattr(msg, "text", "") or ""
                 if any(word in text.casefold() for word in ("تم التصويت", "تم تسجيل التصويت", "صوتك مسجل", "تم التصويت بنجاح", "vote submitted", "vote recorded")):
