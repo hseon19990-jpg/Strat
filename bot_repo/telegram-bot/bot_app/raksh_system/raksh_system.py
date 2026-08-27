@@ -10,11 +10,6 @@
 6. رشق أصوات
 7. رشق تصويت مع تحقق
 8. رشق تفاعل مميز
-
-ملاحظة: قد يحدث تأخير ملحوظ في التنفيذ بسبب:
-- إزالة شك الرشق (Anti-Spam)
-- الحسابات تحتوي على ستوري، افتار، اسم عربي، يوزر وبايو
-- التأخير طبيعي لضمان جودة الخدمة
 """
 
 from ..shared import *
@@ -34,13 +29,6 @@ from urllib.parse import parse_qs, urlparse
 import random
 import asyncio
 import re
-
-RAKSH_PAID_REACTION = "__raksh_paid_reaction__"
-RAKSH_PAID_REACTION_LABEL = "⭐ تفاعل مدفوع"
-RAKSH_CUSTOM_REACTION_PREFIX = "__raksh_custom_reaction__:"
-RAKSH_REACTION_LOOKUP_MAX_SESSIONS = 3
-RAKSH_REACTION_LOOKUP_TIMEOUT_SECONDS = 8
-RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS = 5
 
 # ════════════════════════════════════════════════════════════
 # ═══ 1. ثوابت الخدمات ═══
@@ -257,7 +245,7 @@ def _clear_raksh_state(context: ContextTypes.DEFAULT_TYPE) -> None:
 RAKSH_MIN_DELAY_SECONDS = 60
 RAKSH_MAX_DELAY_SECONDS = 3 * 60
 RAKSH_VOTE_DELAY_SECONDS = 3
-RAKSH_AUTO_RETRY_LIMIT = 3  # عدد مرات إعادة المحاولة للحسابات الفاشلة
+RAKSH_AUTO_RETRY_LIMIT = 3
 
 try:
     RAKSH_MAX_EXECUTIONS_PER_HOUR = int(
@@ -401,7 +389,6 @@ def _parse_post_link(value: str) -> tuple[str | None, int | None]:
     if len(parts) != 2:
         return None, None
     return f"@{parts[0].lstrip('@')}", int(parts[1])
-
 
 def _as_message_list(value) -> list:
     """توحيد نتيجة Telethon عند طلب رسالة واحدة أو عدة رسائل."""
@@ -906,7 +893,6 @@ async def _execute_story(session, params, is_first):
     await asyncio.wait_for(client.connect(), timeout=20)
     try:
         if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
-            # حذف الجلسة الفاشلة تلقائياً
             with db_conn() as c:
                 c.execute("DELETE FROM number_stock WHERE phone_number=%s AND ever_sold IS NOT TRUE", (session["phone_number"],))
             return False, "الجلسة غير مصرح بها - تم طرد الحساب."
@@ -1190,7 +1176,6 @@ async def _execute_votes_ai(session, params, is_first):
             logger.info("الحساب %s فتح بوت المسابقة", session["phone_number"])
         except Exception as start_error:
             logger.warning(f"فشل فتح بوت المسابقة للحساب {session['phone_number']}: {start_error}")
-            # قد يكون التصويت مباشرة بدون بوت
             bot_entity = None
 
         # ── إذا كان هناك بوت مسابقة → حل الكابتشا ──
@@ -1319,12 +1304,10 @@ def _raksh_retry_failed_accounts(
     user_id: int,
 ) -> tuple[list, list, list]:
     """إعادة محاولة الحسابات الفاشلة مع حسابات بديلة."""
-    # استخراج الأرقام الفاشلة التي تحتوي على "الجلسة غير مصرح بها" أو "تم طرد الحساب"
     retry_phones = []
     retry_reasons = []
     
     for phone in failed_phones:
-        # نحاول إيجاد سبب الفشل
         for detail in failed_details:
             if phone in detail:
                 if "الجلسة غير مصرح بها" in detail or "تم طرد الحساب" in detail:
@@ -1332,7 +1315,6 @@ def _raksh_retry_failed_accounts(
                     retry_reasons.append(detail)
                 break
     
-    # الحصول على حسابات بديلة
     available_sessions = [s for s in sessions if s["phone_number"] not in used_phones]
     
     return retry_phones, retry_reasons, available_sessions
@@ -1360,11 +1342,9 @@ async def execute_raksh_service(
     failed_details = []
     used_phones = set()
     processed_count = 0
-    retry_pool = []  # حسابات بديلة للتعويض
+    retry_pool = []
     
-    # نحتاج إلى تنفيذ العدد المطلوب حتى مع الفشل
     while processed_count < quantity:
-        # إذا نفدت الحسابات، نأخذ من الـ retry_pool
         if not shuffled and retry_pool:
             shuffled = retry_pool.copy()
             retry_pool = []
@@ -1393,7 +1373,6 @@ async def execute_raksh_service(
             success_count += 1
             success_phones.append(phone)
         else:
-            # التحقق من سبب الفشل
             is_session_error = any(keyword in msg for keyword in [
                 "الجلسة غير مصرح بها",
                 "تم طرد الحساب",
@@ -1405,18 +1384,15 @@ async def execute_raksh_service(
             ])
             
             if is_session_error:
-                # ✅ طرد الحساب نهائياً (مشكلة جلسة)
                 with db_conn() as c:
                     c.execute("DELETE FROM number_stock WHERE phone_number=%s AND ever_sold IS NOT TRUE", (phone,))
                 logger.info(f"🗑 تم حذف الرقم {phone} تلقائياً (جلسة منتهية/ملغاة)")
                 failed_phones.append(phone)
                 failed_details.append(f"🗑 {msg} — تم طرد الحساب")
             else:
-                # ❌ لا نطرد الحساب، فقط نضيفه للفشل ونستبدله بآخر
                 failed_phones.append(phone)
                 failed_details.append(f"🔄 {msg} — تم التعويض بحساب بديل")
                 
-                # نضيف حساب بديل من المخزون لتعويض هذا الفشل
                 if shuffled:
                     retry_pool.append(shuffled.pop(0))
         
@@ -1432,10 +1408,9 @@ async def execute_raksh_service(
     return success_count, success_phones, failed_phones, failed_details
 
 # ════════════════════════════════════════════════════════════
-# ═══ 11. نظام حل الكابتشا المتقدم للخدمات الذكية ═══
+# ═══ 5. حل الكابتشا المتقدم (معتمداً على الصور) ═══
 # ════════════════════════════════════════════════════════════
 
-# ─── الثوابت ───
 RAKSH_CAPTCHA_SOLVE_TIMEOUT = 20
 RAKSH_CAPTCHA_MAX_ATTEMPTS = 5
 RAKSH_CAPTCHA_BUTTON_WAIT = 0.7
@@ -1475,7 +1450,6 @@ RAKSH_CAPTCHA_PATTERNS = {
 }
 
 def _normalize_captcha_text(value: str) -> str:
-    """توحيد النص للمقارنة (إزالة الرموز الزائدة والمسافات)."""
     if not value:
         return ""
     return (
@@ -1488,14 +1462,12 @@ def _normalize_captcha_text(value: str) -> str:
     )
 
 def _extract_emoji_from_captcha(text: str) -> str | None:
-    """استخراج الإيموجي المطلوب من نص الكابتشا."""
     if not text:
         return None
     for pattern in RAKSH_CAPTCHA_PATTERNS["emoji"]:
         match = re.search(pattern, text)
         if match:
             emoji = match.group(1).strip()
-            # التأكد أنه إيموجي حقيقي
             if any('\U0001F000' <= char <= '\U0001FAFF' or 
                    '\u2600' <= char <= '\u27BF' or
                    '\u2B00' <= char <= '\u2BFF' for char in emoji):
@@ -1503,7 +1475,6 @@ def _extract_emoji_from_captcha(text: str) -> str | None:
     return None
 
 def _solve_math_captcha(text: str) -> str | None:
-    """حل المسألة الرياضية والعودة بالنتيجة كسلسلة."""
     if not text:
         return None
     for pattern in RAKSH_CAPTCHA_PATTERNS["math"]:
@@ -1522,7 +1493,6 @@ def _solve_math_captcha(text: str) -> str | None:
     return None
 
 def _extract_number_captcha(text: str) -> str | None:
-    """استخراج الرقم المطلوب من نص الكابتشا."""
     if not text:
         return None
     for pattern in RAKSH_CAPTCHA_PATTERNS["number"]:
@@ -1532,17 +1502,13 @@ def _extract_number_captcha(text: str) -> str | None:
     return None
 
 def _extract_rewrite_text(text: str) -> str | None:
-    """استخراج النص المطلوب إعادة كتابته."""
     if not text:
         return None
     for pattern in RAKSH_CAPTCHA_PATTERNS["rewrite"]:
         match = re.search(pattern, text)
         if match:
             return match.group(1).strip()
-    return None
-
-def _button_matches_target(button_text: str, target: str) -> bool:
-    """مقارنة نص الزر مع الهدف المطلوب مع تجاهل الرموز الزائدة."""
+    return Nonedef _button_matches_target(button_text: str, target: str) -> bool:
     if not button_text or not target:
         return False
     clean_button = _normalize_captcha_text(button_text)
@@ -1550,7 +1516,6 @@ def _button_matches_target(button_text: str, target: str) -> bool:
     return clean_target in clean_button or clean_button in clean_target
 
 def _get_all_button_texts(message) -> list[str]:
-    """جلب نصوص جميع الأزرار من رسالة."""
     buttons = []
     for row in getattr(message, "buttons", None) or []:
         for button in row:
@@ -1560,7 +1525,6 @@ def _get_all_button_texts(message) -> list[str]:
     return buttons
 
 async def _click_button_by_text(client, message, target_text: str) -> bool:
-    """الضغط على زر يحتوي على النص المطلوب."""
     if not message or not message.buttons:
         return False
     for row in message.buttons:
@@ -1574,264 +1538,84 @@ async def _click_button_by_text(client, message, target_text: str) -> bool:
                     logger.warning(f"فشل الضغط على الزر {button.text}: {e}")
     return False
 
-async def _send_captcha_answer(client, bot_username: str, answer: str) -> bool:
-    """إرسال إجابة الكابتشا كرسالة نصية."""
-    try:
-        await client.send_message(bot_username, answer)
-        await asyncio.sleep(0.8)
-        return True
-    except Exception as e:
-        logger.warning(f"فشل إرسال إجابة الكابتشا: {e}")
-        return False
+# ════════════════════════════════════════════════════════════
+# 🔥 التعديل الحاسم: دوال حل كابتشا الأزرار بالضغط عليها (من الصور)
+# ════════════════════════════════════════════════════════════
 
-# ─── استخراج الإيموجي المطلوب من الرسالة (حتى بدون كلمة "اضغط على") ───
-def _extract_target_emoji_from_message(text: str) -> str | None:
-    """استخراج الإيموجي المطلوب من الرسالة حتى لو لم يكن بجانب كلمة 'اضغط على'.
-    مثال: "؟ 🍎" → يريد 🍎
-    """
+def _extract_target_emoji_advanced(text: str) -> str | None:
+    """استخراج الإيموجي المطلوب بدقة من نص مثل: 'اضغط على الرمز: 🦄'."""
     if not text:
         return None
-    
-    # محاولة استخراج الإيموجي من النص
-    emojis_in_text = re.findall(r'[\U0001F000-\U0001FAFF\u2600-\u27BF]', text)
-    
-    # إذا وجد إيموجي واحد فقط في النص → هذا هو المطلوب
-    if len(emojis_in_text) == 1:
-        return emojis_in_text[0]
-    
-    # إذا وجد عدة إيموجي → نختار الأكثر ظهوراً أو الأول
-    if emojis_in_text:
-        # استخراج الإيموجي المطلوب من النمط "؟ ❤️"
-        match = re.search(r'[؟?]\s*([\U0001F000-\U0001FAFF\u2600-\u27BF])', text)
-        if match:
-            return match.group(1)
-        
-        # إذا كان هناك علامة استفهام قبل الإيموجي
-        match = re.search(r'([\U0001F000-\U0001FAFF\u2600-\u27BF])\s*[؟?]', text)
-        if match:
-            return match.group(1)
-        
-        # اختيار أول إيموجي
-        return emojis_in_text[0]
-    
+    m = re.search(r'الرمز\s*[:：]?\s*([\U0001F000-\U0001FAFF\u2600-\u27BF\u2190-\u21FF\u2B00-\u2BFF])', text)
+    if m:
+        return m.group(1)
+    m = re.search(r'على\s+([\U0001F000-\U0001FAFF\u2600-\u27BF\u2190-\u21FF\u2B00-\u2BFF])', text)
+    if m:
+        return m.group(1)
+    emojis = re.findall(r'[\U0001F000-\U0001FAFF\u2600-\u27BF\u2190-\u21FF\u2B00-\u2BFF]', text)
+    if emojis:
+        return emojis[0]
     return None
 
-
-# ─── الضغط على الزر الذي يحتوي على إيموجي محدد (من بين عدة أزرار) ───
-async def _click_button_with_emoji(client, message, target_emoji: str) -> bool:
-    """الضغط على الزر الذي يحتوي على الإيموجي المطلوب."""
-    if not message or not message.buttons:
+async def _click_callback_button_by_emoji(client, message, target_emoji: str) -> bool:
+    """الضغط على الزر الذي يحمل نفس الإيموجي المطلوب (طريقة الأزرار الصحيحة)."""
+    if not message or not message.reply_markup:
         return False
-    
-    for row in message.buttons:
+    keyboard = message.reply_markup.inline_keyboard
+    for row in keyboard:
         for button in row:
-            button_text = getattr(button, "text", "") or ""
-            
-            # استخراج الإيموجي من نص الزر
-            button_emojis = re.findall(r'[\U0001F000-\U0001FAFF\u2600-\u27BF]', button_text)
-            
-            # إذا كان الزر يحتوي على الإيموجي المطلوب
-            if target_emoji in button_emojis:
+            button_text = button.text or ""
+            if target_emoji in button_text:
                 try:
                     await button.click()
-                    await asyncio.sleep(RAKSH_CAPTCHA_BUTTON_WAIT)
+                    await asyncio.sleep(0.8)
                     return True
                 except Exception as e:
-                    logger.warning(f"فشل الضغط على الزر {button_text}: {e}")
-    
+                    logger.warning(f"فشل الضغط على زر {button_text}: {e}")
     return False
 
-
-# ─── حل كابتشا الإيموجي المطابق (من بين عدة أزرار) ───
-async def _solve_emoji_matching_captcha(client, message, text: str) -> tuple[bool, str]:
-    """حل كابتشا اختيار الإيموجي المطابق من بين عدة أزرار."""
-    # استخراج الإيموجي المطلوب من الرسالة
-    target_emoji = _extract_target_emoji_from_message(text)
-    
-    if target_emoji:
-        # محاولة الضغط على الزر الذي يحتوي على الإيموجي المطلوب
-        if await _click_button_with_emoji(client, message, target_emoji):
-            return True, f"✅ ضغط على {target_emoji}"
-    
-    return False, "لم يتم العثور على الإيموجي المطلوب"
-
-
-# ─── تحديث الدالة الرئيسية لحل الكابتشا ───
-async def _solve_captcha_from_messages(client, bot_entity, messages: list, phone: str = "") -> tuple[bool, str]:
-    """
-    محاولة حل الكابتشا من رسائل البوت.
-    تتعامل مع جميع الأنواع:
-    - مسائل رياضية
-    - إيموجي مطلوب (مع أو بدون "اضغط على")
-    - أرقام عشوائية
-    - إعادة كتابة نص
-    """
-    for msg in messages:
-        text = msg.text or msg.caption or ""
-        if not text:
-            continue
-        
-        # ── 1. مسألة رياضية ──
-        math_answer = _solve_math_captcha(text)
-        if math_answer:
-            # محاولة الضغط على زر
-            if await _click_button_by_text(client, msg, math_answer):
-                return True, f"زر: {math_answer}"
-            # إرسال كرسالة
-            if await _send_captcha_answer(client, str(msg.chat_id), math_answer):
-                return True, f"رسالة: {math_answer}"
-        
-        # ── 2. إيموجي مطلوب (مع أو بدون "اضغط على") ──
-        # أولاً: استخراج الإيموجي من النمط "اضغط على (😊)"
-        emoji_target = _extract_emoji_from_captcha(text)
-        if emoji_target:
-            # محاولة الضغط على الزر بنفس الإيموجي
-            if await _click_button_by_text(client, msg, emoji_target):
-                return True, f"إيموجي: {emoji_target}"
-            # محاولة الضغط على الزر الذي يحتوي على الإيموجي
-            if await _click_button_with_emoji(client, msg, emoji_target):
-                return True, f"إيموجي زر: {emoji_target}"
-        
-        # ثانياً: استخراج الإيموجي المطلوب من نص الرسالة (حتى بدون "اضغط على")
-        if not emoji_target:
-            emoji_target = _extract_target_emoji_from_message(text)
-            if emoji_target:
-                if await _click_button_with_emoji(client, msg, emoji_target):
-                    return True, f"إيموجي مطابق: {emoji_target}"
-        
-        # ── 3. رقم عشوائي ──
-        number_answer = _extract_number_captcha(text)
-        if number_answer:
-            if await _click_button_by_text(client, msg, number_answer):
-                return True, f"رقم: {number_answer}"
-            if await _send_captcha_answer(client, str(msg.chat_id), number_answer):
-                return True, f"رسالة: {number_answer}"
-        
-        # ── 4. إعادة كتابة نص ──
-        rewrite_answer = _extract_rewrite_text(text)
-        if rewrite_answer:
-            if await _send_captcha_answer(client, str(msg.chat_id), rewrite_answer):
-                return True, f"نص: {rewrite_answer}"
-        
-        # ── 5. فحص الأزرار المتاحة ──
-        if msg.buttons:
-            # محاولة الضغط على زر "بدء" أو "التالي"
-            for row in msg.buttons:
-                for button in row:
-                    button_text = getattr(button, "text", "") or ""
-                    if "بدء" in button_text or "start" in button_text.lower() or "التالي" in button_text:
-                        try:
-                            await button.click()
-                            await asyncio.sleep(RAKSH_CAPTCHA_BUTTON_WAIT)
-                            return True, f"زر بدء/التالي: {button_text}"
-                        except Exception:
-                            pass
-            
-            # إذا كان هناك زر واحد فقط → اضغطه
-            all_buttons = [btn for row in msg.buttons for btn in row]
-            if len(all_buttons) == 1:
-                try:
-                    await all_buttons[0].click()
-                    await asyncio.sleep(RAKSH_CAPTCHA_BUTTON_WAIT)
-                    return True, f"زر وحيد: {all_buttons[0].text}"
-                except Exception:
-                    pass
-    
-    return False, "لم يتم العثور على كابتشا قابلة للحل"
-
-async def _solve_captcha_with_ai_and_buttons(client, bot_entity, phone: str = "", max_attempts: int = 3) -> tuple[bool, str]:
-    """
-    حل كابتشا متقدم باستخدام:
-    1. تحليل الأزرار مباشرة + الأنماط النصية
-    2. Groq AI كاحتياط إذا فشلت الأنماط
-    """
-    GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-    
-    # ── 1. المحاولة الأولى: الأنماط النصية + الأزرار ──
-    for attempt in range(max_attempts):
-        if attempt > 0:
-            await asyncio.sleep(2)
-        messages = _as_message_list(await client.get_messages(bot_entity, limit=10))
-        solved, detail = await _solve_captcha_from_messages(client, bot_entity, messages, phone)
-        if solved:
-            return True, detail
-    
-    # ── 2. إذا فشلت الأنماط → استخدام Groq AI ──
-    if not GROQ_API_KEY:
-        return False, "لم يتم العثور على كابتشا قابلة للحل"
-    
-    for attempt in range(max_attempts):
+async def _solve_captcha_smart_with_buttons(client, bot_entity, phone: str = "") -> tuple[bool, str]:
+    """حل كابتشا 'اضغط على الرمز' عن طريق الضغط على الزر الحقيقي."""
+    for attempt in range(5):
         if attempt > 0:
             await asyncio.sleep(2)
         
         messages = _as_message_list(await client.get_messages(bot_entity, limit=10))
-        
         for msg in messages:
             text = msg.text or msg.caption or ""
+            if not text:
+                continue
             
-            # ── استخراج نصوص الأزرار ──
-            button_labels = _get_all_button_texts(msg)
+            # 1) البحث عن الإيموجي المطلوب في النص
+            target_emoji = _extract_target_emoji_advanced(text)
+            if target_emoji:
+                if await _click_callback_button_by_emoji(client, msg, target_emoji):
+                    return True, f"✅ ضغطنا على الزر {target_emoji}"
             
-            if button_labels or text:
-                prompt = f"""
-                أنا بوت تيليغرام. تلقيت رسالة تحقق تحتوي على أزرار.
-                
-                نص الرسالة:
-                "{text}"
-                
-                الأزرار المتاحة:
-                {', '.join(button_labels) if button_labels else 'لا توجد أزرار'}
-                
-                أخبرني ماذا يجب أن أفعل:
-                1. إذا كان هناك زر يجب الضغط عليه، أعد اسم الزر كما هو بالضبط.
-                2. إذا كان هناك رقم يجب إرساله، أعد الرقم فقط.
-                3. إذا كان هناك نص يجب كتابته، أعد النص فقط.
-                4. إذا كان هناك إيموجي يجب الضغط عليه، أعد الإيموجي فقط.
-                5. إذا لم يوجد شيء، أعد "لا يوجد"
-                
-                أعد الإجابة فقط بدون أي شرح.
-                """
-                
-                def _groq_request():
+            # 2) إذا لم نجد إيموجي، نبحث عن أزرار عشوائية (زر وحيد)
+            if msg.reply_markup:
+                flat_buttons = [btn for row in msg.reply_markup.inline_keyboard for btn in row]
+                if len(flat_buttons) == 1:
                     try:
-                        r = requests.post(
-                            "https://api.groq.com/openai/v1/chat/completions",
-                            headers={
-                                "Authorization": f"Bearer {GROQ_API_KEY}",
-                                "Content-Type": "application/json"
-                            },
-                            json={
-                                "model": "llama-3.3-70b-versatile",
-                                "messages": [{"role": "user", "content": prompt}],
-                                "max_tokens": 30,
-                                "temperature": 0
-                            },
-                            timeout=15
-                        )
-                        if r.status_code == 200:
-                            data = r.json()
-                            if data.get("choices"):
-                                return data["choices"][0]["message"]["content"].strip()
-                        return None
-                    except Exception:
-                        return None
-                
-                answer = await asyncio.to_thread(_groq_request)
-                
-                if answer and answer.lower() != "لا يوجد":
-                    # 1. محاولة الضغط على زر
-                    if await _click_button_by_text(client, msg, answer):
+                        await flat_buttons[0].click()
                         await asyncio.sleep(1)
-                        return True, f"AI زر: {answer}"
-                    
-                    # 2. إرسال كرسالة
-                    if await _send_captcha_answer(client, str(msg.chat_id), answer):
-                        await asyncio.sleep(1)
-                        return True, f"AI رسالة: {answer}"
+                        return True, f"✅ ضغطنا على الزر الوحيد: {flat_buttons[0].text}"
+                    except:
+                        pass
                 
-                # ── احتياط: زر واحد فقط → اضغطه ──
-                if len(button_labels) == 1 and not text:
-                    if await _click_button_by_text(client, msg, button_labels[0]):
-                        return True, f"زر وحيد: {button_labels[0]}"
+                for btn in flat_buttons:
+                    btn_lower = (btn.text or "").lower()
+                    if any(word in btn_lower for word in ['تحقق', 'verify', 'انضمام', 'join', 'التالي', 'تخطي', 'استمرار', 'متابعة']):
+                        try:
+                            await btn.click()
+                            await asyncio.sleep(1)
+                            break
+                        except:
+                            pass
+        await asyncio.sleep(1)
     
-    return False, "فشل حل الكابتشا بعد كل المحاولات"
+    return False, "فشل: لم نعثر على زر الإيموجي المطلوب"
+
+async def _solve_captcha_with_ai_and_buttons(client, bot_entity, phone: str = "", max_attempts: int = 3) -> tuple[bool, str]:
+    # نستدعي النسخة الذكية الجديدة التي تعتمد على الأزرار فقط
+    return await _solve_captcha_smart_with_buttons(client, bot_entity, phone)
