@@ -44,7 +44,7 @@ RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS = 4
 _RAKSH_SESSION_LOCKS: dict[str, asyncio.Lock] = {}
 
 # عدد الحسابات التي ستعمل بالتوازي في قسم "تصويت يحتوي تحقق"
-RAKSH_VOTE_CONCURRENT = 10  # زيادة من 3 إلى 10 لتنفيذ 30 حساب خلال 10-15 ثانية
+RAKSH_VOTE_CONCURRENT = 5  # تعديل من 10 إلى 5 لتقليل الضغط على Groq
 
 def _get_raksh_session_lock(phone_number: str) -> asyncio.Lock:
     key = str(phone_number or "").strip()
@@ -231,10 +231,6 @@ def _clear_raksh_state(context: ContextTypes.DEFAULT_TYPE) -> None:
 RAKSH_MIN_DELAY_SECONDS = 60
 RAKSH_MAX_DELAY_SECONDS = 3 * 60
 RAKSH_VOTE_DELAY_SECONDS = 3
-# The available session pool is the real per-request limit.  A value greater
-# than zero can still be supplied when an operator wants an hourly safety cap;
-# zero keeps the cap disabled instead of silently limiting a 71-account pool
-# to the old hard-coded value of 12.
 try:
     RAKSH_MAX_EXECUTIONS_PER_HOUR = int(
         os.getenv("RAKSH_MAX_EXECUTIONS_PER_HOUR", "0")
@@ -248,7 +244,6 @@ def _get_delay_seconds(service_type: str | None = None, custom_delay: int | None
         if custom_delay is not None:
             return custom_delay
         return 180
-    # التصويت مع التحقق: بدون فاصل زمني - يعمل بالتوازي
     if service_type == "votes_ai":
         return 0  # ⚡ إلغاء الفاصل الزمني تماماً
     if service_type == "votes":
@@ -282,7 +277,6 @@ def _reserve_raksh_execution_slot(user_id: int, service_type: str, phone_number:
         return True
     try:
         with db_conn() as c:
-            # قفل خاص بالمستخدم داخل المعاملة الحالية لمنع سباق طلبين متزامنين.
             c.execute(
                 "SELECT pg_advisory_xact_lock(hashtext(%s))",
                 (f"raksh-hourly:{user_id}",),
@@ -316,11 +310,7 @@ def _reserve_raksh_execution_slot(user_id: int, service_type: str, phone_number:
         return False
 
 def _get_all_active_sessions(service_type: str | None = None) -> list[dict]:
-    """جلب كل الجلسات المخزنة التي يمكن استخدامها لخدمات الرشق.
-
-    يستخدم نفس شروط مخزون «إحالة بوت إجباري» حتى يطابق العدد المعروض
-    عدد الجلسات التي سيحاول نظام الرشق استخدامها فعلياً.
-    """
+    """جلب كل الجلسات المخزنة التي يمكن استخدامها لخدمات الرشق."""
     with db_conn() as c:
         rows = c.execute(
             "SELECT id, phone_number, session_string, raksh_only "
@@ -375,33 +365,28 @@ def _parse_post_link(value: str) -> tuple[str | None, int | None]:
     """تحليل رابط منشور - دعم صيغ متعددة"""
     value = (value or "").strip().strip("<>")
     
-    # دعم الروابط بدون https://
     if not value.startswith("http"):
         value = "https://" + value
     
     parsed = urlparse(value)
     
-    # دعم t.me و telegram.me
     netloc = parsed.netloc.lower().replace("www.", "")
     if netloc not in {"t.me", "telegram.me"}:
         return None, None
     
     parts = [part for part in parsed.path.strip("/").split("/") if part]
     
-    # صيغة: t.me/username/123 أو t.me/c/123/456
     if parts and parts[0] == "s":
         parts = parts[1:]
     
     if len(parts) < 2 or len(parts) > 3 or not parts[-1].isdigit():
         return None, None
     
-    # قناة خاصة: t.me/c/123456789/123
     if parts[0] == "c":
         if len(parts) != 3 or not parts[1].isdigit():
             return None, None
         return f"-100{parts[1]}", int(parts[2])
     
-    # قناة عامة: t.me/username/123
     if len(parts) != 2:
         return None, None
     return f"@{parts[0].lstrip('@')}", int(parts[1])
@@ -1154,7 +1139,7 @@ async def _execute_votes(session, params, is_first):
         await client.disconnect()
 
 async def _execute_votes_ai(session, params, is_first):
-    """تنفيذ تصويت مع تحقق بسرعة عالية - يدعم الضغط على زر المشاركة والتحقق بملصق"""
+    """تنفيذ تصويت مع تحقق - ينتظر رسالة "تم التصويت بنجاح" قبل إعلان النجاح"""
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     await asyncio.wait_for(client.connect(), timeout=10)
     try:
@@ -1185,7 +1170,7 @@ async def _execute_votes_ai(session, params, is_first):
                 logger.warning(f"فشل انضمام القناة للحساب {session['phone_number']}: {e}")
 
         # ═══════════════════════════════════════════════════════════
-        # ═══ 2. الضغط على زر "المشاركة في المسابقة" ═══
+        # ═══ 2. العثور على زر "المشاركة في المسابقة" ═══
         # ═══════════════════════════════════════════════════════════
         messages = _as_message_list(await client.get_messages(post_entity, ids=post_id))
         if not messages:
@@ -1221,106 +1206,128 @@ async def _execute_votes_ai(session, params, is_first):
         # إذا وجدنا زر المشاركة، نضغط عليه
         if join_button is not None:
             try:
-                await join_button.click()
-                logger.info(f"✅ الحساب {session['phone_number']} ضغط على زر المشاركة في المسابقة")
-                await asyncio.sleep(0.5)
+                # زر المشاركة هو زر رابط (URL) وليس زر كولباك
+                # لذا لا نضغط عليه مباشرة، بل نستخرج الرابط منه
+                url = getattr(join_button, "url", None)
+                if url:
+                    # استخراج البوت والبارامتر من الرابط
+                    parsed_bot = _parse_bot_link(url)
+                    if parsed_bot[0]:
+                        bot_username = parsed_bot[0]
+                        start_param = parsed_bot[1]
+                logger.info(f"✅ الحساب {session['phone_number']} وجد زر المشاركة في المسابقة")
+                await asyncio.sleep(0.3)
             except Exception as e:
-                logger.warning(f"فشل الضغط على زر المشاركة للحساب {session['phone_number']}: {e}")
+                logger.warning(f"فشل التعامل مع زر المشاركة للحساب {session['phone_number']}: {e}")
 
         # ═══════════════════════════════════════════════════════════
-        # ═══ 3. الدخول للبوت عبر "Start Bot" ═══
+        # ═══ 3. الدخول للبوت عبر إرسال /start مع البارامتر ═══
         # ═══════════════════════════════════════════════════════════
         if bot_username:
             try:
                 bot_entity = await client.get_entity(bot_username)
                 
+                # حفظ آخر رسالة من البوت قبل البدء
                 previous_bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=5))
                 previous_bot_message_id = _latest_message_id(previous_bot_messages)
                 
-                await client(StartBotRequest(
-                    bot=bot_entity,
-                    peer=bot_entity,
-                    start_param=start_param or "",
-                ))
-                logger.info(f"✅ الحساب {session['phone_number']} بدأ محادثة البوت")
+                # إرسال /start مع البارامتر مباشرة (بدون StartBotRequest)
+                # هذا يعمل أفضل مع بوتات المسابقات
+                start_command = "/start" + (f" {start_param}" if start_param else "")
+                await client.send_message(bot_entity, start_command)
+                logger.info(f"✅ الحساب {session['phone_number']} أرسل: {start_command}")
                 await asyncio.sleep(0.5)
             except Exception as e:
-                logger.warning(f"فشل بدء محادثة البوت للحساب {session['phone_number']}: {e}")
-                return False, f"فشل بدء محادثة البوت: {str(e)[:80]}"
+                logger.warning(f"فشل إرسال /start للحساب {session['phone_number']}: {e}")
+                return False, f"فشل إرسال /start: {str(e)[:80]}"
         else:
             return False, "لم يُعثر على رابط بوت في المنشور"
 
         # ═══════════════════════════════════════════════════════════
-        # ═══ 4. الضغط على /start داخل البوت ═══
+        # ═══ 4. حل التحقق: "اضغط على الرمز لإكمال التحقق لست روبوت" ═══
         # ═══════════════════════════════════════════════════════════
-        try:
-            await client.send_message(bot_entity, "/start")
-            logger.info(f"✅ الحساب {session['phone_number']} ضغط على /start")
-            await asyncio.sleep(0.5)
-        except Exception as e:
-            logger.warning(f"فشل إرسال /start للحساب {session['phone_number']}: {e}")
+        # يظهر ملصقات/ستيكرات، يجب اختيار الملصق الصحيح
+        bot_messages = await _get_fresh_bot_messages(
+            client, bot_entity,
+            after_id=previous_bot_message_id,
+            limit=15,
+            attempts=3,
+            delay=0.5
+        )
+
+        solved_captcha = False
+        for msg in bot_messages:
+            text = getattr(msg, "message", "") or getattr(msg, "text", "") or ""
+            
+            # البحث عن رسالة "اضغط على الرمز"
+            if "اضغط على الرمز" in text or "لست روبوت" in text or "التحقق" in text:
+                # البحث عن أزرار تحتوي ملصقات/ستيكرات
+                for row in getattr(msg, "buttons", None) or []:
+                    for button in row:
+                        button_text = getattr(button, "text", "") or ""
+                        # البحث عن أي زر يحتوي إيموجي أو ملصق
+                        if button_text and any(
+                            0x1F300 <= ord(char) <= 0x1FAFF or 0x2600 <= ord(char) <= 0x27BF
+                            for char in button_text
+                        ):
+                            # الضغط على الزر
+                            try:
+                                await button.click()
+                                logger.info(f"✅ الحساب {session['phone_number']} ضغط على الملصق: {button_text}")
+                                solved_captcha = True
+                                await asyncio.sleep(0.5)
+                                break
+                            except Exception as click_err:
+                                logger.warning(f"فشل الضغط على الملصق {button_text} للحساب {session['phone_number']}: {click_err}")
+                    if solved_captcha:
+                        break
+                if solved_captcha:
+                    break
 
         # ═══════════════════════════════════════════════════════════
-        # ═══ 5. اختيار الملصق الصحيح للتحقق ═══
+        # ═══ 5. انتظار رسالة "تم التصويت بنجاح" ═══
         # ═══════════════════════════════════════════════════════════
-        try:
+        # ننتظر حتى تصل رسالة تؤكد نجاح التصويت
+        success_keywords = (
+            "تم التصويت", "تم تسجيل التصويت", "صوتك مسجل",
+            "تم التصويت بنجاح", "vote submitted", "vote recorded",
+            "voted successfully", "your vote", "تم قبول التصويت",
+            "شكراً لتصويتك", "شكرا لتصويتك", "تم الادلاء بصوتك",
+            "تم الإدلاء بصوتك", "سجلنا تصويتك", "تم تسجيل صوتك"
+        )
+        
+        for attempt in range(5):  # حتى 5 محاولات
+            await asyncio.sleep(1)  # انتظار ثانية واحدة بين المحاولات
             bot_messages = await _get_fresh_bot_messages(
                 client, bot_entity,
                 after_id=previous_bot_message_id,
-                limit=15,
-                attempts=3,
-                delay=0.5
+                limit=10,
+                attempts=2,
+                delay=0.3
             )
             
-            # البحث عن رسالة التحقق واختيار الملصق الصحيح
             for msg in bot_messages:
                 text = getattr(msg, "message", "") or getattr(msg, "text", "") or ""
-                
-                # البحث عن رسالة "اضغط على الرمز"
-                if "اضغط على الرمز" in text or "لست روبوت" in text or "التحقق" in text:
-                    # البحث عن أزرار تحتوي ملصقات/ستيكرات
-                    for row in getattr(msg, "buttons", None) or []:
+                if any(word in text.casefold() for word in success_keywords):
+                    return True, f"✅ تم التصويت مع التحقق من {session['phone_number']}"
+            
+            # أيضاً نفحص المنشور الأصلي - قد يظهر زر التصويت به النتيجة
+            try:
+                refreshed_post = _as_message_list(await client.get_messages(post_entity, ids=post_id))
+                if refreshed_post:
+                    post_msg = refreshed_post[0]
+                    # البحث عن زر التصويت في المنشور
+                    for row in getattr(post_msg, "buttons", None) or []:
                         for button in row:
                             button_text = getattr(button, "text", "") or ""
-                            # البحث عن أي زر يحتوي إيموجي أو ملصق
-                            if button_text and any(
-                                0x1F300 <= ord(char) <= 0x1FAFF or 0x2600 <= ord(char) <= 0x27BF
-                                for char in button_text
-                            ):
-                                # اختيار زر يحتوي رمز الحماية أو أي ملصق مشابه
-                                await button.click()
-                                logger.info(f"✅ الحساب {session['phone_number']} اختار الملصق: {button_text}")
-                                await asyncio.sleep(0.5)
-                                break
-                        else:
-                            continue
-                        break
-                    break
-        except Exception as e:
-            logger.warning(f"فشل اختيار الملصق للحساب {session['phone_number']}: {e}")
+                            if "تصويت" in button_text or "صوت" in button_text or "❤️" in button_text:
+                                # وجدنا زر التصويت - ربما تم التصويت
+                                return True, f"✅ تم التصويت من {session['phone_number']}"
+            except Exception:
+                pass
 
-        # ═══════════════════════════════════════════════════════════
-        # ═══ 6. التحقق من نجاح التصويت ═══
-        # ═══════════════════════════════════════════════════════════
-        try:
-            bot_messages = await _get_fresh_bot_messages(
-                client, bot_entity,
-                after_id=_latest_message_id(bot_messages),
-                limit=10,
-                attempts=3,
-                delay=0.5
-            )
-            
-            for msg in bot_messages:
-                text = getattr(msg, "message", "") or getattr(msg, "text", "") or ""
-                if any(word in text.casefold() for word in ("تم التصويت", "تم تسجيل التصويت", "صوتك مسجل", "تم التصويت بنجاح", "vote submitted", "vote recorded")):
-                    return True, f"✅ تم التصويت مع التحقق من {session['phone_number']}"
-        except Exception:
-            pass
-
-        # إذا وصلنا هنا، قد يكون التصويت نجح لكن لم نجد رسالة تأكيد
-        # نعتبره نجاحاً لأن جميع الخطوات تمت بنجاح
-        return True, f"✅ تم التصويت من {session['phone_number']}"
+        # إذا لم تصل رسالة تأكيد، نعتبره فشلاً وليس نجاحاً
+        return False, "لم تصل رسالة تأكيد التصويت بعد التحقق"
 
     except Exception as e:
         return False, f"❌ فشل: {str(e)[:80]}"
