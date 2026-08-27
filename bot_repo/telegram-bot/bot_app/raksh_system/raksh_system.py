@@ -1400,130 +1400,8 @@ RAKSH_CAPTCHA_SOLVE_TIMEOUT = 20
 RAKSH_CAPTCHA_MAX_ATTEMPTS = 5
 RAKSH_CAPTCHA_BUTTON_WAIT = 0.7
 
-RAKSH_CAPTCHA_PATTERNS = {
-    "math": [
-        r'كم ناتج[:\s]*(\d+)\s*([+\-*x×])\s*(\d+)',
-        r'حل المسألة[:\s]*(\d+)\s*([+\-*x×])\s*(\d+)',
-        r'حل المسأله[:\s]*(\d+)\s*([+\-*x×])\s*(\d+)',
-        r'المعادلة[:\s]*(\d+)\s*([+\-*x×])\s*(\d+)',
-        r'المعادله[:\s]*(\d+)\s*([+\-*x×])\s*(\d+)',
-        r'(\d+)\s*([+\-*x×])\s*(\d+)\s*=\s*\?',
-        r'(\d+)\s*([+\-*x×])\s*(\d+)\s*=\s*_',
-    ],
-    "emoji": [
-        r'اضغط على\s*\(([^\w\s]{1,5})\)',
-        r'انقر على\s*\(([^\w\s]{1,5})\)',
-        r'اختر\s*\(([^\w\s]{1,5})\)',
-        r'هذا الإيموجي\s*\(([^\w\s]{1,5})\)',
-        r'يشبه\s*\(([^\w\s]{1,5})\)',
-        r'الرمز هو\s*\(([^\w\s]{1,5})\)',
-    ],
-    "number": [
-        r'أرسل الرقم[:\s]*(\d{4,6})',
-        r'ارسل الرقم[:\s]*(\d{4,6})',
-        r'الرقم التالي[:\s]*(\d{4,6})',
-        r'كود التحقق[:\s]*(\d{4,6})',
-        r'الكود هو[:\s]*(\d{4,6})',
-    ],
-    "rewrite": [
-        r'أعد كتابة[:\s]*["\']([^"\']+)["\']',
-        r'اكتب[:\s]*["\']([^"\']+)["\']',
-        r'أرسل هذا النص[:\s]*["\']([^"\']+)["\']',
-        r'انسخ النص[:\s]*["\']([^"\']+)["\']',
-    ],
-}
-
-def _normalize_captcha_text(value: str) -> str:
-    if not value:
-        return ""
-    return (
-        value.replace("\ufe0f", "")
-        .replace("\u200d", "")
-        .replace("\u200c", "")
-        .replace("\u200b", "")
-        .strip()
-        .lower()
-    )
-
-def _extract_emoji_from_captcha(text: str) -> str | None:
-    if not text:
-        return None
-    for pattern in RAKSH_CAPTCHA_PATTERNS["emoji"]:
-        match = re.search(pattern, text)
-        if match:
-            emoji = match.group(1).strip()
-            if any('\U0001F000' <= char <= '\U0001FAFF' or '\u2600' <= char <= '\u27BF' or '\u2B00' <= char <= '\u2BFF' for char in emoji):
-                return emoji
-    return None
-
-def _solve_math_captcha(text: str) -> str | None:
-    if not text:
-        return None
-    for pattern in RAKSH_CAPTCHA_PATTERNS["math"]:
-        match = re.search(pattern, text)
-        if match:
-            try:
-                n1 = int(match.group(1))
-                op = match.group(2)
-                n2 = int(match.group(3))
-                if op in ('+', 'x', '×'):
-                    return str(n1 + n2 if op == '+' else n1 * n2)
-                elif op == '-':
-                    return str(n1 - n2)
-            except (ValueError, TypeError):
-                continue
-    return None
-
-def _extract_number_captcha(text: str) -> str | None:
-    if not text:
-        return None
-    for pattern in RAKSH_CAPTCHA_PATTERNS["number"]:
-        match = re.search(pattern, text)
-        if match:
-            return match.group(1)
-    return None
-
-def _extract_rewrite_text(text: str) -> str | None:
-    if not text:
-        return None
-    for pattern in RAKSH_CAPTCHA_PATTERNS["rewrite"]:
-        match = re.search(pattern, text)
-        if match:
-            return match.group(1).strip()
-    return None
-
-def _button_matches_target(button_text: str, target: str) -> bool:
-    if not button_text or not target:
-        return False
-    clean_button = _normalize_captcha_text(button_text)
-    clean_target = _normalize_captcha_text(target)
-    return clean_target in clean_button or clean_button in clean_target
-
-def _get_all_button_texts(message) -> list[str]:
-    buttons = []
-    for row in getattr(message, "buttons", None) or []:
-        for button in row:
-            text = getattr(button, "text", "")
-            if text and not getattr(button, "url", None):
-                buttons.append(text)
-    return buttons
-
-async def _click_button_by_text(client, message, target_text: str) -> bool:
-    if not message or not message.buttons:
-        return False
-    for row in message.buttons:
-        for button in row:
-            if _button_matches_target(getattr(button, "text", ""), target_text):
-                try:
-                    await button.click()
-                    await asyncio.sleep(RAKSH_CAPTCHA_BUTTON_WAIT)
-                    return True
-                except Exception as e:
-                    logger.warning(f"فشل الضغط على الزر {button.text}: {e}")
-    return False
-
-# ─── استخراج الإيموجي المطلوب من الرسالة ───
 def _extract_target_emoji_from_message(text: str) -> str | None:
+    """استخراج الإيموجي المطلوب من الرسالة."""
     if not text:
         return None
     emojis_in_text = re.findall(r'[\U0001F000-\U0001FAFF\u2600-\u27BF]', text)
@@ -1536,8 +1414,8 @@ def _extract_target_emoji_from_message(text: str) -> str | None:
         return emojis_in_text[0]
     return None
 
-# ─── الضغط على الزر الذي يحتوي على الإيموجي المطلوب ───
 async def _click_button_with_emoji(client, message, target_emoji: str) -> bool:
+    """الضغط على الزر الذي يحتوي على الإيموجي المطلوب."""
     if not message or not message.buttons:
         return False
     for row in message.buttons:
@@ -1552,7 +1430,6 @@ async def _click_button_with_emoji(client, message, target_emoji: str) -> bool:
                     logger.warning(f"فشل الضغط على الزر {button_text}: {e}")
     return False
 
-# ─── الحل الذكي الجديد المعتمد على الأزرار فقط (بدون AI) ───
 async def _solve_captcha_smart_with_buttons(client, bot_entity, phone: str = "", max_attempts: int = 3) -> tuple[bool, str]:
     """حل كابتشا 'اضغط على الرمز' عن طريق الضغط على الزر الحقيقي."""
     for attempt in range(max_attempts):
