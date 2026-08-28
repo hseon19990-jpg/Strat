@@ -1139,7 +1139,7 @@ async def _execute_votes(session, params, is_first):
         await client.disconnect()
 
 # ════════════════════════════════════════════════════════════
-# ═══ 4.5 دالة تصويت مع تحقق (النسخة النهائية - تستخدم ResolveUsernameRequest) ═══
+# ═══ 4.5 دالة تصويت مع تحقق (النسخة النهائية - تقرأ فوراً وتفحص الأزرار) ═══
 # ════════════════════════════════════════════════════════════
 
 async def _execute_votes_ai(session, params, is_first):
@@ -1167,12 +1167,10 @@ async def _execute_votes_ai(session, params, is_first):
 
         logger.info(f"📋 الحساب {session['phone_number']} - البوت: {bot_username} | التوكن: {bot_start_param}")
 
-        # 2. فتح البوت بالتوكن (استخدام ResolveUsernameRequest بدلاً من get_entity)
+        # 2. فتح البوت بالتوكن
         try:
-            resolved = await client(ResolveUsernameRequest(bot_username))
-            bot_entity = resolved.users[0] if resolved.users else resolved.chats[0]
+            bot_entity = await client.get_entity(bot_username)
         except Exception as e:
-            logger.info(f"🔴 الحساب {session['phone_number']} - فشل العثور على البوت: {str(e)[:80]}")
             return False, f"فشل العثور على البوت: {str(e)[:80]}"
 
         await client(StartBotRequest(
@@ -1190,15 +1188,11 @@ async def _execute_votes_ai(session, params, is_first):
         for attempt in range(5):
             bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=30))
             
-            # البحث عن رسالة تحتوي "لست روبوت" أو "اضغط على الرمز"
+            # البحث عن رسالة تحتوي أزرار (أي أزرار = رسالة تحقق)
             for msg in bot_messages:
-                msg_text = getattr(msg, "message", "") or getattr(msg, "text", "") or ""
-                if any(keyword in msg_text.casefold() for keyword in 
-                       ["لست روبوت", "لست بوت", "not a robot", "تحقق", "captcha", 
-                        "اضغط على الرمز", "اختر الرمز", "verification"]):
-                    if getattr(msg, "buttons", None):
-                        verification_message = msg
-                        break
+                if getattr(msg, "buttons", None):
+                    verification_message = msg
+                    break
             
             if verification_message:
                 break
@@ -1207,19 +1201,11 @@ async def _execute_votes_ai(session, params, is_first):
             await asyncio.sleep(1.0)
 
         if not verification_message:
-            # إذا لم نجد رسالة تحقق، نبحث عن أي رسالة بأزرار
-            bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=30))
-            for msg in bot_messages:
-                if getattr(msg, "buttons", None):
-                    verification_message = msg
-                    break
-
-        if not verification_message:
             return False, "لم يتم العثور على رسالة تحقق."
 
         # 5. استخراج الإيموجي المطلوب
         verification_text = getattr(verification_message, "message", "") or getattr(verification_message, "text", "") or ""
-        logger.info(f"📋 الحسab {session['phone_number']} - رسالة التحقق: {verification_text[:100]}")
+        logger.info(f"📋 الحساب {session['phone_number']} - رسالة التحقق: {verification_text[:100]}")
 
         target_emoji = None
         emoji_pattern = re.compile(r'[\U0001F300-\U0001FAFF\u2600-\u27BF\uFE0F]')
