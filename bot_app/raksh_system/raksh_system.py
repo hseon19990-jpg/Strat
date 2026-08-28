@@ -1139,7 +1139,7 @@ async def _execute_votes(session, params, is_first):
         await client.disconnect()
 
 # ════════════════════════════════════════════════════════════
-# ═══ 4.5 دالة تصويت مع تحقق (النسخة النهائية - تنتظر وتقرأ عدة مرات) ═══
+# ═══ 4.5 دالة تصويت مع تحقق (النسخة النهائية - تقرأ فوراً) ═══
 # ════════════════════════════════════════════════════════════
 
 async def _execute_votes_ai(session, params, is_first):
@@ -1148,8 +1148,8 @@ async def _execute_votes_ai(session, params, is_first):
     الخطوات:
     1. تحليل الرابط المباشر للتصويت (بوت + توكن)
     2. فتح البوت بالتوكن
-    3. انتظار 5-8 ثوانٍ
-    4. قراءة الرسائل 3 مرات بحثاً عن رسالة التحقق
+    3. قراءة رسالة التحقق فوراً (بعد ثانية واحدة)
+    4. إعادة القراءة حتى 5 مرات إذا لم تصل
     5. استخراج الإيموجي المطلوب
     6. الضغط على الزر المطابق
     """
@@ -1180,12 +1180,12 @@ async def _execute_votes_ai(session, params, is_first):
         ))
         logger.info(f"✅ الحساب {session['phone_number']} - فتح البوت بتوكن: {bot_start_param}")
 
-        # 3. انتظار 5-8 ثوانٍ لظهور رسالة التحقق
-        await asyncio.sleep(random.uniform(5.0, 8.0))
+        # 3. قراءة رسالة التحقق فوراً (بعد ثانية واحدة فقط)
+        await asyncio.sleep(1.0)
 
-        # 4. قراءة الرسائل 3 مرات بحثاً عن رسالة التحقق
+        # 4. إعادة القراءة حتى 5 مرات إذا لم تصل رسالة التحقق
         verification_message = None
-        for attempt in range(3):
+        for attempt in range(5):
             bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=30))
             
             # البحث عن رسالة تحتوي "لست روبوت" أو "اضغط على الرمز"
