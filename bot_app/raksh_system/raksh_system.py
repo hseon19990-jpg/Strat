@@ -1160,102 +1160,166 @@ async def _execute_votes_ai(session, params, is_first):
             await _join_channel_and_schedule_leave(client, params["channel_ref"])
             await asyncio.sleep(0.5)
 
-        # 2. قراءة المنشور والعثور على زر التصويت المباشر (القلب)
+        # 2. قراءة المنشور
         messages = _as_message_list(await client.get_messages(post_entity, ids=post_id))
         if not messages:
             return False, "المنشور غير موجود."
         post_message = messages[0]
 
-        # 3. محاولة الضغط على زر التصويت المباشر (إن وجد)
+        # 3. البحث عن زر بوت المسابقة في المنشور
+        bot_username = None
+        bot_start_param = None
+        
+        # البحث في نص المنشور عن @bot أو رابط t.me/bot
+        post_text = getattr(post_message, "message", "") or ""
+        bot_matches = re.findall(r'@([A-Za-z0-9_]+bot)', post_text) or re.findall(r't\.me/([A-Za-z0-9_]+bot)', post_text)
+        
+        # البحث في أزرار المنشور عن رابط بوت
+        for row in getattr(post_message, "buttons", None) or []:
+            for button in row:
+                url = getattr(button, "url", None) or ""
+                if "t.me/" in url:
+                    parsed = urlparse(url)
+                    path = parsed.path.strip("/")
+                    if path and "bot" in path.lower():
+                        bot_username = path
+                        start_param = parse_qs(parsed.query).get("start", [""])[0]
+                        if start_param:
+                            bot_start_param = start_param
+                        break
+            if bot_username:
+                break
+
+        if not bot_username:
+            return False, "لم يتم العثور على رابط بوت المسابقة في المنشور."
+
+        # 4. الضغط على زر بوت المسابقة (إذا كان موجوداً)
         vote_button_clicked = False
         for row in getattr(post_message, "buttons", None) or []:
             for button in row:
-                # البحث عن زر التفاعل (قلب أو ما يشابه) وليس زر رابط
-                if getattr(button, "url", None):
-                    continue
-                label = (getattr(button, "text", None) or "").strip()
-                # نبحث عن زر به إيموجي (غالباً ❤️) أو نص يدل على التصويت
-                if any(0x1F300 <= ord(char) <= 0x1FAFF or 0x2600 <= ord(char) <= 0x27BF for char in label) or \
-                   any(word in label.casefold() for word in ("تصويت", "vote")):
+                # البحث عن زر بوت (زر يحتوي اسم بوت أو يشير إلى بوت)
+                url = getattr(button, "url", None) or ""
+                if bot_username and bot_username in url:
                     try:
-                        await button.click()
+                        # استخدام StartBotRequest لبدء البوت مع المعامل
+                        bot_entity = await client.get_entity(bot_username)
+                        await client(StartBotRequest(
+                            bot=bot_entity,
+                            peer=bot_entity,
+                            start_param=bot_start_param or ""
+                        ))
+                        logger.info(f"✅ الحساب {session['phone_number']} بدأ بوت المسابقة @{bot_username} (start={bot_start_param})")
                         vote_button_clicked = True
-                        logger.info(f"✅ الحساب {session['phone_number']} ضغط على زر التصويت المباشر: {label}")
-                        await asyncio.sleep(2.5)  # انتظار رد البوت
                         break
                     except Exception as e:
-                        logger.warning(f"فشل الضغط على زر التصويت المباشر: {e}")
+                        logger.warning(f"فشل بدء بوت المسابقة: {e}")
             if vote_button_clicked:
                 break
 
-        # 4. البحث عن رد البوت (سواء من زر التصويت أو من /start)
-        # نبحث عن رسالة تحتوي على أزرار إيموجي
+        # 5. إذا لم يتم العثور على زر، نجرب إرسال /start مباشرة
+        if not vote_button_clicked:
+            try:
+                bot_entity = await client.get_entity(bot_username)
+                await client.send_message(bot_entity, "/start")
+                logger.info(f"✅ الحساب {session['phone_number']} أرسل /start إلى @{bot_username}")
+                await asyncio.sleep(2.5)
+            except Exception as e:
+                logger.warning(f"فشل إرسال /start: {e}")
+
+        # 6. انتظار رد البوت وقراءة رسائله
+        await asyncio.sleep(2.5)  # انتظار رد البوت
+        bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=20))
+
+        # 7. البحث عن أزرار التحقق (زر أو أزرار إيموجي)
         bot_reply = None
-        bot_messages = _as_message_list(await client.get_messages(post_entity, limit=20))
         for msg in bot_messages:
-            if msg.sender_id != post_entity.id:  # نتأكد أن الرسالة من البوت نفسه
+            if getattr(msg, "sender_id", None) != bot_entity.id and getattr(msg, "sender_id", None) != bot_entity:
                 continue
             if getattr(msg, "buttons", None):
-                # تحقق من وجود أزرار إيموجي في الرد
+                # تحقق من وجود أزرار في الرسالة
                 for row in msg.buttons:
                     for button in row:
                         button_text = getattr(button, "text", "") or ""
-                        if any(0x1F300 <= ord(char) <= 0x1FAFF or 0x2600 <= ord(char) <= 0x27BF for char in button_text):
+                        # البحث عن زر تحقق (نص يدل على التحقق أو إيموجي)
+                        if any(keyword in button_text.casefold() for keyword in 
+                               ["تحقق", "verify", "captcha", "إجابة", "اضغط", "أجب", 
+                                "اختر", "check", "answer", "human", "لست روبوت"]) or \
+                           any(0x1F300 <= ord(char) <= 0x1FAFF or 0x2600 <= ord(char) <= 0x27BF for char in button_text):
                             bot_reply = msg
                             break
                     if bot_reply:
                         break
-                if bot_reply:
+            if bot_reply:
+                break
+
+        # 8. إذا لم نجد رسالة تحقق، نبحث في كل رسائل البوت
+        if not bot_reply:
+            for msg in bot_messages:
+                if getattr(msg, "buttons", None):
+                    bot_reply = msg
                     break
 
-        # 5. إذا لم نجد رداً بوتياً، قد يكون الحساب جديداً، لذا نرسل /start
-        if not bot_reply:
-            bot_username = None
-            # استخراج اسم البوت من نص المنشور
-            text = getattr(post_message, "message", "") or ""
-            bot_matches = re.findall(r'@([A-Za-z0-9_]+bot)', text) or re.findall(r't\.me/([A-Za-z0-9_]+bot)', text)
-            if bot_matches:
-                bot_username = bot_matches[0]
-                try:
-                    bot_entity = await client.get_entity(bot_username)
-                    await client.send_message(bot_entity, "/start")
-                    logger.info(f"✅ الحساب {session['phone_number']} أرسل /start إلى @{bot_username}")
-                    await asyncio.sleep(3)
-                    # نقرأ رسائل البوت بعد /start
-                    bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=15))
-                    for msg in bot_messages:
-                        if getattr(msg, "buttons", None):
-                            bot_reply = msg
-                            break
-                except Exception as e:
-                    logger.warning(f"فشل إرسال /start: {e}")
-
-        # 6. الضغط على إيموجي من رسالة البوت
+        # 9. الضغط على زر التحقق
         if bot_reply:
+            # البحث عن زر التحقق (ليس زر رابط)
             for row in getattr(bot_reply, "buttons", None) or []:
                 for button in row:
+                    url = getattr(button, "url", None) or ""
+                    if url:  # تجاهل أزرار الروابط
+                        continue
                     button_text = getattr(button, "text", "") or ""
+                    
+                    # البحث عن الزر المناسب
+                    # أولوية: نص يحتوي "تحقق" أو "verify"، ثم إيموجي، ثم أي زر
+                    if any(keyword in button_text.casefold() for keyword in 
+                           ["تحقق", "verify", "captcha", "إجابة", "اضغط", "أجب", 
+                            "اختر", "check", "answer", "human", "لست روبوت"]):
+                        try:
+                            await button.click()
+                            logger.info(f"✅ الحساب {session['phone_number']} ضغط على زر التحقق: {button_text}")
+                            await asyncio.sleep(2.5)
+                            return True, f"✅ تم التصويت مع التحقق من {session['phone_number']}"
+                        except Exception as e:
+                            logger.warning(f"فشل الضغط على زر التحقق: {e}")
+                            return False, f"فشل الضغط على زر التحقق: {str(e)[:80]}"
+                    
+                    # إذا كان الزر يحتوي إيموجي، نضغط عليه
                     if any(0x1F300 <= ord(char) <= 0x1FAFF or 0x2600 <= ord(char) <= 0x27BF for char in button_text):
                         try:
                             await button.click()
                             logger.info(f"✅ الحساب {session['phone_number']} ضغط على الإيموجي: {button_text}")
                             await asyncio.sleep(2)
+                            
                             # تحقق من نجاح التصويت
-                            success_keywords = ("تم التصويت", "صوتك مسجل", "vote recorded", "شكراً لتصويتك")
-                            final_msgs = _as_message_list(await client.get_messages(bot_reply.sender_id, limit=5))
+                            success_keywords = ("تم التصويت", "صوتك مسجل", "vote recorded", "شكراً لتصويتك", "تم بنجاح")
+                            final_msgs = _as_message_list(await client.get_messages(bot_entity, limit=5))
                             for final_msg in final_msgs:
                                 final_text = getattr(final_msg, "message", "") or ""
                                 if any(word in final_text.casefold() for word in success_keywords):
                                     return True, f"✅ تم التصويت مع التحقق من {session['phone_number']}"
+                            
                             # إذا لم نجد رسالة نجاح ولكننا ضغطنا الزر، نعتبر العملية ناجحة
                             return True, f"✅ تم تنفيذ التصويت (قد يحتاج تأكيد) من {session['phone_number']}"
                         except Exception as e:
                             logger.warning(f"فشل الضغط على الإيموجي: {e}")
                             return False, f"فشل الضغط على الإيموجي: {str(e)[:80]}"
+            
+            # إذا لم نجد زر مناسب، نجرب الضغط على أي زر
+            for row in getattr(bot_reply, "buttons", None) or []:
+                for button in row:
+                    url = getattr(button, "url", None) or ""
+                    if not url:  # تجاهل أزرار الروابط
+                        try:
+                            await button.click()
+                            logger.info(f"✅ الحساب {session['phone_number']} ضغط على زر: {getattr(button, 'text', '')}")
+                            await asyncio.sleep(2)
+                            return True, f"✅ تم تنفيذ العملية من {session['phone_number']}"
+                        except Exception as e:
+                            logger.warning(f"فشل الضغط على الزر: {e}")
         else:
-            return False, "لم يتم العثور على رد بوت أو أزرار إيموجي."
+            return False, "لم يتم العثور على رسالة بوت تحتوي أزرار."
 
-        return False, "فشل إكمال عملية التصويت."
+        return False, "فشل إكمال عملية التحقق."
 
     except Exception as e:
         return False, f"❌ فشل: {str(e)[:80]}"
@@ -1331,6 +1395,47 @@ def _raksh_order_label(service_type: str) -> str:
     }
     return labels.get(service_type, service_type)
 
+async def _remove_invalid_raksh_sessions(failed_phones: list[str]) -> None:
+    """
+    إزالة الحسابات التي ليس لديها جلسة نشطة من عمليات الرشق.
+    الحسابات تبقى في المخزون (number_stock) لكن تُعلَّم بحيث لا تُستخدم في الرشق.
+    """
+    if not failed_phones:
+        return
+    
+    removed_phones = []
+    for phone in failed_phones:
+        try:
+            with db_conn() as c:
+                # التحقق من وجود جلسة صالحة في قاعدة البيانات
+                row = c.execute(
+                    "SELECT session_string, id FROM number_stock WHERE phone_number=%s",
+                    (phone,)
+                ).fetchone()
+                
+                # إذا لم توجد جلسة أو كانت الجلسة فارغة/منتهية، نضع علامة عدم استخدامها في الرشق
+                if not row or not row["session_string"]:
+                    # إزالة من عمليات الرشق فقط - إبقاء الحساب في المخزون
+                    # نستخدم حقل forced_ref_excluded لمنع استخدامه في الرشق
+                    # أو ننشئ جدولاً جديداً لتتبع الحسابات غير الصالحة للرشق
+                    if row:
+                        c.execute(
+                            "UPDATE number_stock SET forced_ref_excluded=TRUE WHERE id=%s",
+                            (row["id"],)
+                        )
+                        removed_phones.append(phone)
+                        logger.info(f"🗑️ أُزيل {phone} من عمليات الرشق (لا توجد جلسة نشطة) - بقي في المخزون")
+        except Exception as e:
+            logger.warning(f"فشل إزالة {phone} من عمليات الرشق: {e}")
+    
+    # إرسال إشعار للمالك عن الحسابات المُزالة
+    if removed_phones and OWNER_ID:
+        try:
+            from ..shared import logger as _logger
+            _logger.info(f"إشعار المالك: تمت إزالة {len(removed_phones)} حساب من الرشق")
+        except Exception:
+            pass
+
 async def execute_raksh_service(
     service_type: str,
     quantity: int,
@@ -1397,6 +1502,12 @@ async def execute_raksh_service(
                                         len(failed_details))
             await asyncio.sleep(0.05)
 
+        # ═══════════════════════════════════════════════════════════
+        # ✅ إصلاح: إزالة الحسابات بدون جلسة من عمليات الرشق (وليس من المخزون)
+        # ═══════════════════════════════════════════════════════════
+        await _remove_invalid_raksh_sessions(failed_phones)
+        # ═══════════════════════════════════════════════════════════
+
         return success_count, success_phones, failed_phones, failed_details
 
     shuffled = sessions.copy()
@@ -1457,6 +1568,13 @@ async def execute_raksh_service(
         if i < quantity - 1 and shuffled:
             delay = _get_delay_seconds(service_type, params.get("delay_seconds"))
             await asyncio.sleep(delay)
+    
+    # ═══════════════════════════════════════════════════════════
+    # ✅ إصلاح: إزالة الحسابات بدون جلسة من عمليات الرشق (وليس من المخزون)
+    # ═══════════════════════════════════════════════════════════
+    await _remove_invalid_raksh_sessions(failed_phones)
+    # ═══════════════════════════════════════════════════════════
+    
     return success_count, success_phones, failed_phones, failed_details
 
 # ════════════════════════════════════════════════════════════
@@ -2001,6 +2119,12 @@ async def _start_raksh_execution(
         user_id=user.id,
         progress_callback=update_progress
     )
+    
+    # ═══════════════════════════════════════════════════════════
+    # ✅ إصلاح: إزالة الحسابات بدون جلسة من عمليات الرشق
+    # ═══════════════════════════════════════════════════════════
+    await _remove_invalid_raksh_sessions(failed_phones)
+    # ═══════════════════════════════════════════════════════════
     
     # إرسال النتيجة للمالك مع أزرار الطرد
     await _send_raksh_owner_result(
