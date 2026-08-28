@@ -1060,22 +1060,34 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:bot_ref_numbers")]]))
             return
 
+        # ════════════════════════════════════════════════════════════
+        # ═══ معالج طرد الحسابات الفاشلة (محدث) ═══
+        # ════════════════════════════════════════════════════════════
         if data.startswith("fref_kick:") and is_own:
             _parts = data.split(":")
             _fk_stock_id = int(_parts[1]) if len(_parts) > 1 else 0
             _fk_phone    = _parts[2]      if len(_parts) > 2 else ""
             await q.answer()
             with db_conn() as _fkc:
+                # حذف الحساب نهائياً من جدول number_stock
                 _fkc.execute(
-                    "UPDATE number_stock SET deleted_at=NOW() "
-                    "WHERE (id=%s OR phone_number=%s) AND deleted_at IS NULL",
+                    "DELETE FROM number_stock WHERE (id=%s OR phone_number=%s) AND deleted_at IS NULL",
                     (_fk_stock_id, _fk_phone)
                 )
-            await context.bot.send_message(
-                user.id,
-                f"✅ تم إزالة الرقم <code>{_fk_phone}</code> من قائمة الإحالة الإجبارية.",
-                parse_mode="HTML"
-            )
+                _deleted = _fkc.rowcount
+            if _deleted:
+                await context.bot.send_message(
+                    user.id,
+                    f"✅ تم حذف الرقم <code>{_fk_phone}</code> نهائياً من المخزون.",
+                    parse_mode="HTML"
+                )
+            else:
+                await context.bot.send_message(
+                    user.id,
+                    f"⚠️ لم يتم العثور على الرقم <code>{_fk_phone}</code> في المخزون.",
+                    parse_mode="HTML"
+                )
+            # تحديث لوحة المفاتيح
             try:
                 _orig_kb = q.message.reply_markup.inline_keyboard if q.message and q.message.reply_markup else []
                 _new_kb  = [row for row in _orig_kb if not any(btn.callback_data == data for btn in row)]
@@ -1083,6 +1095,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             except Exception:
                 pass
             return
+        # ════════════════════════════════════════════════════════════
 
         if data == "os:restricted_members" and is_own:
             await q.answer()
