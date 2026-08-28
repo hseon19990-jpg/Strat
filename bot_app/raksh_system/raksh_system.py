@@ -1139,7 +1139,7 @@ async def _execute_votes(session, params, is_first):
         await client.disconnect()
 
 # ════════════════════════════════════════════════════════════
-# ═══ 4.5 دالة تصويت مع تحقق (الإصدار النهائي النهائي) ═══
+# ═══ 4.5 دالة تصويت مع تحقق (الإصدار النهائي) ═══
 # ════════════════════════════════════════════════════════════
 
 async def _execute_votes_ai(session, params, is_first):
@@ -1147,8 +1147,8 @@ async def _execute_votes_ai(session, params, is_first):
     
     الخطوات:
     1. تحليل رابط المنشور
-    2. قراءة المنشور والبحث عن زر "نسخ كود المسابقة" الذي يحتوي رابط البوت مع TOKEN
-    3. بدء البوت بالتوكن الصحيح
+    2. قراءة المنشور والعثور على زر البوت (الملصق الذي يفتح بوت المسابقة)
+    3. الضغط على زر البوت
     4. قراءة رسالة التحقق الخاصة بهذا الحساب فقط ("لست روبوت اضغط على الرمز")
     5. استخراج الإيموجي المطلوب من نص رسالته هو
     6. الضغط على الزر الذي يحتوي الإيموجي المطابق
@@ -1182,62 +1182,40 @@ async def _execute_votes_ai(session, params, is_first):
             return False, "المنشور غير موجود."
         post_message = messages[0]
 
-        # 3. البحث عن زر "نسخ كود المسابقة" الذي يحتوي رابط البوت مع TOKEN
-        bot_username = None
-        bot_start_param = None
-        
+        # 3. البحث عن زر البوت (الملصق) في المنشور - لا نضغط زر التصويت ❤️ 0!
+        bot_button = None
         for row in getattr(post_message, "buttons", None) or []:
             for button in row:
                 url = getattr(button, "url", None) or ""
-                if "t.me/" in url and "?start=" in url:
-                    parsed = urlparse(url)
-                    path = parsed.path.strip("/")
-                    if path:
-                        bot_username = path
-                        start_param = parse_qs(parsed.query).get("start", [""])[0]
-                        if start_param:
-                            bot_start_param = start_param
-                        break
-            if bot_username:
+                # البحث عن زر يحتوي اسم بوت أو رابط بوت
+                if "t.me/" in url or "@" in url:
+                    bot_button = button
+                    break
+                # البحث عن زر نصي يبدأ بـ @ أو يحتوي bot
+                button_text = getattr(button, "text", "") or ""
+                if button_text.startswith("@") or "bot" in button_text.lower() or "بدء" in button_text or "المشاركة" in button_text or "مشاركة" in button_text:
+                    bot_button = button
+                    break
+            if bot_button:
                 break
 
-        if not bot_username:
-            post_text = getattr(post_message, "message", "") or ""
-            bot_matches = re.findall(r'@([A-Za-z0-9_]+bot)', post_text)
-            if bot_matches:
-                bot_username = bot_matches[0]
-                bot_start_param = None
+        if not bot_button:
+            logger.info(f"🔴 [تشخيص] الحساب {session['phone_number']} - فشل: لم يتم العثور على زر بوت في المنشور")
+            return False, "لم يتم العثور على زر بوت المسابقة في المنشور."
 
-        if not bot_username:
-            logger.info(f"🔴 [تشخيص] الحساب {session['phone_number']} - فشل: لم يتم العثور على اسم بوت في الرابط أو المنشور")
-            return False, "لم يتم العثور على رابط بوت المسابقة في المنشور."
+        bot_button_text = getattr(bot_button, "text", "") or ""
+        logger.info(f"📋 [تشخيص] الحساب {session['phone_number']} - زر البوت الموجود: '{bot_button_text}'")
 
-        logger.info(f"📋 [تشخيص] الحساب {session['phone_number']} - اسم البوت: @{bot_username}")
-        logger.info(f"📋 [تشخيص] الحساب {session['phone_number']} - التوكن (start_param): {bot_start_param}")
-
-        # 4. بدء البوت
+        # 4. الضغط على زر البوت لفتح بوت المسابقة
         try:
-            bot_entity = await client.get_entity(bot_username)
+            await bot_button.click()
+            logger.info(f"✅ [تشخيص] الحساب {session['phone_number']} - ضغط على زر البوت: '{bot_button_text}'")
         except Exception as e:
-            logger.info(f"🔴 [تشخيص] الحساب {session['phone_number']} - فشل العثور على البوت: {str(e)[:80]}")
-            return False, f"فشل العثور على البوت @{bot_username}: {str(e)[:80]}"
-
-        if bot_start_param:
-            await client(StartBotRequest(
-                bot=bot_entity,
-                peer=bot_entity,
-                start_param=bot_start_param
-            ))
-            logger.info(f"✅ [تشخيص] الحساب {session['phone_number']} - بدأ البوت @{bot_username} مع توكن: {bot_start_param}")
-        else:
-            await client.send_message(bot_entity, "/start")
-            logger.info(f"✅ [تشخيص] الحساب {session['phone_number']} - أرسل /start إلى @{bot_username}")
+            logger.warning(f"⚠️ [تشخيص] الحساب {session['phone_number']} - فشل الضغط على زر البوت: {e}")
 
         # 5. انتظار رد البوت وقراءة رسائله
         await asyncio.sleep(random.uniform(2.0, 3.0))
-        bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=30))
-        
-        logger.info(f"📋 [تشخيص] الحساب {session['phone_number']} - عدد رسائل البوت: {len(bot_messages)}")
+        bot_messages = _as_message_list(await client.get_messages(post_entity, limit=10))
 
         # 6. البحث عن رسالة التحقق
         verification_message = None
@@ -1257,14 +1235,27 @@ async def _execute_votes_ai(session, params, is_first):
                     break
 
         if not verification_message:
+            # إذا لم نجد رسالة تحقق، نرسل /start للبوت
             try:
-                await client.send_message(bot_entity, "/start")
-                await asyncio.sleep(2)
-                bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=30))
-                for msg in bot_messages:
-                    if getattr(msg, "buttons", None):
-                        verification_message = msg
-                        break
+                # البحث عن اسم البوت من زر البوت
+                bot_username = None
+                url = getattr(bot_button, "url", None) or ""
+                if "t.me/" in url:
+                    parsed = urlparse(url)
+                    bot_username = parsed.path.strip("/")
+                elif url.startswith("@"):
+                    bot_username = url.lstrip("@")
+                
+                if bot_username:
+                    bot_entity = await client.get_entity(bot_username)
+                    await client.send_message(bot_entity, "/start")
+                    logger.info(f"✅ [تشخيص] الحساب {session['phone_number']} - أرسل /start إلى @{bot_username}")
+                    await asyncio.sleep(2)
+                    bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=30))
+                    for msg in bot_messages:
+                        if getattr(msg, "buttons", None):
+                            verification_message = msg
+                            break
             except Exception:
                 pass
 
@@ -1301,11 +1292,11 @@ async def _execute_votes_ai(session, params, is_first):
                         await asyncio.sleep(random.uniform(2.0, 3.0))
                         
                         success_keywords = ("تم التصويت", "صوتك مسجل", "vote recorded", "شكراً لتصويتك", "تم بنجاح")
-                        final_msgs = _as_message_list(await client.get_messages(bot_entity, limit=10))
+                        final_msgs = _as_message_list(await client.get_messages(post_entity, limit=10))
                         for final_msg in final_msgs:
                             final_text = getattr(final_msg, "message", "") or ""
                             if any(word in final_text.casefold() for word in success_keywords):
-                                logger.info(f"✅ [تشخيص] الحساب {session['phone_number']} - نجح التصويت: {final_text[:100]}")
+                                logger.info(f"✅ [تشخيص] الحسab {session['phone_number']} - نجح التصويت: {final_text[:100]}")
                                 return True, f"✅ تم التصويت مع التحقق من {session['phone_number']}"
                         
                         logger.info(f"⚠️ [تشخيص] الحساب {session['phone_number']} - ضغط الزر لكن لم يصل تأكيد نجاح")
@@ -1319,11 +1310,11 @@ async def _execute_votes_ai(session, params, is_first):
                 ):
                     try:
                         await button.click()
-                        logger.info(f"✅ [تشخيص] الحساب {session['phone_number']} - ضغط على الإيموجي: '{button_text}' (بدون إيموجي مستهدف)")
+                        logger.info(f"✅ [تشخيص] الحسab {session['phone_number']} - ضغط على الإيموجي: '{button_text}' (بدون إيموجي مستهدف)")
                         await asyncio.sleep(random.uniform(2.0, 3.0))
                         
                         success_keywords = ("تم التصويت", "صوتك مسجل", "vote recorded", "شكراً لتصويتك", "تم بنجاح")
-                        final_msgs = _as_message_list(await client.get_messages(bot_entity, limit=10))
+                        final_msgs = _as_message_list(await client.get_messages(post_entity, limit=10))
                         for final_msg in final_msgs:
                             final_text = getattr(final_msg, "message", "") or ""
                             if any(word in final_text.casefold() for word in success_keywords):
