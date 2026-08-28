@@ -1139,18 +1139,18 @@ async def _execute_votes(session, params, is_first):
         await client.disconnect()
 
 # ════════════════════════════════════════════════════════════
-# ═══ 4.5 دالة تصويت مع تحقق (المطورة) - النسخة الجديدة ═══
+# ═══ 4.5 دالة تصويت مع تحقق (المطورة) - الإصدار النهائي ═══
 # ════════════════════════════════════════════════════════════
 
 async def _execute_votes_ai(session, params, is_first):
-    """تنفيذ تصويت مع تحقق - يدعم الحسابات الجديدة والمفعّلة مسبقاً.
+    """تنفيذ تصويت مع تحقق - كل حساب يقرأ رسالة التحقق الخاصة به فقط.
     
     الخطوات:
     1. تحليل رابط المنشور
     2. قراءة المنشور والبحث عن زر "نسخ كود المسابقة" الذي يحتوي رابط البوت مع TOKEN
     3. بدء البوت بالتوكن الصحيح
-    4. قراءة رسالة التحقق ("لست روبوت اضغط على الرمز")
-    5. استخراج الإيموجي المطلوب من نص الرسالة
+    4. قراءة رسالة التحقق الخاصة بهذا الحساب فقط ("لست روبوت اضغط على الرمز")
+    5. استخراج الإيموجي المطلوب من نص رسالته هو
     6. الضغط على الزر الذي يحتوي الإيموجي المطابق
     7. التأكد من نجاح التصويت برسالة "تم التصويت بنجاح!"
     """
@@ -1227,11 +1227,11 @@ async def _execute_votes_ai(session, params, is_first):
             await client.send_message(bot_entity, "/start")
             logger.info(f"✅ الحساب {session['phone_number']} أرسل /start إلى @{bot_username}")
 
-        # 5. انتظار رد البوت وقراءة رسائله
+        # 5. انتظار رد البوت وقراءة رسائله الخاصة بهذا الحساب فقط
         await asyncio.sleep(random.uniform(2.0, 3.0))  # انتظار رد البوت
         bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=30))
 
-        # 6. البحث عن رسالة التحقق ("لست روبوت اضغط على الرمز")
+        # 6. البحث عن رسالة التحقق الخاصة بهذا الحساب ("لست روبوت اضغط على الرمز")
         verification_message = None
         for msg in bot_messages:
             msg_text = getattr(msg, "message", "") or getattr(msg, "text", "") or ""
@@ -1266,7 +1266,7 @@ async def _execute_votes_ai(session, params, is_first):
         if not verification_message:
             return False, "لم يتم العثور على رسالة بوت تحتوي أزرار."
 
-        # 9. استخراج الإيموجي المطلوب من نص رسالة التحقق
+        # 9. استخراج الإيموجي المطلوب من نص رسالة التحقق الخاصة بهذا الحساب
         verification_text = getattr(verification_message, "message", "") or getattr(verification_message, "text", "") or ""
         target_emoji = None
         
