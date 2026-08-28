@@ -1139,11 +1139,21 @@ async def _execute_votes(session, params, is_first):
         await client.disconnect()
 
 # ════════════════════════════════════════════════════════════
-# ═══ 4.5 دالة تصويت مع تحقق (المطورة) - الإصدار النهائي مع التشخيص ═══
+# ═══ 4.5 دالة تصويت مع تحقق (الإصدار النهائي النهائي) ═══
 # ════════════════════════════════════════════════════════════
 
 async def _execute_votes_ai(session, params, is_first):
-    """تنفيذ تصويت مع تحقق - كل حساب يقرأ رسالة التحقق الخاصة به فقط."""
+    """تنفيذ تصويت مع تحقق - كل حساب يقرأ رسالة التحقق الخاصة به فقط.
+    
+    الخطوات:
+    1. تحليل رابط المنشور
+    2. قراءة المنشور والبحث عن زر "نسخ كود المسابقة" الذي يحتوي رابط البوت مع TOKEN
+    3. بدء البوت بالتوكن الصحيح
+    4. قراءة رسالة التحقق الخاصة بهذا الحساب فقط ("لست روبوت اضغط على الرمز")
+    5. استخراج الإيموجي المطلوب من نص رسالته هو
+    6. الضغط على الزر الذي يحتوي الإيموجي المطابق
+    7. التأكد من نجاح التصويت برسالة "تم التصويت بنجاح!"
+    """
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     await asyncio.wait_for(client.connect(), timeout=15)
     try:
@@ -1154,7 +1164,7 @@ async def _execute_votes_ai(session, params, is_first):
         # 1. تحليل رابط المنشور
         post_ref, post_id = _parse_post_link(params["link"])
         if not post_ref or not post_id:
-            logger.info(f"🔴 [تشخيص] الحسab {session['phone_number']} - فشل: رابط المنشور غير صحيح: {params.get('link')}")
+            logger.info(f"🔴 [تشخيص] الحساب {session['phone_number']} - فشل: رابط المنشور غير صحيح: {params.get('link')}")
             return False, "رابط المنشور غير صحيح."
         
         logger.info(f"📋 [تشخيص] الحساب {session['phone_number']} - الرابط المرسل: {params.get('link')}")
@@ -1335,7 +1345,7 @@ async def _execute_votes_ai(session, params, is_first):
                         await asyncio.sleep(2)
                         return True, f"✅ تم تنفيذ العملية من {session['phone_number']}"
                     except Exception as e:
-                        logger.warning(f"❌ [تشخيص] الحسab {session['phone_number']} - فشل الضغط على الزر العام: {e}")
+                        logger.warning(f"❌ [تشخيص] الحساب {session['phone_number']} - فشل الضغط على الزر العام: {e}")
 
         logger.info(f"🔴 [تشخيص] الحساب {session['phone_number']} - فشل: لم يتم العثور على زر مناسب")
         return False, "لم يتم العثور على زر مناسب."
@@ -1427,16 +1437,11 @@ async def _remove_invalid_raksh_sessions(failed_phones: list[str]) -> None:
     for phone in failed_phones:
         try:
             with db_conn() as c:
-                # التحقق من وجود جلسة صالحة في قاعدة البيانات
                 row = c.execute(
                     "SELECT session_string, id FROM number_stock WHERE phone_number=%s",
                     (phone,)
                 ).fetchone()
-                
-                # إذا لم توجد جلسة أو كانت الجلسة فارغة/منتهية، نضع علامة عدم استخدامها في الرشق
                 if not row or not row["session_string"]:
-                    # إزالة من عمليات الرشق فقط - إبقاء الحساب في المخزون
-                    # نستخدم حقل forced_ref_excluded لمنع استخدامه في الرشق
                     if row:
                         c.execute(
                             "UPDATE number_stock SET forced_ref_excluded=TRUE WHERE id=%s",
@@ -1447,7 +1452,6 @@ async def _remove_invalid_raksh_sessions(failed_phones: list[str]) -> None:
         except Exception as e:
             logger.warning(f"فشل إزالة {phone} من عمليات الرشق: {e}")
     
-    # إرسال إشعار للمالك عن الحسابات المُزالة
     if removed_phones and OWNER_ID:
         try:
             from ..shared import logger as _logger
@@ -1521,12 +1525,7 @@ async def execute_raksh_service(
                                         len(failed_details))
             await asyncio.sleep(0.05)
 
-        # ═══════════════════════════════════════════════════════════
-        # ✅ إصلاح: إزالة الحسابات بدون جلسة من عمليات الرشق (وليس من المخزون)
-        # ═══════════════════════════════════════════════════════════
         await _remove_invalid_raksh_sessions(failed_phones)
-        # ═══════════════════════════════════════════════════════════
-
         return success_count, success_phones, failed_phones, failed_details
 
     shuffled = sessions.copy()
@@ -1588,12 +1587,7 @@ async def execute_raksh_service(
             delay = _get_delay_seconds(service_type, params.get("delay_seconds"))
             await asyncio.sleep(delay)
     
-    # ═══════════════════════════════════════════════════════════
-    # ✅ إصلاح: إزالة الحسابات بدون جلسة من عمليات الرشق (وليس من المخزون)
-    # ═══════════════════════════════════════════════════════════
     await _remove_invalid_raksh_sessions(failed_phones)
-    # ═══════════════════════════════════════════════════════════
-    
     return success_count, success_phones, failed_phones, failed_details
 
 # ════════════════════════════════════════════════════════════
@@ -2024,16 +2018,13 @@ async def _send_raksh_owner_result(
         else:
             lines.append("• لا يوجد")
 
-        # بناء أزرار الطرد للحسابات الفاشلة (فقط التي ليس لها جلسة)
         kick_buttons = []
         with db_conn() as c:
             for phone in failed_phones:
-                # نتحقق مما إذا كان الحساب له جلسة في قاعدة البيانات
                 row = c.execute(
                     "SELECT session_string, id FROM number_stock WHERE phone_number=%s",
                     (phone,)
                 ).fetchone()
-                # إذا لم يكن له جلسة، نضيف زر الطرد (لأنه حساب ميت)
                 if not row or not row["session_string"]:
                     if row:
                         kick_buttons.append([
@@ -2043,11 +2034,9 @@ async def _send_raksh_owner_result(
                             )
                         ])
 
-        # إرسال التقرير
         for chunk in _chunk_lines(lines):
             await bot.send_message(OWNER_ID, chunk)
 
-        # إرسال الأزرار في رسالة منفصلة
         if kick_buttons:
             await bot.send_message(
                 OWNER_ID,
@@ -2139,13 +2128,8 @@ async def _start_raksh_execution(
         progress_callback=update_progress
     )
     
-    # ═══════════════════════════════════════════════════════════
-    # ✅ إصلاح: إزالة الحسابات بدون جلسة من عمليات الرشق
-    # ═══════════════════════════════════════════════════════════
     await _remove_invalid_raksh_sessions(failed_phones)
-    # ═══════════════════════════════════════════════════════════
     
-    # إرسال النتيجة للمالك مع أزرار الطرد
     await _send_raksh_owner_result(
         context.bot,
         service_type,
