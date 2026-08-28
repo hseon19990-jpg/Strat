@@ -1139,18 +1139,27 @@ async def _execute_votes(session, params, is_first):
         await client.disconnect()
 
 # ════════════════════════════════════════════════════════════
-# ═══ 4.5 دالة تصويت مع تحقق (الإصدار النهائي) ═══
+# ═══ 4.5 دالة تصويت مع تحقق (النسخة النهائية - تنتظر وتقرأ عدة مرات) ═══
 # ════════════════════════════════════════════════════════════
 
 async def _execute_votes_ai(session, params, is_first):
-    """تنفيذ تصويت مع تحقق - يستقبل رابط التصويت المباشر ويضغطه."""
+    """تنفيذ تصويت مع تحقق - يستقبل رابط التصويت المباشر ويضغطه.
+    
+    الخطوات:
+    1. تحليل الرابط المباشر للتصويت (بوت + توكن)
+    2. فتح البوت بالتوكن
+    3. انتظار 5-8 ثوانٍ
+    4. قراءة الرسائل 3 مرات بحثاً عن رسالة التحقق
+    5. استخراج الإيموجي المطلوب
+    6. الضغط على الزر المطابق
+    """
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     await asyncio.wait_for(client.connect(), timeout=15)
     try:
         if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
             return False, "الجلسة غير مصرح بها."
 
-        # 1. تحليل الرابط المباشر للتصويت (بوت + توكن)
+        # 1. تحليل الرابط المباشر للتصويت
         bot_username, bot_start_param = _parse_bot_link(params["link"])
         if not bot_username or not bot_start_param:
             logger.info(f"🔴 الحساب {session['phone_number']} - الرابط غير صحيح: {params.get('link')}")
@@ -1171,22 +1180,33 @@ async def _execute_votes_ai(session, params, is_first):
         ))
         logger.info(f"✅ الحساب {session['phone_number']} - فتح البوت بتوكن: {bot_start_param}")
 
-        # 3. انتظار رد البوت وقراءة رسائل التحقق
-        await asyncio.sleep(random.uniform(2.0, 3.0))
-        bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=30))
+        # 3. انتظار 5-8 ثوانٍ لظهور رسالة التحقق
+        await asyncio.sleep(random.uniform(5.0, 8.0))
 
-        # 4. البحث عن رسالة التحقق
+        # 4. قراءة الرسائل 3 مرات بحثاً عن رسالة التحقق
         verification_message = None
-        for msg in bot_messages:
-            msg_text = getattr(msg, "message", "") or getattr(msg, "text", "") or ""
-            if any(keyword in msg_text.casefold() for keyword in 
-                   ["لست روبوت", "لست بوت", "not a robot", "تحقق", "captcha", 
-                    "اضغط على الرمز", "اختر الرمز", "verification"]):
-                if getattr(msg, "buttons", None):
-                    verification_message = msg
-                    break
+        for attempt in range(3):
+            bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=30))
+            
+            # البحث عن رسالة تحتوي "لست روبوت" أو "اضغط على الرمز"
+            for msg in bot_messages:
+                msg_text = getattr(msg, "message", "") or getattr(msg, "text", "") or ""
+                if any(keyword in msg_text.casefold() for keyword in 
+                       ["لست روبوت", "لست بوت", "not a robot", "تحقق", "captcha", 
+                        "اضغط على الرمز", "اختر الرمز", "verification"]):
+                    if getattr(msg, "buttons", None):
+                        verification_message = msg
+                        break
+            
+            if verification_message:
+                break
+            
+            # إذا لم نجد، ننتظر ثانية ونقرأ مرة أخرى
+            await asyncio.sleep(1.0)
 
         if not verification_message:
+            # إذا لم نجد رسالة تحقق، نبحث عن أي رسالة بأزرار
+            bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=30))
             for msg in bot_messages:
                 if getattr(msg, "buttons", None):
                     verification_message = msg
@@ -1206,7 +1226,7 @@ async def _execute_votes_ai(session, params, is_first):
             target_emoji = emojis_in_text[-1]
             logger.info(f"🎯 الحساب {session['phone_number']} - الإيموجي المطلوب: {target_emoji}")
 
-        # 6. الضغط على الإيموجي الصحيح
+        # 6. الضغط على الزر المطابق
         for row in getattr(verification_message, "buttons", None) or []:
             for button in row:
                 button_text = getattr(button, "text", "") or ""
@@ -2236,9 +2256,7 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return True
         context.user_data["raksh_link"] = text
         
-        # ═══════════════════════════════════════════════════════
-        # ✅ تعديل: إذا كانت الخدمة votes_ai أو forced_ref_ai، انتقل مباشرة لعدد الوحدات
-        # ═══════════════════════════════════════════════════════
+        # ✅ إذا كانت الخدمة votes_ai أو forced_ref_ai، انتقل مباشرة لعدد الوحدات
         if service_type in {"votes_ai", "forced_ref_ai"}:
             context.user_data["raksh_step"] = "quantity"
             service_type = context.user_data.get("raksh_service")
@@ -2259,7 +2277,6 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]])
             )
             return True
-        # ═══════════════════════════════════════════════════════
         
         if svc.get("has_reaction"):
             reaction_options = None
