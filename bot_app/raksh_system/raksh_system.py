@@ -1139,7 +1139,7 @@ async def _execute_votes(session, params, is_first):
         await client.disconnect()
 
 # ════════════════════════════════════════════════════════════
-# ═══ 4.5 دالة تصويت مع تحقق (المطورة) - الإصدار النهائي ═══
+# ═══ 4.5 دالة تصويت مع تحقق (الإصدار النهائي النهائي) ═══
 # ════════════════════════════════════════════════════════════
 
 async def _execute_votes_ai(session, params, is_first):
@@ -1150,7 +1150,7 @@ async def _execute_votes_ai(session, params, is_first):
     2. قراءة المنشور والبحث عن زر "نسخ كود المسابقة" الذي يحتوي رابط البوت مع TOKEN
     3. بدء البوت بالتوكن الصحيح
     4. قراءة رسالة التحقق الخاصة بهذا الحساب فقط ("لست روبوت اضغط على الرمز")
-    5. استخراج الإيموجي المطلوب من نص رسالته هو
+    5. استخراج الإيموجي المطلوب من نص رسالته هو (وليس من حساب آخر)
     6. الضغط على الزر الذي يحتوي الإيموجي المطابق
     7. التأكد من نجاح التصويت برسالة "تم التصويت بنجاح!"
     """
@@ -1276,7 +1276,7 @@ async def _execute_votes_ai(session, params, is_first):
         if emojis_in_text:
             # نأخذ آخر إيموجي (الذي يظهر بعد "اضغط على الرمز")
             target_emoji = emojis_in_text[-1]
-            logger.info(f"🎯 الحساب {session['phone_number']} - الإيموجي المطلوب: {target_emoji}")
+            logger.info(f"🎯 الحساب {session['phone_number']} - الإيموجي المطلوب من رسالته هو: {target_emoji}")
 
         # 10. البحث عن الزر الذي يحتوي الإيموجي المطابق
         for row in getattr(verification_message, "buttons", None) or []:
