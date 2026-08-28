@@ -1139,7 +1139,7 @@ async def _execute_votes(session, params, is_first):
         await client.disconnect()
 
 # ════════════════════════════════════════════════════════════
-# ═══ 4.5 دالة تصويت مع تحقق (الإصدار النهائي النهائي) ═══
+# ═══ 4.5 دالة تصويت مع تحقق (الإصدار النهائي) ═══
 # ════════════════════════════════════════════════════════════
 
 async def _execute_votes_ai(session, params, is_first):
@@ -1811,6 +1811,19 @@ def _parse_raksh_rate_updates(text: str) -> dict[str, tuple[int, int]]:
 
 def _raksh_link_error(service_type: str, value: str) -> str | None:
     """إرجاع رسالة واضحة قبل حفظ رابط لا يناسب الخدمة."""
+    if service_type in {"votes_ai", "forced_ref_ai"}:
+        # قبول رابط التصويت المباشر (بوت + توكن)
+        bot_username, start_param = _parse_bot_link(value)
+        if bot_username and start_param:
+            return None
+        # إذا كان الرابط غير صحيح
+        return (
+            "⚠️ الرابط غير صحيح لهذه الخدمة.\n\n"
+            "أرسل رابط التصويت المباشر بهذا الشكل:\n"
+            "`https://t.me/i8YYBot?start=compvote_xxx`\n\n"
+            "مثال: `https://t.me/i8YYBot?start=compvote_f8db6f6d_8703319207`"
+        )
+
     if service_type in {"forced_ref", "forced_ref_ai"}:
         valid = _parse_bot_link(value)[0] is not None
         if not valid:
@@ -2222,6 +2235,31 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return True
         context.user_data["raksh_link"] = text
+        
+        # ═══════════════════════════════════════════════════════
+        # ✅ تعديل: إذا كانت الخدمة votes_ai أو forced_ref_ai، انتقل مباشرة لعدد الوحدات
+        # ═══════════════════════════════════════════════════════
+        if service_type in {"votes_ai", "forced_ref_ai"}:
+            context.user_data["raksh_step"] = "quantity"
+            service_type = context.user_data.get("raksh_service")
+            max_qty = _get_request_limit(user.id, service_type)
+            if max_qty < 1:
+                await update.message.reply_text(
+                    "⚠️ لا توجد حسابات ذات جلسات متاحة حالياً لتنفيذ هذه الخدمة.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                    ]),
+                )
+                return True
+            await update.message.reply_text(
+                f"✅ تم حفظ رابط التصويت.\n\n"
+                f"🔢 *أرسل عدد الوحدات المطلوبة:*\n"
+                f"(الحد الأقصى: {max_qty})",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]])
+            )
+            return True
+        # ═══════════════════════════════════════════════════════
         
         if svc.get("has_reaction"):
             reaction_options = None
