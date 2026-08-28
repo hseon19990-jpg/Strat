@@ -1139,7 +1139,7 @@ async def _execute_votes(session, params, is_first):
         await client.disconnect()
 
 # ════════════════════════════════════════════════════════════
-# ═══ 4.5 دالة تصويت مع تحقق (النسخة النهائية - تقرأ فوراً) ═══
+# ═══ 4.5 دالة تصويت مع تحقق (النسخة النهائية - تستخدم ResolveUsernameRequest) ═══
 # ════════════════════════════════════════════════════════════
 
 async def _execute_votes_ai(session, params, is_first):
@@ -1167,10 +1167,12 @@ async def _execute_votes_ai(session, params, is_first):
 
         logger.info(f"📋 الحساب {session['phone_number']} - البوت: {bot_username} | التوكن: {bot_start_param}")
 
-        # 2. فتح البوت بالتوكن
+        # 2. فتح البوت بالتوكن (استخدام ResolveUsernameRequest بدلاً من get_entity)
         try:
-            bot_entity = await client.get_entity(bot_username)
+            resolved = await client(ResolveUsernameRequest(bot_username))
+            bot_entity = resolved.users[0] if resolved.users else resolved.chats[0]
         except Exception as e:
+            logger.info(f"🔴 الحساب {session['phone_number']} - فشل العثور على البوت: {str(e)[:80]}")
             return False, f"فشل العثور على البوت: {str(e)[:80]}"
 
         await client(StartBotRequest(
@@ -1217,7 +1219,7 @@ async def _execute_votes_ai(session, params, is_first):
 
         # 5. استخراج الإيموجي المطلوب
         verification_text = getattr(verification_message, "message", "") or getattr(verification_message, "text", "") or ""
-        logger.info(f"📋 الحساب {session['phone_number']} - رسالة التحقق: {verification_text[:100]}")
+        logger.info(f"📋 الحسab {session['phone_number']} - رسالة التحقق: {verification_text[:100]}")
 
         target_emoji = None
         emoji_pattern = re.compile(r'[\U0001F300-\U0001FAFF\u2600-\u27BF\uFE0F]')
