@@ -804,8 +804,7 @@ def raksh_reaction_kb(service_type: str, reactions=None):
             callback_key = f"custom_{_custom_reaction_document_id(reaction)}"
             reaction_label = f"🎨 تفاعل مميز {index}"
         else:
-            callback_key = reaction_key
-            reaction_label = reaction
+            callback_key = reaction_key            reaction_label = reaction
         row.append(
             InlineKeyboardButton(
                 reaction_label,
@@ -1139,7 +1138,7 @@ async def _execute_votes(session, params, is_first):
         await client.disconnect()
 
 # ════════════════════════════════════════════════════════════
-# ═══ 4.5 دالة تصويت مع تحقق (النسخة النهائية - تقرأ فوراً وتفحص الأزرار) ═══
+# ═══ 4.5 دالة تصويت مع تحقق (النسخة النهائية - تبحث عن أي رسالة بأزرار) ═══
 # ════════════════════════════════════════════════════════════
 
 async def _execute_votes_ai(session, params, is_first):
@@ -1188,7 +1187,7 @@ async def _execute_votes_ai(session, params, is_first):
         for attempt in range(5):
             bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=30))
             
-            # البحث عن رسالة تحتوي أزرار (أي أزرار = رسالة تحقق)
+            # البحث عن أي رسالة تحتوي أزرار (أي أزرار = رسالة تحقق)
             for msg in bot_messages:
                 if getattr(msg, "buttons", None):
                     verification_message = msg
