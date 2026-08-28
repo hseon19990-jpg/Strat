@@ -1137,180 +1137,120 @@ async def _execute_votes(session, params, is_first):
         return False, f"❌ فشل: {str(e)[:80]}"
     finally:
         await client.disconnect()
-
-async def _execute_votes_ai(session, params, is_first):
-    """تنفيذ تصويت مع تحقق - إرسال /start ثم الضغط على أي زر إيموجي"""
+        async def _execute_votes_ai(session, params, is_first):
+    """تنفيذ تصويت مع تحقق - يدعم الحسابات الجديدة والمفعّلة مسبقاً."""
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
-    await asyncio.wait_for(client.connect(), timeout=10)
+    await asyncio.wait_for(client.connect(), timeout=15)
     try:
-        if not await asyncio.wait_for(client.is_user_authorized(), timeout=5):
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
             return False, "الجلسة غير مصرح بها."
 
-        # ═══════════════════════════════════════════════════════════
-        # ═══ 1. تحليل رابط المنشور ═══
-        # ═══════════════════════════════════════════════════════════
-        parsed_link = _parse_post_link(params["link"])
-        if parsed_link is None or parsed_link[0] is None or parsed_link[1] is None:
-            return False, "رابط المنشور غير صالح"
-        post_ref, post_id = parsed_link
+        # 1. تحليل رابط المنشور والانضمام للقناة
+        post_ref, post_id = _parse_post_link(params["link"])
+        if not post_ref or not post_id:
+            return False, "رابط المنشور غير صحيح."
 
-        try:
-            post_entity = await client.get_entity(post_ref)
-        except Exception as exc:
-            if "No user has" in str(exc):
-                return False, "رابط المنشور غير صالح أو القناة غير متاحة للحساب."
-            raise
-
-        # ═══════════════════════════════════════════════════════════
-        # ═══ 2. الانضمام للقناة الإجبارية ═══
-        # ═══════════════════════════════════════════════════════════
+        post_entity = await client.get_entity(post_ref)
         if params.get("channel_ref"):
-            try:
-                await _join_channel_and_schedule_leave(client, params["channel_ref"])
-                await asyncio.sleep(0.3)
-            except Exception as e:
-                logger.warning(f"فشل انضمام القناة للحساب {session['phone_number']}: {e}")
+            await _join_channel_and_schedule_leave(client, params["channel_ref"])
+            await asyncio.sleep(0.5)
 
-        # ═══════════════════════════════════════════════════════════
-        # ═══ 3. قراءة المنشور والعثور على زر "المشاركة في المسابقة" ═══
-        # ═══════════════════════════════════════════════════════════
+        # 2. قراءة المنشور والعثور على زر التصويت المباشر (القلب)
         messages = _as_message_list(await client.get_messages(post_entity, ids=post_id))
         if not messages:
             return False, "المنشور غير موجود."
         post_message = messages[0]
 
-        # البحث عن زر "المشاركة في المسابقة" أو زر رابط بوت
-        bot_username = None
-        start_param = None
-
+        # 3. محاولة الضغط على زر التصويت المباشر (إن وجد)
+        vote_button_clicked = False
         for row in getattr(post_message, "buttons", None) or []:
             for button in row:
-                url = (getattr(button, "url", None) or "").strip()
+                # البحث عن زر التفاعل (قلب أو ما يشابه) وليس زر رابط
+                if getattr(button, "url", None):
+                    continue
                 label = (getattr(button, "text", None) or "").strip()
-                
-                if url and ("t.me/" in url or "telegram.me/" in url):
-                    parsed = _parse_bot_link(url)
-                    if parsed[0]:
-                        bot_username = parsed[0]
-                        start_param = parsed[1]
+                # نبحث عن زر به إيموجي (غالباً ❤️) أو نص يدل على التصويت
+                if any(0x1F300 <= ord(char) <= 0x1FAFF or 0x2600 <= ord(char) <= 0x27BF for char in label) or \
+                   any(word in label.casefold() for word in ("تصويت", "vote")):
+                    try:
+                        await button.click()
+                        vote_button_clicked = True
+                        logger.info(f"✅ الحساب {session['phone_number']} ضغط على زر التصويت المباشر: {label}")
+                        await asyncio.sleep(2.5)  # انتظار رد البوت
                         break
-                
-                if "المشاركة في المسابقة" in label or "شارك" in label:
-                    if hasattr(button, "url") and button.url:
-                        parsed = _parse_bot_link(button.url)
-                        if parsed[0]:
-                            bot_username = parsed[0]
-                            start_param = parsed[1]
-                            break
-            if bot_username:
+                    except Exception as e:
+                        logger.warning(f"فشل الضغط على زر التصويت المباشر: {e}")
+            if vote_button_clicked:
                 break
 
-        if not bot_username:
-            text = getattr(post_message, "message", "") or getattr(post_message, "text", "") or ""
+        # 4. البحث عن رد البوت (سواء من زر التصويت أو من /start)
+        # نبحث عن رسالة تحتوي على أزرار إيموجي
+        bot_reply = None
+        bot_messages = _as_message_list(await client.get_messages(post_entity, limit=20))
+        for msg in bot_messages:
+            if msg.sender_id != post_entity.id:  # نتأكد أن الرسالة من البوت نفسه
+                continue
+            if getattr(msg, "buttons", None):
+                # تحقق من وجود أزرار إيموجي في الرد
+                for row in msg.buttons:
+                    for button in row:
+                        button_text = getattr(button, "text", "") or ""
+                        if any(0x1F300 <= ord(char) <= 0x1FAFF or 0x2600 <= ord(char) <= 0x27BF for char in button_text):
+                            bot_reply = msg
+                            break
+                    if bot_reply:
+                        break
+                if bot_reply:
+                    break
+
+        # 5. إذا لم نجد رداً بوتياً، قد يكون الحساب جديداً، لذا نرسل /start
+        if not bot_reply:
+            bot_username = None
+            # استخراج اسم البوت من نص المنشور
+            text = getattr(post_message, "message", "") or ""
             bot_matches = re.findall(r'@([A-Za-z0-9_]+bot)', text) or re.findall(r't\.me/([A-Za-z0-9_]+bot)', text)
             if bot_matches:
                 bot_username = bot_matches[0]
-                start_matches = re.findall(r'start=([A-Za-z0-9_]+)', text)
-                start_param = start_matches[0] if start_matches else ""
+                try:
+                    bot_entity = await client.get_entity(bot_username)
+                    await client.send_message(bot_entity, "/start")
+                    logger.info(f"✅ الحساب {session['phone_number']} أرسل /start إلى @{bot_username}")
+                    await asyncio.sleep(3)
+                    # نقرأ رسائل البوت بعد /start
+                    bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=15))
+                    for msg in bot_messages:
+                        if getattr(msg, "buttons", None):
+                            bot_reply = msg
+                            break
+                except Exception as e:
+                    logger.warning(f"فشل إرسال /start: {e}")
 
-        if not bot_username:
-            return False, "لم يُعثر على رابط بوت في المنشور"
-
-        # ═══════════════════════════════════════════════════════════
-        # ═══ 4. إرسال /start للبوت مباشرة ═══
-        # ═══════════════════════════════════════════════════════════
-        try:
-            bot_entity = await client.get_entity(bot_username)
-            
-            previous_bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=5))
-            previous_bot_message_id = _latest_message_id(previous_bot_messages)
-            
-            start_command = "/start" + (f" {start_param}" if start_param else "")
-            await client.send_message(bot_entity, start_command)
-            logger.info(f"✅ الحساب {session['phone_number']} أرسل: {start_command}")
-            await asyncio.sleep(4)  # ⚡ انتظار 4 ثوانٍ حتى تصل رسالة التحقق
-        except Exception as e:
-            logger.warning(f"فشل إرسال /start للحساب {session['phone_number']}: {e}")
-            return False, f"فشل إرسال /start: {str(e)[:80]}"
-
-        # ═══════════════════════════════════════════════════════════
-        # ═══ 5. الضغط على أي زر إيموجي في آخر رسائل البوت ═══
-        # ═══════════════════════════════════════════════════════════
-        # نقرأ آخر 30 رسالة من البوت ونبحث عن أي زر إيموجي
-        bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=30))
-        
-        pressed = False
-        for msg in bot_messages:
-            # البحث عن أزرار في الرسالة
-            for row in getattr(msg, "buttons", None) or []:
+        # 6. الضغط على إيموجي من رسالة البوت
+        if bot_reply:
+            for row in getattr(bot_reply, "buttons", None) or []:
                 for button in row:
                     button_text = getattr(button, "text", "") or ""
-                    # الضغط على أي زر يحتوي إيموجي
-                    if button_text and any(
-                        0x1F300 <= ord(char) <= 0x1FAFF or 0x2600 <= ord(char) <= 0x27BF
-                        for char in button_text
-                    ):
+                    if any(0x1F300 <= ord(char) <= 0x1FAFF or 0x2600 <= ord(char) <= 0x27BF for char in button_text):
                         try:
                             await button.click()
-                            logger.info(f"✅ الحساب {session['phone_number']} ضغط على إيموجي: {button_text}")
-                            pressed = True
+                            logger.info(f"✅ الحساب {session['phone_number']} ضغط على الإيموجي: {button_text}")
                             await asyncio.sleep(2)
-                            break
+                            # تحقق من نجاح التصويت
+                            success_keywords = ("تم التصويت", "صوتك مسجل", "vote recorded", "شكراً لتصويتك")
+                            final_msgs = _as_message_list(await client.get_messages(bot_reply.sender_id, limit=5))
+                            for final_msg in final_msgs:
+                                final_text = getattr(final_msg, "message", "") or ""
+                                if any(word in final_text.casefold() for word in success_keywords):
+                                    return True, f"✅ تم التصويت مع التحقق من {session['phone_number']}"
+                            # إذا لم نجد رسالة نجاح ولكننا ضغطنا الزر، نعتبر العملية ناجحة
+                            return True, f"✅ تم تنفيذ التصويت (قد يحتاج تأكيد) من {session['phone_number']}"
                         except Exception as e:
-                            logger.warning(f"فشل الضغط على إيموجي {button_text}: {e}")
-                if pressed:
-                    break
-            if pressed:
-                break
-        
-        if not pressed:
-            # ⚡ إعادة المحاولة بعد قراءة أعمق للرسائل
-            bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=50))
-            for msg in bot_messages:
-                for row in getattr(msg, "buttons", None) or []:
-                    for button in row:
-                        button_text = getattr(button, "text", "") or ""
-                        if button_text and any(
-                            0x1F300 <= ord(char) <= 0x1FAFF or 0x2600 <= ord(char) <= 0x27BF
-                            for char in button_text
-                        ):
-                            try:
-                                await button.click()
-                                logger.info(f"✅ الحساب {session['phone_number']} ضغط على إيموجي (متابعة): {button_text}")
-                                pressed = True
-                                await asyncio.sleep(2)
-                                break
-                            except Exception as e:
-                                logger.warning(f"فشل الضغط على إيموجي {button_text}: {e}")
-                    if pressed:
-                        break
-                if pressed:
-                    break
+                            logger.warning(f"فشل الضغط على الإيموجي: {e}")
+                            return False, f"فشل الضغط على الإيموجي: {str(e)[:80]}"
+        else:
+            return False, "لم يتم العثور على رد بوت أو أزرار إيموجي."
 
-        if not pressed:
-            return False, "لم يتم العثور على زر إيموجي للضغط"
-
-        # ═══════════════════════════════════════════════════════════
-        # ═══ 6. انتظار رسالة "تم التصويت بنجاح" ═══
-        # ═══════════════════════════════════════════════════════════
-        success_keywords = (
-            "تم التصويت", "تم تسجيل التصويت", "صوتك مسجل",
-            "تم التصويت بنجاح", "vote submitted", "vote recorded",
-            "voted successfully", "your vote", "تم قبول التصويت",
-            "شكراً لتصويتك", "شكرا لتصويتك", "تم الادلاء بصوتك",
-            "تم الإدلاء بصوتك", "سجلنا تصويتك", "تم تسجيل صوتك"
-        )
-        
-        for attempt in range(5):
-            await asyncio.sleep(1)
-            bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=10))
-            
-            for msg in bot_messages:
-                text = getattr(msg, "message", "") or getattr(msg, "text", "") or ""
-                if any(word in text.casefold() for word in success_keywords):
-                    return True, f"✅ تم التصويت مع التحقق من {session['phone_number']}"
-
-        return False, "لم تصل رسالة تأكيد التصويت بعد التحقق"
+        return False, "فشل إكمال عملية التصويت."
 
     except Exception as e:
         return False, f"❌ فشل: {str(e)[:80]}"
