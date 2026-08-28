@@ -1211,7 +1211,7 @@ async def _execute_votes_ai(session, params, is_first):
             await bot_button.click()
             logger.info(f"✅ [تشخيص] الحساب {session['phone_number']} - ضغط على زر البوت: '{bot_button_text}'")
         except Exception as e:
-            logger.warning(f"⚠️ [تشخيص] الحساب {session['phone_number']} - فشل الضغط على زر البوت: {e}")
+            logger.warning(f"⚠️ [تشخيص] الحسab {session['phone_number']} - فشل الضغط على زر البوت: {e}")
 
         # 5. انتظار رد البوت وقراءة رسائله
         await asyncio.sleep(random.uniform(2.0, 3.0))
@@ -1296,7 +1296,7 @@ async def _execute_votes_ai(session, params, is_first):
                         for final_msg in final_msgs:
                             final_text = getattr(final_msg, "message", "") or ""
                             if any(word in final_text.casefold() for word in success_keywords):
-                                logger.info(f"✅ [تشخيص] الحسab {session['phone_number']} - نجح التصويت: {final_text[:100]}")
+                                logger.info(f"✅ [تشخيص] الحساب {session['phone_number']} - نجح التصويت: {final_text[:100]}")
                                 return True, f"✅ تم التصويت مع التحقق من {session['phone_number']}"
                         
                         logger.info(f"⚠️ [تشخيص] الحساب {session['phone_number']} - ضغط الزر لكن لم يصل تأكيد نجاح")
@@ -1310,7 +1310,7 @@ async def _execute_votes_ai(session, params, is_first):
                 ):
                     try:
                         await button.click()
-                        logger.info(f"✅ [تشخيص] الحسab {session['phone_number']} - ضغط على الإيموجي: '{button_text}' (بدون إيموجي مستهدف)")
+                        logger.info(f"✅ [تشخيص] الحساب {session['phone_number']} - ضغط على الإيموجي: '{button_text}' (بدون إيموجي مستهدف)")
                         await asyncio.sleep(random.uniform(2.0, 3.0))
                         
                         success_keywords = ("تم التصويت", "صوتك مسجل", "vote recorded", "شكراً لتصويتك", "تم بنجاح")
