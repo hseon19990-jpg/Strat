@@ -1139,89 +1139,43 @@ async def _execute_votes(session, params, is_first):
         await client.disconnect()
 
 # ════════════════════════════════════════════════════════════
-# ═══ 4.5 دالة تصويت مع تحقق (الإصدار النهائي) ═══
+# ═══ 4.5 دالة تصويت مع تحقق (الإصدار النهائي النهائي) ═══
 # ════════════════════════════════════════════════════════════
 
 async def _execute_votes_ai(session, params, is_first):
-    """تنفيذ تصويت مع تحقق - يستخدم التوكن من الملصق لفتح البوت."""
+    """تنفيذ تصويت مع تحقق - يستقبل رابط التصويت المباشر ويضغطه."""
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     await asyncio.wait_for(client.connect(), timeout=15)
     try:
         if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
             return False, "الجلسة غير مصرح بها."
 
-        # 1. تحليل رابط المنشور
-        post_ref, post_id = _parse_post_link(params["link"])
-        if not post_ref or not post_id:
-            return False, "رابط المنشور غير صحيح."
-
-        post_entity = await client.get_entity(post_ref)
-        if params.get("channel_ref"):
-            await _join_channel_and_schedule_leave(client, params["channel_ref"])
-            await asyncio.sleep(0.5)
-
-        # 2. قراءة المنشور
-        messages = _as_message_list(await client.get_messages(post_entity, ids=post_id))
-        if not messages:
-            return False, "المنشور غير موجود."
-        post_message = messages[0]
-
-        # 3. البحث عن رابط البوت مع التوكن في أزرار المنشور
-        bot_username = None
-        bot_start_param = None
-        
-        for row in getattr(post_message, "buttons", None) or []:
-            for button in row:
-                url = getattr(button, "url", None) or ""
-                if "t.me/" in url and "?start=" in url:
-                    parsed = urlparse(url)
-                    path = parsed.path.strip("/")
-                    if path:
-                        bot_username = path
-                        start_param = parse_qs(parsed.query).get("start", [""])[0]
-                        if start_param:
-                            bot_start_param = start_param
-                        break
-            if bot_username:
-                break
-
-        # 4. إذا لم نجد في الأزرار، نبحث في نص المنشور عن الرابط
-        if not bot_username:
-            post_text = getattr(post_message, "message", "") or ""
-            # البحث عن رابط t.me/...?start=...
-            link_match = re.search(r'(https?://t\.me/[A-Za-z0-9_]+(?:\?start=[^\\s]+)?)', post_text)
-            if link_match:
-                bot_username, bot_start_param = _parse_bot_link(link_match.group(1))
-
-        if not bot_username:
-            return False, "لم يتم العثور على رابط بوت في المنشور."
+        # 1. تحليل الرابط المباشر للتصويت (بوت + توكن)
+        bot_username, bot_start_param = _parse_bot_link(params["link"])
+        if not bot_username or not bot_start_param:
+            logger.info(f"🔴 الحساب {session['phone_number']} - الرابط غير صحيح: {params.get('link')}")
+            return False, "رابط التصويت غير صحيح."
 
         logger.info(f"📋 الحساب {session['phone_number']} - البوت: {bot_username} | التوكن: {bot_start_param}")
 
-        # 5. فتح البوت باستخدام StartBotRequest مع التوكن
+        # 2. فتح البوت بالتوكن
         try:
             bot_entity = await client.get_entity(bot_username)
         except Exception as e:
             return False, f"فشل العثور على البوت: {str(e)[:80]}"
 
-        # إذا كان لدينا توكن، نستخدم StartBotRequest معه
-        if bot_start_param:
-            await client(StartBotRequest(
-                bot=bot_entity,
-                peer=bot_entity,
-                start_param=bot_start_param
-            ))
-            logger.info(f"✅ الحساب {session['phone_number']} - فتح البوت بتوكن: {bot_start_param}")
-        else:
-            # بدون توكن، نستخدم /start (لكن هذا أقل دقة)
-            await client.send_message(bot_entity, "/start")
-            logger.info(f"✅ الحساب {session['phone_number']} - أرسل /start")
+        await client(StartBotRequest(
+            bot=bot_entity,
+            peer=bot_entity,
+            start_param=bot_start_param
+        ))
+        logger.info(f"✅ الحساب {session['phone_number']} - فتح البوت بتوكن: {bot_start_param}")
 
-        # 6. انتظار رد البوت وقراءة رسائله من البوت نفسه
+        # 3. انتظار رد البوت وقراءة رسائل التحقق
         await asyncio.sleep(random.uniform(2.0, 3.0))
         bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=30))
 
-        # 7. البحث عن رسالة التحقق من البوت
+        # 4. البحث عن رسالة التحقق
         verification_message = None
         for msg in bot_messages:
             msg_text = getattr(msg, "message", "") or getattr(msg, "text", "") or ""
@@ -1241,9 +1195,9 @@ async def _execute_votes_ai(session, params, is_first):
         if not verification_message:
             return False, "لم يتم العثور على رسالة تحقق."
 
-        # 8. قراءة رسالة التحقق واستخراج الإيموجي
+        # 5. استخراج الإيموجي المطلوب
         verification_text = getattr(verification_message, "message", "") or getattr(verification_message, "text", "") or ""
-        logger.info(f"📋 الحسab {session['phone_number']} - رسالة التحقق: {verification_text[:100]}")
+        logger.info(f"📋 الحساب {session['phone_number']} - رسالة التحقق: {verification_text[:100]}")
 
         target_emoji = None
         emoji_pattern = re.compile(r'[\U0001F300-\U0001FAFF\u2600-\u27BF\uFE0F]')
@@ -1252,7 +1206,7 @@ async def _execute_votes_ai(session, params, is_first):
             target_emoji = emojis_in_text[-1]
             logger.info(f"🎯 الحساب {session['phone_number']} - الإيموجي المطلوب: {target_emoji}")
 
-        # 9. الضغط على الزر الذي يحتوي الإيموجي المطابق
+        # 6. الضغط على الإيموجي الصحيح
         for row in getattr(verification_message, "buttons", None) or []:
             for button in row:
                 button_text = getattr(button, "text", "") or ""
