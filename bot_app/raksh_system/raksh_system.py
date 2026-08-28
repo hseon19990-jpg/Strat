@@ -44,7 +44,7 @@ RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS = 4
 _RAKSH_SESSION_LOCKS: dict[str, asyncio.Lock] = {}
 
 # عدد الحسابات التي ستعمل بالتوازي في قسم "تصويت يحتوي تحقق"
-RAKSH_VOTE_CONCURRENT = 2
+RAKSH_VOTE_CONCURRENT = 1
 
 def _get_raksh_session_lock(phone_number: str) -> asyncio.Lock:
     key = str(phone_number or "").strip()
@@ -1512,59 +1512,9 @@ async def execute_raksh_service(
                     success_count,
                     len(failed_details),
                 )
-            await asyncio.sleep(0.05)
-
-        await _remove_invalid_raksh_sessions(failed_phones)
-        return success_count, success_phones, failed_phones, failed_details
-
-        random.shuffle(shuffled)
-        success_count = 0
-        success_phones = []
-        failed_phones = []
-        failed_details = []
-
-        for batch_start in range(0, min(quantity, len(shuffled)), RAKSH_VOTE_CONCURRENT):
-            batch = shuffled[batch_start:batch_start + RAKSH_VOTE_CONCURRENT]
-            tasks = []
-            for session in batch:
-                phone = session["phone_number"]
-                if phone in success_phones or phone in failed_phones:
-                    continue
-                if not _reserve_raksh_execution_slot(user_id, service_type, phone):
-                    continue
-
-                session_lock = _get_raksh_session_lock(phone)
-                if session_lock.locked():
-                    continue
-
-                async def _run_one(session=session, session_lock=session_lock):
-                    async with session_lock:
-                        try:
-                            return await executor(session=session, params=params, is_first=True)
-                        except Exception as e:
-                            return False, f"❌ خطأ: {str(e)[:80]}"
-                tasks.append(asyncio.create_task(_run_one()))
-
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            for session, result in zip(batch, results):
-                phone = session["phone_number"]
-                if isinstance(result, BaseException):
-                    ok, msg = False, f"❌ فشل: {str(result)[:80]}"
-                else:
-                    ok, msg = result
-                if ok:
-                    success_count += 1
-                    success_phones.append(phone)
-                else:
-                    failed_phones.append(phone)
-                    failed_details.append(msg)
-
-            if progress_callback:
-                await progress_callback(min(batch_start + RAKSH_VOTE_CONCURRENT, quantity),
-                                        quantity,
-                                        success_count,
-                                        len(failed_details))
-            await asyncio.sleep(0.05)
+            # تشغيل حساب واحد فقط، مع مهلة 3 ثوانٍ قبل الحساب التالي.
+            if batch_start + len(batch) < quantity:
+                await asyncio.sleep(_get_delay_seconds(service_type, params.get("delay_seconds")))
 
         await _remove_invalid_raksh_sessions(failed_phones)
         return success_count, success_phones, failed_phones, failed_details
