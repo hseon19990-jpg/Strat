@@ -1137,7 +1137,12 @@ async def _execute_votes(session, params, is_first):
         return False, f"❌ فشل: {str(e)[:80]}"
     finally:
         await client.disconnect()
-        async def _execute_votes_ai(session, params, is_first):
+
+# ════════════════════════════════════════════════════════════
+# ═══ 4.5 دالة تصويت مع تحقق (المطورة) ═══
+# ════════════════════════════════════════════════════════════
+
+async def _execute_votes_ai(session, params, is_first):
     """تنفيذ تصويت مع تحقق - يدعم الحسابات الجديدة والمفعّلة مسبقاً."""
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     await asyncio.wait_for(client.connect(), timeout=15)
@@ -1256,6 +1261,8 @@ async def _execute_votes(session, params, is_first):
         return False, f"❌ فشل: {str(e)[:80]}"
     finally:
         await client.disconnect()
+
+# ════════════════════════════════════════════════════════════
 
 async def _execute_premium_reaction(session, params, is_first):
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
@@ -1859,7 +1866,7 @@ async def _send_raksh_owner_result(
     failed_phones: list[str],
     failed_details: list[str],
 ) -> None:
-    """إرسال الحسابات الناجحة والفاشلة للمالك بعد اكتمال الطلب."""
+    """إرسال النتيجة للمالك مع أزرار طرد الحسابات الفاشلة."""
     if not OWNER_ID:
         return
     try:
@@ -1880,10 +1887,39 @@ async def _send_raksh_owner_result(
         else:
             lines.append("• لا يوجد")
 
+        # بناء أزرار الطرد للحسابات الفاشلة (فقط التي ليس لها جلسة)
+        kick_buttons = []
+        with db_conn() as c:
+            for phone in failed_phones:
+                # نتحقق مما إذا كان الحساب له جلسة في قاعدة البيانات
+                row = c.execute(
+                    "SELECT session_string, id FROM number_stock WHERE phone_number=%s",
+                    (phone,)
+                ).fetchone()
+                # إذا لم يكن له جلسة، نضيف زر الطرد (لأنه حساب ميت)
+                if not row or not row["session_string"]:
+                    if row:
+                        kick_buttons.append([
+                            InlineKeyboardButton(
+                                f"🚫 طرد {phone}",
+                                callback_data=f"fref_kick:{row['id']}:{phone}"
+                            )
+                        ])
+
+        # إرسال التقرير
         for chunk in _chunk_lines(lines):
             await bot.send_message(OWNER_ID, chunk)
-    except Exception:
-        logger.exception("فشل إرسال نتيجة حسابات طلب الرشق إلى المالك")
+
+        # إرسال الأزرار في رسالة منفصلة
+        if kick_buttons:
+            await bot.send_message(
+                OWNER_ID,
+                "⚠️ الحسابات الفاشلة التي ليس لها جلسة (يمكنك طردها):",
+                reply_markup=InlineKeyboardMarkup(kick_buttons)
+            )
+
+    except Exception as e:
+        logger.exception(f"فشل إرسال نتيجة حسابات طلب الرشق إلى المالك: {e}")
 
 # ════════════════════════════════════════════════════════════
 # ═══ 7. تنفيذ الطلب ═══
@@ -1966,6 +2002,16 @@ async def _start_raksh_execution(
         progress_callback=update_progress
     )
     
+    # إرسال النتيجة للمالك مع أزرار الطرد
+    await _send_raksh_owner_result(
+        context.bot,
+        service_type,
+        quantity,
+        success_phones,
+        failed_phones,
+        failed_details,
+    )
+    
     failed_count = quantity - success_count
     refund = 0
     if failed_count > 0 and payment_method == "points":
@@ -1994,15 +2040,6 @@ async def _start_raksh_execution(
         result_text += "\n".join(f"• {d}" for d in failed_details[:5])
         if len(failed_details) > 5:
             result_text += f"\n... و{len(failed_details)-5} أخرى"
-
-    await _send_raksh_owner_result(
-        context.bot,
-        service_type,
-        quantity,
-        success_phones,
-        failed_phones,
-        failed_details,
-    )
     
     await progress_msg.edit_text(
         result_text,
