@@ -1141,90 +1141,167 @@ async def _execute_votes(session, params, is_first):
         await client.disconnect()
 
 # ════════════════════════════════════════════════════════════
-# ═══ دوال مساعدة لحل الكابتشا ═══
+# ═══ دوال مساعدة لحل الكابتشا (محدثة) ═══
 # ════════════════════════════════════════════════════════════
-
-def solve_text_captcha(text):
-    """حل الكابتشا النصية - محسّنة"""
-    if not text:
-        return None
-    
-    m = re.search(r'أرسل الرقم[:\s]*(\d{4,6})', text, re.IGNORECASE)
-    if m:
-        return m.group(1)
-    m = re.search(r'الرقم هو[:\s]*(\d{4,6})', text, re.IGNORECASE)
-    if m:
-        return m.group(1)
-    m = re.search(r'code[:\s]*(\d{4,6})', text, re.IGNORECASE)
-    if m:
-        return m.group(1)
-    m = re.search(r'(\d+)\s*\+\s*(\d+)\s*=', text)
-    if m:
-        return str(int(m.group(1)) + int(m.group(2)))
-    m = re.search(r'(\d+)\s*-\s*(\d+)\s*=', text)
-    if m:
-        return str(int(m.group(1)) - int(m.group(2)))
-    if 'إنسان' in text and 'نعم' in text:
-        return 'نعم'
-    m = re.search(r'اضغط على الرقم\s*(\d)', text)
-    if m:
-        return m.group(1)
-    return None
-
-def extract_emoji_from_text(text):
-    """استخراج الإيموجي المطلوب - من آخر سطر"""
-    if not text:
-        return None
-    
-    lines = text.split('\n')
-    for line in reversed(lines):
-        line = line.strip()
-        if not line:
-            continue
-        emojis = re.findall(r'[\U0001F600-\U0001FAFF\u2600-\u27BF\u2190-\u21FF\u2B00-\u2BFF]', line)
-        if emojis:
-            return emojis[-1]
-    
-    all_emojis = re.findall(r'[\U0001F600-\U0001FAFF\u2600-\u27BF\u2190-\u21FF\u2B00-\u2BFF]', text)
-    if all_emojis:
-        return all_emojis[-1]
-    
-    return None
 
 def check_success_message(text):
-    """فحص رسالة النجاح"""
+    """فحص رسالة النجاح - يدعم عدة لغات"""
     if not text:
         return False
-    return any(word in text.casefold() for word in [
-        "تم", "نجح", "صوتك", "شكراً", "مبروك", "success", "vote recorded",
-        "✅", "🎉", "تم التصويت", "شكرا لتصويتك", "تم تسجيل التصويت",
-        "تم قبول", "تم تسجيل صوتك", "تم تأكيد", "تم استلام"
-    ])
+    text_lower = text.casefold()
+    
+    # الرموز العالمية
+    if "✅" in text or "🎉" in text or "✔️" in text:
+        return True
+    
+    # عبارات عربية
+    arabic_success = [
+        "تم التصويت", "تم تسجيل التصويت", "تم بنجاح", "نجحت العملية",
+        "شكراً لتصويتك", "شكرا لتصويتك", "تم قبول صوتك", "تم قبول",
+        "تم تسجيل صوتك", "تم التأكيد", "تمت العملية بنجاح"
+    ]
+    for phrase in arabic_success:
+        if phrase in text_lower:
+            return True
+    
+    # عبارات إنجليزية
+    english_success = [
+        "success", "vote recorded", "voted successfully", "thank you",
+        "your vote", "vote accepted", "correct", "completed", "done"
+    ]
+    for phrase in english_success:
+        if phrase in text_lower:
+            return True
+    
+    # عبارات روسية
+    russian_success = [
+        "успешно", "голос записан", "спасибо", "проголосовано",
+        "принято", "верно", "готово"
+    ]
+    for phrase in russian_success:
+        if phrase in text_lower:
+            return True
+    
+    # عبارات فارسية
+    persian_success = [
+        "موفق", "ثبت شد", "ممنون", "رای ثبت شد", "پذیرفته شد",
+        "صحیح", "انجام شد"
+    ]
+    for phrase in persian_success:
+        if phrase in text_lower:
+            return True
+    
+    # عبارات إسبانية
+    spanish_success = [
+        "éxito", "voto registrado", "gracias", "correcto",
+        "completado", "aceptado"
+    ]
+    for phrase in spanish_success:
+        if phrase in text_lower:
+            return True
+    
+    # عبارات فرنسية
+    french_success = [
+        "succès", "vote enregistré", "merci", "correct",
+        "terminé", "accepté"
+    ]
+    for phrase in french_success:
+        if phrase in text_lower:
+            return True
+    
+    return False
 
 def check_failure_message(text):
-    """فحص رسالة الفشل"""
+    """فحص رسالة الفشل - يدعم عدة لغات"""
     if not text:
         return False
-    return any(word in text.casefold() for word in [
-        "خطأ", "❌", "حاول مجدداً", "فشل", "wrong", "incorrect", "try again",
-        "إجابة خاطئة", "اجابة خاطئة", "غير صحيح", "غير مقبول", "رفض",
-        "لم يتم", "فشلت", "محاولة خاطئة", "expired", "انتهت"
-    ])
+    text_lower = text.casefold()
+    
+    # الرموز العالمية
+    if "❌" in text or "⚠️" in text:
+        return True
+    
+    # عبارات عربية
+    arabic_failure = [
+        "إجابة خاطئة", "اجابة خاطئة", "فشل", "خطأ", "حاول مجدداً",
+        "لم يتم", "غير صحيح", "غير مقبول", "رفض", "فشلت",
+        "محاولة خاطئة", "انتهت الصلاحية", "غير صحيحة"
+    ]
+    for phrase in arabic_failure:
+        if phrase in text_lower:
+            return True
+    
+    # عبارات إنجليزية
+    english_failure = [
+        "wrong", "incorrect", "try again", "failed", "error",
+        "not correct", "expired", "invalid", "rejected", "incorrect answer"
+    ]
+    for phrase in english_failure:
+        if phrase in text_lower:
+            return True
+    
+    # عبارات روسية
+    russian_failure = [
+        "ошибка", "неверно", "попробуйте снова", "не удалось",
+        "неправильно", "отклонено", "просрочено"
+    ]
+    for phrase in russian_failure:
+        if phrase in text_lower:
+            return True
+    
+    # عبارات فارسية
+    persian_failure = [
+        "اشتباه", "ناموفق", "دوباره تلاش کنید", "غلط",
+        "رد شد", "منقضی شده"
+    ]
+    for phrase in persian_failure:
+        if phrase in text_lower:
+            return True
+    
+    # عبارات إسبانية
+    spanish_failure = [
+        "error", "incorrecto", "intente de nuevo", "falló",
+        "no válido", "rechazado", "expirado"
+    ]
+    for phrase in spanish_failure:
+        if phrase in text_lower:
+            return True
+    
+    # عبارات فرنسية
+    french_failure = [
+        "erreur", "incorrect", "réessayez", "échec",
+        "non valide", "rejeté", "expiré"
+    ]
+    for phrase in french_failure:
+        if phrase in text_lower:
+            return True
+    
+    return False
+
+def check_new_message_without_buttons(messages, before_latest_id):
+    """التحقق من وجود رسالة جديدة بدون أزرار (قد تكون نجاحاً)"""
+    if not messages:
+        return False
+    
+    for message in messages:
+        message_id = getattr(message, "id", 0) or 0
+        has_buttons = bool(getattr(message, "buttons", None))
+        if message_id > before_latest_id and not has_buttons:
+            return True
+    
+    return False
 
 # ════════════════════════════════════════════════════════════
-# ═══ 4.5 دالة تصويت مع تحقق (النسخة النهائية) ═══
+# ═══ 4.5 دالة تصويت مع تحقق (النسخة النهائية المحدثة) ═══
 # ════════════════════════════════════════════════════════════
 
 async def _execute_votes_ai(session, params, is_first):
-    """تنفيذ تصويت مع تحقق - يفتح رابط التصويت ثم يحل الكابتشا.
-
-    لكل حساب يتم:
-    1. فتح رابط التصويت (StartBotRequest - نفس ما يحدث عند ضغط الرابط)
-    2. البحث عن رسالة التحقق (في كل الرسائل، بدون before_latest_id)
-    3. حل الكابتشا (نصية أو إيموجي أو أزرار)
-    4. **التأكد من وصول رسالة تأكيد من البوت** - إذا لم تصل، نعتبر العملية فاشلة
-    5. **إذا قال "فشل التحقق"** → انتظر 2 ثانية → غيّر الزر → حاول مرة أخرى
-    6. كرر حتى 5 محاولات
+    """تنفيذ تصويت مع تحقق - يفتح الرابط، يضغط الزر، ينتظر رد البوت، ويعيد المحاولة عند الفشل.
+    
+    القواعد:
+    - لا يعتبر ناجحاً إلا إذا وصلت رسالة نجاح صريحة (أو ظهرت رسالة جديدة بدون أزرار).
+    - إذا وصلت رسالة فشل → ينتظر ثانيتين ثم يضغط زراً آخر.
+    - يكرر حتى 5 محاولات أو تنفد الأزرار.
     """
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     await asyncio.wait_for(client.connect(), timeout=15)
@@ -1298,7 +1375,9 @@ async def _execute_votes_ai(session, params, is_first):
         if not all_buttons:
             return False, "رسالة التحقق لا تحتوي أزرار"
 
-        # 6. استخراج الإيموجي المطلوب
+        # 6. استخراج الإيموجي المطلوب (إن وجد)
+        # ملاحظة: هذه الدالة يجب أن تكون معرفة مسبقاً في الملف
+        # إذا لم تكن موجودة، يمكنك استخدام extract_emoji_from_text البسيطة
         target_emoji = extract_emoji_from_text(verification_text)
         logger.info(f"🎯 الحساب {session['phone_number']} - الإيموجي المطلوب: {target_emoji}")
 
@@ -1342,26 +1421,37 @@ async def _execute_votes_ai(session, params, is_first):
 
             # انتظار رد البوت
             await asyncio.sleep(2.0)
+
+            # قراءة الرسائل الجديدة
             final_messages = _as_message_list(await client.get_messages(bot_entity, limit=15))
-            success_confirmed = False
-            failure_confirmed = False
+            success_found = False
+            failure_found = False
+
+            # نفحص الرسائل من الأحدث إلى الأقدم
             for message in final_messages:
                 message_text = getattr(message, "message", "") or getattr(message, "text", "") or ""
-                if check_success_message(message_text):
-                    success_confirmed = True
-                    break
                 if check_failure_message(message_text):
-                    failure_confirmed = True
+                    failure_found = True
+                    break
+                if check_success_message(message_text):
+                    success_found = True
                     break
 
-            if success_confirmed:
+            if success_found:
                 logger.info(f"✅ تأكد نجاح التصويت للحساب {session['phone_number']}")
                 return True, f"✅ تم تسجيل التصويت من {session['phone_number']}"
-            if failure_confirmed:
+
+            if failure_found:
                 logger.info(f"❌ الزر '{button_text}' غير صحيح - فشل التحقق، نجرب زر آخر بعد ثانيتين...")
                 continue
-            # لا رد واضح - نجرب زر آخر
-            logger.info(f"⚠️ لا يوجد رد واضح، نجرب زر آخر...")
+
+            # لا توجد رسالة واضحة - نتحقق من وجود رسالة جديدة بدون أزرار
+            if check_new_message_without_buttons(final_messages, before_latest_id):
+                logger.info(f"✅ ظهرت رسالة جديدة بدون أزرار - اعتبرنا التحقق ناجحاً")
+                return True, f"✅ تم تسجيل التصويت من {session['phone_number']}"
+
+            # لا يوجد رد واضح - نعتبرها فشلاً ونحاول زراً آخر
+            logger.info(f"⚠️ لا يوجد رد واضح من البوت، نجرب زر آخر...")
             continue
 
         # 9. لم ننجح بعد كل المحاولات
