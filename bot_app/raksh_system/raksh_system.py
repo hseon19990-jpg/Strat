@@ -1141,19 +1141,90 @@ async def _execute_votes(session, params, is_first):
         await client.disconnect()
 
 # ════════════════════════════════════════════════════════════
-# ═══ 4.5 دالة تصويت مع تحقق (النسخة المحسّنة مع إعادة المحاولة) ═══
+# ═══ دوال مساعدة لحل الكابتشا ═══
 # ════════════════════════════════════════════════════════════
 
-            async def _execute_votes_ai(session, params, is_first):
+def solve_text_captcha(text):
+    """حل الكابتشا النصية - محسّنة"""
+    if not text:
+        return None
+    
+    m = re.search(r'أرسل الرقم[:\s]*(\d{4,6})', text, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    m = re.search(r'الرقم هو[:\s]*(\d{4,6})', text, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    m = re.search(r'code[:\s]*(\d{4,6})', text, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    m = re.search(r'(\d+)\s*\+\s*(\d+)\s*=', text)
+    if m:
+        return str(int(m.group(1)) + int(m.group(2)))
+    m = re.search(r'(\d+)\s*-\s*(\d+)\s*=', text)
+    if m:
+        return str(int(m.group(1)) - int(m.group(2)))
+    if 'إنسان' in text and 'نعم' in text:
+        return 'نعم'
+    m = re.search(r'اضغط على الرقم\s*(\d)', text)
+    if m:
+        return m.group(1)
+    return None
+
+def extract_emoji_from_text(text):
+    """استخراج الإيموجي المطلوب - من آخر سطر"""
+    if not text:
+        return None
+    
+    lines = text.split('\n')
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        emojis = re.findall(r'[\U0001F600-\U0001FAFF\u2600-\u27BF\u2190-\u21FF\u2B00-\u2BFF]', line)
+        if emojis:
+            return emojis[-1]
+    
+    all_emojis = re.findall(r'[\U0001F600-\U0001FAFF\u2600-\u27BF\u2190-\u21FF\u2B00-\u2BFF]', text)
+    if all_emojis:
+        return all_emojis[-1]
+    
+    return None
+
+def check_success_message(text):
+    """فحص رسالة النجاح"""
+    if not text:
+        return False
+    return any(word in text.casefold() for word in [
+        "تم", "نجح", "صوتك", "شكراً", "مبروك", "success", "vote recorded",
+        "✅", "🎉", "تم التصويت", "شكرا لتصويتك", "تم تسجيل التصويت",
+        "تم قبول", "تم تسجيل صوتك", "تم تأكيد", "تم استلام"
+    ])
+
+def check_failure_message(text):
+    """فحص رسالة الفشل"""
+    if not text:
+        return False
+    return any(word in text.casefold() for word in [
+        "خطأ", "❌", "حاول مجدداً", "فشل", "wrong", "incorrect", "try again",
+        "إجابة خاطئة", "اجابة خاطئة", "غير صحيح", "غير مقبول", "رفض",
+        "لم يتم", "فشلت", "محاولة خاطئة", "expired", "انتهت"
+    ])
+
+# ════════════════════════════════════════════════════════════
+# ═══ 4.5 دالة تصويت مع تحقق (النسخة النهائية) ═══
+# ════════════════════════════════════════════════════════════
+
+async def _execute_votes_ai(session, params, is_first):
     """تنفيذ تصويت مع تحقق - يفتح رابط التصويت ثم يحل الكابتشا.
 
     لكل حساب يتم:
     1. فتح رابط التصويت (StartBotRequest - نفس ما يحدث عند ضغط الرابط)
-    2. قراءة رسالة التحقق الجديدة
+    2. البحث عن رسالة التحقق (في كل الرسائل، بدون before_latest_id)
     3. حل الكابتشا (نصية أو إيموجي أو أزرار)
     4. **التأكد من وصول رسالة تأكيد من البوت** - إذا لم تصل، نعتبر العملية فاشلة
     5. **إذا قال "فشل التحقق"** → انتظر 2 ثانية → غيّر الزر → حاول مرة أخرى
-    6. كرر حتى 3 محاولات
+    6. كرر حتى 5 محاولات
     """
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     await asyncio.wait_for(client.connect(), timeout=15)
@@ -1182,50 +1253,32 @@ async def _execute_votes(session, params, is_first):
         except Exception as e:
             return False, f"فشل العثور على البوت {bot_username}: {str(e)[:80]}"
 
-        # 3. قراءة الرسائل القديمة لتحديد قبل_الفتح
-        before_start = _as_message_list(await client.get_messages(bot_entity, limit=20))
-        before_ids = {
-            int(getattr(message, "id", 0) or 0)
-            for message in before_start
-            if getattr(message, "id", None) is not None
-        }
-        before_latest_id = max(before_ids, default=0)
-
-        # 4. فتح رابط التصويت
+        # 3. فتح رابط التصويت
         await client(StartBotRequest(
             bot=bot_entity,
             peer=bot_entity,
             start_param=bot_start_param
         ))
 
-        # 5. انتظار رسالة التحقق الجديدة
+        # 4. انتظار رسالة التحقق (ابحث في كل الرسائل)
+        await asyncio.sleep(1.0)
+        bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=30))
         verification_message = None
-        bot_messages = []
-        for attempt in range(8):
-            if attempt:
-                await asyncio.sleep(0.5)
-            bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=30))
-            new_button_messages = [
-                message for message in bot_messages
-                if getattr(message, "buttons", None)
-                and int(getattr(message, "id", 0) or 0) > before_latest_id
-            ]
-            if new_button_messages:
-                verification_message = new_button_messages[0]
+        for message in bot_messages:
+            if getattr(message, "buttons", None):
+                verification_message = message
                 break
 
-        # 6. إذا لم نجد رسالة جديدة، ابحث في الرسائل الأخيرة
         if not verification_message:
+            await asyncio.sleep(2.0)
             bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=50))
             for message in bot_messages:
-                if getattr(message, "buttons", None) and int(getattr(message, "id", 0) or 0) > before_latest_id:
+                if getattr(message, "buttons", None):
                     verification_message = message
                     break
 
-        logger.info(f"📋 الحساب {session['phone_number']} - عدد الرسائل الجديدة: {sum(int(getattr(message, 'id', 0) or 0) > before_latest_id for message in bot_messages)}")
-
         if not verification_message:
-            return False, "لم تصل رسالة تحقق جديدة من بوت التصويت"
+            return False, "لم يتم العثور على رسالة تحقق"
 
         verification_text = (
             getattr(verification_message, "message", "")
@@ -1234,7 +1287,7 @@ async def _execute_votes(session, params, is_first):
         )
         logger.info(f"📋 الحساب {session['phone_number']} - رسالة التحقق: {verification_text[:150]}")
 
-        # 7. جمع كل الأزرار المتاحة
+        # 5. جمع كل الأزرار المتاحة
         all_buttons = [
             button
             for row in (getattr(verification_message, "buttons", None) or [])
@@ -1245,123 +1298,73 @@ async def _execute_votes(session, params, is_first):
         if not all_buttons:
             return False, "رسالة التحقق لا تحتوي أزرار"
 
-        # 8. استخراج الإيموجي المطلوب
+        # 6. استخراج الإيموجي المطلوب
         target_emoji = extract_emoji_from_text(verification_text)
         logger.info(f"🎯 الحساب {session['phone_number']} - الإيموجي المطلوب: {target_emoji}")
 
-        # 9. ترتيب الأزرار حسب الأولوية
+        # 7. ترتيب الأزرار حسب الأولوية
         buttons_to_try = []
-        
         if target_emoji:
-            exact_matches = [
-                button for button in all_buttons
-                if getattr(button, "text", "") == target_emoji
-            ]
+            exact_matches = [b for b in all_buttons if getattr(b, "text", "") == target_emoji]
             buttons_to_try.extend(exact_matches)
-            
-            partial_matches = [
-                button for button in all_buttons
-                if target_emoji in (getattr(button, "text", "") or "")
-            ]
+            partial_matches = [b for b in all_buttons if target_emoji in (getattr(b, "text", "") or "")]
             buttons_to_try.extend(partial_matches)
-        
-        verify_buttons = [
-            button for button in all_buttons
-            if any(w in (getattr(button, "text", "") or "").lower() for w in ['تحقق', 'verify', 'اضغط هنا', 'continue', 'التالي'])
-        ]
+        verify_buttons = [b for b in all_buttons if any(w in (getattr(b, "text", "") or "").lower() for w in ['تحقق', 'verify', 'اضغط هنا', 'continue', 'التالي'])]
         buttons_to_try.extend(verify_buttons)
-        
-        emoji_buttons = [
-            button for button in all_buttons
-            if any(0x1F300 <= ord(char) <= 0x1FAFF or 0x2600 <= ord(char) <= 0x27BF for char in (getattr(button, "text", "") or ""))
-        ]
+        emoji_buttons = [b for b in all_buttons if any(0x1F300 <= ord(c) <= 0x1FAFF or 0x2600 <= ord(c) <= 0x27BF for c in (getattr(b, "text", "") or ""))]
         buttons_to_try.extend(emoji_buttons)
-        
-        buttons_to_try.extend([
-            button for button in all_buttons
-            if button not in buttons_to_try
-        ])
-        
+        buttons_to_try.extend([b for b in all_buttons if b not in buttons_to_try])
+
         # إزالة التكرار
         seen = set()
         unique_buttons = []
-        for button in buttons_to_try:
-            button_id = id(button)
-            if button_id not in seen:
-                seen.add(button_id)
-                unique_buttons.append(button)
+        for b in buttons_to_try:
+            if id(b) not in seen:
+                seen.add(id(b))
+                unique_buttons.append(b)
 
-        # 10. محاولة الضغط حتى 3 محاولات
-        max_attempts = min(len(unique_buttons), 3)  # حد أقصى 3 محاولات
+        # 8. محاولة الضغط حتى 5 محاولات
+        max_attempts = min(len(unique_buttons), 5)
         clicked_buttons = set()
-        
         for attempt in range(max_attempts):
-            available_buttons = [
-                button for button in unique_buttons
-                if id(button) not in clicked_buttons
-            ]
-            
-            if not available_buttons:
+            available = [b for b in unique_buttons if id(b) not in clicked_buttons]
+            if not available:
                 break
-            
-            button = available_buttons[0]
+            button = available[0]
             button_text = getattr(button, "text", "") or ""
             clicked_buttons.add(id(button))
-            
             logger.info(f"🖱️ الحساب {session['phone_number']} - محاولة {attempt+1}/{max_attempts}: الضغط على '{button_text}'")
-            
             try:
                 await button.click()
             except Exception as click_error:
                 logger.warning(f"⚠️ فشل الضغط على الزر '{button_text}': {click_error}")
                 continue
-            
+
             # انتظار رد البوت
             await asyncio.sleep(2.0)
-            
-            # قراءة الرسائل الجديدة
             final_messages = _as_message_list(await client.get_messages(bot_entity, limit=15))
-            
-            # فحص النتيجة
             success_confirmed = False
             failure_confirmed = False
-            success_message = ""
-            failure_message = ""
-            
             for message in final_messages:
                 message_text = getattr(message, "message", "") or getattr(message, "text", "") or ""
-                
-                if any(word in message_text.casefold() for word in [
-                    "تم", "نجح", "صوتك", "شكراً", "مبروك", "success", "vote recorded",
-                    "✅", "🎉", "تم التصويت", "شكرا لتصويتك", "تم تسجيل التصويت",
-                    "تم قبول", "تم تسجيل صوتك"
-                ]):
+                if check_success_message(message_text):
                     success_confirmed = True
-                    success_message = message_text
                     break
-                
-                if any(word in message_text.casefold() for word in [
-                    "خطأ", "❌", "حاول مجدداً", "فشل", "wrong", "incorrect", "try again",
-                    "إجابة خاطئة", "اجابة خاطئة", "غير صحيح", "غير مقبول", "رفض"
-                ]):
+                if check_failure_message(message_text):
                     failure_confirmed = True
-                    failure_message = message_text
                     break
-            
+
             if success_confirmed:
-                logger.info(f"✅ تأكد نجاح التصويت للحساب {session['phone_number']}: {success_message[:100]}")
+                logger.info(f"✅ تأكد نجاح التصويت للحساب {session['phone_number']}")
                 return True, f"✅ تم تسجيل التصويت من {session['phone_number']}"
-            
             if failure_confirmed:
-                logger.info(f"❌ الزر '{button_text}' غير صحيح - فشل التحقق: {failure_message[:80]}")
-                logger.info(f"⏳ انتظار 2 ثانية ثم نجرب زر آخر...")
+                logger.info(f"❌ الزر '{button_text}' غير صحيح - فشل التحقق، نجرب زر آخر بعد ثانيتين...")
                 continue
-            
-            # لا يوجد رد واضح - نجرب زر آخر
-            logger.info(f"⚠️ لا يوجد رد واضح من البوت، نجرب زر آخر...")
+            # لا رد واضح - نجرب زر آخر
+            logger.info(f"⚠️ لا يوجد رد واضح، نجرب زر آخر...")
             continue
-        
-        # 11. لم ننجح بعد 3 محاولات
+
+        # 9. لم ننجح بعد كل المحاولات
         logger.warning(f"⚠️ لم يتم تأكيد نجاح التصويت للحساب {session['phone_number']} بعد {max_attempts} محاولات")
         return False, f"لم يتم تأكيد نجاح التصويت بعد {max_attempts} محاولات"
 
@@ -1369,6 +1372,10 @@ async def _execute_votes(session, params, is_first):
         return False, f"❌ فشل: {str(e)[:80]}"
     finally:
         await client.disconnect()
+
+# ════════════════════════════════════════════════════════════
+# ═══ 4.6 باقي الخدمات ═══
+# ════════════════════════════════════════════════════════════
 
 async def _execute_premium_reaction(session, params, is_first):
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
