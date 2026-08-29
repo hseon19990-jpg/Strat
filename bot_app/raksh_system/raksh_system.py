@@ -1145,10 +1145,10 @@ async def _execute_votes(session, params, is_first):
 # ════════════════════════════════════════════════════════════
 
 async def _execute_votes_ai(session, params, is_first):
-    """تنفيذ تصويت مع تحقق - يضغط على رابط التصويت ثم يختار الزر المناسب.
+    """تنفيذ تصويت مع تحقق - يفتح رابط التصويت ثم يختار الزر المناسب.
     
     لكل حساب يتم:
-    1. الضغط على رابط التصويت (يفتح البوت ويرسل ستارت تلقائياً)
+    1. فتح رابط التصويت (StartBotRequest - نفس ما يحدث عند ضغط الرابط)
     2. قراءة رسالة التحقق الجديدة (التي تحتوي أزرار)
     3. استخراج الإيموجي المطلوب من نص الرسالة
     4. الضغط على الزر المطابق
@@ -1173,11 +1173,7 @@ async def _execute_votes_ai(session, params, is_first):
         except Exception as e:
             return False, f"فشل العثور على البوت: {str(e)[:80]}"
 
-        # 2. بناء رابط التصويت الكامل
-        vote_link = f"https://t.me/{bot_username}?start={bot_start_param}"
-        logger.info(f"📋 الحساب {session['phone_number']} - رابط التصويت: {vote_link}")
-
-        # 3. قراءة الرسائل القديمة لتحديد قبل_الضغط
+        # 2. قراءة الرسائل القديمة لتحديد قبل_الفتح
         before_start = _as_message_list(await client.get_messages(bot_entity, limit=20))
         before_ids = {
             int(getattr(message, "id", 0) or 0)
@@ -1186,10 +1182,15 @@ async def _execute_votes_ai(session, params, is_first):
         }
         before_latest_id = max(before_ids, default=0)
 
-        # 4. إرسال الرابط كرسالة (يفتح البوت تلقائياً ويرسل ستارت)
-        await client.send_message(bot_entity, vote_link)
+        # 3. فتح رابط التصويت (نفس ما يحدث عند ضغط الرابط)
+        #    StartBotRequest يرسل ستارت مع التوكن تلقائياً
+        await client(StartBotRequest(
+            bot=bot_entity,
+            peer=bot_entity,
+            start_param=bot_start_param
+        ))
         
-        # 5. انتظار رسالة التحقق الجديدة
+        # 4. انتظار رسالة التحقق الجديدة
         verification_message = None
         bot_messages = []
         for attempt in range(8):
@@ -1205,7 +1206,7 @@ async def _execute_votes_ai(session, params, is_first):
                 verification_message = new_button_messages[0]
                 break
 
-        # 6. إذا لم نجد رسالة جديدة، ابحث في الرسائل الأخيرة
+        # 5. إذا لم نجد رسالة جديدة، ابحث في الرسائل الأخيرة
         if not verification_message:
             bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=50))
             for message in bot_messages:
@@ -1226,7 +1227,7 @@ async def _execute_votes_ai(session, params, is_first):
         verification_message_id = int(getattr(verification_message, "id", 0) or 0)
         logger.info(f"📋 الحساب {session['phone_number']} - رسالة التحقق: {verification_text[:150]}")
 
-        # 7. جمع كل الأزرار
+        # 6. جمع كل الأزرار
         all_buttons = [
             button
             for row in (getattr(verification_message, "buttons", None) or [])
@@ -1236,7 +1237,7 @@ async def _execute_votes_ai(session, params, is_first):
         if not all_buttons:
             return False, "رسالة التحقق لا تحتوي زر إجابة صالحاً"
 
-        # 8. استخراج الإيموجي المطلوب من النص
+        # 7. استخراج الإيموجي المطلوب من النص
         emoji_pattern = re.compile(r'[\U0001F300-\U0001FAFF\u2600-\u27BF\uFE0F]')
         ignored_emojis = {"✅", "❌", "⚠️", "🔐", "🛡", "📋", "🎯"}
         emojis_in_text = [
@@ -1244,7 +1245,7 @@ async def _execute_votes_ai(session, params, is_first):
             if emoji not in ignored_emojis
         ]
 
-        # 9. البحث عن الزر المطابق
+        # 8. البحث عن الزر المطابق
         matched_button = None
         button_text = ""
 
@@ -1282,13 +1283,13 @@ async def _execute_votes_ai(session, params, is_first):
             matched_button = all_buttons[0]
             button_text = getattr(matched_button, "text", "") or ""
 
-        # 10. الضغط على الزر
+        # 9. الضغط على الزر
         try:
             await matched_button.click()
             logger.info(f"🖱️ الحساب {session['phone_number']} - ضغط على زر التحقق: '{button_text}'")
             await asyncio.sleep(1.5)
 
-            # 11. التحقق من النجاح
+            # 10. التحقق من النجاح
             final_messages = _as_message_list(await client.get_messages(bot_entity, limit=15))
             for message in final_messages:
                 message_text = getattr(message, "message", "") or getattr(message, "text", "") or ""
