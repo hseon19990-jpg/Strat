@@ -1257,15 +1257,14 @@ async def solve_captcha_with_friend_logic(client, bot_entity, bot_messages):
     return False
 
 # الدالة الرئيسية المحسنة
-
 async def _execute_votes_ai(session, params, is_first):
     """تنفيذ تصويت مع تحقق - يفتح رابط التصويت ثم يحل الكابتشا.
-    
+
     لكل حساب يتم:
     1. فتح رابط التصويت (StartBotRequest - نفس ما يحدث عند ضغط الرابط)
     2. قراءة رسالة التحقق الجديدة
     3. حل الكابتشا (نصية أو إيموجي أو أزرار)
-    4. التحقق من نجاح التصويت
+    4. **التأكد من وصول رسالة تأكيد من البوت** - إذا لم تصل، نعتبر العملية فاشلة
     """
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     await asyncio.wait_for(client.connect(), timeout=15)
@@ -1280,13 +1279,21 @@ async def _execute_votes_ai(session, params, is_first):
             return False, "رابط التصويت غير صحيح."
 
         logger.info(f"📋 الحساب {session['phone_number']} - البوت: {bot_username} | التوكن: {bot_start_param}")
-        
-        try:
-            bot_entity = await client.get_entity(bot_username)
-        except Exception as e:
-            return False, f"فشل العثور على البوت: {str(e)[:80]}"
 
-        # 2. قراءة الرسائل القديمة لتحديد قبل_الفتح
+        # 2. العثور على البوت
+        try:
+            from telethon.tl.functions.contacts import ResolveUsernameRequest
+            resolved = await client(ResolveUsernameRequest(bot_username))
+            if resolved.users:
+                bot_entity = resolved.users[0]
+            elif resolved.chats:
+                bot_entity = resolved.chats[0]
+            else:
+                return False, f"البوت {bot_username} غير موجود"
+        except Exception as e:
+            return False, f"فشل العثور على البوت {bot_username}: {str(e)[:80]}"
+
+        # 3. قراءة الرسائل القديمة لتحديد قبل_الفتح
         before_start = _as_message_list(await client.get_messages(bot_entity, limit=20))
         before_ids = {
             int(getattr(message, "id", 0) or 0)
@@ -1295,15 +1302,14 @@ async def _execute_votes_ai(session, params, is_first):
         }
         before_latest_id = max(before_ids, default=0)
 
-        # 3. فتح رابط التصويت (نفس ما يحدث عند ضغط الرابط)
-        #    StartBotRequest يرسل ستارت مع التوكن تلقائياً
+        # 4. فتح رابط التصويت
         await client(StartBotRequest(
             bot=bot_entity,
             peer=bot_entity,
             start_param=bot_start_param
         ))
-        
-        # 4. انتظار رسالة التحقق الجديدة
+
+        # 5. انتظار رسالة التحقق الجديدة
         verification_message = None
         bot_messages = []
         for attempt in range(8):
@@ -1319,7 +1325,7 @@ async def _execute_votes_ai(session, params, is_first):
                 verification_message = new_button_messages[0]
                 break
 
-        # 5. إذا لم نجد رسالة جديدة، ابحث في الرسائل الأخيرة
+        # 6. إذا لم نجد رسالة جديدة، ابحث في الرسائل الأخيرة
         if not verification_message:
             bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=50))
             for message in bot_messages:
@@ -1328,7 +1334,7 @@ async def _execute_votes_ai(session, params, is_first):
                     break
 
         logger.info(f"📋 الحساب {session['phone_number']} - عدد الرسائل الجديدة: {sum(int(getattr(message, 'id', 0) or 0) > before_latest_id for message in bot_messages)}")
-        
+
         if not verification_message:
             return False, "لم تصل رسالة تحقق جديدة من بوت التصويت"
 
@@ -1339,9 +1345,9 @@ async def _execute_votes_ai(session, params, is_first):
         )
         logger.info(f"📋 الحساب {session['phone_number']} - رسالة التحقق: {verification_text[:150]}")
 
-        # 6. حل الكابتشا بطريقة صديقك
+        # 7. حل الكابتشا
         solved = await solve_captcha_with_friend_logic(client, bot_entity, bot_messages)
-        
+
         if not solved:
             # محاولة أخيرة: البحث عن أي زر إيموجي
             all_buttons = [
@@ -1351,7 +1357,6 @@ async def _execute_votes_ai(session, params, is_first):
                 if not getattr(button, "url", None)
             ]
             if all_buttons:
-                # جرب أول زر
                 try:
                     await all_buttons[0].click()
                     solved = True
@@ -1361,21 +1366,50 @@ async def _execute_votes_ai(session, params, is_first):
         if not solved:
             return False, "لم يتم حل الكابتشا"
 
-        # 7. انتظار رسالة النجاح
-        await asyncio.sleep(1.5)
-        
-        # 8. التحقق من النجاح
-        final_messages = _as_message_list(await client.get_messages(bot_entity, limit=15))
+        # 8. انتظار رسالة التأكيد
+        await asyncio.sleep(2.0)
+
+        # 9. التحقق من وصول رسالة تأكيد - **الإصلاح الحاسم**
+        final_messages = _as_message_list(await client.get_messages(bot_entity, limit=20))
+        success_confirmed = False
+        success_message = ""
+        failure_message = ""
+
         for message in final_messages:
+            message_id = int(getattr(message, "id", 0) or 0)
             message_text = getattr(message, "message", "") or getattr(message, "text", "") or ""
+
+            # نتجاهل الرسائل القديمة
+            if message_id <= before_latest_id:
+                continue
+
+            # نفحص الرسائل الجديدة فقط
             if any(word in message_text.casefold() for word in [
                 "تم", "نجح", "صوتك", "شكراً", "مبروك", "success", "vote recorded",
-                "✅", "🎉", "تم التصويت", "شكرا لتصويتك", "تم تسجيل التصويت"
+                "✅", "🎉", "تم التصويت", "شكرا لتصويتك", "تم تسجيل التصويت",
+                "تم قبول", "تم تسجيل صوتك"
             ]):
-                return True, f"✅ تم تسجيل التصويت من {session['phone_number']}"
+                success_confirmed = True
+                success_message = message_text
+                break
 
-        # 9. إذا لم نجد رسالة نجاح لكن الكابتشا حُلّت
-        return True, f"✅ تم التصويت من {session['phone_number']}"
+            if any(word in message_text.casefold() for word in [
+                "خطأ", "❌", "حاول مجدداً", "فشل", "wrong", "incorrect", "try again",
+                "إجابة خاطئة", "اجابة خاطئة", "غير صحيح", "غير مقبول", "رفض"
+            ]):
+                failure_message = message_text
+                break
+
+        # 10. تحديد النتيجة
+        if success_confirmed:
+            logger.info(f"✅ تأكد نجاح التصويت للحساب {session['phone_number']}: {success_message[:100]}")
+            return True, f"✅ تم تسجيل التصويت من {session['phone_number']}"
+        elif failure_message:
+            logger.warning(f"❌ رفض البوت الإجابة للحساب {session['phone_number']}: {failure_message[:100]}")
+            return False, f"رفض البوت الإجابة: {failure_message[:80]}"
+        else:
+            logger.warning(f"⚠️ لم يتم تأكيد نجاح التصويت للحساب {session['phone_number']}")
+            return False, "تم الضغط على الزر لكن لم يتم تأكيد نجاح التصويت"
 
     except Exception as e:
         return False, f"❌ فشل: {str(e)[:80]}"
