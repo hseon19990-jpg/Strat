@@ -1155,14 +1155,12 @@ def extract_emoji_from_text(text):
             return emojis[-1]
     all_emojis = re.findall(r'[\U0001F600-\U0001FAFF\u2600-\u27BF\u2190-\u21FF\u2B00-\u2BFF]', text)
     return all_emojis[-1] if all_emojis else None
-
 def check_success_message(text):
     """فحص رسالة النجاح - عبارات تأكيد التصويت فقط (بكل اللغات)"""
     if not text:
         return False
     text_lower = text.casefold()
 
-    # عبارات تؤكد تسجيل التصويت بوضوح
     exact_success_phrases = [
         # عربية
         "تم تسجيل تصويتك",
@@ -1171,39 +1169,66 @@ def check_success_message(text):
         "صوتك تم تسجيله",
         "تم التصويت بنجاح",
         "تم تسجيل تصويتك بنجاح",
+        # إضافة جديدة: علامات قبول الحساب/التحقق
+        "تم قبول الحساب",
+        "تم قبول التحقق",
+        "تم اعتماد الحساب",
+        "تم اعتماد التحقق",
+        "تم تسجيلك بنجاح",
+        "تمت إضافة صوتك",
+        "تمت الموافقة",
+        "تم قبولك",
+        "تم تسجيل عضويتك",
         # إنجليزية
         "your vote has been counted",
         "your vote was recorded",
         "vote recorded successfully",
         "voted successfully",
         "vote accepted",
+        "account accepted",
+        "verification accepted",
+        "approved",
+        "successfully registered",
         # روسية
         "голос записан",
         "ваш голос учтен",
         "голосование принято",
+        "аккаунт принят",
+        "проверка пройдена",
         # فارسية
         "رای ثبت شد",
         "رای شما ثبت شد",
         "رای شما ثبت گردید",
+        "حساب پذیرفته شد",
+        "تأیید شد",
         # إسبانية
         "voto registrado",
         "voto contabilizado",
         "su voto ha sido registrado",
+        "cuenta aceptada",
+        "verificación aprobada",
         # فرنسية
         "vote enregistré",
         "vote comptabilisé",
+        "compte accepté",
+        "vérification approuvée",
         # تركية
         "oyunuz kaydedildi",
         "oyunuz sayıldı",
+        "hesap kabul edildi",
+        "doğrulama onaylandı",
         # ألمانية
         "stimme registriert",
         "stimme gezählt",
+        "konto akzeptiert",
+        "verifizierung bestätigt",
     ]
     for phrase in exact_success_phrases:
         if phrase in text_lower:
             return True
     
     return False
+
 
 def check_failure_message(text):
     """فحص رسالة الفشل - يدعم عدة لغات"""
@@ -1268,7 +1293,6 @@ def check_failure_message(text):
 # ════════════════════════════════════════════════════════════
 # ═══ 4.5 دالة تصويت مع تحقق (النسخة النهائية) ═══
 # ════════════════════════════════════════════════════════════
-
 async def _execute_votes_ai(session, params, is_first):
     """تنفيذ تصويت مع تحقق - يفتح الرابط، يضغط الزر، ينتظر رد البوت، ويعيد المحاولة عند الفشل."""
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
@@ -1372,8 +1396,8 @@ async def _execute_votes_ai(session, params, is_first):
                 seen.add(id(b))
                 unique_buttons.append(b)
 
-        # 8. محاولة الضغط حتى 5 محاولات
-        max_attempts = min(len(unique_buttons), 5)
+        # 8. محاولة الضغط حتى 15 محاولة (زيادة من 5)
+        max_attempts = min(len(unique_buttons), 15)  # غيّرنا من 5 إلى 15
         clicked_buttons = set()
         for attempt in range(max_attempts):
             available = [b for b in unique_buttons if id(b) not in clicked_buttons]
@@ -1428,9 +1452,6 @@ async def _execute_votes_ai(session, params, is_first):
     finally:
         await client.disconnect()
 
-# ════════════════════════════════════════════════════════════
-# ═══ 4.6 باقي الخدمات ═══
-# ════════════════════════════════════════════════════════════
 
 async def _execute_premium_reaction(session, params, is_first):
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
