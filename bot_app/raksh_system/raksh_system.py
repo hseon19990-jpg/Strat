@@ -42,6 +42,7 @@ RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS = 4
 # عن إيقاف نسخة قديمة من التطبيق على خادم آخر؛ Telegram لا يسمح باستخدام
 # authorization key نفسه من عمليتين/عنواني IP مختلفين.
 _RAKSH_SESSION_LOCKS: dict[str, asyncio.Lock] = {}
+_RAKSH_VOTE_FLOW_LOCK = asyncio.Lock()
 
 # عدد الحسابات التي ستعمل بالتوازي في قسم "تصويت يحتوي تحقق"
 RAKSH_VOTE_CONCURRENT = 1
@@ -245,7 +246,7 @@ def _get_delay_seconds(service_type: str | None = None, custom_delay: int | None
             return custom_delay
         return 180
     if service_type == "votes_ai":
-        return 0
+        return random.randint(8, 15)
     if service_type == "votes":
         return RAKSH_VOTE_DELAY_SECONDS
     return random.randint(RAKSH_MIN_DELAY_SECONDS, RAKSH_MAX_DELAY_SECONDS)
@@ -1454,18 +1455,17 @@ async def execute_raksh_service(
         raise RuntimeError(f"خدمة غير معروفة: {service_type}")
 
     if service_type == "votes_ai":
-        shuffled = sessions.copy()
-        random.shuffle(shuffled)
-        success_count = 0
-        success_phones = []
-        failed_phones = []
-        failed_details = []
+        # قفل شامل يمنع تداخل طلبين للتصويت حتى لو وصلا من مستخدمين مختلفين.
+        async with _RAKSH_VOTE_FLOW_LOCK:
+            shuffled = sessions.copy()
+            random.shuffle(shuffled)
+            success_count = 0
+            success_phones = []
+            failed_phones = []
+            failed_details = []
+            total_to_run = min(quantity, len(shuffled))
 
-        for batch_start in range(0, min(quantity, len(shuffled)), RAKSH_VOTE_CONCURRENT):
-            batch = shuffled[batch_start:batch_start + RAKSH_VOTE_CONCURRENT]
-            tasks = []
-            task_sessions = []
-            for session in batch:
+            for index, session in enumerate(shuffled[:total_to_run]):
                 phone = session["phone_number"]
                 if phone in success_phones or phone in failed_phones:
                     continue
@@ -1480,24 +1480,17 @@ async def execute_raksh_service(
                     failed_details.append("⏳ الجلسة قيد الاستخدام من تنفيذ آخر")
                     continue
 
-                async def _run_one(session=session, session_lock=session_lock):
-                    async with session_lock:
-                        try:
-                            return await executor(session=session, params=params, is_first=True)
-                        except Exception as e:
-                            return False, f"❌ خطأ: {str(e)[:80]}"
+                async with session_lock:
+                    try:
+                        ok, msg = await executor(
+                            session=session,
+                            params=params,
+                            is_first=(index == 0),
+                        )
+                    except Exception as e:
+                        ok = False
+                        msg = f"❌ خطأ: {str(e)[:80]}"
 
-                task_sessions.append(session)
-                tasks.append(asyncio.create_task(_run_one()))
-
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            # نطابق النتائج مع الحسابات التي شُغّلت فعلاً، لا مع الحسابات المتخطاة.
-            for session, result in zip(task_sessions, results):
-                phone = session["phone_number"]
-                if isinstance(result, BaseException):
-                    ok, msg = False, f"❌ فشل: {str(result)[:80]}"
-                else:
-                    ok, msg = result
                 if ok:
                     success_count += 1
                     success_phones.append(phone)
@@ -1505,19 +1498,20 @@ async def execute_raksh_service(
                     failed_phones.append(phone)
                     failed_details.append(msg)
 
-            if progress_callback:
-                await progress_callback(
-                    min(batch_start + len(batch), quantity),
-                    quantity,
-                    success_count,
-                    len(failed_details),
-                )
-            # تشغيل حساب واحد فقط، مع مهلة 3 ثوانٍ قبل الحساب التالي.
-            if batch_start + len(batch) < quantity:
-                await asyncio.sleep(_get_delay_seconds(service_type, params.get("delay_seconds")))
+                if progress_callback:
+                    await progress_callback(
+                        index + 1,
+                        quantity,
+                        success_count,
+                        len(failed_details),
+                    )
 
-        await _remove_invalid_raksh_sessions(failed_phones)
-        return success_count, success_phones, failed_phones, failed_details
+                # حساب واحد فقط في كل مرة، مع فاصل بشري متغير بين 8 و15 ثانية.
+                if index < total_to_run - 1:
+                    await asyncio.sleep(_get_delay_seconds(service_type, params.get("delay_seconds")))
+
+            await _remove_invalid_raksh_sessions(failed_phones)
+            return success_count, success_phones, failed_phones, failed_details
 
     shuffled = sessions.copy()
     random.shuffle(shuffled)
