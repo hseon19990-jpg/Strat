@@ -246,7 +246,7 @@ def _get_delay_seconds(service_type: str | None = None, custom_delay: int | None
             return custom_delay
         return 180
     if service_type == "votes_ai":
-        return random.randint(8, 15)
+        return 3
     if service_type == "votes":
         return RAKSH_VOTE_DELAY_SECONDS
     return random.randint(RAKSH_MIN_DELAY_SECONDS, RAKSH_MAX_DELAY_SECONDS)
@@ -1464,6 +1464,9 @@ async def execute_raksh_service(
             failed_phones = []
             failed_details = []
             total_to_run = min(quantity, len(shuffled))
+            vote_loop = asyncio.get_running_loop()
+            vote_interval = _get_delay_seconds(service_type, params.get("delay_seconds"))
+            last_vote_started_at = None
 
             for index, session in enumerate(shuffled[:total_to_run]):
                 phone = session["phone_number"]
@@ -1479,6 +1482,14 @@ async def execute_raksh_service(
                     failed_phones.append(phone)
                     failed_details.append("⏳ الجلسة قيد الاستخدام من تنفيذ آخر")
                     continue
+
+                # جدولة بداية الحساب التالي كل 3 ثوانٍ على الأقل.
+                # مدة عملية الحساب لا تُقصّر الفاصل؛ إذا استغرقت أكثر من 3 ثوانٍ نبدأ بعد انتهائها.
+                if last_vote_started_at is not None:
+                    remaining = vote_interval - (vote_loop.time() - last_vote_started_at)
+                    if remaining > 0:
+                        await asyncio.sleep(remaining)
+                last_vote_started_at = vote_loop.time()
 
                 async with session_lock:
                     try:
@@ -1506,9 +1517,7 @@ async def execute_raksh_service(
                         len(failed_details),
                     )
 
-                # حساب واحد فقط في كل مرة، مع فاصل بشري متغير بين 8 و15 ثانية.
-                if index < total_to_run - 1:
-                    await asyncio.sleep(_get_delay_seconds(service_type, params.get("delay_seconds")))
+                # لا يوجد تشغيل متوازٍ؛ الفاصل يُحسب قبل بداية الحساب التالي.
 
             await _remove_invalid_raksh_sessions(failed_phones)
             return success_count, success_phones, failed_phones, failed_details
