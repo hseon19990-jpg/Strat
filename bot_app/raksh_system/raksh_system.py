@@ -47,6 +47,9 @@ _RAKSH_VOTE_FLOW_LOCK = asyncio.Lock()
 # عدد الحسابات التي ستعمل بالتوازي في قسم "تصويت يحتوي تحقق"
 RAKSH_VOTE_CONCURRENT = 1
 
+# رسالة خاصة تدل على أن العملية نجحت بدون ظهور زر تحقق (لاسترداد نصف المبلغ)
+RAKSH_NO_VERIFICATION_MESSAGE = "NO_VERIFICATION_BUTTON_SUCCESS"
+
 def _get_raksh_session_lock(phone_number: str) -> asyncio.Lock:
     key = str(phone_number or "").strip()
     lock = _RAKSH_SESSION_LOCKS.get(key)
@@ -1294,7 +1297,8 @@ def check_failure_message(text):
 # ═══ 4.5 دالة تصويت مع تحقق (النسخة النهائية) ═══
 # ════════════════════════════════════════════════════════════
 async def _execute_votes_ai(session, params, is_first):
-    """تنفيذ تصويت مع تحقق - يضغط أزرار رسالة التحقق فقط حتى تختفي أزرارها."""
+    """تنفيذ تصويت مع تحقق - يضغط أزرار رسالة التحقق فقط حتى تختفي أزرارها.
+       إذا لم يظهر زر تحقق، تعتبر العملية ناجحة مع استرداد نصف المبلغ."""
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     await asyncio.wait_for(client.connect(), timeout=15)
     try:
@@ -1302,10 +1306,11 @@ async def _execute_votes_ai(session, params, is_first):
             _mark_raksh_session_unauthorized(session.get("phone_number"))
             return False, "الجلسة غير مصرح بها."
 
-        # 1. تحليل رابط التصويت
+        # 1. تحليل رابط التصويت - الآن نقبل أي شيء، لكن إن لم يكن رابط بوت نعتبرها نجاحاً بدون تحقق
         bot_username, bot_start_param = _parse_bot_link(params.get("link", ""))
         if not bot_username or not bot_start_param:
-            return False, "رابط التصويت غير صحيح."
+            logger.info(f"رابط غير بوت، تعتبر العملية ناجحة (بدون تحقق) للحساب {session['phone_number']}")
+            return True, RAKSH_NO_VERIFICATION_MESSAGE
 
         # 2. العثور على البوت
         bot_entity = None
@@ -1322,7 +1327,8 @@ async def _execute_votes_ai(session, params, is_first):
                 try:
                     bot_entity = await client.get_entity(f"@{bot_username}")
                 except Exception as e3:
-                    return False, f"فشل العثور على البوت {bot_username}: {str(e3)[:80]}"
+                    logger.info(f"تعذر العثور على البوت، تعتبر العملية ناجحة (بدون تحقق) للحساب {session['phone_number']}")
+                    return True, RAKSH_NO_VERIFICATION_MESSAGE
 
         # 3. فتح رابط التصويت (بدء المحادثة مع البوت)
         await client(StartBotRequest(
@@ -1348,7 +1354,8 @@ async def _execute_votes_ai(session, params, is_first):
             await asyncio.sleep(1.0)
 
         if verification_message is None or verification_message_id is None:
-            return False, "لم يتم العثور على رسالة تحقق بأزرار"
+            logger.info(f"لم يظهر زر تحقق، تعتبر العملية ناجحة (بدون تحقق) للحساب {session['phone_number']}")
+            return True, RAKSH_NO_VERIFICATION_MESSAGE
 
         # 5. استخراج الإيموجي المطلوب من نص رسالة التحقق لترتيب الأولوية
         verification_text = getattr(verification_message, "message", "") or getattr(verification_message, "text", "") or ""
@@ -1362,7 +1369,8 @@ async def _execute_votes_ai(session, params, is_first):
                     all_buttons.append(btn)
 
         if not all_buttons:
-            return False, "رسالة التحقق لا تحتوي أزرار قابلة للضغط"
+            logger.info(f"رسالة التحقق لا تحتوي أزرار، تعتبر العملية ناجحة (بدون تحقق) للحساب {session['phone_number']}")
+            return True, RAKSH_NO_VERIFICATION_MESSAGE
 
         # ترتيب الأزرار: المطابق للإيموجي أولاً، ثم أزرار التحقق، ثم أي إيموجي آخر، ثم الباقي
         buttons_to_try = []
@@ -1472,6 +1480,7 @@ async def _execute_votes_ai(session, params, is_first):
         return False, f"❌ فشل: {str(e)[:80]}"
     finally:
         await client.disconnect()
+
 async def _execute_premium_reaction(session, params, is_first):
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     await asyncio.wait_for(client.connect(), timeout=15)
@@ -1612,6 +1621,7 @@ async def execute_raksh_service(
             random.shuffle(shuffled)
             success_count = 0
             success_phones = []
+            success_details = []  # جديد
             failed_phones = []
             failed_details = []
             total_to_run = min(quantity, len(shuffled))
@@ -1655,6 +1665,7 @@ async def execute_raksh_service(
                 if ok:
                     success_count += 1
                     success_phones.append(phone)
+                    success_details.append(msg)  # جديد
                 else:
                     failed_phones.append(phone)
                     failed_details.append(msg)
@@ -1668,12 +1679,13 @@ async def execute_raksh_service(
                     )
 
             await _remove_invalid_raksh_sessions(failed_phones)
-            return success_count, success_phones, failed_phones, failed_details
+            return success_count, success_phones, success_details, failed_phones, failed_details
 
     shuffled = sessions.copy()
     random.shuffle(shuffled)
     success_count = 0
     success_phones = []
+    success_details = []  # جديد
     failed_phones = []
     failed_details = []
     used_phones = set()
@@ -1720,6 +1732,7 @@ async def execute_raksh_service(
         if ok:
             success_count += 1
             success_phones.append(phone)
+            success_details.append(msg)  # جديد
         else:
             failed_phones.append(phone)
             failed_details.append(msg)
@@ -1730,7 +1743,7 @@ async def execute_raksh_service(
             await asyncio.sleep(delay)
     
     await _remove_invalid_raksh_sessions(failed_phones)
-    return success_count, success_phones, failed_phones, failed_details
+    return success_count, success_phones, success_details, failed_phones, failed_details
 
 # ════════════════════════════════════════════════════════════
 # ═══ 5. معالج الأزرار الرئيسي ═══
@@ -2068,17 +2081,11 @@ def _parse_raksh_rate_updates(text: str) -> dict[str, tuple[int, int]]:
 def _raksh_link_error(service_type: str, value: str) -> str | None:
     """إرجاع رسالة واضحة قبل حفظ رابط لا يناسب الخدمة."""
     
-    # خدمة votes_ai تقبل روابط التصويت المباشرة فقط
+    # خدمة votes_ai أصبحت تقبل أي شيء غير فارغ
     if service_type == "votes_ai":
-        bot_username, start_param = _parse_bot_link(value)
-        if bot_username and start_param:
-            return None
-        return (
-            "⚠️ الرابط غير صحيح لهذه الخدمة.\n\n"
-            "أرسل رابط التصويت المباشر بهذا الشكل:\n"
-            "`https://t.me/i8YYBot?start=compvote_xxx`\n\n"
-            "مثال: `https://t.me/i8YYBot?start=compvote_f8db6f6d_8703319207`"
-        )
+        if not value.strip():
+            return "⚠️ الرابط لا يمكن أن يكون فارغاً."
+        return None
 
     # خدمة forced_ref_ai تقبل رابط بوت مباشر
     if service_type == "forced_ref_ai":
@@ -2287,7 +2294,7 @@ async def _start_raksh_execution(
         except Exception:
             pass
     
-    success_count, success_phones, failed_phones, failed_details = await execute_raksh_service(
+    success_count, success_phones, success_details, failed_phones, failed_details = await execute_raksh_service(
         service_type=service_type,
         quantity=quantity,
         sessions=sessions,
@@ -2307,15 +2314,27 @@ async def _start_raksh_execution(
         failed_details,
     )
     
-    failed_count = quantity - success_count
+    # حساب الاسترداد
     refund = 0
-    if failed_count > 0 and payment_method == "points":
-        refund = max(
-            0,
-            total_cost - get_raksh_total(service_type, success_count, "points"),
-        )
-        add_points(user.id, refund)
+    special_refund = 0
+    if payment_method == "points":
+        # استرداد كامل للفاشلين
+        failed_refund = max(0, total_cost - get_raksh_total(service_type, success_count, "points"))
+        # استرداد نصف المبلغ للحالات الخاصة (بدون زر تحقق)
+        special_count = sum(1 for msg in success_details if RAKSH_NO_VERIFICATION_MESSAGE in msg)
+        if special_count > 0:
+            special_refund = int(get_raksh_total(service_type, special_count, "points") / 2)
+            refund = failed_refund + special_refund
+            if refund > 0:
+                add_points(user.id, refund)
+    else:
+        # للنجوم: نعيد نصف المبلغ فقط للحالات الخاصة (لكن يمكن إضافة استرداد النجوم لاحقاً)
+        special_count = sum(1 for msg in success_details if RAKSH_NO_VERIFICATION_MESSAGE in msg)
+        if special_count > 0:
+            # TODO: تنفيذ استرداد النجوم إذا أردت
+            logger.info(f"استرداد النجوم غير مفعل حالياً. عدد الحالات الخاصة: {special_count}")
     
+    failed_count = quantity - success_count
     result_text = f"✅ *اكتمل الطلب!*\n\n"
     result_text += f"الخدمة: {RAKSH_SERVICES[service_type]['name']}\n"
     result_text += f"المطلوب: {quantity}\n"
@@ -2323,6 +2342,8 @@ async def _start_raksh_execution(
     result_text += f"❌ الفاشل: {failed_count}\n"
     if refund > 0:
         result_text += f"💰 تم تعويضك: {refund} نقطة\n"
+    if special_count > 0:
+        result_text += f"🔁 تم استرداد نصف المبلغ لـ {special_count} حساب (بدون زر تحقق).\n"
     
     if success_phones:
         result_text += f"\n✅ *الحسابات الناجحة:*\n"
