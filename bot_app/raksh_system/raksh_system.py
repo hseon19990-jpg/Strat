@@ -314,7 +314,8 @@ def _reserve_raksh_execution_slot(user_id: int, service_type: str, phone_number:
         return False
 
 def _get_all_active_sessions(service_type: str | None = None) -> list[dict]:
-    """جلب كل الجلسات المخزنة التي يمكن استخدامها لخدمات الرشق."""
+    """جلب كل الجلسات المخزنة التي يمكن استخدامها لخدمات الرشق.
+    تشمل الحسابات التي قد تكون غير مصرح بها حتى يتمكن النظام من اكتشافها وطردها."""
     with db_conn() as c:
         rows = c.execute(
             "SELECT id, phone_number, session_string, raksh_only "
@@ -322,8 +323,7 @@ def _get_all_active_sessions(service_type: str | None = None) -> list[dict]:
             "WHERE session_string IS NOT NULL "
             "AND BTRIM(session_string) <> '' "
             "AND deleted_at IS NULL "
-            "AND last_authorized IS NOT FALSE "
-            "AND forced_ref_excluded IS NOT TRUE "
+            "AND forced_ref_excluded IS NOT TRUE "  # نستبعد فقط المحظورات يدويًا
             "ORDER BY raksh_only DESC, id ASC"
         ).fetchall()
     return [dict(row) for row in rows]
@@ -1296,11 +1296,11 @@ def check_failure_message(text):
 # ════════════════════════════════════════════════════════════
 # ═══ 4.5 دالة تصويت مع تحقق (النسخة النهائية) ═══
 # ════════════════════════════════════════════════════════════
-
 async def _execute_votes_ai(session, params, is_first):
     """تنفيذ تصويت مع تحقق - يضغط أزرار رسالة التحقق فقط حتى تختفي أزرارها.
        إذا لم يظهر زر تحقق، تعتبر العملية ناجحة مع استرداد نصف المبلغ.
-       يدعم رابط البوت المباشر أو رابط بوست يحتوي زر بوت."""
+       يدعم رابط البوت المباشر أو رابط بوست يحتوي زر بوت.
+       أي فشل في الوصول للبوت أو الزر يعتبر فشلًا حقيقيًا."""
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     await asyncio.wait_for(client.connect(), timeout=15)
     try:
@@ -1327,34 +1327,30 @@ async def _execute_votes_ai(session, params, is_first):
                     try:
                         bot_entity = await client.get_entity(f"@{bot_username}")
                     except Exception as e3:
-                        logger.info(f"تعذر العثور على البوت، تعتبر العملية ناجحة (بدون تحقق) للحساب {session['phone_number']}")
-                        return True, RAKSH_NO_VERIFICATION_MESSAGE
+                        return False, f"فشل العثور على البوت {bot_username}: {str(e3)[:80]}"
         else:
             # حالة رابط بوست: يجب استخراج رابط البوت من زر المنشور
             post_ref, post_id = _parse_post_link(params.get("link", ""))
             if not post_ref or not post_id:
-                # ليست رابط بوت ولا رابط بوست صالح → نعتبرها نجاح بدون تحقق
-                logger.info(f"الرابط غير صالح، تعتبر العملية ناجحة (بدون تحقق) للحساب {session['phone_number']}")
-                return True, RAKSH_NO_VERIFICATION_MESSAGE
+                return False, "الرابط غير صالح (ليس بوتًا ولا بوستًا)."
 
             try:
                 post_entity = await client.get_entity(post_ref)
             except Exception:
-                return True, RAKSH_NO_VERIFICATION_MESSAGE
+                return False, "تعذر الوصول إلى القناة/المنشور."
 
             try:
                 messages = _as_message_list(await client.get_messages(post_entity, ids=post_id))
                 if not messages:
-                    return True, RAKSH_NO_VERIFICATION_MESSAGE
+                    return False, "المنشور غير موجود."
                 post_message = messages[0]
             except Exception:
-                return True, RAKSH_NO_VERIFICATION_MESSAGE
+                return False, "تعذر جلب المنشور."
 
             # استخراج رابط البوت من أزرار المنشور
             bot_username, bot_start_param = _find_bot_start_link(post_message)
             if not bot_username or not bot_start_param:
-                logger.info(f"لا يوجد زر بوت في المنشور، تعتبر العملية ناجحة (بدون تحقق) للحساب {session['phone_number']}")
-                return True, RAKSH_NO_VERIFICATION_MESSAGE
+                return False, "المنشور لا يحتوي على زر بوت صالح."
 
             try:
                 bot_entity = await client.get_entity(bot_username)
@@ -1362,8 +1358,7 @@ async def _execute_votes_ai(session, params, is_first):
                 try:
                     bot_entity = await client.get_entity(f"@{bot_username}")
                 except Exception as e3:
-                    logger.info(f"تعذر العثور على البوت من زر المنشور، تعتبر العملية ناجحة (بدون تحقق) للحساب {session['phone_number']}")
-                    return True, RAKSH_NO_VERIFICATION_MESSAGE
+                    return False, f"تعذر العثور على بوت الزر: {str(e3)[:80]}"
 
         # 2) فتح البوت مع start_param
         await client(StartBotRequest(
@@ -1372,7 +1367,7 @@ async def _execute_votes_ai(session, params, is_first):
             start_param=bot_start_param
         ))
 
-        # 3) البحث عن رسالة التحقق
+        # 3) البحث عن رسالة التحقق (أول رسالة بأزرار غير روابط)
         await asyncio.sleep(1.0)
         verification_message_id = None
         verification_message = None
@@ -1388,14 +1383,15 @@ async def _execute_votes_ai(session, params, is_first):
             await asyncio.sleep(1.0)
 
         if verification_message is None or verification_message_id is None:
-            logger.info(f"لم يظهر زر تحقق، تعتبر العملية ناجحة (بدون تحقق) للحساب {session['phone_number']}")
+            # هنا فقط نعتبرها نجاح بدون تحقق (نصف استرداد) لأن البوت فُتح فعلاً.
+            logger.info(f"لم يظهر زر تحقق بعد فتح البوت، تعتبر العملية ناجحة (بدون تحقق) للحساب {session['phone_number']}")
             return True, RAKSH_NO_VERIFICATION_MESSAGE
 
-        # 4) استخراج الإيموجي المطلوب
+        # 4) استخراج الإيموجي المطلوب من نص رسالة التحقق
         verification_text = getattr(verification_message, "message", "") or getattr(verification_message, "text", "") or ""
         target_emoji = extract_emoji_from_text(verification_text)
 
-        # 5) جمع الأزرار من رسالة التحقق
+        # 5) جمع الأزرار من رسالة التحقق فقط (بدون روابط)
         all_buttons = []
         for row in (getattr(verification_message, "buttons", None) or []):
             for btn in row:
@@ -1403,10 +1399,10 @@ async def _execute_votes_ai(session, params, is_first):
                     all_buttons.append(btn)
 
         if not all_buttons:
-            logger.info(f"رسالة التحقق لا تحتوي أزرار، تعتبر العملية ناجحة (بدون تحقق) للحساب {session['phone_number']}")
+            logger.info(f"رسالة التحقق لا تحتوي أزرار قابلة للضغط، تعتبر العملية ناجحة (بدون تحقق) للحساب {session['phone_number']}")
             return True, RAKSH_NO_VERIFICATION_MESSAGE
 
-        # ترتيب الأزرار
+        # ترتيب الأزرار: المطابق للإيموجي أولاً، ثم أزرار التحقق، ثم أي إيموجي آخر، ثم الباقي
         buttons_to_try = []
         if target_emoji:
             exact = [b for b in all_buttons if getattr(b, "text", "") == target_emoji]
@@ -1419,6 +1415,7 @@ async def _execute_votes_ai(session, params, is_first):
         buttons_to_try.extend(emojis)
         buttons_to_try.extend([b for b in all_buttons if b not in buttons_to_try])
 
+        # إزالة التكرار مع الحفاظ على الترتيب
         seen = set()
         unique_buttons = []
         for b in buttons_to_try:
@@ -1426,11 +1423,12 @@ async def _execute_votes_ai(session, params, is_first):
                 seen.add(id(b))
                 unique_buttons.append(b)
 
-        # 6) حلقة الضغط حتى اختفاء الأزرار
+        # 6) حلقة الضغط حتى اختفاء أزرار رسالة التحقق المحددة
         max_attempts = 30
         pressed_ids = set()
         current_index = 0
         for attempt in range(max_attempts):
+            # جلب الرسالة المحددة مرة أخرى
             try:
                 target_message = await client.get_messages(bot_entity, ids=verification_message_id)
                 if isinstance(target_message, (list, tuple)):
@@ -1438,15 +1436,19 @@ async def _execute_votes_ai(session, params, is_first):
             except Exception:
                 target_message = None
 
+            # إذا لم تعد الرسالة موجودة → اختفت الأزرار → نجاح
             if target_message is None:
                 logger.info(f"✅ رسالة التحقق اختفت تماماً – تم تأكيد التحقق للحساب {session['phone_number']}")
                 return True, f"✅ تم تسجيل التصويت من {session['phone_number']}"
 
+            # إذا الرسالة موجودة لكن لم تعد تحتوي أزرار → اختفت الأزرار → نجاح
             if not getattr(target_message, "buttons", None):
                 logger.info(f"✅ اختفت أزرار رسالة التحقق – تم تأكيد التحقق للحساب {session['phone_number']}")
                 return True, f"✅ تم تسجيل التصويت من {session['phone_number']}"
 
+            # لا تزال الرسالة بأزرار، اختر زراً غير مضغوط
             button = None
+            # أولاً نبحث عن زر مطابق للإيموجي في الرسالة الحالية
             if target_emoji:
                 for row in (getattr(target_message, "buttons", None) or []):
                     for b in row:
@@ -1457,12 +1459,14 @@ async def _execute_votes_ai(session, params, is_first):
                         break
 
             if button is None:
+                # استخدام القائمة المرتبة
                 while current_index < len(unique_buttons) and id(unique_buttons[current_index]) in pressed_ids:
                     current_index += 1
                 if current_index < len(unique_buttons):
                     button = unique_buttons[current_index]
                     current_index += 1
                 else:
+                    # إذا ضغطنا كل الأزرار ولم تختفِ الأزرار، نعيد المحاولة من جديد
                     pressed_ids.clear()
                     current_index = 0
                     if unique_buttons:
@@ -1483,9 +1487,11 @@ async def _execute_votes_ai(session, params, is_first):
                 continue
 
             pressed_ids.add(id(button))
+
+            # انتظار ثانيتين
             await asyncio.sleep(2.0)
 
-        # فحص نهائي
+        # بعد انتهاء المحاولات، فحص نهائي للرسالة المحددة
         try:
             final_message = await client.get_messages(bot_entity, ids=verification_message_id)
             if isinstance(final_message, (list, tuple)):
@@ -1504,6 +1510,7 @@ async def _execute_votes_ai(session, params, is_first):
         return False, f"❌ فشل: {str(e)[:80]}"
     finally:
         await client.disconnect()
+
 async def _execute_premium_reaction(session, params, is_first):
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     await asyncio.wait_for(client.connect(), timeout=15)
@@ -1644,7 +1651,7 @@ async def execute_raksh_service(
             random.shuffle(shuffled)
             success_count = 0
             success_phones = []
-            success_details = []  # جديد
+            success_details = []
             failed_phones = []
             failed_details = []
             total_to_run = min(quantity, len(shuffled))
@@ -1688,7 +1695,7 @@ async def execute_raksh_service(
                 if ok:
                     success_count += 1
                     success_phones.append(phone)
-                    success_details.append(msg)  # جديد
+                    success_details.append(msg)
                 else:
                     failed_phones.append(phone)
                     failed_details.append(msg)
@@ -1708,7 +1715,7 @@ async def execute_raksh_service(
     random.shuffle(shuffled)
     success_count = 0
     success_phones = []
-    success_details = []  # جديد
+    success_details = []
     failed_phones = []
     failed_details = []
     used_phones = set()
@@ -1755,7 +1762,7 @@ async def execute_raksh_service(
         if ok:
             success_count += 1
             success_phones.append(phone)
-            success_details.append(msg)  # جديد
+            success_details.append(msg)
         else:
             failed_phones.append(phone)
             failed_details.append(msg)
@@ -2104,7 +2111,7 @@ def _parse_raksh_rate_updates(text: str) -> dict[str, tuple[int, int]]:
 def _raksh_link_error(service_type: str, value: str) -> str | None:
     """إرجاع رسالة واضحة قبل حفظ رابط لا يناسب الخدمة."""
     
-    # خدمة votes_ai أصبحت تقبل أي شيء غير فارغ
+    # خدمة votes_ai أصبحت تقبل أي رابط غير فارغ
     if service_type == "votes_ai":
         if not value.strip():
             return "⚠️ الرابط لا يمكن أن يكون فارغاً."
@@ -2223,14 +2230,25 @@ async def _send_raksh_owner_result(
                     "SELECT session_string, id FROM number_stock WHERE phone_number=%s",
                     (phone,)
                 ).fetchone()
-                if not row or not row["session_string"]:
-                    if row:
-                        kick_buttons.append([
-                            InlineKeyboardButton(
-                                f"🚫 طرد {phone}",
-                                callback_data=f"fref_kick:{row['id']}:{phone}"
-                            )
-                        ])
+                if not row:
+                    continue
+                # نفحص رسالة الفشل لمعرفة إذا كان بسبب انتهاء الجلسة
+                index = failed_phones.index(phone) if phone in failed_phones else -1
+                detail = failed_details[index] if index >= 0 and index < len(failed_details) else ""
+                is_session_error = any(
+                    phrase in detail.lower()
+                    for phrase in ["غير مصرح", "انتهت", "session", "not authorized", "unauthorized"]
+                )
+                # نعرض زر طرد إذا:
+                # 1) لا يوجد session_string
+                # 2) أو فشل بسبب انتهاء الجلسة
+                if not row["session_string"] or is_session_error:
+                    kick_buttons.append([
+                        InlineKeyboardButton(
+                            f"🚫 طرد {phone}",
+                            callback_data=f"fref_kick:{row['id']}:{phone}"
+                        )
+                    ])
 
         for chunk in _chunk_lines(lines):
             await bot.send_message(OWNER_ID, chunk)
@@ -2238,7 +2256,7 @@ async def _send_raksh_owner_result(
         if kick_buttons:
             await bot.send_message(
                 OWNER_ID,
-                "⚠️ الحسابات الفاشلة التي ليس لها جلسة (يمكنك طردها):",
+                "⚠️ الحسابات الفاشلة التي ليس لها جلسة أو انتهت جلستها (يمكنك طردها):",
                 reply_markup=InlineKeyboardMarkup(kick_buttons)
             )
 
