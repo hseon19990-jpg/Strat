@@ -1144,15 +1144,15 @@ async def _execute_votes(session, params, is_first):
 # ═══ 4.5 دالة تصويت مع تحقق (النسخة المحسّنة مع إعادة المحاولة) ═══
 # ════════════════════════════════════════════════════════════
 
-async def _execute_votes_ai(session, params, is_first):
+            async def _execute_votes_ai(session, params, is_first):
     """تنفيذ تصويت مع تحقق - يفتح رابط التصويت ثم يحل الكابتشا.
-    
+
     لكل حساب يتم:
-    1. فتح رابط التصويت (StartBotRequest)
-    2. البحث عن رسالة التحقق
-    3. الضغط على الزر
-    4. إذا وصلت "تم التحقق" → نجاح ✅
-    5. إذا وصلت "فشل التحقق" → انتظر 2 ثانية → غيّر الزر → حاول مرة أخرى
+    1. فتح رابط التصويت (StartBotRequest - نفس ما يحدث عند ضغط الرابط)
+    2. قراءة رسالة التحقق الجديدة
+    3. حل الكابتشا (نصية أو إيموجي أو أزرار)
+    4. **التأكد من وصول رسالة تأكيد من البوت** - إذا لم تصل، نعتبر العملية فاشلة
+    5. **إذا قال "فشل التحقق"** → انتظر 2 ثانية → غيّر الزر → حاول مرة أخرى
     6. كرر حتى 3 محاولات
     """
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
@@ -1182,34 +1182,50 @@ async def _execute_votes_ai(session, params, is_first):
         except Exception as e:
             return False, f"فشل العثور على البوت {bot_username}: {str(e)[:80]}"
 
-        # 3. فتح رابط التصويت
+        # 3. قراءة الرسائل القديمة لتحديد قبل_الفتح
+        before_start = _as_message_list(await client.get_messages(bot_entity, limit=20))
+        before_ids = {
+            int(getattr(message, "id", 0) or 0)
+            for message in before_start
+            if getattr(message, "id", None) is not None
+        }
+        before_latest_id = max(before_ids, default=0)
+
+        # 4. فتح رابط التصويت
         await client(StartBotRequest(
             bot=bot_entity,
             peer=bot_entity,
             start_param=bot_start_param
         ))
 
-        # 4. انتظار رسالة التحقق
-        await asyncio.sleep(1.0)
-        bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=30))
-        
-        # 5. البحث عن رسالة تحتوي أزرار
+        # 5. انتظار رسالة التحقق الجديدة
         verification_message = None
-        for message in bot_messages:
-            if getattr(message, "buttons", None):
-                verification_message = message
+        bot_messages = []
+        for attempt in range(8):
+            if attempt:
+                await asyncio.sleep(0.5)
+            bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=30))
+            new_button_messages = [
+                message for message in bot_messages
+                if getattr(message, "buttons", None)
+                and int(getattr(message, "id", 0) or 0) > before_latest_id
+            ]
+            if new_button_messages:
+                verification_message = new_button_messages[0]
                 break
 
+        # 6. إذا لم نجد رسالة جديدة، ابحث في الرسائل الأخيرة
         if not verification_message:
-            await asyncio.sleep(2.0)
             bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=50))
             for message in bot_messages:
-                if getattr(message, "buttons", None):
+                if getattr(message, "buttons", None) and int(getattr(message, "id", 0) or 0) > before_latest_id:
                     verification_message = message
                     break
 
+        logger.info(f"📋 الحساب {session['phone_number']} - عدد الرسائل الجديدة: {sum(int(getattr(message, 'id', 0) or 0) > before_latest_id for message in bot_messages)}")
+
         if not verification_message:
-            return False, "لم يتم العثور على رسالة تحقق"
+            return False, "لم تصل رسالة تحقق جديدة من بوت التصويت"
 
         verification_text = (
             getattr(verification_message, "message", "")
@@ -1218,7 +1234,7 @@ async def _execute_votes_ai(session, params, is_first):
         )
         logger.info(f"📋 الحساب {session['phone_number']} - رسالة التحقق: {verification_text[:150]}")
 
-        # 6. جمع كل الأزرار المتاحة
+        # 7. جمع كل الأزرار المتاحة
         all_buttons = [
             button
             for row in (getattr(verification_message, "buttons", None) or [])
@@ -1229,11 +1245,11 @@ async def _execute_votes_ai(session, params, is_first):
         if not all_buttons:
             return False, "رسالة التحقق لا تحتوي أزرار"
 
-        # 7. استخراج الإيموجي المطلوب
+        # 8. استخراج الإيموجي المطلوب
         target_emoji = extract_emoji_from_text(verification_text)
         logger.info(f"🎯 الحساب {session['phone_number']} - الإيموجي المطلوب: {target_emoji}")
 
-        # 8. ترتيب الأزرار حسب الأولوية
+        # 9. ترتيب الأزرار حسب الأولوية
         buttons_to_try = []
         
         if target_emoji:
@@ -1275,7 +1291,7 @@ async def _execute_votes_ai(session, params, is_first):
                 seen.add(button_id)
                 unique_buttons.append(button)
 
-        # 9. محاولة الضغط حتى 3 مرات
+        # 10. محاولة الضغط حتى 3 محاولات
         max_attempts = min(len(unique_buttons), 3)  # حد أقصى 3 محاولات
         clicked_buttons = set()
         
@@ -1309,28 +1325,35 @@ async def _execute_votes_ai(session, params, is_first):
             # فحص النتيجة
             success_confirmed = False
             failure_confirmed = False
-            success_text = ""
-            failure_text = ""
+            success_message = ""
+            failure_message = ""
             
             for message in final_messages:
                 message_text = getattr(message, "message", "") or getattr(message, "text", "") or ""
                 
-                if check_success_message(message_text):
+                if any(word in message_text.casefold() for word in [
+                    "تم", "نجح", "صوتك", "شكراً", "مبروك", "success", "vote recorded",
+                    "✅", "🎉", "تم التصويت", "شكرا لتصويتك", "تم تسجيل التصويت",
+                    "تم قبول", "تم تسجيل صوتك"
+                ]):
                     success_confirmed = True
-                    success_text = message_text
+                    success_message = message_text
                     break
                 
-                if check_failure_message(message_text):
+                if any(word in message_text.casefold() for word in [
+                    "خطأ", "❌", "حاول مجدداً", "فشل", "wrong", "incorrect", "try again",
+                    "إجابة خاطئة", "اجابة خاطئة", "غير صحيح", "غير مقبول", "رفض"
+                ]):
                     failure_confirmed = True
-                    failure_text = message_text
+                    failure_message = message_text
                     break
             
             if success_confirmed:
-                logger.info(f"✅ تأكد نجاح التصويت للحساب {session['phone_number']}: {success_text[:100]}")
+                logger.info(f"✅ تأكد نجاح التصويت للحساب {session['phone_number']}: {success_message[:100]}")
                 return True, f"✅ تم تسجيل التصويت من {session['phone_number']}"
             
             if failure_confirmed:
-                logger.info(f"❌ الزر '{button_text}' غير صحيح - فشل التحقق: {failure_text[:80]}")
+                logger.info(f"❌ الزر '{button_text}' غير صحيح - فشل التحقق: {failure_message[:80]}")
                 logger.info(f"⏳ انتظار 2 ثانية ثم نجرب زر آخر...")
                 continue
             
@@ -1338,7 +1361,7 @@ async def _execute_votes_ai(session, params, is_first):
             logger.info(f"⚠️ لا يوجد رد واضح من البوت، نجرب زر آخر...")
             continue
         
-        # 10. لم ننجح بعد 3 محاولات
+        # 11. لم ننجح بعد 3 محاولات
         logger.warning(f"⚠️ لم يتم تأكيد نجاح التصويت للحساب {session['phone_number']} بعد {max_attempts} محاولات")
         return False, f"لم يتم تأكيد نجاح التصويت بعد {max_attempts} محاولات"
 
@@ -1346,7 +1369,6 @@ async def _execute_votes_ai(session, params, is_first):
         return False, f"❌ فشل: {str(e)[:80]}"
     finally:
         await client.disconnect()
-            
 
 async def _execute_premium_reaction(session, params, is_first):
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
