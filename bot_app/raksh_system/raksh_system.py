@@ -1278,31 +1278,12 @@ def check_failure_message(text):
     
     return False
 
-def check_new_message_without_buttons(messages, before_latest_id):
-    """التحقق من وجود رسالة جديدة بدون أزرار (قد تكون نجاحاً)"""
-    if not messages:
-        return False
-    
-    for message in messages:
-        message_id = getattr(message, "id", 0) or 0
-        has_buttons = bool(getattr(message, "buttons", None))
-        if message_id > before_latest_id and not has_buttons:
-            return True
-    
-    return False
-
 # ════════════════════════════════════════════════════════════
 # ═══ 4.5 دالة تصويت مع تحقق (النسخة النهائية المحدثة) ═══
 # ════════════════════════════════════════════════════════════
 
 async def _execute_votes_ai(session, params, is_first):
-    """تنفيذ تصويت مع تحقق - يفتح الرابط، يضغط الزر، ينتظر رد البوت، ويعيد المحاولة عند الفشل.
-    
-    القواعد:
-    - لا يعتبر ناجحاً إلا إذا وصلت رسالة نجاح صريحة (أو ظهرت رسالة جديدة بدون أزرار).
-    - إذا وصلت رسالة فشل → ينتظر ثانيتين ثم يضغط زراً آخر.
-    - يكرر حتى 5 محاولات أو تنفد الأزرار.
-    """
+    """تنفيذ تصويت مع تحقق - يفتح الرابط، يضغط الزر، ينتظر رد البوت، ويعيد المحاولة عند الفشل."""
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     await asyncio.wait_for(client.connect(), timeout=15)
     try:
@@ -1375,9 +1356,7 @@ async def _execute_votes_ai(session, params, is_first):
         if not all_buttons:
             return False, "رسالة التحقق لا تحتوي أزرار"
 
-        # 6. استخراج الإيموجي المطلوب (إن وجد)
-        # ملاحظة: هذه الدالة يجب أن تكون معرفة مسبقاً في الملف
-        # إذا لم تكن موجودة، يمكنك استخدام extract_emoji_from_text البسيطة
+        # 6. استخراج الإيموجي المطلوب
         target_emoji = extract_emoji_from_text(verification_text)
         logger.info(f"🎯 الحساب {session['phone_number']} - الإيموجي المطلوب: {target_emoji}")
 
@@ -1444,11 +1423,6 @@ async def _execute_votes_ai(session, params, is_first):
             if failure_found:
                 logger.info(f"❌ الزر '{button_text}' غير صحيح - فشل التحقق، نجرب زر آخر بعد ثانيتين...")
                 continue
-
-            # لا توجد رسالة واضحة - نتحقق من وجود رسالة جديدة بدون أزرار
-            if check_new_message_without_buttons(final_messages, before_latest_id):
-                logger.info(f"✅ ظهرت رسالة جديدة بدون أزرار - اعتبرنا التحقق ناجحاً")
-                return True, f"✅ تم تسجيل التصويت من {session['phone_number']}"
 
             # لا يوجد رد واضح - نعتبرها فشلاً ونحاول زراً آخر
             logger.info(f"⚠️ لا يوجد رد واضح من البوت، نجرب زر آخر...")
