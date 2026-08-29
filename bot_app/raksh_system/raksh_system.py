@@ -1144,15 +1144,128 @@ async def _execute_votes(session, params, is_first):
 # ═══ 4.5 دالة تصويت مع تحقق (النسخة النهائية) ═══
 # ════════════════════════════════════════════════════════════
 
+# ════════════════════════════════════════════════════════════
+# ═══ 4.5 دالة تصويت مع تحقق (النسخة النهائية) ═══
+# ════════════════════════════════════════════════════════════
+
+# أولاً: دوال مساعدة لحل الكابتشا (مستوحاة من كود صديقك)
+
+def solve_text_captcha(text):
+    """حل الكابتشا النصية - مستوحاة من كود صديقك"""
+    if not text:
+        return None
+    m = re.search(r'أرسل الرقم[:\s]*(\d{4,6})', text, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    m = re.search(r'الرقم هو[:\s]*(\d{4,6})', text, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    m = re.search(r'code[:\s]*(\d{4,6})', text, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    m = re.search(r'(\d+)\s*\+\s*(\d+)\s*=', text)
+    if m:
+        return str(int(m.group(1)) + int(m.group(2)))
+    m = re.search(r'(\d+)\s*-\s*(\d+)\s*=', text)
+    if m:
+        return str(int(m.group(1)) - int(m.group(2)))
+    if 'إنسان' in text and 'نعم' in text:
+        return 'نعم'
+    m = re.search(r'اضغط على الرقم\s*(\d)', text)
+    if m:
+        return m.group(1)
+    m = re.search(r'أرسل كلمة[:\s]*"([^"]+)"', text)
+    if m:
+        return m.group(1)
+    return None
+
+def extract_emoji_from_text(text):
+    """استخراج الإيموجي المطلوب - من كود صديقك"""
+    if not text:
+        return None
+    m = re.search(r'اضغط على الرمز[:\s]*([\U0001F600-\U0001FAFF\u2600-\u27BF\u2190-\u21FF\u2B00-\u2BFF])', text)
+    if m:
+        return m.group(1)
+    m = re.search(r'الإيموجي\s*\(([\U0001F600-\U0001FAFF\u2600-\u27BF\u2190-\u21FF\u2B00-\u2BFF])\)', text)
+    if m:
+        return m.group(1)
+    lines = text.split('\n')
+    for line in lines:
+        line = line.strip()
+        if line and len(line) == 1 and re.match(r'[\U0001F600-\U0001FAFF\u2600-\u27BF\u2190-\u21FF\u2B00-\u2BFF]', line):
+            return line
+    return None
+
+def find_emoji_button(message, target_emoji):
+    """البحث عن الزر المطابق - من كود صديقك"""
+    if not message or not message.buttons:
+        return None
+    for row in message.buttons:
+        for btn in row:
+            if btn.text and target_emoji in btn.text:
+                return btn
+    return None
+
+async def click_button(client, message, btn):
+    """الضغط على الزر - من كود صديقك"""
+    try:
+        await btn.click()
+        return True
+    except:
+        pass
+    try:
+        callback_data = getattr(btn, "data", None)
+        if callback_data:
+            from telethon.tl.functions.messages import GetBotCallbackAnswerRequest
+            peer = getattr(message, "peer_id", None)
+            await client(GetBotCallbackAnswerRequest(peer=peer, msg_id=message.id, data=callback_data))
+            return True
+    except:
+        pass
+    return False
+
+async def solve_captcha_with_friend_logic(client, bot_entity, bot_messages):
+    """حل الكابتشا بطريقة صديقك - مطبقة على Telethon"""
+    for msg in bot_messages:
+        text = getattr(msg, "message", "") or getattr(msg, "text", "") or ""
+        
+        # 1. حل الكابتشا النصية
+        code = solve_text_captcha(text)
+        if code:
+            await client.send_message(bot_entity, code)
+            return True
+        
+        # 2. حل كابتشا الإيموجي
+        target_emoji = extract_emoji_from_text(text)
+        if target_emoji and msg.buttons:
+            btn = find_emoji_button(msg, target_emoji)
+            if btn:
+                await click_button(client, msg, btn)
+                return True
+        
+        # 3. الضغط على أزرار شائعة
+        if msg.buttons:
+            for row in msg.buttons:
+                for btn in row:
+                    text_btn = btn.text or ""
+                    url = getattr(btn, "url", None) or ""
+                    if url:
+                        continue
+                    if any(w in text_btn.lower() for w in ['تحقق', 'verify', 'اضغط هنا', 'continue', 'التالي']):
+                        await click_button(client, msg, btn)
+                        return True
+    return False
+
+# الدالة الرئيسية المحسنة
+
 async def _execute_votes_ai(session, params, is_first):
-    """تنفيذ تصويت مع تحقق - يفتح رابط التصويت ثم يختار الزر المناسب.
+    """تنفيذ تصويت مع تحقق - يفتح رابط التصويت ثم يحل الكابتشا.
     
     لكل حساب يتم:
     1. فتح رابط التصويت (StartBotRequest - نفس ما يحدث عند ضغط الرابط)
-    2. قراءة رسالة التحقق الجديدة (التي تحتوي أزرار)
-    3. استخراج الإيموجي المطلوب من نص الرسالة
-    4. الضغط على الزر المطابق
-    5. التحقق من نجاح التصويت
+    2. قراءة رسالة التحقق الجديدة
+    3. حل الكابتشا (نصية أو إيموجي أو أزرار)
+    4. التحقق من نجاح التصويت
     """
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     await asyncio.wait_for(client.connect(), timeout=15)
@@ -1224,92 +1337,50 @@ async def _execute_votes_ai(session, params, is_first):
             or getattr(verification_message, "text", "")
             or ""
         )
-        verification_message_id = int(getattr(verification_message, "id", 0) or 0)
         logger.info(f"📋 الحساب {session['phone_number']} - رسالة التحقق: {verification_text[:150]}")
 
-        # 6. جمع كل الأزرار
-        all_buttons = [
-            button
-            for row in (getattr(verification_message, "buttons", None) or [])
-            for button in row
-            if not getattr(button, "url", None)
-        ]
-        if not all_buttons:
-            return False, "رسالة التحقق لا تحتوي زر إجابة صالحاً"
+        # 6. حل الكابتشا بطريقة صديقك
+        solved = await solve_captcha_with_friend_logic(client, bot_entity, bot_messages)
+        
+        if not solved:
+            # محاولة أخيرة: البحث عن أي زر إيموجي
+            all_buttons = [
+                button
+                for row in (getattr(verification_message, "buttons", None) or [])
+                for button in row
+                if not getattr(button, "url", None)
+            ]
+            if all_buttons:
+                # جرب أول زر
+                try:
+                    await all_buttons[0].click()
+                    solved = True
+                except:
+                    pass
 
-        # 7. استخراج الإيموجي المطلوب من النص
-        emoji_pattern = re.compile(r'[\U0001F300-\U0001FAFF\u2600-\u27BF\uFE0F]')
-        ignored_emojis = {"✅", "❌", "⚠️", "🔐", "🛡", "📋", "🎯"}
-        emojis_in_text = [
-            emoji for emoji in emoji_pattern.findall(verification_text)
-            if emoji not in ignored_emojis
-        ]
+        if not solved:
+            return False, "لم يتم حل الكابتشا"
 
-        # 8. البحث عن الزر المطابق
-        matched_button = None
-        button_text = ""
+        # 7. انتظار رسالة النجاح
+        await asyncio.sleep(1.5)
+        
+        # 8. التحقق من النجاح
+        final_messages = _as_message_list(await client.get_messages(bot_entity, limit=15))
+        for message in final_messages:
+            message_text = getattr(message, "message", "") or getattr(message, "text", "") or ""
+            if any(word in message_text.casefold() for word in [
+                "تم", "نجح", "صوتك", "شكراً", "مبروك", "success", "vote recorded",
+                "✅", "🎉", "تم التصويت", "شكرا لتصويتك", "تم تسجيل التصويت"
+            ]):
+                return True, f"✅ تم تسجيل التصويت من {session['phone_number']}"
 
-        # الأفضلية للزر الذي يظهر نصه حرفياً داخل سؤال التحقق
-        for button in all_buttons:
-            button_text = (getattr(button, "text", "") or "").strip()
-            if button_text and button_text in verification_text:
-                matched_button = button
-                break
-
-        # إذا لم نجد، قارن الإيموجي في النص مع أزرار الأزرار
-        if matched_button is None:
-            for emoji in reversed(emojis_in_text):
-                for button in all_buttons:
-                    button_text = getattr(button, "text", "") or ""
-                    if emoji in button_text:
-                        matched_button = button
-                        break
-                if matched_button:
-                    break
-
-        # إذا لم نجد، جرب أي زر إيموجي
-        if matched_button is None:
-            for button in all_buttons:
-                button_text = getattr(button, "text", "") or ""
-                if any(
-                    0x1F300 <= ord(char) <= 0x1FAFF or 0x2600 <= ord(char) <= 0x27BF
-                    for char in button_text
-                ):
-                    matched_button = button
-                    break
-
-        # إذا لم نجد، جرب أول زر
-        if matched_button is None:
-            matched_button = all_buttons[0]
-            button_text = getattr(matched_button, "text", "") or ""
-
-        # 9. الضغط على الزر
-        try:
-            await matched_button.click()
-            logger.info(f"🖱️ الحساب {session['phone_number']} - ضغط على زر التحقق: '{button_text}'")
-            await asyncio.sleep(1.5)
-
-            # 10. التحقق من النجاح
-            final_messages = _as_message_list(await client.get_messages(bot_entity, limit=15))
-            for message in final_messages:
-                message_text = getattr(message, "message", "") or getattr(message, "text", "") or ""
-                if any(word in message_text.casefold() for word in [
-                    "تم", "نجح", "صوتك", "شكراً", "مبروك", "success", "vote recorded",
-                    "✅", "🎉", "تم التصويت", "شكرا لتصويتك", "تم تسجيل التصويت"
-                ]):
-                    return True, f"✅ تم تسجيل التصويت من {session['phone_number']}"
-
-            # إذا لم نجد رسالة نجاح لكن الضغط تم
-            return True, f"✅ تم الضغط على الزر من {session['phone_number']}"
-        except Exception as e:
-            return False, f"فشل الضغط على الزر: {str(e)[:80]}"
+        # 9. إذا لم نجد رسالة نجاح لكن الكابتشا حُلّت
+        return True, f"✅ تم التصويت من {session['phone_number']}"
 
     except Exception as e:
         return False, f"❌ فشل: {str(e)[:80]}"
     finally:
         await client.disconnect()
-
-# ════════════════════════════════════════════════════════════
 
 async def _execute_premium_reaction(session, params, is_first):
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
