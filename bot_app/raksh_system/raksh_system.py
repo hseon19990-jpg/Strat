@@ -319,6 +319,7 @@ def _get_all_active_sessions(service_type: str | None = None) -> list[dict]:
             "WHERE session_string IS NOT NULL "
             "AND BTRIM(session_string) <> '' "
             "AND deleted_at IS NULL "
+            "AND last_authorized IS NOT FALSE "
             "AND forced_ref_excluded IS NOT TRUE "
             "ORDER BY raksh_only DESC, id ASC"
         ).fetchall()
@@ -1149,6 +1150,7 @@ async def _execute_votes_ai(session, params, is_first):
     await asyncio.wait_for(client.connect(), timeout=15)
     try:
         if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
+            _mark_raksh_session_unauthorized(session.get("phone_number"))
             return False, "الجلسة غير مصرح بها."
 
         bot_username, bot_start_param = _parse_bot_link(params.get("link", ""))
@@ -1246,7 +1248,23 @@ async def _execute_votes_ai(session, params, is_first):
                     break
 
         if matched_button is None:
-            return False, "لم يتم العثور على زر الإجابة المطابق لسؤال التحقق"
+            button_labels = [
+                (getattr(button, "text", "") or "").strip()
+                for button in all_buttons
+            ]
+            question_preview = " ".join(verification_text.split())[:180]
+            labels_preview = " | ".join(label for label in button_labels if label)[:300]
+            logger.warning(
+                "⚠️ CAPTCHA تحتاج اختياراً يدوياً للحساب %s: السؤال=%r الأزرار=%r",
+                session.get("phone_number"),
+                question_preview,
+                labels_preview,
+            )
+            return False, (
+                "CAPTCHA تحتاج اختياراً يدوياً"
+                f" | السؤال: {question_preview or 'غير ظاهر'}"
+                f" | الأزرار: {labels_preview or 'أزرار غير نصية'}"
+            )
 
         button_text = (getattr(matched_button, "text", "") or "").strip()
         callback_answer = await matched_button.click()
@@ -1404,6 +1422,23 @@ def _raksh_order_label(service_type: str) -> str:
         "premium_reaction": "تفاعلات مميزة",
     }
     return labels.get(service_type, service_type)
+
+def _mark_raksh_session_unauthorized(phone_number: str | None) -> None:
+    """استبعاد الجلسة غير المصرح بها من عمليات الرشق دون حذفها من المخزون."""
+    phone = str(phone_number or "").strip()
+    if not phone:
+        return
+    try:
+        with db_conn() as c:
+            c.execute(
+                "UPDATE number_stock SET last_authorized=FALSE "
+                "WHERE phone_number=%s AND deleted_at IS NULL",
+                (phone,),
+            )
+        logger.warning("🔒 أُبعدت جلسة غير مصرح بها من الرشق: %s", phone)
+    except Exception as exc:
+        logger.warning("تعذر تحديث حالة الجلسة غير المصرح بها %s: %s", phone, exc)
+
 
 async def _remove_invalid_raksh_sessions(failed_phones: list[str]) -> None:
     """
