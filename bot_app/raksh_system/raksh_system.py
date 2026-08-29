@@ -1157,60 +1157,49 @@ def extract_emoji_from_text(text):
     return all_emojis[-1] if all_emojis else None
 
 def check_success_message(text):
-    """فحص رسالة النجاح - يدعم عدة لغات"""
+    """فحص رسالة النجاح - عبارات تأكيد التصويت فقط (بكل اللغات)"""
     if not text:
         return False
     text_lower = text.casefold()
-    
-    if "✅" in text or "🎉" in text or "✔️" in text:
-        return True
-    
-    arabic_success = [
-        "تم التصويت", "تم تسجيل التصويت", "تم بنجاح", "نجحت العملية",
-        "شكراً لتصويتك", "شكرا لتصويتك", "تم قبول صوتك", "تم قبول",
-        "تم تسجيل صوتك", "تم التأكيد", "تمت العملية بنجاح"
+
+    # عبارات تؤكد تسجيل التصويت بوضوح
+    exact_success_phrases = [
+        # عربية
+        "تم تسجيل تصويتك",
+        "تم تسجيل صوتك",
+        "تم قبول صوتك",
+        "صوتك تم تسجيله",
+        "تم التصويت بنجاح",
+        "تم تسجيل تصويتك بنجاح",
+        # إنجليزية
+        "your vote has been counted",
+        "your vote was recorded",
+        "vote recorded successfully",
+        "voted successfully",
+        "vote accepted",
+        # روسية
+        "голос записан",
+        "ваш голос учтен",
+        "голосование принято",
+        # فارسية
+        "رای ثبت شد",
+        "رای شما ثبت شد",
+        "رای شما ثبت گردید",
+        # إسبانية
+        "voto registrado",
+        "voto contabilizado",
+        "su voto ha sido registrado",
+        # فرنسية
+        "vote enregistré",
+        "vote comptabilisé",
+        # تركية
+        "oyunuz kaydedildi",
+        "oyunuz sayıldı",
+        # ألمانية
+        "stimme registriert",
+        "stimme gezählt",
     ]
-    for phrase in arabic_success:
-        if phrase in text_lower:
-            return True
-    
-    english_success = [
-        "success", "vote recorded", "voted successfully", "thank you",
-        "your vote", "vote accepted", "correct", "completed", "done"
-    ]
-    for phrase in english_success:
-        if phrase in text_lower:
-            return True
-    
-    russian_success = [
-        "успешно", "голос записан", "спасибо", "проголосовано",
-        "принято", "верно", "готово"
-    ]
-    for phrase in russian_success:
-        if phrase in text_lower:
-            return True
-    
-    persian_success = [
-        "موفق", "ثبت شد", "ممنون", "رای ثبت شد", "پذیرفته شد",
-        "صحیح", "انجام شد"
-    ]
-    for phrase in persian_success:
-        if phrase in text_lower:
-            return True
-    
-    spanish_success = [
-        "éxito", "voto registrado", "gracias", "correcto",
-        "completado", "aceptado"
-    ]
-    for phrase in spanish_success:
-        if phrase in text_lower:
-            return True
-    
-    french_success = [
-        "succès", "vote enregistré", "merci", "correct",
-        "terminé", "accepté"
-    ]
-    for phrase in french_success:
+    for phrase in exact_success_phrases:
         if phrase in text_lower:
             return True
     
