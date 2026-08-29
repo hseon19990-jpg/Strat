@@ -1141,13 +1141,12 @@ async def _execute_votes(session, params, is_first):
         await client.disconnect()
 
 # ════════════════════════════════════════════════════════════
-# ═══ 4.5 دالة تصويت مع تحقق (النسخة المحسنة) ═══
+# ═══ 4.5 دالة تصويت مع تحقق (النسخة المعدلة) ═══
 # ════════════════════════════════════════════════════════════
 async def _execute_votes_ai(session, params, is_first):
-    """تنفيذ تصويت مع تحقق - يقبل أي رابط (بوت أو قناة/منشور).
-    إذا كان رابط قناة نبحث عن زر بوت بداخله، ونضغطه.
-    إذا لم تظهر أزرار بعد فتح البوت، نعتبر التحقق ناجحاً (الحساب قد يكون مضطراً
-    للانضمام لقنوات إجبارية ولم يظهر تحقق إضافي)."""
+    """تنفيذ تصويت مع تحقق - يضغط أزرار رسالة التحقق فقط حتى تختفي أزرارها.
+    يقبل رابط بوت مباشر أو رابط منشور قناة يحتوي زر البوت.
+    إذا لم تظهر أزرار تحقق بعد فتح البوت، نعتبر العملية ناجحة."""
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     await asyncio.wait_for(client.connect(), timeout=15)
     try:
@@ -1155,19 +1154,19 @@ async def _execute_votes_ai(session, params, is_first):
             _mark_raksh_session_unauthorized(session.get("phone_number"))
             return False, "الجلسة غير مصرح بها."
 
-        # 1. تحليل الرابط – قد يكون رابط بوت مباشر أو رابط قناة/منشور
-        link = (params.get("link") or "").strip()
+        # 1. تحليل الرابط – إما رابط بوت مباشر أو رابط منشور قناة
+        raw_link = (params.get("link") or "").strip()
         bot_username = None
         bot_start_param = None
 
-        # محاولة قراءة كرابط بوت مباشر
-        direct_bot, direct_start = _parse_bot_link(link)
-        if direct_bot and direct_start:
+        # محاولة تحليل كرابط بوت مباشر
+        direct_bot, direct_start = _parse_bot_link(raw_link)
+        if direct_bot:
             bot_username = direct_bot
-            bot_start_param = direct_start
+            bot_start_param = direct_start or ""
         else:
-            # محاولة قراءة كرابط قناة/منشور
-            entity_ref, post_id = _parse_post_link(link)
+            # تحليل كرابط منشور قناة
+            entity_ref, post_id = _parse_post_link(raw_link)
             if entity_ref and post_id:
                 try:
                     entity = await client.get_entity(entity_ref)
@@ -1177,7 +1176,7 @@ async def _execute_votes_ai(session, params, is_first):
                         found_bot, found_start = _find_bot_start_link(post_message)
                         if found_bot:
                             bot_username = found_bot
-                            bot_start_param = found_start
+                            bot_start_param = found_start or ""
                 except Exception as e:
                     logger.warning(f"فشل جلب منشور القناة للبحث عن زر البوت: {e}")
             else:
@@ -1204,34 +1203,34 @@ async def _execute_votes_ai(session, params, is_first):
                 except Exception as e3:
                     return False, f"فشل العثور على البوت {clean_username}: {str(e3)[:80]}"
 
-        # 3. فتح الرابط (بدء المحادثة مع البوت)
+        # 3. فتح رابط التصويت (بدء المحادثة مع البوت)
         await client(StartBotRequest(
             bot=bot_entity,
             peer=bot_entity,
             start_param=bot_start_param or ""
         ))
 
-        # 4. انتظار ظهور رسالة بأزرار (حتى 5 ثوانٍ)
+        # 4. البحث عن رسالة تحقق بأزرار (حتى 5 ثوانٍ)
         verification_message_id = None
         verification_message = None
         for attempt in range(5):
             await asyncio.sleep(1.0)
             msgs = _as_message_list(await client.get_messages(bot_entity, limit=50))
             for m in msgs:
-                # نبحث عن رسالة بها أزرار (غير روابط)
                 if getattr(m, "buttons", None) and not getattr(m, "url", None):
                     verification_message = m
                     verification_message_id = m.id
                     break
             if verification_message:
                 break
+            await asyncio.sleep(1.0)
 
-        # 5. إذا لم نجد أزرار خلال 5 ثوانٍ → نعتبر التحقق ناجحاً
+        # 5. إذا لم نجد أي رسالة بأزرار خلال 5 ثوانٍ → نعتبر العملية ناجحة
         if verification_message is None or verification_message_id is None:
             logger.info(f"✅ لا توجد أزرار تحقق – تم اعتبار العملية ناجحة للحساب {session['phone_number']}")
             return True, f"✅ تمت العملية (بدون تحقق إضافي) من {session['phone_number']}"
 
-        # 6. استخراج الإيموجي المطلوب من رسالة التحقق لترتيب الأولوية
+        # 6. استخراج الإيموجي المطلوب من رسالة التحقق (اختياري)
         verification_text = getattr(verification_message, "message", "") or getattr(verification_message, "text", "") or ""
         target_emoji = extract_emoji_from_text(verification_text)
 
@@ -1258,7 +1257,7 @@ async def _execute_votes_ai(session, params, is_first):
         buttons_to_try.extend(emojis)
         buttons_to_try.extend([b for b in all_buttons if b not in buttons_to_try])
 
-        # إزالة التكرار مع الحفاظ على الترتيب
+        # إزالة التكرار
         seen = set()
         unique_buttons = []
         for b in buttons_to_try:
@@ -1266,7 +1265,7 @@ async def _execute_votes_ai(session, params, is_first):
                 seen.add(id(b))
                 unique_buttons.append(b)
 
-        # 8. حلقة الضغط حتى اختفاء أزرار رسالة التحقق
+        # 8. حلقة الضغط حتى اختفاء أزرار رسالة التحقق المحددة
         max_attempts = 30
         pressed_ids = set()
         current_index = 0
@@ -1291,7 +1290,6 @@ async def _execute_votes_ai(session, params, is_first):
 
             # لا تزال الرسالة بأزرار، اختر زراً غير مضغوط
             button = None
-            # أولاً نبحث عن زر مطابق للإيموجي في الرسالة الحالية
             if target_emoji:
                 for row in (getattr(target_message, "buttons", None) or []):
                     for b in row:
@@ -1302,14 +1300,12 @@ async def _execute_votes_ai(session, params, is_first):
                         break
 
             if button is None:
-                # استخدام القائمة المرتبة
                 while current_index < len(unique_buttons) and id(unique_buttons[current_index]) in pressed_ids:
                     current_index += 1
                 if current_index < len(unique_buttons):
                     button = unique_buttons[current_index]
                     current_index += 1
                 else:
-                    # إذا ضغطنا كل الأزرار ولم تختفِ الأزرار، نعيد المحاولة من جديد
                     pressed_ids.clear()
                     current_index = 0
                     if unique_buttons:
@@ -1330,11 +1326,9 @@ async def _execute_votes_ai(session, params, is_first):
                 continue
 
             pressed_ids.add(id(button))
-
-            # انتظار ثانيتين
             await asyncio.sleep(2.0)
 
-        # 9. بعد انتهاء المحاولات، فحص نهائي للرسالة المحددة
+        # 9. الفحص النهائي
         try:
             final_message = await client.get_messages(bot_entity, ids=verification_message_id)
             if isinstance(final_message, (list, tuple)):
@@ -1950,25 +1944,16 @@ def _parse_raksh_rate_updates(text: str) -> dict[str, tuple[int, int]]:
 def _raksh_link_error(service_type: str, value: str) -> str | None:
     """إرجاع رسالة واضحة قبل حفظ رابط لا يناسب الخدمة."""
     
-    # خدمة votes_ai تقبل أي رابط (بوت أو قناة)
+    # خدمة votes_ai تقبل أي رابط t.me صالح (بوت أو قناة)
     if service_type == "votes_ai":
-        # هل هو رابط بوت؟
-        bot_username, start_param = _parse_bot_link(value)
-        if bot_username and start_param:
-            return None
-        # هل هو رابط قناة/منشور؟
-        entity_ref, post_id = _parse_post_link(value)
-        if entity_ref and post_id:
-            return None
-        return (
-            "⚠️ الرابط غير صحيح لهذه الخدمة.\n\n"
-            "أرسل رابط بوت مباشر بهذا الشكل:\n"
-            "`https://t.me/BotUsername?start=start_param`\n\n"
-            "أو رابط منشور قناة يحتوي زر البوت:\n"
-            "`https://t.me/channel/123`"
-        )
+        if "t.me/" in value or "telegram.me/" in value:
+            bot_username, _ = _parse_bot_link(value)
+            entity_ref, _ = _parse_post_link(value)
+            if bot_username or entity_ref:
+                return None
+        return "⚠️ الرابط غير صحيح لهذه الخدمة.\nأرسل رابط بوت أو قناة بصيغة t.me"
 
-    # خدمة forced_ref_ai تقبل رابط بوت مباشر
+    # باقي الخدمات كما هي...
     if service_type == "forced_ref_ai":
         bot_username, start_param = _parse_bot_link(value)
         if bot_username and start_param:
@@ -1980,7 +1965,6 @@ def _raksh_link_error(service_type: str, value: str) -> str | None:
             "أو: t.me/BotUsername?start=123"
         )
 
-    # باقي الخدمات كما هي...
     if service_type == "forced_ref":
         valid = _parse_bot_link(value)[0] is not None
         if not valid:
@@ -2393,7 +2377,7 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return True
         context.user_data["raksh_link"] = text
         
-        # ✅ إذا كانت الخدمة votes_ai، انتقل مباشرة لعدد الوحدات
+        # إذا كانت الخدمة votes_ai، انتقل مباشرة لعدد الوحدات
         if service_type == "votes_ai":
             context.user_data["raksh_step"] = "quantity"
             max_qty = _get_request_limit(user.id, service_type)
@@ -2414,7 +2398,7 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return True
         
-        # للخدمات الأخرى كما هي...
+        # للخدمات الأخرى...
         if service_type == "forced_ref_ai":
             context.user_data["raksh_step"] = "quantity"
             max_qty = _get_request_limit(user.id, service_type)
