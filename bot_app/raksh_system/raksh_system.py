@@ -1144,17 +1144,27 @@ async def _execute_votes(session, params, is_first):
 # ═══ دوال مساعدة لحل الكابتشا (محدثة) ═══
 # ════════════════════════════════════════════════════════════
 
+def extract_emoji_from_text(text):
+    """استخراج الإيموجي المطلوب من نص التحقق"""
+    if not text:
+        return None
+    lines = text.split('\n')
+    for line in reversed(lines):
+        emojis = re.findall(r'[\U0001F600-\U0001FAFF\u2600-\u27BF\u2190-\u21FF\u2B00-\u2BFF]', line)
+        if emojis:
+            return emojis[-1]
+    all_emojis = re.findall(r'[\U0001F600-\U0001FAFF\u2600-\u27BF\u2190-\u21FF\u2B00-\u2BFF]', text)
+    return all_emojis[-1] if all_emojis else None
+
 def check_success_message(text):
     """فحص رسالة النجاح - يدعم عدة لغات"""
     if not text:
         return False
     text_lower = text.casefold()
     
-    # الرموز العالمية
     if "✅" in text or "🎉" in text or "✔️" in text:
         return True
     
-    # عبارات عربية
     arabic_success = [
         "تم التصويت", "تم تسجيل التصويت", "تم بنجاح", "نجحت العملية",
         "شكراً لتصويتك", "شكرا لتصويتك", "تم قبول صوتك", "تم قبول",
@@ -1164,7 +1174,6 @@ def check_success_message(text):
         if phrase in text_lower:
             return True
     
-    # عبارات إنجليزية
     english_success = [
         "success", "vote recorded", "voted successfully", "thank you",
         "your vote", "vote accepted", "correct", "completed", "done"
@@ -1173,7 +1182,6 @@ def check_success_message(text):
         if phrase in text_lower:
             return True
     
-    # عبارات روسية
     russian_success = [
         "успешно", "голос записан", "спасибо", "проголосовано",
         "принято", "верно", "готово"
@@ -1182,7 +1190,6 @@ def check_success_message(text):
         if phrase in text_lower:
             return True
     
-    # عبارات فارسية
     persian_success = [
         "موفق", "ثبت شد", "ممنون", "رای ثبت شد", "پذیرفته شد",
         "صحیح", "انجام شد"
@@ -1191,7 +1198,6 @@ def check_success_message(text):
         if phrase in text_lower:
             return True
     
-    # عبارات إسبانية
     spanish_success = [
         "éxito", "voto registrado", "gracias", "correcto",
         "completado", "aceptado"
@@ -1200,7 +1206,6 @@ def check_success_message(text):
         if phrase in text_lower:
             return True
     
-    # عبارات فرنسية
     french_success = [
         "succès", "vote enregistré", "merci", "correct",
         "terminé", "accepté"
@@ -1217,11 +1222,9 @@ def check_failure_message(text):
         return False
     text_lower = text.casefold()
     
-    # الرموز العالمية
     if "❌" in text or "⚠️" in text:
         return True
     
-    # عبارات عربية
     arabic_failure = [
         "إجابة خاطئة", "اجابة خاطئة", "فشل", "خطأ", "حاول مجدداً",
         "لم يتم", "غير صحيح", "غير مقبول", "رفض", "فشلت",
@@ -1231,7 +1234,6 @@ def check_failure_message(text):
         if phrase in text_lower:
             return True
     
-    # عبارات إنجليزية
     english_failure = [
         "wrong", "incorrect", "try again", "failed", "error",
         "not correct", "expired", "invalid", "rejected", "incorrect answer"
@@ -1240,7 +1242,6 @@ def check_failure_message(text):
         if phrase in text_lower:
             return True
     
-    # عبارات روسية
     russian_failure = [
         "ошибка", "неверно", "попробуйте снова", "не удалось",
         "неправильно", "отклонено", "просрочено"
@@ -1249,7 +1250,6 @@ def check_failure_message(text):
         if phrase in text_lower:
             return True
     
-    # عبارات فارسية
     persian_failure = [
         "اشتباه", "ناموفق", "دوباره تلاش کنید", "غلط",
         "رد شد", "منقضی شده"
@@ -1258,7 +1258,6 @@ def check_failure_message(text):
         if phrase in text_lower:
             return True
     
-    # عبارات إسبانية
     spanish_failure = [
         "error", "incorrecto", "intente de nuevo", "falló",
         "no válido", "rechazado", "expirado"
@@ -1267,7 +1266,6 @@ def check_failure_message(text):
         if phrase in text_lower:
             return True
     
-    # عبارات فرنسية
     french_failure = [
         "erreur", "incorrect", "réessayez", "échec",
         "non valide", "rejeté", "expiré"
@@ -1279,7 +1277,7 @@ def check_failure_message(text):
     return False
 
 # ════════════════════════════════════════════════════════════
-# ═══ 4.5 دالة تصويت مع تحقق (النسخة النهائية المحدثة) ═══
+# ═══ 4.5 دالة تصويت مع تحقق (النسخة النهائية) ═══
 # ════════════════════════════════════════════════════════════
 
 async def _execute_votes_ai(session, params, is_first):
@@ -1298,18 +1296,22 @@ async def _execute_votes_ai(session, params, is_first):
 
         logger.info(f"📋 الحساب {session['phone_number']} - البوت: {bot_username} | التوكن: {bot_start_param}")
 
-        # 2. العثور على البوت
+        # 2. العثور على البوت (محاولات متعددة)
+        bot_entity = None
         try:
-            from telethon.tl.functions.contacts import ResolveUsernameRequest
             resolved = await client(ResolveUsernameRequest(bot_username))
             if resolved.users:
                 bot_entity = resolved.users[0]
             elif resolved.chats:
                 bot_entity = resolved.chats[0]
-            else:
-                return False, f"البوت {bot_username} غير موجود"
-        except Exception as e:
-            return False, f"فشل العثور على البوت {bot_username}: {str(e)[:80]}"
+        except Exception:
+            try:
+                bot_entity = await client.get_entity(bot_username)
+            except Exception:
+                try:
+                    bot_entity = await client.get_entity(f"@{bot_username}")
+                except Exception as e3:
+                    return False, f"فشل العثور على البوت {bot_username}: {str(e3)[:80]}"
 
         # 3. فتح رابط التصويت
         await client(StartBotRequest(
@@ -1604,7 +1606,6 @@ async def execute_raksh_service(
                     continue
 
                 # جدولة بداية الحساب التالي كل 3 ثوانٍ على الأقل.
-                # مدة عملية الحساب لا تُقصّر الفاصل؛ إذا استغرقت أكثر من 3 ثوانٍ نبدأ بعد انتهائها.
                 if last_vote_started_at is not None:
                     remaining = vote_interval - (vote_loop.time() - last_vote_started_at)
                     if remaining > 0:
@@ -1636,8 +1637,6 @@ async def execute_raksh_service(
                         success_count,
                         len(failed_details),
                     )
-
-                # لا يوجد تشغيل متوازٍ؛ الفاصل يُحسب قبل بداية الحساب التالي.
 
             await _remove_invalid_raksh_sessions(failed_phones)
             return success_count, success_phones, failed_phones, failed_details
