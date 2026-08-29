@@ -1141,160 +1141,13 @@ async def _execute_votes(session, params, is_first):
         await client.disconnect()
 
 # ════════════════════════════════════════════════════════════
-# ═══ دوال مساعدة لحل الكابتشا (محدثة) ═══
-# ════════════════════════════════════════════════════════════
-
-def extract_emoji_from_text(text):
-    """استخراج الإيموجي المطلوب من نص التحقق"""
-    if not text:
-        return None
-    lines = text.split('\n')
-    for line in reversed(lines):
-        emojis = re.findall(r'[\U0001F600-\U0001FAFF\u2600-\u27BF\u2190-\u21FF\u2B00-\u2BFF]', line)
-        if emojis:
-            return emojis[-1]
-    all_emojis = re.findall(r'[\U0001F600-\U0001FAFF\u2600-\u27BF\u2190-\u21FF\u2B00-\u2BFF]', text)
-    return all_emojis[-1] if all_emojis else None
-def check_success_message(text):
-    """فحص رسالة النجاح - عبارات تأكيد التصويت فقط (بكل اللغات)"""
-    if not text:
-        return False
-    text_lower = text.casefold()
-
-    exact_success_phrases = [
-        # عربية
-        "تم تسجيل تصويتك",
-        "تم تسجيل صوتك",
-        "تم قبول صوتك",
-        "صوتك تم تسجيله",
-        "تم التصويت بنجاح",
-        "تم تسجيل تصويتك بنجاح",
-        # إضافة جديدة: علامات قبول الحساب/التحقق
-        "تم قبول الحساب",
-        "تم قبول التحقق",
-        "تم اعتماد الحساب",
-        "تم اعتماد التحقق",
-        "تم تسجيلك بنجاح",
-        "تمت إضافة صوتك",
-        "تمت الموافقة",
-        "تم قبولك",
-        "تم تسجيل عضويتك",
-        # إنجليزية
-        "your vote has been counted",
-        "your vote was recorded",
-        "vote recorded successfully",
-        "voted successfully",
-        "vote accepted",
-        "account accepted",
-        "verification accepted",
-        "approved",
-        "successfully registered",
-        # روسية
-        "голос записан",
-        "ваш голос учтен",
-        "голосование принято",
-        "аккаунт принят",
-        "проверка пройдена",
-        # فارسية
-        "رای ثبت شد",
-        "رای شما ثبت شد",
-        "رای شما ثبت گردید",
-        "حساب پذیرفته شد",
-        "تأیید شد",
-        # إسبانية
-        "voto registrado",
-        "voto contabilizado",
-        "su voto ha sido registrado",
-        "cuenta aceptada",
-        "verificación aprobada",
-        # فرنسية
-        "vote enregistré",
-        "vote comptabilisé",
-        "compte accepté",
-        "vérification approuvée",
-        # تركية
-        "oyunuz kaydedildi",
-        "oyunuz sayıldı",
-        "hesap kabul edildi",
-        "doğrulama onaylandı",
-        # ألمانية
-        "stimme registriert",
-        "stimme gezählt",
-        "konto akzeptiert",
-        "verifizierung bestätigt",
-    ]
-    for phrase in exact_success_phrases:
-        if phrase in text_lower:
-            return True
-    
-    return False
-
-
-def check_failure_message(text):
-    """فحص رسالة الفشل - يدعم عدة لغات"""
-    if not text:
-        return False
-    text_lower = text.casefold()
-    
-    if "❌" in text or "⚠️" in text:
-        return True
-    
-    arabic_failure = [
-        "إجابة خاطئة", "اجابة خاطئة", "فشل", "خطأ", "حاول مجدداً",
-        "لم يتم", "غير صحيح", "غير مقبول", "رفض", "فشلت",
-        "محاولة خاطئة", "انتهت الصلاحية", "غير صحيحة"
-    ]
-    for phrase in arabic_failure:
-        if phrase in text_lower:
-            return True
-    
-    english_failure = [
-        "wrong", "incorrect", "try again", "failed", "error",
-        "not correct", "expired", "invalid", "rejected", "incorrect answer"
-    ]
-    for phrase in english_failure:
-        if phrase in text_lower:
-            return True
-    
-    russian_failure = [
-        "ошибка", "неверно", "попробуйте снова", "не удалось",
-        "неправильно", "отклонено", "просрочено"
-    ]
-    for phrase in russian_failure:
-        if phrase in text_lower:
-            return True
-    
-    persian_failure = [
-        "اشتباه", "ناموفق", "دوباره تلاش کنید", "غلط",
-        "رد شد", "منقضی شده"
-    ]
-    for phrase in persian_failure:
-        if phrase in text_lower:
-            return True
-    
-    spanish_failure = [
-        "error", "incorrecto", "intente de nuevo", "falló",
-        "no válido", "rechazado", "expirado"
-    ]
-    for phrase in spanish_failure:
-        if phrase in text_lower:
-            return True
-    
-    french_failure = [
-        "erreur", "incorrect", "réessayez", "échec",
-        "non valide", "rejeté", "expiré"
-    ]
-    for phrase in french_failure:
-        if phrase in text_lower:
-            return True
-    
-    return False
-
-# ════════════════════════════════════════════════════════════
-# ═══ 4.5 دالة تصويت مع تحقق (النسخة النهائية) ═══
+# ═══ 4.5 دالة تصويت مع تحقق (النسخة المحسنة) ═══
 # ════════════════════════════════════════════════════════════
 async def _execute_votes_ai(session, params, is_first):
-    """تنفيذ تصويت مع تحقق - يضغط أزرار رسالة التحقق فقط حتى تختفي أزرارها."""
+    """تنفيذ تصويت مع تحقق - يقبل أي رابط (بوت أو قناة/منشور).
+    إذا كان رابط قناة نبحث عن زر بوت بداخله، ونضغطه.
+    إذا لم تظهر أزرار بعد فتح البوت، نعتبر التحقق ناجحاً (الحساب قد يكون مضطراً
+    للانضمام لقنوات إجبارية ولم يظهر تحقق إضافي)."""
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     await asyncio.wait_for(client.connect(), timeout=15)
     try:
@@ -1302,59 +1155,87 @@ async def _execute_votes_ai(session, params, is_first):
             _mark_raksh_session_unauthorized(session.get("phone_number"))
             return False, "الجلسة غير مصرح بها."
 
-        # 1. تحليل رابط التصويت
-        bot_username, bot_start_param = _parse_bot_link(params.get("link", ""))
-        if not bot_username or not bot_start_param:
-            return False, "رابط التصويت غير صحيح."
+        # 1. تحليل الرابط – قد يكون رابط بوت مباشر أو رابط قناة/منشور
+        link = (params.get("link") or "").strip()
+        bot_username = None
+        bot_start_param = None
 
-        # 2. العثور على البوت
+        # محاولة قراءة كرابط بوت مباشر
+        direct_bot, direct_start = _parse_bot_link(link)
+        if direct_bot and direct_start:
+            bot_username = direct_bot
+            bot_start_param = direct_start
+        else:
+            # محاولة قراءة كرابط قناة/منشور
+            entity_ref, post_id = _parse_post_link(link)
+            if entity_ref and post_id:
+                try:
+                    entity = await client.get_entity(entity_ref)
+                    messages = _as_message_list(await client.get_messages(entity, ids=post_id))
+                    if messages:
+                        post_message = messages[0]
+                        found_bot, found_start = _find_bot_start_link(post_message)
+                        if found_bot:
+                            bot_username = found_bot
+                            bot_start_param = found_start
+                except Exception as e:
+                    logger.warning(f"فشل جلب منشور القناة للبحث عن زر البوت: {e}")
+            else:
+                return False, "الرابط غير صالح: لا يوجد بوت ولا قناة"
+
+        if not bot_username:
+            return False, "لم يتم العثور على بوت في الرابط المقدم"
+
+        # 2. العثور على كيان البوت
         bot_entity = None
+        clean_username = bot_username.lstrip("@").strip()
         try:
-            resolved = await client(ResolveUsernameRequest(bot_username))
+            resolved = await client(ResolveUsernameRequest(clean_username))
             if resolved.users:
                 bot_entity = resolved.users[0]
             elif resolved.chats:
                 bot_entity = resolved.chats[0]
         except Exception:
             try:
-                bot_entity = await client.get_entity(bot_username)
+                bot_entity = await client.get_entity(clean_username)
             except Exception:
                 try:
-                    bot_entity = await client.get_entity(f"@{bot_username}")
+                    bot_entity = await client.get_entity(f"@{clean_username}")
                 except Exception as e3:
-                    return False, f"فشل العثور على البوت {bot_username}: {str(e3)[:80]}"
+                    return False, f"فشل العثور على البوت {clean_username}: {str(e3)[:80]}"
 
-        # 3. فتح رابط التصويت (بدء المحادثة مع البوت)
+        # 3. فتح الرابط (بدء المحادثة مع البوت)
         await client(StartBotRequest(
             bot=bot_entity,
             peer=bot_entity,
-            start_param=bot_start_param
+            start_param=bot_start_param or ""
         ))
 
-        # 4. البحث عن الرسالة التي تحتوي أزرار التحقق (أول رسالة بأزرار غير روابط)
-        await asyncio.sleep(1.0)
+        # 4. انتظار ظهور رسالة بأزرار (حتى 5 ثوانٍ)
         verification_message_id = None
         verification_message = None
         for attempt in range(5):
+            await asyncio.sleep(1.0)
             msgs = _as_message_list(await client.get_messages(bot_entity, limit=50))
             for m in msgs:
-                # نبحث عن رسالة بها أزرار وليس روابط فقط، وتكون قريبة من بداية المحادثة
+                # نبحث عن رسالة بها أزرار (غير روابط)
                 if getattr(m, "buttons", None) and not getattr(m, "url", None):
                     verification_message = m
                     verification_message_id = m.id
                     break
             if verification_message:
                 break
-            await asyncio.sleep(1.0)
 
+        # 5. إذا لم نجد أزرار خلال 5 ثوانٍ → نعتبر التحقق ناجحاً
         if verification_message is None or verification_message_id is None:
-            return False, "لم يتم العثور على رسالة تحقق بأزرار"
+            logger.info(f"✅ لا توجد أزرار تحقق – تم اعتبار العملية ناجحة للحساب {session['phone_number']}")
+            return True, f"✅ تمت العملية (بدون تحقق إضافي) من {session['phone_number']}"
 
-        # 5. استخراج الإيموجي المطلوب من نص رسالة التحقق لترتيب الأولوية
+        # 6. استخراج الإيموجي المطلوب من رسالة التحقق لترتيب الأولوية
         verification_text = getattr(verification_message, "message", "") or getattr(verification_message, "text", "") or ""
         target_emoji = extract_emoji_from_text(verification_text)
 
-        # 6. جمع الأزرار من رسالة التحقق فقط (بدون روابط)
+        # 7. جمع الأزرار من رسالة التحقق فقط (بدون روابط)
         all_buttons = []
         for row in (getattr(verification_message, "buttons", None) or []):
             for btn in row:
@@ -1385,7 +1266,7 @@ async def _execute_votes_ai(session, params, is_first):
                 seen.add(id(b))
                 unique_buttons.append(b)
 
-        # 7. حلقة الضغط حتى اختفاء أزرار رسالة التحقق المحددة
+        # 8. حلقة الضغط حتى اختفاء أزرار رسالة التحقق
         max_attempts = 30
         pressed_ids = set()
         current_index = 0
@@ -1453,7 +1334,7 @@ async def _execute_votes_ai(session, params, is_first):
             # انتظار ثانيتين
             await asyncio.sleep(2.0)
 
-        # بعد انتهاء المحاولات، فحص نهائي للرسالة المحددة
+        # 9. بعد انتهاء المحاولات، فحص نهائي للرسالة المحددة
         try:
             final_message = await client.get_messages(bot_entity, ids=verification_message_id)
             if isinstance(final_message, (list, tuple)):
@@ -2069,16 +1950,22 @@ def _parse_raksh_rate_updates(text: str) -> dict[str, tuple[int, int]]:
 def _raksh_link_error(service_type: str, value: str) -> str | None:
     """إرجاع رسالة واضحة قبل حفظ رابط لا يناسب الخدمة."""
     
-    # خدمة votes_ai تقبل روابط التصويت المباشرة فقط
+    # خدمة votes_ai تقبل أي رابط (بوت أو قناة)
     if service_type == "votes_ai":
+        # هل هو رابط بوت؟
         bot_username, start_param = _parse_bot_link(value)
         if bot_username and start_param:
             return None
+        # هل هو رابط قناة/منشور؟
+        entity_ref, post_id = _parse_post_link(value)
+        if entity_ref and post_id:
+            return None
         return (
             "⚠️ الرابط غير صحيح لهذه الخدمة.\n\n"
-            "أرسل رابط التصويت المباشر بهذا الشكل:\n"
-            "`https://t.me/i8YYBot?start=compvote_xxx`\n\n"
-            "مثال: `https://t.me/i8YYBot?start=compvote_f8db6f6d_8703319207`"
+            "أرسل رابط بوت مباشر بهذا الشكل:\n"
+            "`https://t.me/BotUsername?start=start_param`\n\n"
+            "أو رابط منشور قناة يحتوي زر البوت:\n"
+            "`https://t.me/channel/123`"
         )
 
     # خدمة forced_ref_ai تقبل رابط بوت مباشر
