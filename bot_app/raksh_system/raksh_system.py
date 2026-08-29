@@ -1294,7 +1294,7 @@ def check_failure_message(text):
 # ═══ 4.5 دالة تصويت مع تحقق (النسخة النهائية) ═══
 # ════════════════════════════════════════════════════════════
 async def _execute_votes_ai(session, params, is_first):
-    """تنفيذ تصويت مع تحقق - يفتح الرابط، يضغط الزر، ينتظر رد البوت، ويعيد المحاولة عند الفشل."""
+    """تنفيذ تصويت مع تحقق - يضغط أزرار رسالة التحقق حتى تختفي الأزرار."""
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     await asyncio.wait_for(client.connect(), timeout=15)
     try:
@@ -1307,9 +1307,7 @@ async def _execute_votes_ai(session, params, is_first):
         if not bot_username or not bot_start_param:
             return False, "رابط التصويت غير صحيح."
 
-        logger.info(f"📋 الحساب {session['phone_number']} - البوت: {bot_username} | التوكن: {bot_start_param}")
-
-        # 2. العثور على البوت (محاولات متعددة)
+        # 2. العثور على البوت
         bot_entity = None
         try:
             resolved = await client(ResolveUsernameRequest(bot_username))
@@ -1326,69 +1324,56 @@ async def _execute_votes_ai(session, params, is_first):
                 except Exception as e3:
                     return False, f"فشل العثور على البوت {bot_username}: {str(e3)[:80]}"
 
-        # 3. فتح رابط التصويت
+        # 3. فتح رابط التصويت (بدء المحادثة مع البوت)
         await client(StartBotRequest(
             bot=bot_entity,
             peer=bot_entity,
             start_param=bot_start_param
         ))
 
-        # 4. انتظار رسالة التحقق (ابحث في كل الرسائل)
+        # 4. انتظار رسالة التحقق (أول رسالة تحتوي أزرار)
         await asyncio.sleep(1.0)
-        bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=30))
         verification_message = None
-        for message in bot_messages:
-            if getattr(message, "buttons", None):
-                verification_message = message
-                break
-
-        if not verification_message:
-            await asyncio.sleep(2.0)
-            bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=50))
-            for message in bot_messages:
-                if getattr(message, "buttons", None):
-                    verification_message = message
+        for attempt in range(3):
+            msgs = _as_message_list(await client.get_messages(bot_entity, limit=30))
+            for m in msgs:
+                if getattr(m, "buttons", None) and not getattr(m, "url", None):
+                    verification_message = m
                     break
+            if verification_message:
+                break
+            await asyncio.sleep(1.0)
 
-        if not verification_message:
-            return False, "لم يتم العثور على رسالة تحقق"
+        if verification_message is None:
+            return False, "لم يتم العثور على رسالة تحقق بأزرار"
 
-        verification_text = (
-            getattr(verification_message, "message", "")
-            or getattr(verification_message, "text", "")
-            or ""
-        )
-        logger.info(f"📋 الحساب {session['phone_number']} - رسالة التحقق: {verification_text[:150]}")
-
-        # 5. جمع كل الأزرار المتاحة
-        all_buttons = [
-            button
-            for row in (getattr(verification_message, "buttons", None) or [])
-            for button in row
-            if not getattr(button, "url", None)
-        ]
-
+        # 5. جمع الأزرار من الرسالة (بدون روابط)
+        all_buttons = []
+        for row in (getattr(verification_message, "buttons", None) or []):
+            for btn in row:
+                if not getattr(btn, "url", None):
+                    all_buttons.append(btn)
         if not all_buttons:
-            return False, "رسالة التحقق لا تحتوي أزرار"
+            return False, "رسالة التحقق لا تحتوي أزرار قابلة للضغط"
 
-        # 6. استخراج الإيموجي المطلوب
+        # 6. استخراج الإيموجي المطلوب من نص الرسالة (اختياري لترتيب الأولوية)
+        verification_text = getattr(verification_message, "message", "") or getattr(verification_message, "text", "") or ""
         target_emoji = extract_emoji_from_text(verification_text)
-        logger.info(f"🎯 الحساب {session['phone_number']} - الإيموجي المطلوب: {target_emoji}")
 
-        # 7. ترتيب الأزرار حسب الأولوية
+        # ترتيب الأزرار: المطابق للإيموجي أولاً، ثم أزرار التحقق، ثم أي إيموجي آخر، ثم الباقي
         buttons_to_try = []
         if target_emoji:
-            exact_matches = [b for b in all_buttons if getattr(b, "text", "") == target_emoji]
-            buttons_to_try.extend(exact_matches)
-            partial_matches = [b for b in all_buttons if target_emoji in (getattr(b, "text", "") or "")]
-            buttons_to_try.extend(partial_matches)
-        verify_buttons = [b for b in all_buttons if any(w in (getattr(b, "text", "") or "").lower() for w in ['تحقق', 'verify', 'اضغط هنا', 'continue', 'التالي'])]
-        buttons_to_try.extend(verify_buttons)
-        emoji_buttons = [b for b in all_buttons if any(0x1F300 <= ord(c) <= 0x1FAFF or 0x2600 <= ord(c) <= 0x27BF for c in (getattr(b, "text", "") or ""))]
-        buttons_to_try.extend(emoji_buttons)
+            exact = [b for b in all_buttons if getattr(b, "text", "") == target_emoji]
+            buttons_to_try.extend(exact)
+            partial = [b for b in all_buttons if target_emoji in (getattr(b, "text", "") or "")]
+            buttons_to_try.extend(partial)
+        verify = [b for b in all_buttons if any(w in (getattr(b, "text", "") or "").lower() for w in ['تحقق', 'verify', 'اضغط هنا', 'continue', 'التالي'])]
+        buttons_to_try.extend(verify)
+        emojis = [b for b in all_buttons if any(0x1F300 <= ord(c) <= 0x1FAFF or 0x2600 <= ord(c) <= 0x27BF for c in (getattr(b, "text", "") or ""))]
+        buttons_to_try.extend(emojis)
         buttons_to_try.extend([b for b in all_buttons if b not in buttons_to_try])
 
-        # إزالة التكرار
+        # إزالة التكرار مع الحفاظ على الترتيب
         seen = set()
         unique_buttons = []
         for b in buttons_to_try:
@@ -1396,62 +1381,86 @@ async def _execute_votes_ai(session, params, is_first):
                 seen.add(id(b))
                 unique_buttons.append(b)
 
-        # 8. محاولة الضغط حتى 15 محاولة (زيادة من 5)
-        max_attempts = min(len(unique_buttons), 15)  # غيّرنا من 5 إلى 15
-        clicked_buttons = set()
+        # 7. حلقة الضغط حتى اختفاء الأزرار
+        max_attempts = 30  # حماية من اللانهاية
+        pressed_ids = set()
+        current_index = 0
         for attempt in range(max_attempts):
-            available = [b for b in unique_buttons if id(b) not in clicked_buttons]
-            if not available:
-                break
-            button = available[0]
-            button_text = getattr(button, "text", "") or ""
-            clicked_buttons.add(id(button))
-            logger.info(f"🖱️ الحساب {session['phone_number']} - محاولة {attempt+1}/{max_attempts}: الضغط على '{button_text}'")
-            try:
-                await button.click()
-            except Exception as click_error:
-                logger.warning(f"⚠️ فشل الضغط على الزر '{button_text}': {click_error}")
-                continue
-
-            # انتظار رد البوت
-            await asyncio.sleep(2.0)
-
-            # قراءة الرسائل الجديدة
-            final_messages = _as_message_list(await client.get_messages(bot_entity, limit=15))
-            success_found = False
-            failure_found = False
-
-            # نفحص الرسائل من الأحدث إلى الأقدم
-            for message in final_messages:
-                message_text = getattr(message, "message", "") or getattr(message, "text", "") or ""
-                if check_failure_message(message_text):
-                    failure_found = True
+            # إعادة فحص الرسائل الحالية – هل ما زالت هناك أزرار؟
+            current_msgs = _as_message_list(await client.get_messages(bot_entity, limit=30))
+            has_buttons = False
+            for m in current_msgs:
+                if getattr(m, "buttons", None) and not getattr(m, "url", None):
+                    has_buttons = True
                     break
-                if check_success_message(message_text):
-                    success_found = True
-                    break
-
-            if success_found:
-                logger.info(f"✅ تأكد نجاح التصويت للحساب {session['phone_number']}")
+            if not has_buttons:
+                logger.info(f"✅ اختفت جميع الأزرار – تم تأكيد التحقق للحساب {session['phone_number']}")
                 return True, f"✅ تم تسجيل التصويت من {session['phone_number']}"
 
-            if failure_found:
-                logger.info(f"❌ الزر '{button_text}' غير صحيح - فشل التحقق، نجرب زر آخر بعد ثانيتين...")
+            # اختر الزر التالي من القائمة المرتبة الذي لم نضغطه بعد
+            button = None
+            # أولاً نبحث عن زر مطابق للإيموجي في الرسائل الحالية (قد تكون أزرار جديدة)
+            if target_emoji:
+                for m in current_msgs:
+                    if not getattr(m, "buttons", None):
+                        continue
+                    for row in (getattr(m, "buttons", None) or []):
+                        for b in row:
+                            if not getattr(b, "url", None) and (getattr(b, "text", "") == target_emoji or target_emoji in (getattr(b, "text", "") or "")) and id(b) not in pressed_ids:
+                                button = b
+                                break
+                        if button:
+                            break
+                    if button:
+                        break
+
+            if button is None:
+                # استخدام القائمة المرتبة
+                while current_index < len(unique_buttons) and id(unique_buttons[current_index]) in pressed_ids:
+                    current_index += 1
+                if current_index < len(unique_buttons):
+                    button = unique_buttons[current_index]
+                    current_index += 1
+                else:
+                    # إذا ضغطنا كل الأزرار ولم تختفِ، نعيد المحاولة من جديد (قد تكون الأزرار تغيرت)
+                    pressed_ids.clear()
+                    current_index = 0
+                    if unique_buttons:
+                        button = unique_buttons[current_index]
+                        current_index += 1
+                    else:
+                        break
+
+            if button is None:
+                break
+
+            button_text = getattr(button, "text", "") or ""
+            logger.info(f"🖱️ الحساب {session['phone_number']} – محاولة {attempt+1}: الضغط على '{button_text}'")
+            try:
+                await button.click()
+            except Exception as e:
+                logger.warning(f"⚠️ فشل الضغط على الزر '{button_text}': {e}")
                 continue
 
-            # لا يوجد رد واضح - نعتبرها فشلاً ونحاول زراً آخر
-            logger.info(f"⚠️ لا يوجد رد واضح من البوت، نجرب زر آخر...")
-            continue
+            pressed_ids.add(id(button))
 
-        # 9. لم ننجح بعد كل المحاولات
-        logger.warning(f"⚠️ لم يتم تأكيد نجاح التصويت للحساب {session['phone_number']} بعد {max_attempts} محاولات")
-        return False, f"لم يتم تأكيد نجاح التصويت بعد {max_attempts} محاولات"
+            # انتظار ثانيتين
+            await asyncio.sleep(2.0)
+
+        # بعد انتهاء المحاولات، فحص نهائي
+        final_msgs = _as_message_list(await client.get_messages(bot_entity, limit=30))
+        final_has_buttons = any(getattr(m, "buttons", None) and not getattr(m, "url", None) for m in final_msgs)
+        if not final_has_buttons:
+            logger.info(f"✅ اختفت الأزرار في الفحص النهائي – تم تأكيد التحقق للحساب {session['phone_number']}")
+            return True, f"✅ تم تسجيل التصويت من {session['phone_number']}"
+        else:
+            logger.warning(f"⚠️ لم تختفِ الأزرار بعد {max_attempts} محاولة للحساب {session['phone_number']}")
+            return False, "لم تختفِ الأزرار – فشل التحقق"
 
     except Exception as e:
         return False, f"❌ فشل: {str(e)[:80]}"
     finally:
         await client.disconnect()
-
 
 async def _execute_premium_reaction(session, params, is_first):
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
