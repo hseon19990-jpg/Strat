@@ -33,7 +33,7 @@ import re
 
 # استيرادات إضافية لمعالجة التحقق
 from telethon.tl.functions.messages import SendMediaRequest
-from telethon.tl.types import InputMediaContact
+from telethon.tl.types import InputMediaContact, InputContact
 
 RAKSH_PAID_REACTION = "__raksh_paid_reaction__"
 RAKSH_PAID_REACTION_LABEL = "⭐ تفاعل مدفوع"
@@ -1006,6 +1006,229 @@ async def _execute_forced_ref(session, params, is_first):
     finally:
         await client.disconnect()
 
+# ════════════════════════════════════════════════════════════
+# ═══ دالة حل التحقق المحسّنة ═══
+# ════════════════════════════════════════════════════════════
+
+def extract_emoji_from_text(text: str):
+    """استخراج أول إيموجي من النص."""
+    import re
+    # نمط بسيط لالتقاط الإيموجي الشائعة (حسب الحاجة يمكن توسيعه)
+    emoji_pattern = re.compile(
+        "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E0-\U0001F1FF]"
+    )
+    match = emoji_pattern.search(text)
+    return match.group(0) if match else None
+
+def check_success_message(text: str) -> bool:
+    """التعرف على رسائل النجاح الشائعة."""
+    success_keywords = ["تم", "success", "نجاح", "مبروك", "أحسنت", "تمت الإحالة", "✅", "تم التحقق", "انضممت"]
+    return any(keyword.lower() in text.lower() for keyword in success_keywords)
+
+def check_failure_message(text: str) -> bool:
+    """التعرف على رسائل الفشل."""
+    failure_keywords = ["فشل", "خطأ", "error", "failed", "غير صحيح", "محاولة", "انتهت", "مرفوض"]
+    return any(keyword.lower() in text.lower() for keyword in failure_keywords)
+
+async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) -> bool:
+    """
+    يحاول حل جميع أنواع التحقق في بوت الإحالة الإجباري.
+    يعيد True إذا نجح التحقق وتم التأكيد، وإلا False.
+    """
+    # مراقبة الرسائل الجديدة وتفاعلها
+    last_id = 0
+    max_attempts = 30
+    used_buttons = set()  # لتجنب تكرار الضغط على نفس الزر
+
+    for attempt in range(max_attempts):
+        try:
+            messages = _as_message_list(await client.get_messages(bot_entity, limit=30))
+        except Exception as exc:
+            logger.warning(f"تعذر قراءة رسائل البوت: {exc}")
+            await asyncio.sleep(1.0)
+            continue
+
+        if not messages:
+            await asyncio.sleep(1.0)
+            continue
+
+        # البحث عن رسالة جديدة
+        newest = max(msg.id for msg in messages if msg.id)
+        if newest <= last_id:
+            await asyncio.sleep(1.0)
+            continue
+
+        # تحديث آخر معرف
+        last_id = newest
+
+        # البحث عن رسالة تحقق (تحتوي على أزرار غير روابط أو نص يطلب إجراء)
+        verification_message = None
+        for msg in messages:
+            if msg.id == newest:
+                continue  # نركز على الأحدث فقط
+            if getattr(msg, 'buttons', None):
+                # إذا كانت أزرار من نوع inline
+                verification_message = msg
+                break
+
+        # إذا لم نجد رسالة بأزرار، نتحقق من الأحدث
+        if verification_message is None:
+            # نأخذ أحدث رسالة
+            verification_message = messages[0]
+
+        text = getattr(verification_message, 'message', '') or ''
+        buttons = []
+        for row in getattr(verification_message, 'buttons', None) or []:
+            for btn in row:
+                if not getattr(btn, 'url', None):
+                    buttons.append(btn)
+
+        # فحص النجاح
+        if check_success_message(text) and not buttons:
+            return True
+
+        # فحص الفشل
+        if check_failure_message(text):
+            return False
+
+        # 1) مشاركة جهة اتصال
+        contact_btn = next(
+            (btn for btn in buttons if any(word in (getattr(btn, 'text', '') or '').lower()
+                for word in ['share', 'contact', 'هاتف', 'جهة', 'اتصال', 'مشاركة', 'mobile'])),
+            None
+        )
+        if contact_btn:
+            try:
+                from telethon.tl.types import InputMediaContact, InputContact
+                # استخدم رقم الجلسة إذا كان متاحاً، وإلا رقم افتراضي
+                phone = phone_number if phone_number else '1234567890'
+                if not phone.startswith('+'):
+                    phone = f'+{phone}'
+                await client(functions.messages.SendMediaRequest(
+                    peer=bot_entity,
+                    media=InputMediaContact(
+                        phone_number=phone,
+                        first_name='User',
+                        last_name='',
+                        vcard=''
+                    ),
+                    message='',
+                    random_id=random.randint(1, 2**31)
+                ))
+            except Exception as e:
+                logger.warning(f"فشل إرسال جهة الاتصال: {e}")
+            await asyncio.sleep(1.0)
+            continue
+
+        # 2) إعادة كتابة نص
+        retype_match = re.search(
+            r'(أعد كتابة|retype|type again|إعادة كتابة|rewrite|اكتب)\s*[:\-]?\s*(.+)',
+            text, re.IGNORECASE
+        )
+        if retype_match:
+            to_retype = retype_match.group(2).strip()
+            if to_retype:
+                await client.send_message(bot_entity, to_retype)
+                await asyncio.sleep(1.0)
+                continue
+
+        # 3) حل مسألة رياضية
+        math_match = re.search(r'(\d+)\s*([+\-*/])\s*(\d+)\s*=\s*\?', text)
+        if math_match:
+            a, op, b = int(math_match.group(1)), math_match.group(2), int(math_match.group(3))
+            if op == '+':
+                result = a + b
+            elif op == '-':
+                result = a - b
+            elif op == '*':
+                result = a * b
+            elif op == '/':
+                result = a / b if b != 0 else 0
+            await client.send_message(bot_entity, str(result))
+            await asyncio.sleep(1.0)
+            continue
+
+        # 4) أزرار إيموجي
+        emoji_requested = extract_emoji_from_text(text)
+        if emoji_requested:
+            # نبحث عن زر بهذا الإيموجي
+            clicked = False
+            for btn in buttons:
+                if emoji_requested in (getattr(btn, 'text', '') or ''):
+                    try:
+                        await btn.click()
+                        clicked = True
+                    except Exception as e:
+                        logger.warning(f"فشل الضغط على زر الإيموجي: {e}")
+                    await asyncio.sleep(1.0)
+                    break
+            if not clicked and buttons:
+                # إذا لم يوجد زر بهذا الإيموجي، نضغط أول زر غير مضغوط
+                for btn in buttons:
+                    btn_id = (getattr(btn, 'data', None) or '').decode('utf-8', errors='ignore')
+                    if btn_id not in used_buttons:
+                        try:
+                            await btn.click()
+                            used_buttons.add(btn_id)
+                            clicked = True
+                        except Exception as e:
+                            logger.warning(f"فشل الضغط على زر عشوائي: {e}")
+                        await asyncio.sleep(1.0)
+                        break
+            continue
+
+        # 5) أزرار عادية (مثل زر "تحقق" أو "متابعة")
+        verify_btn = next(
+            (btn for btn in buttons if any(word in (getattr(btn, 'text', '') or '').lower()
+                for word in ['تحقق', 'verify', 'متابعة', 'continue', 'التالي', 'next', 'تأكيد', 'confirm'])),
+            None
+        )
+        if verify_btn:
+            try:
+                await verify_btn.click()
+            except Exception as e:
+                logger.warning(f"فشل الضغط على زر التحقق: {e}")
+            await asyncio.sleep(1.0)
+            continue
+
+        # 6) ضغط زر + نص (button_text)
+        if text.startswith("اضغط على الزر"):
+            if buttons:
+                await buttons[0].click()
+                await asyncio.sleep(1.0)
+                continue
+
+        # 7) ملصقات (إذا طلب إرسال ملصق)
+        sticker_request = re.search(r'أرسل نفس الملصق|send same sticker|أرسل ملصق', text, re.IGNORECASE)
+        if sticker_request and buttons:
+            # إذا كان البوت يطلب ملصقًا، نرسل ملصقًا من المتاح (لكن لا نملك file_id معين هنا)
+            # يمكن استخدام أي ملصق من "premium" لكن لا نملك قائمة، لذا نفشل
+            # لكن هنا يمكن إرسال ملصق معروف؟ نتركه
+            pass
+
+        # 8) إذا لم نتعرف على أي شيء، نضغط أول زر غير مضغوط
+        if buttons:
+            clicked_any = False
+            for btn in buttons:
+                btn_id = (getattr(btn, 'data', None) or '').decode('utf-8', errors='ignore')
+                if btn_id not in used_buttons:
+                    try:
+                        await btn.click()
+                        used_buttons.add(btn_id)
+                        clicked_any = True
+                    except Exception as e:
+                        logger.warning(f"فشل الضغط على أول زر: {e}")
+                    await asyncio.sleep(1.0)
+                    break
+            if not clicked_any:
+                # كل الأزرار مضغوطة، ننتظر
+                await asyncio.sleep(1.0)
+        else:
+            # لا أزرار، ننتظر
+            await asyncio.sleep(1.0)
+
+    return False  # فشل بعد المحاولات
+
 async def _execute_forced_ref_ai(session, params, is_first):
     """تنفيذ إحالة بوت إجباري مع تحقق - يحل جميع أنواع التحقق تلقائياً."""
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
@@ -1046,149 +1269,7 @@ async def _execute_forced_ref_ai(session, params, is_first):
     finally:
         await client.disconnect()
 
-# إضافة دالة حل التحقق (قبل الدالة أعلاه أو بعدها، المهم أن تكون معرفة قبل استخدامها)
-async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) -> bool:
-    """
-    يحاول حل جميع أنواع التحقق في بوت الإحالة الإجباري.
-    يعيد True إذا نجح التحقق وتم التأكيد، وإلا False.
-    """
-    # محاولات متعددة حتى تختفي أزرار التحقق أو تظهر رسالة نجاح
-    max_attempts = 30
-    for attempt in range(max_attempts):
-        # قراءة آخر الرسائل (الحد 30)
-        try:
-            messages = _as_message_list(await client.get_messages(bot_entity, limit=30))
-        except Exception:
-            messages = []
-        if not messages:
-            await asyncio.sleep(1.0)
-            continue
-
-        # البحث عن رسالة تحتوي على أزرار غير روابط (تحقق)
-        verification_message = None
-        for msg in messages:
-            if getattr(msg, 'buttons', None) and not any(getattr(btn, 'url', None) for row in msg.buttons for btn in row):
-                verification_message = msg
-                break
-
-        # إذا لا توجد رسالة بأزرار تحقق، نتحقق من رسالة النجاح
-        if verification_message is None:
-            last_msg = messages[0]
-            text = getattr(last_msg, 'message', '') or ''
-            if check_success_message(text):
-                return True
-            # لا يوجد تحقق ولا رسالة فشل، اعتبرها نجاح
-            return True
-
-        # استخراج البيانات من رسالة التحقق
-        text = getattr(verification_message, 'message', '') or ''
-        buttons = []
-        for row in verification_message.buttons:
-            for btn in row:
-                if not getattr(btn, 'url', None):
-                    buttons.append(btn)
-
-        # 1) مشاركة جهة اتصال
-        contact_btn = next(
-            (btn for btn in buttons if any(word in (getattr(btn, 'text', '') or '').lower()
-                for word in ['share', 'contact', 'هاتف', 'جهة', 'اتصال', 'مشاركة', 'mobile'])),
-            None
-        )
-        if contact_btn:
-            try:
-                from telethon.tl.types import InputMediaContact, InputContact
-                # نستخدم رقم الجلسة إذا كان متاحاً، وإلا رقم افتراضي
-                phone = phone_number if phone_number else '1234567890'
-                if not phone.startswith('+'):
-                    phone = f'+{phone}'
-                await client(functions.messages.SendMediaRequest(
-                    peer=bot_entity,
-                    media=InputMediaContact(
-                        phone_number=phone,
-                        first_name='User',
-                        last_name='',
-                        vcard=''
-                    ),
-                    message='',
-                    random_id=random.randint(1, 2**31)
-                ))
-            except Exception as e:
-                logger.warning(f"فشل إرسال جهة الاتصال: {e}")
-            await asyncio.sleep(1.0)
-            continue
-
-        # 2) إعادة كتابة نص
-        retype_match = re.search(
-            r'(أعد كتابة|retype|type again|إعادة كتابة|rewrite|اكتب)\s*[:\-]?\s*(.+)',
-            text, re.IGNORECASE
-        )
-        if retype_match:
-            to_retype = retype_match.group(2).strip()
-            if to_retype:
-                await client.send_message(bot_entity, to_retype)
-                await asyncio.sleep(1.0)
-                continue
-
-        # 3) حل مسألة رياضية
-        math_match = re.search(r'(\d+)\s*([+\-*/])\s*(\d+)\s*=\s*\?', text)
-        if math_match:
-            a, op, b = int(math_match.group(1)), math_match.group(2), int(math_match.group(3))
-            result = eval(f"{a}{op}{b}")
-            await client.send_message(bot_entity, str(result))
-            await asyncio.sleep(1.0)
-            continue
-
-        # 4) أزرار إيموجي
-        emoji_requested = extract_emoji_from_text(text)
-        if emoji_requested:
-            # نبحث عن زر بهذا الإيموجي
-            clicked = False
-            for btn in buttons:
-                if emoji_requested in (getattr(btn, 'text', '') or ''):
-                    try:
-                        await btn.click()
-                        clicked = True
-                    except Exception as e:
-                        logger.warning(f"فشل الضغط على زر الإيموجي: {e}")
-                    await asyncio.sleep(1.0)
-                    break
-            if not clicked and buttons:
-                # إذا لم يوجد زر بهذا الإيموجي، نضغط أول زر
-                try:
-                    await buttons[0].click()
-                except Exception as e:
-                    logger.warning(f"فشل الضغط على زر عشوائي: {e}")
-                await asyncio.sleep(1.0)
-            continue
-
-        # 5) أزرار عادية (مثل زر "تحقق" أو "متابعة")
-        verify_btn = next(
-            (btn for btn in buttons if any(word in (getattr(btn, 'text', '') or '').lower()
-                for word in ['تحقق', 'verify', 'متابعة', 'continue', 'التالي', 'next', 'تأكيد', 'confirm'])),
-            None
-        )
-        if verify_btn:
-            try:
-                await verify_btn.click()
-            except Exception as e:
-                logger.warning(f"فشل الضغط على زر التحقق: {e}")
-            await asyncio.sleep(1.0)
-            continue
-
-        # 6) إذا لم نتعرف على أي شيء، نضغط أول زر
-        if buttons:
-            try:
-                await buttons[0].click()
-            except Exception as e:
-                logger.warning(f"فشل الضغط على أول زر: {e}")
-            await asyncio.sleep(1.0)
-        else:
-            # لا أزرار، ننتظر قليلاً
-            await asyncio.sleep(1.0)
-
-    return False  # فشل بعد المحاولات
-
-# بقية الدوال كما هي (comment, poll, votes, votes_ai, premium_reaction) تبقى كما هي في الكود الأصلي.
+# ─── باقي الدوال كما هي (comment, poll, votes, votes_ai, premium_reaction) ───
 
 async def _execute_comment(session, params, is_first):
     # ... (نفس الكود الأصلي)
