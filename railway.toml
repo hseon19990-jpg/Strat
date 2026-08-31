@@ -1,3 +1,2 @@
 [deploy]
 restartPolicyType = "ALWAYS"
-healthcheckPath = "/healthz"
