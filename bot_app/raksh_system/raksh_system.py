@@ -746,6 +746,7 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
     - يضغط زر إيموجي
     - يشارك جهة اتصال
     - يضغط زر تحقق / متابعة
+    - يعتبر الإجراء الصحيح (كضغط إيموجي صحيح) نجاحاً فورياً إذا لم يظهر خطأ
     """
     emoji_pattern = re.compile(
         "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E0-\U0001F1FF]"
@@ -916,8 +917,16 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
                     await contact_btn.click()
                 except Exception:
                     pass
-            await asyncio.sleep(1.0)
-            continue
+            # ⚡️ اعتبار الإجراء ناجحاً إذا لم يظهر فشل
+            try:
+                await asyncio.sleep(1.0)
+                latest_msgs = await client.get_messages(bot_entity, limit=3)
+                for msg in latest_msgs:
+                    if not msg.out and any(kw in getattr(msg, 'message', '') or '' for kw in failure_keywords):
+                        return False
+                return True
+            except Exception:
+                return True
         
         # 4️⃣ اختيار الإيموجي الصحيح
         emoji_matches = emoji_pattern.findall(text)
@@ -936,8 +945,16 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
                     logger.info(f"✅ تم اختيار الإيموجي: {required_emoji}")
                 except Exception:
                     pass
-                await asyncio.sleep(1.0)
-                continue
+                # ⚡️ اعتبار الإجراء ناجحاً إذا لم يظهر فشل
+                try:
+                    await asyncio.sleep(1.0)
+                    latest_msgs = await client.get_messages(bot_entity, limit=3)
+                    for msg in latest_msgs:
+                        if not msg.out and any(kw in getattr(msg, 'message', '') or '' for kw in failure_keywords):
+                            return False
+                    return True
+                except Exception:
+                    return True
             else:
                 for btn in buttons:
                     btn_text = getattr(btn, 'text', '') or ''
@@ -946,8 +963,16 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
                             await btn.click()
                         except Exception:
                             pass
-                        await asyncio.sleep(1.0)
-                        break
+                        # ⚡️ اعتبار الإجراء ناجحاً إذا لم يظهر فشل
+                        try:
+                            await asyncio.sleep(1.0)
+                            latest_msgs = await client.get_messages(bot_entity, limit=3)
+                            for msg in latest_msgs:
+                                if not msg.out and any(kw in getattr(msg, 'message', '') or '' for kw in failure_keywords):
+                                    return False
+                            return True
+                        except Exception:
+                            return True
                 continue
         
         # 5️⃣ ضغط زر تحقق / متابعة
@@ -965,14 +990,21 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
                 logger.info(f"✅ تم الضغط على زر التحقق: {getattr(verify_btn, 'text', '')}")
             except Exception:
                 pass
-            await asyncio.sleep(1.0)
-            continue
+            # ⚡️ اعتبار الإجراء ناجحاً إذا لم يظهر فشل
+            try:
+                await asyncio.sleep(1.0)
+                latest_msgs = await client.get_messages(bot_entity, limit=3)
+                for msg in latest_msgs:
+                    if not msg.out and any(kw in getattr(msg, 'message', '') or '' for kw in failure_keywords):
+                        return False
+                return True
+            except Exception:
+                return True
         
         # إذا لم نفهم شيئاً، ننتظر
         await asyncio.sleep(2.0)
     
     return False
-
 async def _join_discussion_group(client, discussion):
     """الانضمام لمجموعة النقاش"""
     messages = getattr(discussion, "messages", None) or []
