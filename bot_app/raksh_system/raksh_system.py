@@ -1,7 +1,7 @@
 """
 نظام الرشق المتقدم - منفصل تماماً عن بقية البوت
 نسخة محسّنة مع دالة تحقق شاملة لجميع أنواع التحقق
-مع حل مشكلة إرسال النص وعدد الحسابات
+مع إصلاح مشاكل إرسال النص وحل المسائل وعدد الحسابات
 """
 
 from ..shared import *
@@ -289,7 +289,7 @@ def _clear_raksh_state(context: ContextTypes.DEFAULT_TYPE) -> None:
 def _get_sessions_for_service(service_type: str) -> List[Dict]:
     """
     جلب الجلسات المناسبة لنوع الخدمة مع التخزين المؤقت
-    معدل: نزيل شرط last_authorized = TRUE لأنه قد يكون NULL لجميع الحسابات
+    تم إزالة شرط raksh_only لجلب جميع الحسابات المؤهلة
     """
     # التحقق من التخزين المؤقت
     cache_key = f"sessions_{service_type}"
@@ -299,7 +299,7 @@ def _get_sessions_for_service(service_type: str) -> List[Dict]:
             return _RAKSH_SESSION_CACHE[cache_key].copy()
     
     with db_conn() as c:
-        # بناء الاستعلام حسب نوع الخدمة
+        # بناء الاستعلام بدون شرط raksh_only
         query = """
             SELECT id, phone_number, session_string, raksh_only, last_authorized
             FROM number_stock
@@ -307,18 +307,9 @@ def _get_sessions_for_service(service_type: str) -> List[Dict]:
               AND BTRIM(session_string) <> ''
               AND deleted_at IS NULL
               AND forced_ref_excluded IS NOT TRUE
+            ORDER BY last_authorized DESC NULLS LAST, id ASC
         """
-        params = []
-        
-        # تصفية حسب الخدمة
-        if service_type in {"forced_ref", "forced_ref_ai"}:
-            query += " AND raksh_only = TRUE"
-        
-        # لا نشترط last_authorized = TRUE، نأخذ جميع الحسابات حتى لو كانت NULL
-        # لكن نفضل الحسابات المصرح بها مؤخراً
-        query += " ORDER BY raksh_only DESC, last_authorized DESC NULLS LAST, id ASC"
-        
-        rows = c.execute(query, params).fetchall()
+        rows = c.execute(query).fetchall()
         sessions = [dict(row) for row in rows]
         
         # تحديث التخزين المؤقت
@@ -670,20 +661,20 @@ async def _fetch_raksh_reactions_from_pool(
 async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) -> bool:
     """
     حل جميع أنواع التحقق في بوت الإحالة الإجباري:
-    - إرسال نص محدد (إذا طلب البوت إرسال نص معين)
+    - إرسال نص محدد (صيغ متعددة)
     - إيموجي (استخراج الإيموجي من النص والضغط على الزر المناسب)
     - مسائل رياضية (حل المعادلة وإرسال النتيجة)
     - مشاركة جهة اتصال (إرسال رقم الهاتف كجهة اتصال)
     - أزرار تحقق/متابعة (الضغط عليها)
-    - رابط إحالة (ظهور رابط الإحالة يعني النجاح)
+    - يعتبر النجاح عند اختفاء الأزرار وظهور رسالة نجاح (بدون الاعتماد على رابط الإحالة)
     """
     # أنماط للبحث عن الإيموجي
     emoji_pattern = re.compile(
         "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E0-\U0001F1FF]"
     )
     
-    # كلمات النجاح والفشل
-    success_keywords = ["تم", "success", "نجاح", "مبروك", "أحسنت", "تمت الإحالة", "✅", "تم التحقق", "انضممت", "اكتمل", "رابط الإحالة"]
+    # كلمات النجاح والفشل (مع إزالة "رابط الإحالة" من كلمات النجاح لأنه يظهر طوال الوقت)
+    success_keywords = ["تم", "success", "نجاح", "مبروك", "أحسنت", "تمت الإحالة", "✅", "تم التحقق", "انضممت", "اكتمل", "تم التحقق بنجاح"]
     failure_keywords = ["فشل", "خطأ", "error", "failed", "غير صحيح", "محاولة", "انتهت", "مرفوض", "invalid", "expired"]
     
     last_id = 0
@@ -712,7 +703,13 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
                 # نتحقق من آخر رسالة بحثاً عن نجاح
                 latest_msg = messages[0]
                 latest_text = getattr(latest_msg, 'message', '') or ''
-                if any(kw in latest_text.lower() for kw in success_keywords):
+                # وجود نص نجاح وعدم وجود أزرار = نجاح
+                buttons = []
+                for row in getattr(latest_msg, 'buttons', None) or []:
+                    for btn in row:
+                        if not getattr(btn, 'url', None):
+                            buttons.append(btn)
+                if not buttons and any(kw in latest_text.lower() for kw in success_keywords):
                     return True
                 return False
             await asyncio.sleep(1.0)
@@ -746,41 +743,67 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
                 if not getattr(btn, 'url', None):
                     buttons.append(btn)
         
-        # ===== التحقق من النجاح (ظهور رابط الإحالة أو كلمات نجاح) =====
-        # إذا ظهر رابط إحالة (https://t.me/...?start=ref=...) فهذا يعني النجاح
-        if "t.me/" in text and "start=" in text:
-            logger.info("✅ تم التحقق بنجاح (ظهور رابط الإحالة)")
+        # ===== التحقق من النجاح (عدم وجود أزرار مع كلمات نجاح) =====
+        if not buttons and any(kw in text.lower() for kw in success_keywords):
+            logger.info("✅ تم التحقق بنجاح (رسالة نجاح بدون أزرار)")
             return True
         
-        if not buttons and any(kw in text.lower() for kw in success_keywords):
-            logger.info("✅ تم التحقق بنجاح (رسالة نجاح)")
-            return True
+        # ===== تحقق من وجود رابط إحالة بدون أزرار =====
+        if not buttons and "t.me/" in text and "start=" in text:
+            # قد يكون نجاحاً لكن نتحقق أكثر
+            # ننتظر قليلاً للتأكد من عدم ظهور أزرار جديدة
+            await asyncio.sleep(1.0)
+            messages_check = await client.get_messages(bot_entity, limit=5)
+            for m in messages_check:
+                b = []
+                for row in getattr(m, 'buttons', None) or []:
+                    for btn in row:
+                        if not getattr(btn, 'url', None):
+                            b.append(btn)
+                if b:
+                    break
+            else:
+                logger.info("✅ تم التحقق بنجاح (رابط إحالة بدون أزرار)")
+                return True
         
         if any(kw in text.lower() for kw in failure_keywords):
             logger.warning("❌ رسالة فشل ظهرت")
             return False
         
-        # ===== 1. إرسال نص محدد (المرحلة الأولى في الصورة) =====
-        # ابحث عن عبارة "أرسل النص التالي بالضبط:" أو "اكتب:" متبوعة بنص
-        send_text_match = re.search(r'(أرسل النص التالي بالضبط|اكتب|retype|type|أدخل|enter)\s*[:\-]?\s*([A-Za-z0-9]{6,})', text, re.IGNORECASE)
-        if send_text_match:
-            required_text = send_text_match.group(2).strip()
-            logger.info(f"مطلوب إرسال النص: {required_text}")
+        # ===== 1. إرسال نص محدد (صيغ متعددة) =====
+        # الأنماط المختلفة لطلب النص
+        text_patterns = [
+            r'(الآن\s*أرسل\s*النص\s*التالي|المرحلة\s*الأولى:\s*أرسل\s*النص\s*التالي\s*بالضبط|أرسل\s*النص\s*التالي|اكتب|retype|type|أدخل|enter)\s*[:\-]?\s*([A-Za-z0-9]{6,})',
+            r'النص\s*التالي\s*[:\-]?\s*([A-Za-z0-9]{6,})',
+            r'([A-Za-z0-9]{6,})\s*$',  # نص منفصل في نهاية الرسالة
+        ]
+        send_text = None
+        for pattern in text_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                # إذا كان النمط يحتوي على مجموعتين، نأخذ الثانية
+                if len(match.groups()) >= 2:
+                    send_text = match.group(2).strip()
+                else:
+                    send_text = match.group(1).strip()
+                break
+        
+        if send_text:
+            logger.info(f"مطلوب إرسال النص: {send_text}")
             try:
-                await client.send_message(bot_entity, required_text)
-                logger.info(f"✅ تم إرسال النص: {required_text}")
+                await client.send_message(bot_entity, send_text)
+                logger.info(f"✅ تم إرسال النص: {send_text}")
                 await asyncio.sleep(1.0)
                 continue
             except Exception as e:
                 logger.warning(f"فشل إرسال النص: {e}")
                 # إذا فشل الإرسال، قد يكون هناك زر بدلاً من ذلك
-                # نبحث عن زر بنفس النص
                 for btn in buttons:
                     btn_text = getattr(btn, 'text', '') or ''
-                    if required_text in btn_text:
+                    if send_text in btn_text:
                         try:
                             await btn.click()
-                            logger.info(f"✅ تم الضغط على زر النص: {required_text}")
+                            logger.info(f"✅ تم الضغط على زر النص: {send_text}")
                         except Exception:
                             pass
                         await asyncio.sleep(1.0)
@@ -824,7 +847,8 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
                         math_solved = True
                         await asyncio.sleep(1.0)
                         break
-                except Exception:
+                except Exception as e:
+                    logger.warning(f"فشل حل المسألة: {e}")
                     continue
         if math_solved:
             continue
@@ -1143,8 +1167,8 @@ async def _execute_forced_ref_ai(session: Dict, params: Dict, is_first: bool) ->
     تنفيذ إحالة بوت إجباري مع تحقق شامل.
     - ينضم للقنوات الإجبارية
     - يضغط رابط البوت (مرة واحدة فقط)
-    - يحل جميع أنواع التحقق (إيموجي، رياضيات، إرسال نص، مشاركة اتصال، أزرار)
-    - يعتبر النجاح عند ظهور رابط الإحالة أو رسالة نجاح
+    - يحل جميع أنواع التحقق
+    - يعتبر النجاح عند اختفاء الأزرار وظهور رسالة نجاح
     """
     client = TelegramClient(
         StringSession(session["session_string"]),
