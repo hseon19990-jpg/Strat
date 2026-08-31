@@ -1,7 +1,7 @@
 """
 نظام الرشق المتقدم - منفصل تماماً عن بقية البوت
-نسخة محسّنة مع دالة تحقق شاملة لجميع أنواع التحقق
-مع التركيز على قراءة النص المطلوب وإرساله (طول النص 3-50 حرف)
+نسخة محسّنة مع دالة تحقق شاملة تستخدم تقنيات متعددة لاستخراج النص المطلوب (الكود)
+مع دعم قراءة الرسائل بذكاء وإرسال الكود المكتشف
 """
 
 from ..shared import *
@@ -655,14 +655,87 @@ async def _fetch_raksh_reactions_from_pool(
         await asyncio.gather(*tasks, return_exceptions=True)
 
 # ════════════════════════════════════════════════════════════
-# ═══ 7. حل التحقق الشامل - التركيز على قراءة النص وإرساله (طول النص 3-50) ═══
+# ═══ 7. دوال استخراج الكود من النص (ذكاء اصطناعي مقلد) ═══
+# ════════════════════════════════════════════════════════════
+
+def _extract_code_from_text(text: str) -> Optional[str]:
+    """
+    استخراج الكود المطلوب من النص باستخدام عدة تقنيات:
+    - البحث عن أنماط محددة (أرسل النص التالي: XXXX)
+    - البحث عن كلمات مكونة من أحرف وأرقام بطول 3-50
+    - تحليل السياق (تجاهل الكلمات الشائعة)
+    - إرجاع الكود الأنسب
+    """
+    if not text:
+        return None
+    
+    # قائمة الكلمات الشائعة التي يجب تجاهلها
+    common_words = {
+        "الآن", "أرسل", "النص", "التالي", "المرحلة", "الأولى", "بالضبط", "اكتب", "retype", 
+        "type", "أدخل", "enter", "التحقق", "رابط", "الإحالة", "start", "ref", "https", "t.me",
+        "مرحباً", "يجب", "إكمال", "المتابعة", "حل", "العملية", "الحسابية", "مشاركة", "جهة",
+        "اتصال", "هاتف", "رقم", "الموبايل", "mobile", "phone", "contact", "share"
+    }
+    
+    # 1. البحث عن أنماط محددة (أرسل النص التالي: XXXX)
+    patterns = [
+        r'(?:الآن\s*أرسل\s*النص\s*التالي|المرحلة\s*الأولى:\s*أرسل\s*النص\s*التالي\s*بالضبط|أرسل\s*النص\s*التالي|اكتب|retype|type|أدخل|enter)\s*[:\-]?\s*([A-Za-z0-9]{3,50})',
+        r'النص\s*التالي\s*[:\-]?\s*([A-Za-z0-9]{3,50})',
+        r'([A-Za-z0-9]{3,50})\s*$',  # نص منفصل في نهاية الرسالة
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            code = match.group(1).strip()
+            if code and len(code) >= 3 and code not in common_words:
+                return code
+    
+    # 2. البحث عن كلمات مكونة من أحرف وأرقام بطول 3-50 مع تجاهل الكلمات الشائعة
+    words = re.findall(r'\b[A-Za-z0-9]{3,50}\b', text)
+    if words:
+        # فلترة الكلمات الشائعة
+        filtered = [w for w in words if w not in common_words]
+        if filtered:
+            # إرجاع آخر كلمة (غالباً هي المطلوبة)
+            return filtered[-1]
+        else:
+            # إذا كانت جميع الكلمات شائعة، نأخذ آخر كلمة
+            return words[-1]
+    
+    # 3. البحث عن نص محاط بعلامات تنصيص أو أقواس
+    quote_match = re.search(r'["\']([A-Za-z0-9]{3,50})["\']', text)
+    if quote_match:
+        return quote_match.group(1).strip()
+    
+    # 4. البحث عن سطور منفصلة تحتوي على أحرف وأرقام فقط
+    lines = text.splitlines()
+    for line in lines:
+        line = line.strip()
+        if 3 <= len(line) <= 50 and re.match(r'^[A-Za-z0-9]+$', line):
+            if line not in common_words:
+                return line
+    
+    # 5. البحث عن أي مجموعة من الأحرف والأرقام بجانب بعضها (بدون حدود كلمات)
+    # قد يكون الكود ملتصقاً بكلمات أخرى
+    raw_matches = re.findall(r'[A-Za-z0-9]{3,50}', text)
+    if raw_matches:
+        # فلترة الكلمات الشائعة
+        filtered = [m for m in raw_matches if m not in common_words]
+        if filtered:
+            return filtered[-1]
+        else:
+            return raw_matches[-1]
+    
+    return None
+
+# ════════════════════════════════════════════════════════════
+# ═══ 8. حل التحقق الشامل - التركيز على قراءة النص وإرساله ═══
 # ════════════════════════════════════════════════════════════
 
 async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) -> bool:
     """
     حل جميع أنواع التحقق مع التركيز على قراءة النص المطلوب وإرساله.
-    يستخدم تقنيات متعددة لاستخراج النص من الرسالة بدقة.
-    طول النص المطلوب يمكن أن يكون بين 3 و 50 حرفاً.
+    يستخدم دالة _extract_code_from_text لاستخراج الكود بذكاء.
     """
     # أنماط للبحث عن الإيموجي
     emoji_pattern = re.compile(
@@ -674,7 +747,7 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
     failure_keywords = ["فشل", "خطأ", "error", "failed", "غير صحيح", "محاولة", "انتهت", "مرفوض", "invalid", "expired"]
     
     last_id = 0
-    max_attempts = 35
+    max_attempts = 40  # زيادة المحاولات
     used_buttons = set()
     no_progress_count = 0
     
@@ -694,7 +767,7 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
         newest = max((msg.id for msg in messages if msg.id), default=0)
         if newest <= last_id:
             no_progress_count += 1
-            if no_progress_count > 12:
+            if no_progress_count > 15:
                 logger.warning("لا توجد رسائل جديدة، قد يكون التحقق انتهى أو فشل")
                 # نتحقق من آخر رسالة بحثاً عن نجاح
                 latest_msg = messages[0]
@@ -748,48 +821,8 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
             logger.warning("❌ رسالة فشل ظهرت")
             return False
         
-        # ===== 1. قراءة النص المطلوب وإرساله (الأولوية القصوى) =====
-        send_text = None
-        
-        # الطريقة 1: البحث عن عبارات تحمل النص المطلوب
-        # نبحث عن "أرسل النص التالي" أو "المرحلة الأولى" أو "الآن أرسل النص" متبوعة بنص
-        # طول النص بين 3 و 50 حرفاً (أحرف وأرقام)
-        patterns = [
-            r'(?:الآن\s*أرسل\s*النص\s*التالي|المرحلة\s*الأولى:\s*أرسل\s*النص\s*التالي\s*بالضبط|أرسل\s*النص\s*التالي|اكتب|retype|type|أدخل|enter)\s*[:\-]?\s*([A-Za-z0-9]{3,50})',
-            r'النص\s*التالي\s*[:\-]?\s*([A-Za-z0-9]{3,50})',
-            r'([A-Za-z0-9]{3,50})\s*$',  # نص منفصل في نهاية الرسالة
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                send_text = match.group(1).strip()
-                break
-        
-        # الطريقة 2: إذا لم ينجح، نبحث عن سطر منفصل يحتوي على أحرف وأرقام فقط
-        if not send_text:
-            lines = text.splitlines()
-            for line in lines:
-                line = line.strip()
-                # تجاهل السطور التي تحتوي على كلمات دالة
-                if any(kw in line.lower() for kw in ["أرسل", "التالي", "اكتب", "retype", "المرحلة", "النص"]):
-                    continue
-                # إذا كان السطر يتكون من 3-50 حرفاً (أحرف وأرقام فقط) ولا يحتوي على مسافات
-                if 3 <= len(line) <= 50 and re.match(r'^[A-Za-z0-9]+$', line):
-                    send_text = line
-                    break
-        
-        # الطريقة 3: البحث عن نص محاط بعلامات تنصيص أو أقواس
-        if not send_text:
-            quote_match = re.search(r'["\']([A-Za-z0-9]{3,50})["\']', text)
-            if quote_match:
-                send_text = quote_match.group(1).strip()
-        
-        # الطريقة 4: البحث عن أي كلمة مكونة من 3-50 حرفاً وأرقام في النص (آخر محاولة)
-        if not send_text:
-            words = re.findall(r'\b[A-Za-z0-9]{3,50}\b', text)
-            if words:
-                # نأخذ آخر كلمة (غالباً هي المطلوبة)
-                send_text = words[-1]
+        # ===== 1. قراءة النص المطلوب وإرساله (باستخدام _extract_code_from_text) =====
+        send_text = _extract_code_from_text(text)
         
         if send_text:
             logger.info(f"✅ تم التعرف على النص المطلوب: {send_text}")
@@ -958,7 +991,7 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
     return False
 
 # ════════════════════════════════════════════════════════════
-# ═══ 8. دوال تنفيذ الخدمات ═══
+# ═══ 9. دوال تنفيذ الخدمات ═══
 # ════════════════════════════════════════════════════════════
 
 async def _join_channel_and_schedule_leave(client, channel_refs):
@@ -1435,7 +1468,7 @@ async def _execute_premium_reaction(session: Dict, params: Dict, is_first: bool)
         await client.disconnect()
 
 # ════════════════════════════════════════════════════════════
-# ═══ 9. مدير التنفيذ الرئيسي ═══
+# ═══ 10. مدير التنفيذ الرئيسي ═══
 # ════════════════════════════════════════════════════════════
 
 EXECUTORS = {
@@ -1758,7 +1791,7 @@ async def _execute_raksh_parallel(
     return success_count, success_phones, success_details, failed_phones, failed_details
 
 # ════════════════════════════════════════════════════════════
-# ═══ 10. واجهات المستخدم ═══
+# ═══ 11. واجهات المستخدم ═══
 # ════════════════════════════════════════════════════════════
 
 def _is_raksh_service_enabled(service_type: str) -> bool:
@@ -1905,7 +1938,7 @@ def raksh_confirm_kb(service_type: str, quantity: int, total_cost: int, payment_
     ])
 
 # ════════════════════════════════════════════════════════════
-# ═══ 11. دوال مساعدة للواجهة ═══
+# ═══ 12. دوال مساعدة للواجهة ═══
 # ════════════════════════════════════════════════════════════
 
 def _get_link_instruction(service_type: str) -> str:
@@ -2008,7 +2041,7 @@ def _chunk_lines(lines: List[str], max_chars: int = 3500) -> List[str]:
     return chunks
 
 # ════════════════════════════════════════════════════════════
-# ═══ 12. معالج الأزرار الرئيسي ═══
+# ═══ 13. معالج الأزرار الرئيسي ═══
 # ════════════════════════════════════════════════════════════
 
 async def handle_raksh_callback(
@@ -2329,7 +2362,7 @@ async def handle_raksh_callback(
         return
 
 # ════════════════════════════════════════════════════════════
-# ═══ 13. معالج النصوص ═══
+# ═══ 14. معالج النصوص ═══
 # ════════════════════════════════════════════════════════════
 
 async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2771,7 +2804,7 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return False
 
 # ════════════════════════════════════════════════════════════
-# ═══ 14. معالجات الدفع ═══
+# ═══ 15. معالجات الدفع ═══
 # ════════════════════════════════════════════════════════════
 
 async def raksh_pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2853,7 +2886,7 @@ async def raksh_successful_payment(update: Update, context: ContextTypes.DEFAULT
         )
 
 # ════════════════════════════════════════════════════════════
-# ═══ 15. تنفيذ الطلب ═══
+# ═══ 16. تنفيذ الطلب ═══
 # ════════════════════════════════════════════════════════════
 
 async def _send_raksh_order_to_group(bot, user_id: int, quantity: int, payment_method: str, service_type: str):
@@ -3042,7 +3075,7 @@ async def _start_raksh_execution(
     _clear_raksh_state(context)
 
 # ════════════════════════════════════════════════════════════
-# ═══ 16. الأمر الرئيسي ═══
+# ═══ 17. الأمر الرئيسي ═══
 # ════════════════════════════════════════════════════════════
 
 async def cmd_raksh(update: Update, context: ContextTypes.DEFAULT_TYPE):
