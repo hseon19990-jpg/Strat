@@ -1213,7 +1213,7 @@ async def _execute_votes(session: Dict, params: Dict, is_first: bool) -> Tuple[b
         await client.disconnect()
 
 async def _execute_votes_ai(session, params, is_first):
-    """تنفيذ تصويت مع تحقق - يضغط أزرار رسالة التحقق فقط حتى تختفي أزرارها.
+    """تنفيذ تصويت مع تحقق - يقرأ الإيموجي المطلوب من رسالة التحقق ويضغط عليه.
        إذا لم يظهر زر تحقق، تعتبر العملية ناجحة مع استرداد نصف المبلغ.
        يدعم رابط البوت المباشر أو رابط بوست يحتوي زر بوت.
        أي فشل في الوصول للبوت أو الزر يعتبر فشلًا حقيقيًا."""
@@ -1303,9 +1303,19 @@ async def _execute_votes_ai(session, params, is_first):
             logger.info(f"لم يظهر زر تحقق بعد فتح البوت، تعتبر العملية ناجحة (بدون تحقق) للحساب {session['phone_number']}")
             return True, RAKSH_NO_VERIFICATION_MESSAGE
 
-        # 4) استخراج الإيموجي المطلوب من نص رسالة التحقق
+        # 4) استخراج الإيموجي المطلوب من نص رسالة التحقق (باستخدام مكتبة re مباشرة)
         verification_text = getattr(verification_message, "message", "") or getattr(verification_message, "text", "") or ""
-        target_emoji = extract_emoji_from_text(verification_text)
+        
+        # 🔥 إضافة مهمة جداً: البحث عن الإيموجي في النص
+        target_emoji = None
+        emoji_pattern = re.compile(
+            "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E0-\U0000001F1FF]"
+        )
+        # نبحث عن الإيموجي في النص، ونأخذ آخر إيموجي موجود (غالباً هو المطلوب)
+        found_emojis = emoji_pattern.findall(verification_text)
+        if found_emojis:
+            target_emoji = found_emojis[-1]
+            logger.info(f"✅ تم استخراج الإيموجي المطلوب: {target_emoji}")
 
         # 5) جمع الأزرار من رسالة التحقق فقط (بدون روابط)
         all_buttons = []
