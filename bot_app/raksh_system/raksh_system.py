@@ -1212,51 +1212,220 @@ async def _execute_votes(session: Dict, params: Dict, is_first: bool) -> Tuple[b
     finally:
         await client.disconnect()
 
-async def _execute_votes_ai(session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
-    """تنفيذ رشق تصويت مع تحقق شامل"""
-    client = TelegramClient(
-        StringSession(session["session_string"]),
-        int(TELEGRAM_API_ID),
-        TELEGRAM_API_HASH,
-    )
-    await asyncio.wait_for(client.connect(), timeout=20)
+async def _execute_votes_ai(session, params, is_first):
+    """تنفيذ تصويت مع تحقق - يضغط أزرار رسالة التحقق فقط حتى تختفي أزرارها.
+       إذا لم يظهر زر تحقق، تعتبر العملية ناجحة مع استرداد نصف المبلغ.
+       يدعم رابط البوت المباشر أو رابط بوست يحتوي زر بوت.
+       أي فشل في الوصول للبوت أو الزر يعتبر فشلًا حقيقيًا."""
+    client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+    await asyncio.wait_for(client.connect(), timeout=15)
     try:
-        if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
             _mark_raksh_session_unauthorized(session.get("phone_number"))
-            return False, "الجلسة غير مصرح بها"
-        
-        if is_first and params.get("channel_ref"):
-            await _join_channel_and_schedule_leave(client, params["channel_ref"])
-        
-        link = params["link"]
-        # محاولة تحليل كرابط بوت
-        bot_username, start_param = _parse_bot_link(link)
-        if not bot_username:
-            return False, "رابط البوت غير صحيح"
-        
-        clean_username = bot_username.lstrip("@").strip()
-        resolved = await client(ResolveUsernameRequest(clean_username))
-        bot_entity = resolved.users[0] if resolved.users else resolved.chats[0]
-        
+            return False, "الجلسة غير مصرح بها."
+
+        # 1) تحليل الرابط: هل هو رابط بوت مباشر أم رابط بوست؟
+        bot_username, bot_start_param = _parse_bot_link(params.get("link", ""))
+        bot_entity = None
+
+        if bot_username and bot_start_param:
+            # حالة رابط بوت مباشر (t.me/Bot?start=...)
+            try:
+                resolved = await client(ResolveUsernameRequest(bot_username))
+                if resolved.users:
+                    bot_entity = resolved.users[0]
+                elif resolved.chats:
+                    bot_entity = resolved.chats[0]
+            except Exception:
+                try:
+                    bot_entity = await client.get_entity(bot_username)
+                except Exception:
+                    try:
+                        bot_entity = await client.get_entity(f"@{bot_username}")
+                    except Exception as e3:
+                        return False, f"فشل العثور على البوت {bot_username}: {str(e3)[:80]}"
+        else:
+            # حالة رابط بوست: يجب استخراج رابط البوت من زر المنشور
+            post_ref, post_id = _parse_post_link(params.get("link", ""))
+            if not post_ref or not post_id:
+                return False, "الرابط غير صالح (ليس بوتًا ولا بوستًا)."
+
+            try:
+                post_entity = await client.get_entity(post_ref)
+            except Exception:
+                return False, "تعذر الوصول إلى القناة/المنشور."
+
+            try:
+                messages = _as_message_list(await client.get_messages(post_entity, ids=post_id))
+                if not messages:
+                    return False, "المنشور غير موجود."
+                post_message = messages[0]
+            except Exception:
+                return False, "تعذر جلب المنشور."
+
+            # استخراج رابط البوت من أزرار المنشور
+            bot_username, bot_start_param = _find_bot_start_link(post_message)
+            if not bot_username or not bot_start_param:
+                return False, "المنشور لا يحتوي على زر بوت صالح."
+
+            try:
+                bot_entity = await client.get_entity(bot_username)
+            except Exception:
+                try:
+                    bot_entity = await client.get_entity(f"@{bot_username}")
+                except Exception as e3:
+                    return False, f"تعذر العثور على بوت الزر: {str(e3)[:80]}"
+
+        # 2) فتح البوت مع start_param
         await client(StartBotRequest(
             bot=bot_entity,
             peer=bot_entity,
-            start_param=start_param or ""
+            start_param=bot_start_param
         ))
-        await asyncio.sleep(2.0)
-        
-        # حل التحقق الشامل
-        success = await _solve_forced_ref_verification(client, bot_entity, session.get("phone_number"))
-        
-        if success:
-            return True, f"✅ تم التصويت مع التحقق من {session['phone_number']}"
+
+        # 3) البحث عن رسالة التحقق (أول رسالة بأزرار غير روابط)
+        await asyncio.sleep(1.0)
+        verification_message_id = None
+        verification_message = None
+        for attempt in range(5):
+            msgs = _as_message_list(await client.get_messages(bot_entity, limit=50))
+            for m in msgs:
+                if getattr(m, "buttons", None) and not getattr(m, "url", None):
+                    verification_message = m
+                    verification_message_id = m.id
+                    break
+            if verification_message:
+                break
+            await asyncio.sleep(1.0)
+
+        if verification_message is None or verification_message_id is None:
+            # هنا فقط نعتبرها نجاح بدون تحقق (نصف استرداد) لأن البوت فُتح فعلاً.
+            logger.info(f"لم يظهر زر تحقق بعد فتح البوت، تعتبر العملية ناجحة (بدون تحقق) للحساب {session['phone_number']}")
+            return True, RAKSH_NO_VERIFICATION_MESSAGE
+
+        # 4) استخراج الإيموجي المطلوب من نص رسالة التحقق
+        verification_text = getattr(verification_message, "message", "") or getattr(verification_message, "text", "") or ""
+        target_emoji = extract_emoji_from_text(verification_text)
+
+        # 5) جمع الأزرار من رسالة التحقق فقط (بدون روابط)
+        all_buttons = []
+        for row in (getattr(verification_message, "buttons", None) or []):
+            for btn in row:
+                if not getattr(btn, "url", None):
+                    all_buttons.append(btn)
+
+        if not all_buttons:
+            logger.info(f"رسالة التحقق لا تحتوي أزرار قابلة للضغط، تعتبر العملية ناجحة (بدون تحقق) للحساب {session['phone_number']}")
+            return True, RAKSH_NO_VERIFICATION_MESSAGE
+
+        # ترتيب الأزرار: المطابق للإيموجي أولاً، ثم أزرار التحقق، ثم أي إيموجي آخر، ثم الباقي
+        buttons_to_try = []
+        if target_emoji:
+            exact = [b for b in all_buttons if getattr(b, "text", "") == target_emoji]
+            buttons_to_try.extend(exact)
+            partial = [b for b in all_buttons if target_emoji in (getattr(b, "text", "") or "")]
+            buttons_to_try.extend(partial)
+        verify = [b for b in all_buttons if any(w in (getattr(b, "text", "") or "").lower() for w in ['تحقق', 'verify', 'اضغط هنا', 'continue', 'التالي'])]
+        buttons_to_try.extend(verify)
+        emojis = [b for b in all_buttons if any(0x1F300 <= ord(c) <= 0x1FAFF or 0x2600 <= ord(c) <= 0x27BF for c in (getattr(b, "text", "") or ""))]
+        buttons_to_try.extend(emojis)
+        buttons_to_try.extend([b for b in all_buttons if b not in buttons_to_try])
+
+        # إزالة التكرار مع الحفاظ على الترتيب
+        seen = set()
+        unique_buttons = []
+        for b in buttons_to_try:
+            if id(b) not in seen:
+                seen.add(id(b))
+                unique_buttons.append(b)
+
+        # 6) حلقة الضغط حتى اختفاء أزرار رسالة التحقق المحددة
+        max_attempts = 30
+        pressed_ids = set()
+        current_index = 0
+        for attempt in range(max_attempts):
+            # جلب الرسالة المحددة مرة أخرى
+            try:
+                target_message = await client.get_messages(bot_entity, ids=verification_message_id)
+                if isinstance(target_message, (list, tuple)):
+                    target_message = target_message[0] if target_message else None
+            except Exception:
+                target_message = None
+
+            # إذا لم تعد الرسالة موجودة → اختفت الأزرار → نجاح
+            if target_message is None:
+                logger.info(f"✅ رسالة التحقق اختفت تماماً – تم تأكيد التحقق للحساب {session['phone_number']}")
+                return True, f"✅ تم تسجيل التصويت من {session['phone_number']}"
+
+            # إذا الرسالة موجودة لكن لم تعد تحتوي أزرار → اختفت الأزرار → نجاح
+            if not getattr(target_message, "buttons", None):
+                logger.info(f"✅ اختفت أزرار رسالة التحقق – تم تأكيد التحقق للحساب {session['phone_number']}")
+                return True, f"✅ تم تسجيل التصويت من {session['phone_number']}"
+
+            # لا تزال الرسالة بأزرار، اختر زراً غير مضغوط
+            button = None
+            # أولاً نبحث عن زر مطابق للإيموجي في الرسالة الحالية
+            if target_emoji:
+                for row in (getattr(target_message, "buttons", None) or []):
+                    for b in row:
+                        if not getattr(b, "url", None) and (getattr(b, "text", "") == target_emoji or target_emoji in (getattr(b, "text", "") or "")) and id(b) not in pressed_ids:
+                            button = b
+                            break
+                    if button:
+                        break
+
+            if button is None:
+                # استخدام القائمة المرتبة
+                while current_index < len(unique_buttons) and id(unique_buttons[current_index]) in pressed_ids:
+                    current_index += 1
+                if current_index < len(unique_buttons):
+                    button = unique_buttons[current_index]
+                    current_index += 1
+                else:
+                    # إذا ضغطنا كل الأزرار ولم تختفِ الأزرار، نعيد المحاولة من جديد
+                    pressed_ids.clear()
+                    current_index = 0
+                    if unique_buttons:
+                        button = unique_buttons[current_index]
+                        current_index += 1
+                    else:
+                        break
+
+            if button is None:
+                break
+
+            button_text = getattr(button, "text", "") or ""
+            logger.info(f"🖱️ الحساب {session['phone_number']} – محاولة {attempt+1}: الضغط على '{button_text}'")
+            try:
+                await button.click()
+            except Exception as e:
+                logger.warning(f"⚠️ فشل الضغط على الزر '{button_text}': {e}")
+                continue
+
+            pressed_ids.add(id(button))
+
+            # انتظار ثانيتين
+            await asyncio.sleep(2.0)
+
+        # بعد انتهاء المحاولات، فحص نهائي للرسالة المحددة
+        try:
+            final_message = await client.get_messages(bot_entity, ids=verification_message_id)
+            if isinstance(final_message, (list, tuple)):
+                final_message = final_message[0] if final_message else None
+        except Exception:
+            final_message = None
+
+        if final_message is None or not getattr(final_message, "buttons", None):
+            logger.info(f"✅ اختفت الأزرار في الفحص النهائي – تم تأكيد التحقق للحساب {session['phone_number']}")
+            return True, f"✅ تم تسجيل التصويت من {session['phone_number']}"
         else:
-            return False, "فشل التحقق"
+            logger.warning(f"⚠️ لم تختفِ أزرار رسالة التحقق بعد {max_attempts} محاولة للحساب {session['phone_number']}")
+            return False, "لم تختفِ أزرار التحقق – فشل"
+
     except Exception as e:
-        return False, f"❌ فشل التصويت: {str(e)}"
+        return False, f"❌ فشل: {str(e)[:80]}"
     finally:
         await client.disconnect()
-
 async def _execute_premium_reaction(session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
     """تنفيذ رشق تفاعل مميز"""
     client = TelegramClient(
