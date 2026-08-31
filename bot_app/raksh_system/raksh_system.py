@@ -972,8 +972,7 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
         await asyncio.sleep(2.0)
     
     return False
-   """
-    حل التحقق: يقرأ فقط الرسائل الجديدة التي تأتي بعد آخر رسالة أرسلهاالحساب
+
 async def _join_discussion_group(client, discussion):
     """الانضمام لمجموعة النقاش"""
     messages = getattr(discussion, "messages", None) or []
