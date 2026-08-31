@@ -669,6 +669,12 @@ def _extract_code_from_text(text: str) -> Optional[str]:
     if not text:
         return None
     
+    # ⚡️ تعديل: تجاهل الرسائل التي تبدأ بـ "/" أو تساوي "start"
+    if text.strip().startswith("/"):
+        return None
+    if text.strip().lower() in {"start", "/start", "بدء"}:
+        return None
+    
     # قائمة الكلمات الشائعة التي يجب تجاهلها
     common_words = {
         "الآن", "أرسل", "النص", "التالي", "المرحلة", "الأولى", "بالضبط", "اكتب", "retype", 
@@ -747,7 +753,7 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
     failure_keywords = ["فشل", "خطأ", "error", "failed", "غير صحيح", "محاولة", "انتهت", "مرفوض", "invalid", "expired"]
     
     last_id = 0
-    max_attempts = 40  # زيادة المحاولات
+    max_attempts = 40
     used_buttons = set()
     no_progress_count = 0
     
@@ -763,16 +769,22 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
             await asyncio.sleep(1.0)
             continue
         
-        # العثور على أحدث رسالة
-        newest = max((msg.id for msg in messages if msg.id), default=0)
+        # ⚡️ تعديل: تصفية الرسائل - تجاهل الرسائل التي أرسلها الحساب نفسه
+        incoming_messages = [msg for msg in messages if not msg.out]
+        
+        if not incoming_messages:
+            await asyncio.sleep(1.0)
+            continue
+        
+        # العثور على أحدث رسالة واردة من البوت
+        newest = max((msg.id for msg in incoming_messages if msg.id), default=0)
         if newest <= last_id:
             no_progress_count += 1
             if no_progress_count > 15:
                 logger.warning("لا توجد رسائل جديدة، قد يكون التحقق انتهى أو فشل")
-                # نتحقق من آخر رسالة بحثاً عن نجاح
-                latest_msg = messages[0]
+                # نتحقق من آخر رسالة واردة بحثاً عن نجاح
+                latest_msg = incoming_messages[0]
                 latest_text = getattr(latest_msg, 'message', '') or ''
-                # وجود نص نجاح وعدم وجود أزرار = نجاح
                 buttons = []
                 for row in getattr(latest_msg, 'buttons', None) or []:
                     for btn in row:
@@ -789,7 +801,7 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
         
         # البحث عن رسالة بها أزرار (الأحدث غالباً)
         verification_message = None
-        for msg in messages:
+        for msg in incoming_messages:
             if msg.id == newest:
                 continue
             if getattr(msg, 'buttons', None):
@@ -797,15 +809,19 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
                 break
         
         if verification_message is None:
-            # نأخذ أحدث رسالة
-            for msg in messages:
-                if msg.id == newest:
-                    verification_message = msg
-                    break
+            # نأخذ أحدث رسالة واردة
+            verification_message = next((msg for msg in incoming_messages if msg.id == newest), None)
             if verification_message is None:
-                verification_message = messages[0]
+                verification_message = incoming_messages[0]
         
         text = getattr(verification_message, 'message', '') or ''
+        
+        # ⚡️ تعديل: تجاهل أي رسالة تبدأ بـ "/" (مثل /start)
+        if text.strip().startswith("/"):
+            logger.info("تجاهل رسالة أمر (نحتاج رسالة التحقق الفعلية)")
+            await asyncio.sleep(1.0)
+            continue
+        
         buttons = []
         for row in getattr(verification_message, 'buttons', None) or []:
             for btn in row:
@@ -829,7 +845,7 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
             try:
                 await client.send_message(bot_entity, send_text)
                 logger.info(f"✅ تم إرسال النص: {send_text}")
-                await asyncio.sleep(2.0)  # زيادة وقت الانتظار للتأكد من وصول الرسالة
+                await asyncio.sleep(2.0)
                 continue
             except Exception as e:
                 logger.warning(f"فشل إرسال النص: {e}")
@@ -973,10 +989,11 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
         logger.info("لم يتم التعرف على أي نوع تحقق، ننتظر...")
         await asyncio.sleep(1.0)
     
-    # بعد انتهاء المحاولات، نتحقق من آخر رسالة للنجاح
+    # بعد انتهاء المحاولات، نتحقق من آخر رسالة واردة للنجاح
     try:
         messages = await client.get_messages(bot_entity, limit=5)
-        for msg in messages:
+        incoming_messages = [msg for msg in messages if not msg.out]
+        for msg in incoming_messages:
             msg_text = getattr(msg, 'message', '') or ''
             buttons = []
             for row in getattr(msg, 'buttons', None) or []:
