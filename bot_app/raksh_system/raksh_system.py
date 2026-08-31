@@ -739,7 +739,7 @@ def _extract_code_from_text(text: str) -> Optional[str]:
 # ════════════════════════════════════════════════════════════
 async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) -> bool:
     """
-    حل التحقق: يقرأ آخر رسالة واردة تحتوي على طلب إرسال كود، ويستخرج الكود منها.
+    حل التحقق: يقرأ الرسائل الجديدة فقط بعد آخر رسالة معالجة، ويستخرج الكود منها.
     يتجاهل الرسائل التي أرسلها الحساب نفسه والأوامر (مثل /start).
     """
     emoji_pattern = re.compile(
@@ -749,8 +749,9 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
     success_keywords = ["تم", "success", "نجاح", "مبروك", "أحسنت", "تمت الإحالة", "✅", "تم التحقق", "انضممت", "اكتمل", "تم التحقق بنجاح"]
     failure_keywords = ["فشل", "خطأ", "error", "failed", "غير صحيح", "محاولة", "انتهت", "مرفوض", "invalid", "expired"]
     
-    max_attempts = 20
+    max_attempts = 50
     last_message_id = 0
+    no_progress_count = 0
 
     for attempt in range(max_attempts):
         try:
@@ -771,56 +772,56 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
         # 3. ترتيب الرسائل من الأقدم إلى الأحدث
         incoming_messages.sort(key=lambda m: m.id)
         
-        # 4. فحص آخر رسالة للتحقق من نجاح أو فشل العملية
-        latest_msg = incoming_messages[-1]
-        latest_text = getattr(latest_msg, 'message', '') or ''
-        if any(kw in latest_text.lower() for kw in failure_keywords):
-            logger.warning(f"❌ رسالة فشل ظهرت: {latest_text[:50]}")
-            return False
-        if any(kw in latest_text.lower() for kw in success_keywords) and not getattr(latest_msg, 'buttons', None):
-            logger.info("✅ تم التحقق بنجاح")
-            return True
+        # 4. ⭐ مهم جداً: احصل فقط على الرسائل الجديدة (الأحدث من آخر رسالة عالجناها)
+        new_messages = [msg for msg in incoming_messages if msg.id > last_message_id]
         
-        # 5. البحث عن آخر رسالة واردة تحتوي على كلمات تدل على طلب إرسال كود
-        # (نبحث عن كلمة "أرسل" أو "التالي" أو "بالضبط")
+        # 5. إذا لا توجد رسائل جديدة، انتظر
+        if not new_messages:
+            no_progress_count += 1
+            if no_progress_count > 15:
+                # تحقق من آخر رسالة موجودة (قد تكون نجاحاً)
+                latest_msg = incoming_messages[-1]
+                latest_text = getattr(latest_msg, 'message', '') or ''
+                if any(kw in latest_text.lower() for kw in success_keywords) and not getattr(latest_msg, 'buttons', None):
+                    return True
+                return False
+            await asyncio.sleep(1.0)
+            continue
+        
+        # 6. إعادة تعيين العداد ورفع آخر رسالة معالجة
+        no_progress_count = 0
+        last_message_id = max(msg.id for msg in new_messages)
+        
+        # 7. ابحث عن آخر رسالة تحتوي على طلب إرسال كود، أو أول رسالة جديدة
         verification_message = None
-        for msg in incoming_messages:
+        for msg in new_messages:
             msg_text = getattr(msg, 'message', '') or ''
-            # نتجاهل الأوامر مثل /start
             if msg_text.strip().startswith("/"):
                 continue
-            # نبحث عن أي رسالة تحتوي على كلمة "أرسل" أو "التالي" أو "بالضبط"
             if any(kw in msg_text for kw in ["أرسل", "التالي", "بالضبط", "اكتب", "retype", "type"]):
                 verification_message = msg
+                break
         
-        # إذا لم نجد رسالة تحتوي على هذه الكلمات، نأخذ أحدث رسالة واردة (غير الأمر)
+        # إذا لم نجد، نأخذ أول رسالة جديدة
         if verification_message is None:
-            verification_message = next(
-                (msg for msg in reversed(incoming_messages) if not getattr(msg, 'message', '').strip().startswith("/")), 
-                None
-            )
-        
-        if verification_message is None:
-            await asyncio.sleep(1.0)
-            continue
+            verification_message = new_messages[0]
         
         text = getattr(verification_message, 'message', '') or ''
-        msg_id = verification_message.id
         
-        # إذا كانت هذه الرسالة هي نفسها التي عالجناها من قبل، ننتظر قليلاً
-        if msg_id == last_message_id:
-            await asyncio.sleep(1.0)
-            continue
+        # 8. فحص رسالة فشل/نجاح مباشرة
+        if any(kw in text.lower() for kw in failure_keywords):
+            return False
+        if any(kw in text.lower() for kw in success_keywords) and not getattr(verification_message, 'buttons', None):
+            return True
         
-        last_message_id = msg_id
-        
-        # 6. استخراج الكود من الرسالة الصحيحة وإرساله
+        # 9. استخراج الكود من الرسالة الصحيحة وإرساله
         send_text = _extract_code_from_text(text)
         
         if send_text:
             logger.info(f"✅ تم التعرف على النص المطلوب: {send_text} (من الرسالة: {text[:50]})")
             try:
                 await client.send_message(bot_entity, send_text)
+                logger.info(f"✅ تم إرسال النص: {send_text}")
                 await asyncio.sleep(1.5)  # انتظار رد البوت
                 continue
             except Exception as e:
@@ -828,16 +829,7 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
                 await asyncio.sleep(1.0)
                 continue
         
-        # 7. إذا لم يوجد كود، نحاول حل أزرار (إيموجي، رياضيات، متابعة) من نفس الرسالة
-        buttons = []
-        for row in getattr(verification_message, 'buttons', None) or []:
-            for btn in row:
-                if not getattr(btn, 'url', None):
-                    buttons.append(btn)
-        
-        # (هنا يمكنك وضع منطق حل المسائل والأزرار إذا أردت، لكن الأولوية دائماً لإرسال الكود)
-        
-        # 8. إذا لم نفهم شيئاً، ننتظر
+        # 10. إذا لم يوجد كود، ننتظر قليلاً
         await asyncio.sleep(2.0)
     
     # بعد انتهاء المحاولات، نتحقق من آخر رسالة للنجاح
@@ -852,6 +844,10 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
         pass
     
     return False
+
+# ════════════════════════════════════════════════════════════
+# ═══ 9. دوال تنفيذ الخدمات ═══
+# ════════════════════════════════════════════════════════════
 
 async def _join_channel_and_schedule_leave(client, channel_refs):
     """الانضمام للقنوات وجدولة المغادرة"""
