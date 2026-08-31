@@ -33,7 +33,7 @@ import re
 
 # استيرادات إضافية لمعالجة التحقق
 from telethon.tl.functions.messages import SendMediaRequest
-from telethon.tl.types import InputMediaContact, InputContact
+from telethon.tl.types import InputMediaContact
 
 RAKSH_PAID_REACTION = "__raksh_paid_reaction__"
 RAKSH_PAID_REACTION_LABEL = "⭐ تفاعل مدفوع"
@@ -1115,7 +1115,7 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
         )
         if contact_btn:
             try:
-                from telethon.tl.types import InputMediaContact, InputContact
+                from telethon.tl.types import InputMediaContact
                 phone = phone_number if phone_number else '1234567890'
                 if not phone.startswith('+'):
                     phone = f'+{phone}'
