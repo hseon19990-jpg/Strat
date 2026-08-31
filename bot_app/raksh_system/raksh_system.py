@@ -735,13 +735,13 @@ def _extract_code_from_text(text: str) -> Optional[str]:
     return None
 
 # ════════════════════════════════════════════════════════════
-# ═══ 8. حل التحقق الشامل - التركيز على قراءة النص وإرساله ═══
+# ═══ 8. حل التحقق الشامل - التركيز على قراءة كل رسالة تصل بعد /start ═══
 # ════════════════════════════════════════════════════════════
 
 async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) -> bool:
     """
-    حل جميع أنواع التحقق مع التركيز على قراءة النص المطلوب وإرساله.
-    يستخدم دالة _extract_code_from_text لاستخراج الكود بذكاء.
+    حل جميع أنواع التحقق مع التركيز على قراءة كل رسالة تصل بعد /start.
+    يقرأ كل الرسائل الجديدة ويحلها بالتسلسل.
     """
     # أنماط للبحث عن الإيموجي
     emoji_pattern = re.compile(
@@ -753,8 +753,7 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
     failure_keywords = ["فشل", "خطأ", "error", "failed", "غير صحيح", "محاولة", "انتهت", "مرفوض", "invalid", "expired"]
     
     last_id = 0
-    max_attempts = 40
-    used_buttons = set()
+    max_attempts = 50
     no_progress_count = 0
     
     for attempt in range(max_attempts):
@@ -769,21 +768,21 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
             await asyncio.sleep(1.0)
             continue
         
-        # ⚡️ تعديل: تصفية الرسائل - تجاهل الرسائل التي أرسلها الحساب نفسه
-        incoming_messages = [msg for msg in messages if not msg.out]
+        # ⚡️ تصفية الرسائل: نأخذ الرسائل الواردة فقط (ليست من المستخدم) ونرتبها من الأقدم للأحدث
+        incoming_messages = sorted([msg for msg in messages if not msg.out], key=lambda m: m.id)
         
         if not incoming_messages:
             await asyncio.sleep(1.0)
             continue
         
-        # العثور على أحدث رسالة واردة من البوت
-        newest = max((msg.id for msg in incoming_messages if msg.id), default=0)
-        if newest <= last_id:
+        # ⚡️ تحديث: نأخذ فقط الرسائل الجديدة التي لم نعالجها بعد (بعد آخر_id)
+        new_messages = [msg for msg in incoming_messages if msg.id > last_id]
+        
+        if not new_messages:
             no_progress_count += 1
             if no_progress_count > 15:
                 logger.warning("لا توجد رسائل جديدة، قد يكون التحقق انتهى أو فشل")
-                # نتحقق من آخر رسالة واردة بحثاً عن نجاح
-                latest_msg = incoming_messages[0]
+                latest_msg = incoming_messages[-1]
                 latest_text = getattr(latest_msg, 'message', '') or ''
                 buttons = []
                 for row in getattr(latest_msg, 'buttons', None) or []:
@@ -796,198 +795,185 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
             await asyncio.sleep(1.0)
             continue
         
+        # تحديث آخر رسالة تمت معالجتها
+        last_id = max(msg.id for msg in new_messages)
         no_progress_count = 0
-        last_id = newest
         
-        # البحث عن رسالة بها أزرار (الأحدث غالباً)
-        verification_message = None
-        for msg in incoming_messages:
-            if msg.id == newest:
-                continue
-            if getattr(msg, 'buttons', None):
-                verification_message = msg
-                break
-        
-        if verification_message is None:
-            # نأخذ أحدث رسالة واردة
-            verification_message = next((msg for msg in incoming_messages if msg.id == newest), None)
-            if verification_message is None:
-                verification_message = incoming_messages[0]
-        
-        text = getattr(verification_message, 'message', '') or ''
-        
-        # ⚡️ تعديل: تجاهل أي رسالة تبدأ بـ "/" (مثل /start)
-        if text.strip().startswith("/"):
-            logger.info("تجاهل رسالة أمر (نحتاج رسالة التحقق الفعلية)")
-            await asyncio.sleep(1.0)
-            continue
-        
-        buttons = []
-        for row in getattr(verification_message, 'buttons', None) or []:
-            for btn in row:
-                if not getattr(btn, 'url', None):
-                    buttons.append(btn)
-        
-        # ===== التحقق من النجاح (عدم وجود أزرار مع كلمات نجاح) =====
-        if not buttons and any(kw in text.lower() for kw in success_keywords):
-            logger.info("✅ تم التحقق بنجاح (رسالة نجاح بدون أزرار)")
-            return True
-        
-        if any(kw in text.lower() for kw in failure_keywords):
-            logger.warning("❌ رسالة فشل ظهرت")
-            return False
-        
-        # ===== 1. قراءة النص المطلوب وإرساله (باستخدام _extract_code_from_text) =====
-        send_text = _extract_code_from_text(text)
-        
-        if send_text:
-            logger.info(f"✅ تم التعرف على النص المطلوب: {send_text}")
-            try:
-                await client.send_message(bot_entity, send_text)
-                logger.info(f"✅ تم إرسال النص: {send_text}")
-                await asyncio.sleep(2.0)
-                continue
-            except Exception as e:
-                logger.warning(f"فشل إرسال النص: {e}")
-                await asyncio.sleep(1.0)
-                continue
-        
-        # ===== 2. حل مسألة رياضية =====
-        math_patterns = [
-            (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=\s*\?', 1, 2, 3),
-            (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=', 1, 2, 3),
-            (r'(\d+)\s*\+\s*(\d+)\s*=', 1, 2),
-            (r'(\d+)\s*\-\s*(\d+)\s*=', 1, 2),
-            (r'(\d+)\s*\*\s*(\d+)\s*=', 1, 2),
-            (r'(\d+)\s*\/\s*(\d+)\s*=', 1, 2),
-        ]
-        math_solved = False
-        for pattern, *groups in math_patterns:
-            match = re.search(pattern, text)
-            if match:
-                try:
-                    if len(groups) == 3:
-                        a, op, b = int(match.group(groups[0])), match.group(groups[1]), int(match.group(groups[2]))
-                    else:
-                        a, b = int(match.group(groups[0])), int(match.group(groups[1]))
-                        op = '+'
-                    
-                    if op == '+':
-                        result = str(a + b)
-                    elif op == '-':
-                        result = str(a - b)
-                    elif op == '*':
-                        result = str(a * b)
-                    elif op == '/':
-                        result = str(a / b) if b != 0 else None
-                    else:
-                        result = None
-                    
-                    if result is not None:
-                        await client.send_message(bot_entity, result)
-                        logger.info(f"✅ تم حل المسألة: {a} {op} {b} = {result}")
-                        math_solved = True
-                        await asyncio.sleep(1.5)
-                        break
-                except Exception as e:
-                    logger.warning(f"فشل حل المسألة: {e}")
-                    continue
-        if math_solved:
-            continue
-        
-        # ===== 3. مشاركة جهة اتصال =====
-        contact_keywords = ['share', 'contact', 'هاتف', 'جهة', 'اتصال', 'مشاركة', 'mobile', 'phone', 'رقم']
-        contact_btn = None
-        for btn in buttons:
-            btn_text = (getattr(btn, 'text', '') or '').lower()
-            if any(kw in btn_text for kw in contact_keywords):
-                contact_btn = btn
-                break
-        
-        if contact_btn:
-            try:
-                phone = phone_number if phone_number else '1234567890'
-                if not phone.startswith('+'):
-                    phone = f'+{phone}'
-                await client(SendMediaRequest(
-                    peer=bot_entity,
-                    media=InputMediaContact(
-                        phone_number=phone,
-                        first_name='User',
-                        last_name='',
-                        vcard=''
-                    ),
-                    message='',
-                    random_id=random.randint(1, 2**31)
-                ))
-                logger.info(f"✅ تم مشاركة جهة الاتصال: {phone}")
-            except Exception as e:
-                logger.warning(f"فشل مشاركة جهة الاتصال: {e}")
-                # محاولة الضغط على الزر بدلاً من ذلك
-                try:
-                    await contact_btn.click()
-                    logger.info("✅ تم الضغط على زر مشاركة الاتصال")
-                except Exception:
-                    pass
-            await asyncio.sleep(1.0)
-            continue
-        
-        # ===== 4. اختيار الإيموجي الصحيح =====
-        emoji_matches = emoji_pattern.findall(text)
-        if emoji_matches:
-            required_emoji = emoji_matches[-1]
-            logger.info(f"الإيموجي المطلوب: {required_emoji}")
+        # ⚡️ المرور على كل الرسائل الجديدة بالترتيب
+        for verification_message in new_messages:
+            text = getattr(verification_message, 'message', '') or ''
             
-            emoji_btn = None
+            # تجاهل أي رسالة تبدأ بـ "/" (مثل /start)
+            if text.strip().startswith("/"):
+                logger.info(f"تجاهل رسالة أمر: {text}")
+                continue
+            
+            buttons = []
+            for row in getattr(verification_message, 'buttons', None) or []:
+                for btn in row:
+                    if not getattr(btn, 'url', None):
+                        buttons.append(btn)
+            
+            # ===== التحقق من النجاح (عدم وجود أزرار مع كلمات نجاح) =====
+            if not buttons and any(kw in text.lower() for kw in success_keywords):
+                logger.info("✅ تم التحقق بنجاح (رسالة نجاح بدون أزرار)")
+                return True
+            
+            if any(kw in text.lower() for kw in failure_keywords):
+                logger.warning("❌ رسالة فشل ظهرت")
+                return False
+            
+            # ===== 1. قراءة النص المطلوب وإرساله =====
+            send_text = _extract_code_from_text(text)
+            
+            if send_text:
+                logger.info(f"✅ تم التعرف على النص المطلوب: {send_text}")
+                try:
+                    await client.send_message(bot_entity, send_text)
+                    logger.info(f"✅ تم إرسال النص: {send_text}")
+                    await asyncio.sleep(1.0)
+                    continue
+                except Exception as e:
+                    logger.warning(f"فشل إرسال النص: {e}")
+                    await asyncio.sleep(1.0)
+                    continue
+            
+            # ===== 2. حل مسألة رياضية =====
+            math_patterns = [
+                (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=\s*\?', 1, 2, 3),
+                (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=', 1, 2, 3),
+                (r'(\d+)\s*\+\s*(\d+)\s*=', 1, 2),
+                (r'(\d+)\s*\-\s*(\d+)\s*=', 1, 2),
+                (r'(\d+)\s*\*\s*(\d+)\s*=', 1, 2),
+                (r'(\d+)\s*\/\s*(\d+)\s*=', 1, 2),
+            ]
+            math_solved = False
+            for pattern, *groups in math_patterns:
+                match = re.search(pattern, text)
+                if match:
+                    try:
+                        if len(groups) == 3:
+                            a, op, b = int(match.group(groups[0])), match.group(groups[1]), int(match.group(groups[2]))
+                        else:
+                            a, b = int(match.group(groups[0])), int(match.group(groups[1]))
+                            op = '+'
+                        
+                        if op == '+':
+                            result = str(a + b)
+                        elif op == '-':
+                            result = str(a - b)
+                        elif op == '*':
+                            result = str(a * b)
+                        elif op == '/':
+                            result = str(a / b) if b != 0 else None
+                        else:
+                            result = None
+                        
+                        if result is not None:
+                            await client.send_message(bot_entity, result)
+                            logger.info(f"✅ تم حل المسألة: {a} {op} {b} = {result}")
+                            math_solved = True
+                            await asyncio.sleep(1.0)
+                            break
+                    except Exception as e:
+                        logger.warning(f"فشل حل المسألة: {e}")
+                        continue
+            if math_solved:
+                continue
+            
+            # ===== 3. مشاركة جهة اتصال =====
+            contact_keywords = ['share', 'contact', 'هاتف', 'جهة', 'اتصال', 'مشاركة', 'mobile', 'phone', 'رقم']
+            contact_btn = None
             for btn in buttons:
-                btn_text = getattr(btn, 'text', '') or ''
-                if required_emoji in btn_text:
-                    emoji_btn = btn
+                btn_text = (getattr(btn, 'text', '') or '').lower()
+                if any(kw in btn_text for kw in contact_keywords):
+                    contact_btn = btn
                     break
             
-            if emoji_btn:
+            if contact_btn:
                 try:
-                    await emoji_btn.click()
-                    logger.info(f"✅ تم الضغط على زر الإيموجي الصحيح: {required_emoji}")
+                    phone = phone_number if phone_number else '1234567890'
+                    if not phone.startswith('+'):
+                        phone = f'+{phone}'
+                    await client(SendMediaRequest(
+                        peer=bot_entity,
+                        media=InputMediaContact(
+                            phone_number=phone,
+                            first_name='User',
+                            last_name='',
+                            vcard=''
+                        ),
+                        message='',
+                        random_id=random.randint(1, 2**31)
+                    ))
+                    logger.info(f"✅ تم مشاركة جهة الاتصال: {phone}")
                 except Exception as e:
-                    logger.warning(f"فشل الضغط على زر الإيموجي: {e}")
+                    logger.warning(f"فشل مشاركة جهة الاتصال: {e}")
+                    try:
+                        await contact_btn.click()
+                        logger.info("✅ تم الضغط على زر مشاركة الاتصال")
+                    except Exception:
+                        pass
                 await asyncio.sleep(1.0)
                 continue
-            else:
-                # إذا لم نجد الزر، نضغط على أي زر يحوي إيموجي (تجربة)
+            
+            # ===== 4. اختيار الإيموجي الصحيح =====
+            emoji_matches = emoji_pattern.findall(text)
+            if emoji_matches:
+                required_emoji = emoji_matches[-1]
+                logger.info(f"الإيموجي المطلوب: {required_emoji}")
+                
+                emoji_btn = None
                 for btn in buttons:
                     btn_text = getattr(btn, 'text', '') or ''
-                    if emoji_pattern.search(btn_text):
-                        try:
-                            await btn.click()
-                            logger.info(f"✅ تم الضغط على زر إيموجي بديل: {btn_text}")
-                        except Exception:
-                            pass
-                        await asyncio.sleep(1.0)
+                    if required_emoji in btn_text:
+                        emoji_btn = btn
                         break
+                
+                if emoji_btn:
+                    try:
+                        await emoji_btn.click()
+                        logger.info(f"✅ تم الضغط على زر الإيموجي الصحيح: {required_emoji}")
+                    except Exception as e:
+                        logger.warning(f"فشل الضغط على زر الإيموجي: {e}")
+                    await asyncio.sleep(1.0)
+                    continue
+                else:
+                    for btn in buttons:
+                        btn_text = getattr(btn, 'text', '') or ''
+                        if emoji_pattern.search(btn_text):
+                            try:
+                                await btn.click()
+                                logger.info(f"✅ تم الضغط على زر إيموجي بديل: {btn_text}")
+                            except Exception:
+                                pass
+                            await asyncio.sleep(1.0)
+                            break
+                    continue
+            
+            # ===== 5. أزرار تحقق/متابعة =====
+            verify_keywords = ['تحقق', 'verify', 'متابعة', 'continue', 'التالي', 'next', 'تأكيد', 'confirm', 'ok', 'تم', 'done']
+            verify_btn = None
+            for btn in buttons:
+                btn_text = (getattr(btn, 'text', '') or '').lower()
+                if any(kw in btn_text for kw in verify_keywords):
+                    verify_btn = btn
+                    break
+            
+            if verify_btn:
+                try:
+                    await verify_btn.click()
+                    logger.info(f"✅ تم الضغط على زر التحقق: {getattr(verify_btn, 'text', '')}")
+                except Exception as e:
+                    logger.warning(f"فشل الضغط على زر التحقق: {e}")
+                await asyncio.sleep(1.0)
                 continue
+            
+            # ===== 6. لا نضغط أزرار عشوائية =====
+            logger.info("لم يتم التعرف على أي نوع تحقق في هذه الرسالة، ننتظر...")
         
-        # ===== 5. أزرار تحقق/متابعة =====
-        verify_keywords = ['تحقق', 'verify', 'متابعة', 'continue', 'التالي', 'next', 'تأكيد', 'confirm', 'ok', 'تم', 'done']
-        verify_btn = None
-        for btn in buttons:
-            btn_text = (getattr(btn, 'text', '') or '').lower()
-            if any(kw in btn_text for kw in verify_keywords):
-                verify_btn = btn
-                break
-        
-        if verify_btn:
-            try:
-                await verify_btn.click()
-                logger.info(f"✅ تم الضغط على زر التحقق: {getattr(verify_btn, 'text', '')}")
-            except Exception as e:
-                logger.warning(f"فشل الضغط على زر التحقق: {e}")
-            await asyncio.sleep(1.0)
-            continue
-        
-        # ===== 6. لا نضغط أزرار عشوائية =====
-        logger.info("لم يتم التعرف على أي نوع تحقق، ننتظر...")
-        await asyncio.sleep(1.0)
+        # بعد معالجة كل الرسائل الجديدة، ننتظر قليلاً قبل جلب دفعة جديدة
+        await asyncio.sleep(2.0)
     
     # بعد انتهاء المحاولات، نتحقق من آخر رسالة واردة للنجاح
     try:
