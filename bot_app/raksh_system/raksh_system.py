@@ -1,7 +1,7 @@
 """
 نظام الرشق المتقدم - منفصل تماماً عن بقية البوت
 نسخة محسّنة مع دالة تحقق شاملة لجميع أنواع التحقق
-مع إصلاح مشاكل إرسال النص وحل المسائل وعدد الحسابات
+مع إصلاح مشكلة إرسال النص وحل المسائل (بدون ضغط أزرار عشوائية)
 """
 
 from ..shared import *
@@ -655,25 +655,25 @@ async def _fetch_raksh_reactions_from_pool(
         await asyncio.gather(*tasks, return_exceptions=True)
 
 # ════════════════════════════════════════════════════════════
-# ═══ 7. حل التحقق الشامل (جميع الأنواع) ═══
+# ═══ 7. حل التحقق الشامل (جميع الأنواع) مع التركيز على إرسال النص وحل المسائل ═══
 # ════════════════════════════════════════════════════════════
 
 async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) -> bool:
     """
     حل جميع أنواع التحقق في بوت الإحالة الإجباري:
-    - إرسال نص محدد (صيغ متعددة)
-    - إيموجي (استخراج الإيموجي من النص والضغط على الزر المناسب)
-    - مسائل رياضية (حل المعادلة وإرسال النتيجة)
-    - مشاركة جهة اتصال (إرسال رقم الهاتف كجهة اتصال)
-    - أزرار تحقق/متابعة (الضغط عليها)
-    - يعتبر النجاح عند اختفاء الأزرار وظهور رسالة نجاح (بدون الاعتماد على رابط الإحالة)
+    - إرسال نص محدد (صيغ متعددة) -> يرسل النص
+    - مسائل رياضية -> يحل ويرسل النتيجة
+    - إيموجي -> يضغط على الزر المناسب
+    - مشاركة جهة اتصال -> يرسل جهة الاتصال
+    - أزرار تحقق/متابعة -> يضغط عليها
+    - لا يقوم بضغط أزرار عشوائية (تم حذف هذا القسم)
     """
     # أنماط للبحث عن الإيموجي
     emoji_pattern = re.compile(
         "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E0-\U0001F1FF]"
     )
     
-    # كلمات النجاح والفشل (مع إزالة "رابط الإحالة" من كلمات النجاح لأنه يظهر طوال الوقت)
+    # كلمات النجاح والفشل
     success_keywords = ["تم", "success", "نجاح", "مبروك", "أحسنت", "تمت الإحالة", "✅", "تم التحقق", "انضممت", "اكتمل", "تم التحقق بنجاح"]
     failure_keywords = ["فشل", "خطأ", "error", "failed", "غير صحيح", "محاولة", "انتهت", "مرفوض", "invalid", "expired"]
     
@@ -748,32 +748,14 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
             logger.info("✅ تم التحقق بنجاح (رسالة نجاح بدون أزرار)")
             return True
         
-        # ===== تحقق من وجود رابط إحالة بدون أزرار =====
-        if not buttons and "t.me/" in text and "start=" in text:
-            # قد يكون نجاحاً لكن نتحقق أكثر
-            # ننتظر قليلاً للتأكد من عدم ظهور أزرار جديدة
-            await asyncio.sleep(1.0)
-            messages_check = await client.get_messages(bot_entity, limit=5)
-            for m in messages_check:
-                b = []
-                for row in getattr(m, 'buttons', None) or []:
-                    for btn in row:
-                        if not getattr(btn, 'url', None):
-                            b.append(btn)
-                if b:
-                    break
-            else:
-                logger.info("✅ تم التحقق بنجاح (رابط إحالة بدون أزرار)")
-                return True
-        
         if any(kw in text.lower() for kw in failure_keywords):
             logger.warning("❌ رسالة فشل ظهرت")
             return False
         
-        # ===== 1. إرسال نص محدد (صيغ متعددة) =====
-        # الأنماط المختلفة لطلب النص
+        # ===== 1. إرسال نص محدد (الأولوية القصوى) =====
+        # أنماط متعددة لالتقاط النص المطلوب
         text_patterns = [
-            r'(الآن\s*أرسل\s*النص\s*التالي|المرحلة\s*الأولى:\s*أرسل\s*النص\s*التالي\s*بالضبط|أرسل\s*النص\s*التالي|اكتب|retype|type|أدخل|enter)\s*[:\-]?\s*([A-Za-z0-9]{6,})',
+            r'(?:الآن\s*أرسل\s*النص\s*التالي|المرحلة\s*الأولى:\s*أرسل\s*النص\s*التالي\s*بالضبط|أرسل\s*النص\s*التالي|اكتب|retype|type|أدخل|enter)\s*[:\-]?\s*([A-Za-z0-9]{6,})',
             r'النص\s*التالي\s*[:\-]?\s*([A-Za-z0-9]{6,})',
             r'([A-Za-z0-9]{6,})\s*$',  # نص منفصل في نهاية الرسالة
         ]
@@ -781,33 +763,20 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
         for pattern in text_patterns:
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
-                # إذا كان النمط يحتوي على مجموعتين، نأخذ الثانية
-                if len(match.groups()) >= 2:
-                    send_text = match.group(2).strip()
-                else:
-                    send_text = match.group(1).strip()
+                send_text = match.group(1).strip()
                 break
         
         if send_text:
-            logger.info(f"مطلوب إرسال النص: {send_text}")
+            logger.info(f"✅ تم التعرف على النص المطلوب: {send_text}")
             try:
                 await client.send_message(bot_entity, send_text)
                 logger.info(f"✅ تم إرسال النص: {send_text}")
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(1.5)
                 continue
             except Exception as e:
                 logger.warning(f"فشل إرسال النص: {e}")
-                # إذا فشل الإرسال، قد يكون هناك زر بدلاً من ذلك
-                for btn in buttons:
-                    btn_text = getattr(btn, 'text', '') or ''
-                    if send_text in btn_text:
-                        try:
-                            await btn.click()
-                            logger.info(f"✅ تم الضغط على زر النص: {send_text}")
-                        except Exception:
-                            pass
-                        await asyncio.sleep(1.0)
-                        break
+                # لا نحاول الضغط على أزرار، بل نستمر للتجربة مرة أخرى
+                await asyncio.sleep(1.0)
                 continue
         
         # ===== 2. حل مسألة رياضية =====
@@ -845,7 +814,7 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
                         await client.send_message(bot_entity, result)
                         logger.info(f"✅ تم حل المسألة: {a} {op} {b} = {result}")
                         math_solved = True
-                        await asyncio.sleep(1.0)
+                        await asyncio.sleep(1.5)
                         break
                 except Exception as e:
                     logger.warning(f"فشل حل المسألة: {e}")
@@ -893,7 +862,6 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
         # ===== 4. اختيار الإيموجي الصحيح =====
         emoji_matches = emoji_pattern.findall(text)
         if emoji_matches:
-            # نأخذ آخر إيموجي (غالباً هو المطلوب)
             required_emoji = emoji_matches[-1]
             logger.info(f"الإيموجي المطلوب: {required_emoji}")
             
@@ -944,33 +912,10 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
             await asyncio.sleep(1.0)
             continue
         
-        # ===== 6. أزرار عادية (أي زر غير رابط) =====
-        if buttons:
-            # نضغط على زر لم نضغط عليه من قبل
-            clicked = False
-            for btn in buttons:
-                btn_id = getattr(btn, 'data', None)
-                if btn_id and btn_id not in used_buttons:
-                    try:
-                        await btn.click()
-                        used_buttons.add(btn_id)
-                        logger.info(f"✅ تم الضغط على زر عادي: {getattr(btn, 'text', '')}")
-                        clicked = True
-                    except Exception as e:
-                        logger.warning(f"فشل الضغط على الزر: {e}")
-                    await asyncio.sleep(1.0)
-                    break
-            if not clicked:
-                # إذا لم نجد زراً جديداً، نضغط على أول زر
-                try:
-                    await buttons[0].click()
-                    logger.info("⚠️ تم الضغط على أول زر (تجربة)")
-                except Exception:
-                    pass
-                await asyncio.sleep(1.0)
-        else:
-            # لا توجد أزرار، ننتظر
-            await asyncio.sleep(1.0)
+        # ===== 6. تم حذف قسم الأزرار العشوائية (كان يضغط على أي زر) =====
+        # بدلاً من ذلك، إذا وصلنا هنا ولم نتعرف على أي شيء، ننتظر
+        logger.info("لم يتم التعرف على أي نوع تحقق، ننتظر...")
+        await asyncio.sleep(1.0)
     
     # بعد انتهاء المحاولات، نتحقق من آخر رسالة للنجاح
     try:
