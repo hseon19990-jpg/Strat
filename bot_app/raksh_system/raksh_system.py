@@ -735,13 +735,13 @@ def _extract_code_from_text(text: str) -> Optional[str]:
     return None
 
 # ════════════════════════════════════════════════════════════
-# ═══ 8. حل التحقق الشامل - التركيز على قراءة كل رسالة تصل بعد /start ═══
+# ═══ 8. حل التحقق الشامل - قراءة كل الرسائل بعد /start ═══
 # ════════════════════════════════════════════════════════════
 
 async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) -> bool:
     """
     حل جميع أنواع التحقق مع التركيز على قراءة كل رسالة تصل بعد /start.
-    يقرأ كل الرسائل الجديدة ويحلها بالتسلسل.
+    يقرأ آخر الرسائل الواردة ويتجاهل رسائل المستخدم (msg.out) والأوامر (/).
     """
     # أنماط للبحث عن الإيموجي
     emoji_pattern = re.compile(
@@ -752,9 +752,9 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
     success_keywords = ["تم", "success", "نجاح", "مبروك", "أحسنت", "تمت الإحالة", "✅", "تم التحقق", "انضممت", "اكتمل", "تم التحقق بنجاح"]
     failure_keywords = ["فشل", "خطأ", "error", "failed", "غير صحيح", "محاولة", "انتهت", "مرفوض", "invalid", "expired"]
     
-    last_id = 0
-    max_attempts = 50
+    max_attempts = 40
     no_progress_count = 0
+    last_id = 0
     
     for attempt in range(max_attempts):
         try:
@@ -775,13 +775,12 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
             await asyncio.sleep(1.0)
             continue
         
-        # ⚡️ تحديث: نأخذ فقط الرسائل الجديدة التي لم نعالجها بعد (بعد آخر_id)
+        # ⚡️ نأخذ الرسائل الجديدة التي لم نعالجها بعد (بعد آخر_id)
         new_messages = [msg for msg in incoming_messages if msg.id > last_id]
         
         if not new_messages:
             no_progress_count += 1
             if no_progress_count > 15:
-                logger.warning("لا توجد رسائل جديدة، قد يكون التحقق انتهى أو فشل")
                 latest_msg = incoming_messages[-1]
                 latest_text = getattr(latest_msg, 'message', '') or ''
                 buttons = []
@@ -803,9 +802,8 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
         for verification_message in new_messages:
             text = getattr(verification_message, 'message', '') or ''
             
-            # تجاهل أي رسالة تبدأ بـ "/" (مثل /start)
+            # ⚡️ تجاهل أي رسالة تبدأ بـ "/" (مثل /start أو /help)
             if text.strip().startswith("/"):
-                logger.info(f"تجاهل رسالة أمر: {text}")
                 continue
             
             buttons = []
@@ -969,10 +967,9 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
                 await asyncio.sleep(1.0)
                 continue
             
-            # ===== 6. لا نضغط أزرار عشوائية =====
             logger.info("لم يتم التعرف على أي نوع تحقق في هذه الرسالة، ننتظر...")
         
-        # بعد معالجة كل الرسائل الجديدة، ننتظر قليلاً قبل جلب دفعة جديدة
+        # ننتظر قبل جلب الدفعة التالية
         await asyncio.sleep(2.0)
     
     # بعد انتهاء المحاولات، نتحقق من آخر رسالة واردة للنجاح
