@@ -654,6 +654,8 @@ async def _fetch_raksh_reactions_from_pool(
                 reactions = await completed
                 if reactions:
                     return reactions
+            except Exception:
+                continue
         return []
     finally:
         for task in tasks:
