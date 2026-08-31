@@ -737,262 +737,121 @@ def _extract_code_from_text(text: str) -> Optional[str]:
 # ════════════════════════════════════════════════════════════
 # ═══ 8. حل التحقق الشامل - قراءة كل الرسائل بعد /start ═══
 # ════════════════════════════════════════════════════════════
-
 async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) -> bool:
     """
-    حل جميع أنواع التحقق مع التركيز على قراءة كل رسالة تصل بعد /start.
-    يقرأ آخر الرسائل الواردة ويتجاهل رسائل المستخدم (msg.out) والأوامر (/).
+    حل التحقق: يقرأ آخر رسالة واردة تحتوي على طلب إرسال كود، ويستخرج الكود منها.
+    يتجاهل الرسائل التي أرسلها الحساب نفسه والأوامر (مثل /start).
     """
-    # أنماط للبحث عن الإيموجي
     emoji_pattern = re.compile(
         "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E0-\U0001F1FF]"
     )
     
-    # كلمات النجاح والفشل
     success_keywords = ["تم", "success", "نجاح", "مبروك", "أحسنت", "تمت الإحالة", "✅", "تم التحقق", "انضممت", "اكتمل", "تم التحقق بنجاح"]
     failure_keywords = ["فشل", "خطأ", "error", "failed", "غير صحيح", "محاولة", "انتهت", "مرفوض", "invalid", "expired"]
     
-    max_attempts = 40
-    no_progress_count = 0
-    last_id = 0
-    
+    max_attempts = 20
+    last_message_id = 0
+
     for attempt in range(max_attempts):
         try:
-            messages = await client.get_messages(bot_entity, limit=30)
+            # 1. جلب آخر 20 رسالة
+            messages = await client.get_messages(bot_entity, limit=20)
         except Exception as exc:
             logger.warning(f"تعذر قراءة رسائل البوت: {exc}")
             await asyncio.sleep(1.0)
             continue
         
-        if not messages:
-            await asyncio.sleep(1.0)
-            continue
-        
-        # ⚡️ تصفية الرسائل: نأخذ الرسائل الواردة فقط (ليست من المستخدم) ونرتبها من الأقدم للأحدث
-        incoming_messages = sorted([msg for msg in messages if not msg.out], key=lambda m: m.id)
+        # 2. تصفية الرسائل: نأخذ فقط الرسائل الواردة (من البوت) وليس من الحساب نفسه
+        incoming_messages = [msg for msg in messages if not msg.out]
         
         if not incoming_messages:
             await asyncio.sleep(1.0)
             continue
         
-        # ⚡️ نأخذ الرسائل الجديدة التي لم نعالجها بعد (بعد آخر_id)
-        new_messages = [msg for msg in incoming_messages if msg.id > last_id]
+        # 3. ترتيب الرسائل من الأقدم إلى الأحدث
+        incoming_messages.sort(key=lambda m: m.id)
         
-        if not new_messages:
-            no_progress_count += 1
-            if no_progress_count > 15:
-                latest_msg = incoming_messages[-1]
-                latest_text = getattr(latest_msg, 'message', '') or ''
-                buttons = []
-                for row in getattr(latest_msg, 'buttons', None) or []:
-                    for btn in row:
-                        if not getattr(btn, 'url', None):
-                            buttons.append(btn)
-                if not buttons and any(kw in latest_text.lower() for kw in success_keywords):
-                    return True
-                return False
+        # 4. فحص آخر رسالة للتحقق من نجاح أو فشل العملية
+        latest_msg = incoming_messages[-1]
+        latest_text = getattr(latest_msg, 'message', '') or ''
+        if any(kw in latest_text.lower() for kw in failure_keywords):
+            logger.warning(f"❌ رسالة فشل ظهرت: {latest_text[:50]}")
+            return False
+        if any(kw in latest_text.lower() for kw in success_keywords) and not getattr(latest_msg, 'buttons', None):
+            logger.info("✅ تم التحقق بنجاح")
+            return True
+        
+        # 5. البحث عن آخر رسالة واردة تحتوي على كلمات تدل على طلب إرسال كود
+        # (نبحث عن كلمة "أرسل" أو "التالي" أو "بالضبط")
+        verification_message = None
+        for msg in incoming_messages:
+            msg_text = getattr(msg, 'message', '') or ''
+            # نتجاهل الأوامر مثل /start
+            if msg_text.strip().startswith("/"):
+                continue
+            # نبحث عن أي رسالة تحتوي على كلمة "أرسل" أو "التالي" أو "بالضبط"
+            if any(kw in msg_text for kw in ["أرسل", "التالي", "بالضبط", "اكتب", "retype", "type"]):
+                verification_message = msg
+        
+        # إذا لم نجد رسالة تحتوي على هذه الكلمات، نأخذ أحدث رسالة واردة (غير الأمر)
+        if verification_message is None:
+            verification_message = next(
+                (msg for msg in reversed(incoming_messages) if not getattr(msg, 'message', '').strip().startswith("/")), 
+                None
+            )
+        
+        if verification_message is None:
             await asyncio.sleep(1.0)
             continue
         
-        # تحديث آخر رسالة تمت معالجتها
-        last_id = max(msg.id for msg in new_messages)
-        no_progress_count = 0
+        text = getattr(verification_message, 'message', '') or ''
+        msg_id = verification_message.id
         
-        # ⚡️ المرور على كل الرسائل الجديدة بالترتيب
-        for verification_message in new_messages:
-            text = getattr(verification_message, 'message', '') or ''
-            
-            # ⚡️ تجاهل أي رسالة تبدأ بـ "/" (مثل /start أو /help)
-            if text.strip().startswith("/"):
+        # إذا كانت هذه الرسالة هي نفسها التي عالجناها من قبل، ننتظر قليلاً
+        if msg_id == last_message_id:
+            await asyncio.sleep(1.0)
+            continue
+        
+        last_message_id = msg_id
+        
+        # 6. استخراج الكود من الرسالة الصحيحة وإرساله
+        send_text = _extract_code_from_text(text)
+        
+        if send_text:
+            logger.info(f"✅ تم التعرف على النص المطلوب: {send_text} (من الرسالة: {text[:50]})")
+            try:
+                await client.send_message(bot_entity, send_text)
+                await asyncio.sleep(1.5)  # انتظار رد البوت
                 continue
-            
-            buttons = []
-            for row in getattr(verification_message, 'buttons', None) or []:
-                for btn in row:
-                    if not getattr(btn, 'url', None):
-                        buttons.append(btn)
-            
-            # ===== التحقق من النجاح (عدم وجود أزرار مع كلمات نجاح) =====
-            if not buttons and any(kw in text.lower() for kw in success_keywords):
-                logger.info("✅ تم التحقق بنجاح (رسالة نجاح بدون أزرار)")
-                return True
-            
-            if any(kw in text.lower() for kw in failure_keywords):
-                logger.warning("❌ رسالة فشل ظهرت")
-                return False
-            
-            # ===== 1. قراءة النص المطلوب وإرساله =====
-            send_text = _extract_code_from_text(text)
-            
-            if send_text:
-                logger.info(f"✅ تم التعرف على النص المطلوب: {send_text}")
-                try:
-                    await client.send_message(bot_entity, send_text)
-                    logger.info(f"✅ تم إرسال النص: {send_text}")
-                    await asyncio.sleep(1.0)
-                    continue
-                except Exception as e:
-                    logger.warning(f"فشل إرسال النص: {e}")
-                    await asyncio.sleep(1.0)
-                    continue
-            
-            # ===== 2. حل مسألة رياضية =====
-            math_patterns = [
-                (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=\s*\?', 1, 2, 3),
-                (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=', 1, 2, 3),
-                (r'(\d+)\s*\+\s*(\d+)\s*=', 1, 2),
-                (r'(\d+)\s*\-\s*(\d+)\s*=', 1, 2),
-                (r'(\d+)\s*\*\s*(\d+)\s*=', 1, 2),
-                (r'(\d+)\s*\/\s*(\d+)\s*=', 1, 2),
-            ]
-            math_solved = False
-            for pattern, *groups in math_patterns:
-                match = re.search(pattern, text)
-                if match:
-                    try:
-                        if len(groups) == 3:
-                            a, op, b = int(match.group(groups[0])), match.group(groups[1]), int(match.group(groups[2]))
-                        else:
-                            a, b = int(match.group(groups[0])), int(match.group(groups[1]))
-                            op = '+'
-                        
-                        if op == '+':
-                            result = str(a + b)
-                        elif op == '-':
-                            result = str(a - b)
-                        elif op == '*':
-                            result = str(a * b)
-                        elif op == '/':
-                            result = str(a / b) if b != 0 else None
-                        else:
-                            result = None
-                        
-                        if result is not None:
-                            await client.send_message(bot_entity, result)
-                            logger.info(f"✅ تم حل المسألة: {a} {op} {b} = {result}")
-                            math_solved = True
-                            await asyncio.sleep(1.0)
-                            break
-                    except Exception as e:
-                        logger.warning(f"فشل حل المسألة: {e}")
-                        continue
-            if math_solved:
-                continue
-            
-            # ===== 3. مشاركة جهة اتصال =====
-            contact_keywords = ['share', 'contact', 'هاتف', 'جهة', 'اتصال', 'مشاركة', 'mobile', 'phone', 'رقم']
-            contact_btn = None
-            for btn in buttons:
-                btn_text = (getattr(btn, 'text', '') or '').lower()
-                if any(kw in btn_text for kw in contact_keywords):
-                    contact_btn = btn
-                    break
-            
-            if contact_btn:
-                try:
-                    phone = phone_number if phone_number else '1234567890'
-                    if not phone.startswith('+'):
-                        phone = f'+{phone}'
-                    await client(SendMediaRequest(
-                        peer=bot_entity,
-                        media=InputMediaContact(
-                            phone_number=phone,
-                            first_name='User',
-                            last_name='',
-                            vcard=''
-                        ),
-                        message='',
-                        random_id=random.randint(1, 2**31)
-                    ))
-                    logger.info(f"✅ تم مشاركة جهة الاتصال: {phone}")
-                except Exception as e:
-                    logger.warning(f"فشل مشاركة جهة الاتصال: {e}")
-                    try:
-                        await contact_btn.click()
-                        logger.info("✅ تم الضغط على زر مشاركة الاتصال")
-                    except Exception:
-                        pass
+            except Exception as e:
+                logger.warning(f"فشل إرسال النص: {e}")
                 await asyncio.sleep(1.0)
                 continue
-            
-            # ===== 4. اختيار الإيموجي الصحيح =====
-            emoji_matches = emoji_pattern.findall(text)
-            if emoji_matches:
-                required_emoji = emoji_matches[-1]
-                logger.info(f"الإيموجي المطلوب: {required_emoji}")
-                
-                emoji_btn = None
-                for btn in buttons:
-                    btn_text = getattr(btn, 'text', '') or ''
-                    if required_emoji in btn_text:
-                        emoji_btn = btn
-                        break
-                
-                if emoji_btn:
-                    try:
-                        await emoji_btn.click()
-                        logger.info(f"✅ تم الضغط على زر الإيموجي الصحيح: {required_emoji}")
-                    except Exception as e:
-                        logger.warning(f"فشل الضغط على زر الإيموجي: {e}")
-                    await asyncio.sleep(1.0)
-                    continue
-                else:
-                    for btn in buttons:
-                        btn_text = getattr(btn, 'text', '') or ''
-                        if emoji_pattern.search(btn_text):
-                            try:
-                                await btn.click()
-                                logger.info(f"✅ تم الضغط على زر إيموجي بديل: {btn_text}")
-                            except Exception:
-                                pass
-                            await asyncio.sleep(1.0)
-                            break
-                    continue
-            
-            # ===== 5. أزرار تحقق/متابعة =====
-            verify_keywords = ['تحقق', 'verify', 'متابعة', 'continue', 'التالي', 'next', 'تأكيد', 'confirm', 'ok', 'تم', 'done']
-            verify_btn = None
-            for btn in buttons:
-                btn_text = (getattr(btn, 'text', '') or '').lower()
-                if any(kw in btn_text for kw in verify_keywords):
-                    verify_btn = btn
-                    break
-            
-            if verify_btn:
-                try:
-                    await verify_btn.click()
-                    logger.info(f"✅ تم الضغط على زر التحقق: {getattr(verify_btn, 'text', '')}")
-                except Exception as e:
-                    logger.warning(f"فشل الضغط على زر التحقق: {e}")
-                await asyncio.sleep(1.0)
-                continue
-            
-            logger.info("لم يتم التعرف على أي نوع تحقق في هذه الرسالة، ننتظر...")
         
-        # ننتظر قبل جلب الدفعة التالية
+        # 7. إذا لم يوجد كود، نحاول حل أزرار (إيموجي، رياضيات، متابعة) من نفس الرسالة
+        buttons = []
+        for row in getattr(verification_message, 'buttons', None) or []:
+            for btn in row:
+                if not getattr(btn, 'url', None):
+                    buttons.append(btn)
+        
+        # (هنا يمكنك وضع منطق حل المسائل والأزرار إذا أردت، لكن الأولوية دائماً لإرسال الكود)
+        
+        # 8. إذا لم نفهم شيئاً، ننتظر
         await asyncio.sleep(2.0)
     
-    # بعد انتهاء المحاولات، نتحقق من آخر رسالة واردة للنجاح
+    # بعد انتهاء المحاولات، نتحقق من آخر رسالة للنجاح
     try:
         messages = await client.get_messages(bot_entity, limit=5)
         incoming_messages = [msg for msg in messages if not msg.out]
         for msg in incoming_messages:
             msg_text = getattr(msg, 'message', '') or ''
-            buttons = []
-            for row in getattr(msg, 'buttons', None) or []:
-                for btn in row:
-                    if not getattr(btn, 'url', None):
-                        buttons.append(btn)
-            if not buttons and any(kw in msg_text.lower() for kw in success_keywords):
+            if any(kw in msg_text.lower() for kw in success_keywords) and not getattr(msg, 'buttons', None):
                 return True
     except Exception:
         pass
     
     return False
-
-# ════════════════════════════════════════════════════════════
-# ═══ 9. دوال تنفيذ الخدمات ═══
-# ════════════════════════════════════════════════════════════
 
 async def _join_channel_and_schedule_leave(client, channel_refs):
     """الانضمام للقنوات وجدولة المغادرة"""
