@@ -739,82 +739,99 @@ def _extract_code_from_text(text: str) -> Optional[str]:
 # ════════════════════════════════════════════════════════════
 async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) -> bool:
     """
-    حل التحقق: يقرأ الرسائل الجديدة فقط بعد آخر رسالة معالجة، ويستخرج الكود منها.
-    يتجاهل الرسائل التي أرسلها الحساب نفسه والأوامر (مثل /start).
+    حل التحقق: يقرأ فقط الرسائل الجديدة التي تأتي بعد آخر رسالة أرسلها الحساب.
+    يتجاهل أي رسالة قديمة كانت موجودة قبل الضغط على /start أو الرابط.
     """
+    # أنماط للبحث عن الإيموجي
     emoji_pattern = re.compile(
         "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E0-\U0001F1FF]"
     )
     
+    # كلمات النجاح والفشل
     success_keywords = ["تم", "success", "نجاح", "مبروك", "أحسنت", "تمت الإحالة", "✅", "تم التحقق", "انضممت", "اكتمل", "تم التحقق بنجاح"]
     failure_keywords = ["فشل", "خطأ", "error", "failed", "غير صحيح", "محاولة", "انتهت", "مرفوض", "invalid", "expired"]
     
-    max_attempts = 50
-    last_message_id = 0
+    max_attempts = 40
     no_progress_count = 0
+    base_id = 0  # رقم آخر رسالة أرسلها الحساب (النقطة المرجعية)
+
+    # ⚡️ الخطوة الأولى: تحديد آخر رسالة أرسلها الحساب نفسه (مثل /start)
+    try:
+        out_messages = await client.get_messages(bot_entity, limit=10)
+        for msg in out_messages:
+            if msg.out:
+                base_id = msg.id
+                logger.info(f"✅ تم تحديد آخر رسالة أرسلها الحساب برقم: {base_id}")
+                break
+    except Exception as e:
+        logger.warning(f"تعذر تحديد الرسالة المرجعية: {e}")
 
     for attempt in range(max_attempts):
         try:
-            # 1. جلب آخر 20 رسالة
+            # جلب آخر 20 رسالة
             messages = await client.get_messages(bot_entity, limit=20)
         except Exception as exc:
             logger.warning(f"تعذر قراءة رسائل البوت: {exc}")
             await asyncio.sleep(1.0)
             continue
         
-        # 2. تصفية الرسائل: نأخذ فقط الرسائل الواردة (من البوت) وليس من الحساب نفسه
+        # تصفية الرسائل: نأخذ فقط الرسائل الواردة من البوت
         incoming_messages = [msg for msg in messages if not msg.out]
         
         if not incoming_messages:
             await asyncio.sleep(1.0)
             continue
         
-        # 3. ترتيب الرسائل من الأقدم إلى الأحدث
+        # ترتيب الرسائل من الأقدم إلى الأحدث
         incoming_messages.sort(key=lambda m: m.id)
         
-        # 4. ⭐ مهم جداً: احصل فقط على الرسائل الجديدة (الأحدث من آخر رسالة عالجناها)
-        new_messages = [msg for msg in incoming_messages if msg.id > last_message_id]
+        # ⚡️ الخطوة الثانية: تجاهل أي رسالة رقمها أصغر من أو يساوي base_id
+        new_messages = [msg for msg in incoming_messages if msg.id > base_id]
         
-        # 5. إذا لا توجد رسائل جديدة، انتظر
+        # إذا لم توجد رسائل جديدة بعد /start، انتظر
         if not new_messages:
             no_progress_count += 1
             if no_progress_count > 15:
-                # تحقق من آخر رسالة موجودة (قد تكون نجاحاً)
-                latest_msg = incoming_messages[-1]
-                latest_text = getattr(latest_msg, 'message', '') or ''
-                if any(kw in latest_text.lower() for kw in success_keywords) and not getattr(latest_msg, 'buttons', None):
-                    return True
                 return False
             await asyncio.sleep(1.0)
             continue
         
-        # 6. إعادة تعيين العداد ورفع آخر رسالة معالجة
         no_progress_count = 0
-        last_message_id = max(msg.id for msg in new_messages)
         
-        # 7. ابحث عن آخر رسالة تحتوي على طلب إرسال كود، أو أول رسالة جديدة
+        # ⚡️ الخطوة الثالثة: البحث عن رسالة تحتوي على طلب الكود
         verification_message = None
         for msg in new_messages:
             msg_text = getattr(msg, 'message', '') or ''
+            # تجاهل أي أمر يبدأ بـ /
             if msg_text.strip().startswith("/"):
                 continue
+            # البحث عن الكلمات الدالة على طلب إرسال كود
             if any(kw in msg_text for kw in ["أرسل", "التالي", "بالضبط", "اكتب", "retype", "type"]):
                 verification_message = msg
                 break
         
-        # إذا لم نجد، نأخذ أول رسالة جديدة
+        # إذا لم نجد، نأخذ أول رسالة جديدة (ولكن لا نرسل أكواداً عشوائية منها إذا لم تكن تحتوي على طلب)
         if verification_message is None:
-            verification_message = new_messages[0]
+            verification_message = next(
+                (msg for msg in reversed(new_messages) if not getattr(msg, 'message', '').strip().startswith("/")), 
+                None
+            )
+        
+        if verification_message is None:
+            await asyncio.sleep(1.0)
+            continue
         
         text = getattr(verification_message, 'message', '') or ''
         
-        # 8. فحص رسالة فشل/نجاح مباشرة
+        # فحص رسالة فشل/نجاح
         if any(kw in text.lower() for kw in failure_keywords):
+            logger.warning(f"❌ رسالة فشل ظهرت: {text[:50]}")
             return False
         if any(kw in text.lower() for kw in success_keywords) and not getattr(verification_message, 'buttons', None):
+            logger.info("✅ تم التحقق بنجاح")
             return True
         
-        # 9. استخراج الكود من الرسالة الصحيحة وإرساله
+        # استخراج الكود من الرسالة الصحيحة
         send_text = _extract_code_from_text(text)
         
         if send_text:
@@ -822,52 +839,18 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
             try:
                 await client.send_message(bot_entity, send_text)
                 logger.info(f"✅ تم إرسال النص: {send_text}")
-                await asyncio.sleep(1.5)  # انتظار رد البوت
+                await asyncio.sleep(1.5)
                 continue
             except Exception as e:
                 logger.warning(f"فشل إرسال النص: {e}")
                 await asyncio.sleep(1.0)
                 continue
         
-        # 10. إذا لم يوجد كود، ننتظر قليلاً
+        # إذا لم يوجد كود، ننتظر
         await asyncio.sleep(2.0)
     
-    # بعد انتهاء المحاولات، نتحقق من آخر رسالة للنجاح
-    try:
-        messages = await client.get_messages(bot_entity, limit=5)
-        incoming_messages = [msg for msg in messages if not msg.out]
-        for msg in incoming_messages:
-            msg_text = getattr(msg, 'message', '') or ''
-            if any(kw in msg_text.lower() for kw in success_keywords) and not getattr(msg, 'buttons', None):
-                return True
-    except Exception:
-        pass
-    
+    # بعد انتهاء المحاولات
     return False
-
-# ════════════════════════════════════════════════════════════
-# ═══ 9. دوال تنفيذ الخدمات ═══
-# ════════════════════════════════════════════════════════════
-
-async def _join_channel_and_schedule_leave(client, channel_refs):
-    """الانضمام للقنوات وجدولة المغادرة"""
-    if isinstance(channel_refs, str):
-        channel_refs = _parse_channel_refs(channel_refs)
-    if not channel_refs:
-        return
-    
-    for ref in channel_refs:
-        try:
-            if ref.startswith("invite:"):
-                await client(ImportChatInviteRequest(ref.split(":", 1)[1]))
-            else:
-                entity = await client.get_entity(ref)
-                await client(JoinChannelRequest(entity))
-            logger.info(f"✅ تم الانضمام للقناة: {ref}")
-        except Exception as exc:
-            if "USER_ALREADY_PARTICIPANT" not in str(exc).upper():
-                logger.warning(f"تعذر الانضمام للقناة {ref}: {exc}")
-
 async def _join_discussion_group(client, discussion):
     """الانضمام لمجموعة النقاش"""
     messages = getattr(discussion, "messages", None) or []
