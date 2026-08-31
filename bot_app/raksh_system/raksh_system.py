@@ -1211,7 +1211,6 @@ async def _execute_votes(session: Dict, params: Dict, is_first: bool) -> Tuple[b
         return False, f"❌ فشل التصويت: {str(e)}"
     finally:
         await client.disconnect()
-
 async def _execute_votes_ai(session, params, is_first):
     """تنفيذ تصويت مع تحقق - يقرأ الإيموجي المطلوب من رسالة التحقق ويضغط عليه.
        إذا لم يظهر زر تحقق، تعتبر العملية ناجحة مع استرداد نصف المبلغ.
@@ -1256,10 +1255,14 @@ async def _execute_votes_ai(session, params, is_first):
                 return False, "تعذر الوصول إلى القناة/المنشور."
 
             try:
-                messages = _as_message_list(await client.get_messages(post_entity, ids=post_id))
+                messages = await client.get_messages(post_entity, ids=post_id)
+                if isinstance(messages, (list, tuple)):
+                    messages = messages[0] if messages else None
+                else:
+                    messages = messages
                 if not messages:
                     return False, "المنشور غير موجود."
-                post_message = messages[0]
+                post_message = messages
             except Exception:
                 return False, "تعذر جلب المنشور."
 
@@ -1288,14 +1291,15 @@ async def _execute_votes_ai(session, params, is_first):
         verification_message_id = None
         verification_message = None
         for attempt in range(5):
-            msgs = _as_message_list(await client.get_messages(bot_entity, limit=50))
-            for m in msgs:
-                if getattr(m, "buttons", None) and not getattr(m, "url", None):
-                    verification_message = m
-                    verification_message_id = m.id
+            msgs = await client.get_messages(bot_entity, limit=50)
+            if isinstance(msgs, (list, tuple)):
+                for m in msgs:
+                    if getattr(m, "buttons", None) and not getattr(m, "url", None):
+                        verification_message = m
+                        verification_message_id = m.id
+                        break
+                if verification_message:
                     break
-            if verification_message:
-                break
             await asyncio.sleep(1.0)
 
         if verification_message is None or verification_message_id is None:
@@ -1303,13 +1307,13 @@ async def _execute_votes_ai(session, params, is_first):
             logger.info(f"لم يظهر زر تحقق بعد فتح البوت، تعتبر العملية ناجحة (بدون تحقق) للحساب {session['phone_number']}")
             return True, RAKSH_NO_VERIFICATION_MESSAGE
 
-        # 4) استخراج الإيموجي المطلوب من نص رسالة التحقق (باستخدام مكتبة re مباشرة)
+        # 4) استخراج الإيموجي المطلوب من نص رسالة التحقق
         verification_text = getattr(verification_message, "message", "") or getattr(verification_message, "text", "") or ""
         
         # 🔥 إضافة مهمة جداً: البحث عن الإيموجي في النص
         target_emoji = None
         emoji_pattern = re.compile(
-            "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E0-\U0000001F1FF]"
+            "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E0-\U0001F1FF]"
         )
         # نبحث عن الإيموجي في النص، ونأخذ آخر إيموجي موجود (غالباً هو المطلوب)
         found_emojis = emoji_pattern.findall(verification_text)
@@ -1436,6 +1440,7 @@ async def _execute_votes_ai(session, params, is_first):
         return False, f"❌ فشل: {str(e)[:80]}"
     finally:
         await client.disconnect()
+
 async def _execute_premium_reaction(session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
     """تنفيذ رشق تفاعل مميز"""
     client = TelegramClient(
