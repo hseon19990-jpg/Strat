@@ -1,7 +1,7 @@
 """
 نظام الرشق المتقدم - منفصل تماماً عن بقية البوت
 نسخة محسّنة مع دالة تحقق شاملة لجميع أنواع التحقق
-مع إصلاح مشكلة إرسال النص وحل المسائل (بدون ضغط أزرار عشوائية)
+مع إصلاح مشكلة إرسال النص (الحل النهائي)
 """
 
 from ..shared import *
@@ -655,18 +655,18 @@ async def _fetch_raksh_reactions_from_pool(
         await asyncio.gather(*tasks, return_exceptions=True)
 
 # ════════════════════════════════════════════════════════════
-# ═══ 7. حل التحقق الشامل (جميع الأنواع) مع التركيز على إرسال النص وحل المسائل ═══
+# ═══ 7. حل التحقق الشامل (جميع الأنواع) - النسخة النهائية ═══
 # ════════════════════════════════════════════════════════════
 
 async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) -> bool:
     """
     حل جميع أنواع التحقق في بوت الإحالة الإجباري:
-    - إرسال نص محدد (صيغ متعددة) -> يرسل النص
-    - مسائل رياضية -> يحل ويرسل النتيجة
-    - إيموجي -> يضغط على الزر المناسب
-    - مشاركة جهة اتصال -> يرسل جهة الاتصال
-    - أزرار تحقق/متابعة -> يضغط عليها
-    - لا يقوم بضغط أزرار عشوائية (تم حذف هذا القسم)
+    - إرسال نص محدد (صيغ متعددة) - الأولوية القصوى
+    - مسائل رياضية - الأولوية الثانية
+    - إيموجي - الأولوية الثالثة
+    - مشاركة جهة اتصال
+    - أزرار تحقق/متابعة
+    - لا يقوم بضغط أزرار عشوائية
     """
     # أنماط للبحث عن الإيموجي
     emoji_pattern = re.compile(
@@ -678,7 +678,7 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
     failure_keywords = ["فشل", "خطأ", "error", "failed", "غير صحيح", "محاولة", "انتهت", "مرفوض", "invalid", "expired"]
     
     last_id = 0
-    max_attempts = 30
+    max_attempts = 35
     used_buttons = set()
     no_progress_count = 0
     
@@ -698,7 +698,7 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
         newest = max((msg.id for msg in messages if msg.id), default=0)
         if newest <= last_id:
             no_progress_count += 1
-            if no_progress_count > 10:
+            if no_progress_count > 12:
                 logger.warning("لا توجد رسائل جديدة، قد يكون التحقق انتهى أو فشل")
                 # نتحقق من آخر رسالة بحثاً عن نجاح
                 latest_msg = messages[0]
@@ -753,18 +753,33 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
             return False
         
         # ===== 1. إرسال نص محدد (الأولوية القصوى) =====
-        # أنماط متعددة لالتقاط النص المطلوب
-        text_patterns = [
+        # محاولة استخراج النص المطلوب بطرق متعددة
+        send_text = None
+        
+        # الطريقة 1: البحث عن عبارة "أرسل النص التالي" أو "المرحلة الأولى" متبوعة بنص
+        patterns = [
             r'(?:الآن\s*أرسل\s*النص\s*التالي|المرحلة\s*الأولى:\s*أرسل\s*النص\s*التالي\s*بالضبط|أرسل\s*النص\s*التالي|اكتب|retype|type|أدخل|enter)\s*[:\-]?\s*([A-Za-z0-9]{6,})',
             r'النص\s*التالي\s*[:\-]?\s*([A-Za-z0-9]{6,})',
             r'([A-Za-z0-9]{6,})\s*$',  # نص منفصل في نهاية الرسالة
         ]
-        send_text = None
-        for pattern in text_patterns:
+        for pattern in patterns:
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
                 send_text = match.group(1).strip()
                 break
+        
+        # الطريقة 2: إذا لم ينجح، نبحث عن سطر منفصل يحتوي على 6-10 أحرف/أرقام
+        if not send_text:
+            lines = text.splitlines()
+            for line in lines:
+                line = line.strip()
+                # إذا كان السطر يحتوي على كلمة "أرسل" أو "التالي" نتجاوزه
+                if any(kw in line.lower() for kw in ["أرسل", "التالي", "اكتب", "retype"]):
+                    continue
+                # إذا كان طول السطر بين 6 و 12 حرفاً ويتكون من أحرف وأرقام فقط
+                if 6 <= len(line) <= 12 and re.match(r'^[A-Za-z0-9]+$', line):
+                    send_text = line
+                    break
         
         if send_text:
             logger.info(f"✅ تم التعرف على النص المطلوب: {send_text}")
@@ -912,8 +927,7 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
             await asyncio.sleep(1.0)
             continue
         
-        # ===== 6. تم حذف قسم الأزرار العشوائية (كان يضغط على أي زر) =====
-        # بدلاً من ذلك، إذا وصلنا هنا ولم نتعرف على أي شيء، ننتظر
+        # ===== 6. لا نضغط أزرار عشوائية =====
         logger.info("لم يتم التعرف على أي نوع تحقق، ننتظر...")
         await asyncio.sleep(1.0)
     
