@@ -248,6 +248,7 @@ def _clear_raksh_state(context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data["state"] = "main_menu"
 
 def _get_all_active_sessions(service_type: str | None = None) -> list[dict]:
+    """جلب كل الجلسات النشطة من قاعدة البيانات"""
     cache_key = f"sessions_{service_type or 'all'}"
     if cache_key in _RAKSH_SESSION_CACHE:
         cache_time = _RAKSH_SESSION_CACHE_TIME.get(cache_key, 0)
@@ -262,6 +263,7 @@ def _get_all_active_sessions(service_type: str | None = None) -> list[dict]:
             WHERE session_string IS NOT NULL
               AND BTRIM(session_string) <> ''
               AND deleted_at IS NULL
+              AND last_authorized IS NOT FALSE
             ORDER BY last_authorized DESC NULLS LAST, id ASC
             """
         ).fetchall()
