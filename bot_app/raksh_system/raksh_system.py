@@ -1109,8 +1109,65 @@ async def _execute_forced_ref_ai(session: Dict, params: Dict, is_first: bool) ->
     finally:
         await client.disconnect()
 
+# ════════════════════════════════════════════════════════════
+# ═══ 9. دوال مساعدة لفتح المنشورات ═══
+# ════════════════════════════════════════════════════════════
+
+async def _open_post_via_link(client, link: str) -> Tuple[Optional[Any], Optional[int]]:
+    """
+    فتح المنشور عبر الرابط مباشرة
+    - يدعم روابط القنوات العامة والخاصة
+    - يعيد الكيان ومعرف الرسالة
+    """
+    try:
+        # تحليل الرابط
+        if "t.me/" in link or "telegram.me/" in link:
+            # استخراج معلومات المنشور من الرابط
+            parsed = urlparse(link if "://" in link else f"https://{link}")
+            path = parsed.path.strip("/")
+            parts = [p for p in path.split("/") if p]
+            
+            if len(parts) >= 2 and parts[-1].isdigit():
+                # تحديد نوع الكيان
+                if parts[0] == "c" and len(parts) >= 3:
+                    # قناة خاصة
+                    channel_id = int(parts[1])
+                    msg_id = int(parts[-1])
+                    entity = await client.get_entity(f"-100{channel_id}")
+                    return entity, msg_id
+                elif parts[0] == "s" and len(parts) >= 3:
+                    # ستوري
+                    username = parts[0]
+                    msg_id = int(parts[-1])
+                    entity = await client.get_entity(f"@{username}")
+                    return entity, msg_id
+                else:
+                    # قناة عامة أو مستخدم
+                    username = parts[0].lstrip("@")
+                    msg_id = int(parts[-1])
+                    entity = await client.get_entity(f"@{username}")
+                    return entity, msg_id
+            elif len(parts) == 1 and parts[0].startswith("+"):
+                # دعوة قناة خاصة
+                invite_hash = parts[0].lstrip("+")
+                try:
+                    updates = await client(ImportChatInviteRequest(invite_hash))
+                    if updates.chats:
+                        return updates.chats[0], None
+                except Exception:
+                    pass
+        
+        # محاولة فتح الرابط مباشرة
+        entity = await client.get_entity(link)
+        return entity, None
+    except Exception as e:
+        logger.warning(f"فشل فتح الرابط {link}: {e}")
+        return None, None
+
+# ─── تنفيذ خدمات محددة (متابعة) ───
+
 async def _execute_comment(session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
-    """تنفيذ رشق تعليق - إصلاح مشكلة عدم التعليق"""
+    """تنفيذ رشق تعليق - فتح المنشور عبر الرابط أولاً"""
     client = TelegramClient(
         StringSession(session["session_string"]),
         int(TELEGRAM_API_ID),
@@ -1122,17 +1179,41 @@ async def _execute_comment(session: Dict, params: Dict, is_first: bool) -> Tuple
             _mark_raksh_session_unauthorized(session.get("phone_number"))
             return False, "الجلسة غير مصرح بها"
         
-        if is_first and params.get("channel_ref"):
-            await _join_channel_and_schedule_leave(client, params["channel_ref"])
+        # محاولة فتح المنشور عبر الرابط مباشرة
+        entity = None
+        msg_id = None
         
+        # تحليل الرابط
         channel_ref, msg_id = _parse_post_link(params["link"])
-        if not channel_ref:
-            return False, "رابط المنشور غير صحيح"
+        if channel_ref:
+            try:
+                entity = await client.get_entity(channel_ref)
+            except Exception:
+                # إذا فشل الحصول على الكيان، نجرب فتح الرابط مباشرة
+                entity, msg_id = await _open_post_via_link(client, params["link"])
+                if not entity:
+                    return False, "تعذر الوصول للمنشور"
+        else:
+            # محاولة فتح الرابط مباشرة
+            entity, msg_id = await _open_post_via_link(client, params["link"])
+            if not entity:
+                return False, "الرابط غير صحيح"
         
-        entity = await client.get_entity(channel_ref)
+        if not msg_id:
+            # إذا لم نستطع تحديد معرف الرسالة، نجرب الحصول عليه من الرابط
+            _, msg_id = _parse_post_link(params["link"])
+            if not msg_id:
+                return False, "تعذر تحديد المنشور"
+        
         comment_text = params.get("comment_text", "")
         if not comment_text:
             return False, "نص التعليق فارغ"
+        
+        # محاولة الانضمام للقناة إذا لزم الأمر
+        try:
+            await client(JoinChannelRequest(entity))
+        except Exception:
+            pass  # قد يكون الحساب مشتركاً بالفعل
         
         # محاولة التعليق على المنشور
         try:
@@ -1156,12 +1237,25 @@ async def _execute_comment(session: Dict, params: Dict, is_first: bool) -> Tuple
                 # حتى لو لم نجد التعليق، نعتبره ناجحاً إذا لم يكن هناك خطأ
                 return True, f"✅ تم إرسال التعليق من {session['phone_number']}"
         except Exception as e:
+            logger.warning(f"فشل التعليق كرد على المنشور من {session['phone_number']}: {e}")
+            
             # محاولة بديلة: إرسال كرسالة عادية
             try:
                 await client.send_message(entity, comment_text)
                 return True, f"✅ تم إرسال التعليق من {session['phone_number']}"
             except Exception as e2:
                 logger.error(f"فشل التعليق من {session['phone_number']}: {str(e)} | {str(e2)}")
+                
+                # محاولة فتح المنشور عبر الرابط ثم إرسال التعليق
+                try:
+                    # إعادة المحاولة مع فتح الرابط
+                    entity2, msg_id2 = await _open_post_via_link(client, params["link"])
+                    if entity2 and msg_id2:
+                        await client.send_message(entity2, comment_text, reply_to=msg_id2)
+                        return True, f"✅ تم التعليق من {session['phone_number']}"
+                except Exception as e3:
+                    return False, f"❌ فشل التعليق: {str(e3)}"
+                
                 return False, f"❌ فشل التعليق: {str(e2)}"
     except Exception as e:
         logger.error(f"خطأ عام في التعليق من {session['phone_number']}: {str(e)}")
@@ -1514,7 +1608,7 @@ async def _execute_votes_ai(session, params, is_first):
         await client.disconnect()
 
 async def _execute_premium_reaction(session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
-    """تنفيذ رشق تفاعل مميز - يتفاعل تلقائياً مع المنشور"""
+    """تنفيذ رشق تفاعل مميز - فتح المنشور عبر الرابط أولاً"""
     client = TelegramClient(
         StringSession(session["session_string"]),
         int(TELEGRAM_API_ID),
@@ -1526,14 +1620,37 @@ async def _execute_premium_reaction(session: Dict, params: Dict, is_first: bool)
             _mark_raksh_session_unauthorized(session.get("phone_number"))
             return False, "الجلسة غير مصرح بها"
         
-        if is_first and params.get("channel_ref"):
-            await _join_channel_and_schedule_leave(client, params["channel_ref"])
+        # محاولة فتح المنشور عبر الرابط مباشرة
+        entity = None
+        msg_id = None
         
+        # تحليل الرابط
         channel_ref, msg_id = _parse_post_link(params["link"])
-        if not channel_ref:
-            return False, "رابط المنشور غير صحيح"
+        if channel_ref:
+            try:
+                entity = await client.get_entity(channel_ref)
+            except Exception:
+                # إذا فشل الحصول على الكيان، نجرب فتح الرابط مباشرة
+                entity, msg_id = await _open_post_via_link(client, params["link"])
+                if not entity:
+                    return False, "تعذر الوصول للمنشور"
+        else:
+            # محاولة فتح الرابط مباشرة
+            entity, msg_id = await _open_post_via_link(client, params["link"])
+            if not entity:
+                return False, "الرابط غير صحيح"
         
-        entity = await client.get_entity(channel_ref)
+        if not msg_id:
+            # إذا لم نستطع تحديد معرف الرسالة، نجرب الحصول عليه من الرابط
+            _, msg_id = _parse_post_link(params["link"])
+            if not msg_id:
+                return False, "تعذر تحديد المنشور"
+        
+        # محاولة الانضمام للقناة إذا لزم الأمر
+        try:
+            await client(JoinChannelRequest(entity))
+        except Exception:
+            pass  # قد يكون الحساب مشتركاً بالفعل
         
         # اختيار تفاعل تلقائي
         reaction = params.get("reaction")
@@ -1603,6 +1720,21 @@ async def _execute_premium_reaction(session: Dict, params: Dict, is_first: bool)
             except Exception as e:
                 logger.warning(f"فشل التفاعل العادي من {session['phone_number']}: {e}")
                 
+                # محاولة فتح المنشور عبر الرابط ثم التفاعل
+                try:
+                    entity2, msg_id2 = await _open_post_via_link(client, params["link"])
+                    if entity2 and msg_id2:
+                        await client(
+                            SendReactionRequest(
+                                peer=entity2,
+                                msg_id=msg_id2,
+                                reaction=ReactionEmoji(emoticon=reaction),
+                            )
+                        )
+                        return True, f"✅ تم التفاعل من {session['phone_number']}"
+                except Exception:
+                    pass
+                
                 # محاولة تفاعلات بديلة
                 alternative_reactions = ["❤️", "👍", "🔥", "😍", "🤩", "✨"]
                 for alt_reaction in alternative_reactions:
@@ -1625,10 +1757,6 @@ async def _execute_premium_reaction(session: Dict, params: Dict, is_first: bool)
         return False, f"❌ فشل: {str(e)}"
     finally:
         await client.disconnect()
-
-# ════════════════════════════════════════════════════════════
-# ═══ 9. دوال مساعدة إضافية ═══
-# ════════════════════════════════════════════════════════════
 
 def _find_bot_start_link(message) -> Tuple[Optional[str], Optional[str]]:
     """استخراج رابط البوت من أزرار المنشور"""
