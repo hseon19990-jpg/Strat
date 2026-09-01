@@ -76,13 +76,13 @@ RAKSH_MAX_EXECUTIONS_PER_HOUR = 100
 
 RAKSH_SERVICES: Dict[str, ServiceConfig] = {
     "story": ServiceConfig(
-        name="📱 رشق مشاهدة ستوري وتفاعل",
+        name="📱 رشق مشاهدة ستوري وتفاعل تلقائي",
         price_points=30,
         points_quantity=1,
         price_stars=1,
         stars_quantity=10,
-        has_channel=True,
-        has_reaction=True,
+        has_channel=False,
+        has_reaction=False,
         has_ai=False,
         needs_link=True,
         min_delay=60,
@@ -183,7 +183,7 @@ RAKSH_SERVICES: Dict[str, ServiceConfig] = {
 }
 
 RAKSH_SERVICE_LABELS = {
-    "story": "📱 مشاهدة ستوري وتفاعل",
+    "story": "📱 مشاهدة ستوري وتفاعل تلقائي",
     "forced_ref": "🔑 إحالة بوت إجباري",
     "forced_ref_ai": "🤖 إحالة بوت إجباري مع تحقق",
     "comment": "💬 تعليق",
@@ -384,7 +384,7 @@ async def _remove_invalid_raksh_sessions(failed_phones: List[str]) -> None:
 # ════════════════════════════════════════════════════════════
 
 def _parse_story_link(value: str) -> Tuple[Optional[str], Optional[int]]:
-    """تحليل روابط الستوري"""
+    """تحليل روابط الستوري والمنشورات"""
     value = (value or "").strip().strip("<>")
     try:
         parsed = urlparse(value if "://" in value else f"https://{value}")
@@ -392,8 +392,16 @@ def _parse_story_link(value: str) -> Tuple[Optional[str], Optional[int]]:
             return None, None
         
         parts = [part for part in parsed.path.strip("/").split("/") if part]
+        
+        # صيغة: t.me/username/s/123 (ستوري)
         if len(parts) == 3 and parts[1] in {"s", "story"} and parts[2].isdigit():
             return f"@{parts[0].lstrip('@')}", int(parts[2])
+        
+        # صيغة: t.me/username/123 (منشور عادي)
+        if len(parts) == 2 and parts[1].isdigit():
+            return f"@{parts[0].lstrip('@')}", int(parts[1])
+        
+        # صيغة: t.me/c/1234567890/s/123 (ستوري في قناة)
         if (
             len(parts) == 4
             and parts[0] == "c"
@@ -402,6 +410,16 @@ def _parse_story_link(value: str) -> Tuple[Optional[str], Optional[int]]:
             and parts[3].isdigit()
         ):
             return f"-100{parts[1]}", int(parts[3])
+        
+        # صيغة: t.me/c/1234567890/123 (منشور في قناة)
+        if (
+            len(parts) == 3
+            and parts[0] == "c"
+            and parts[1].isdigit()
+            and parts[2].isdigit()
+        ):
+            return f"-100{parts[1]}", int(parts[2])
+        
     except Exception:
         pass
     return None, None
@@ -864,6 +882,7 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
     
     # إذا انتهت المحاولات بدون إجراء، نرجع فشل
     return False
+
 async def _join_discussion_group(client, discussion):
     """الانضمام لمجموعة النقاش"""
     messages = getattr(discussion, "messages", None) or []
@@ -934,7 +953,7 @@ async def _send_vote_and_check(client, peer, msg_id: int, option) -> bool:
 # ─── تنفيذ خدمات محددة ───
 
 async def _execute_story(session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
-    """تنفيذ رشق ستوري"""
+    """تنفيذ رشق ستوري - تفاعل تلقائي بدون اختيار"""
     client = TelegramClient(
         StringSession(session["session_string"]),
         int(TELEGRAM_API_ID),
@@ -946,21 +965,34 @@ async def _execute_story(session: Dict, params: Dict, is_first: bool) -> Tuple[b
             _mark_raksh_session_unauthorized(session.get("phone_number"))
             return False, "الجلسة غير مصرح بها"
         
-        if is_first and params.get("channel_ref"):
-            await _join_channel_and_schedule_leave(client, params["channel_ref"])
+        # إزالة الانضمام للقنوات
+        # if is_first and params.get("channel_ref"):
+        #     await _join_channel_and_schedule_leave(client, params["channel_ref"])
         
+        # تحليل الرابط - يدعم الستوري والمنشورات العادية
         entity_ref, story_id = _parse_story_link(params["link"])
         if not entity_ref or not story_id:
-            return False, "رابط الستوري غير صحيح"
+            # محاولة تحليل كمنشور عادي
+            entity_ref, post_id = _parse_post_link(params["link"])
+            if not entity_ref or not post_id:
+                return False, "الرابط غير صحيح"
+            story_id = post_id
         
         entity = await client.get_entity(entity_ref)
-        await client(IncrementStoryViewsRequest(peer=entity, id=story_id))
         
-        reaction = params.get("reaction")
-        if not reaction or reaction == "random":
-            reaction = random.choice(list(RAKSH_REACTIONS.values()))
+        # محاولة مشاهدة الستوري
+        try:
+            await client(IncrementStoryViewsRequest(peer=entity, id=story_id))
+        except Exception:
+            # إذا لم يكن ستوري، نتعامل كمنشور عادي
+            pass
+        
+        # تفاعل تلقائي
+        reactions_to_try = ["❤️", "🔥", "👍", "😍", "🤩", "✨", "💯", "👏"]
+        reaction = random.choice(reactions_to_try)
         
         try:
+            # محاولة التفاعل على الستوري
             await client(
                 SendReactionRequest(
                     peer=entity,
@@ -969,9 +1001,20 @@ async def _execute_story(session: Dict, params: Dict, is_first: bool) -> Tuple[b
                 )
             )
             return True, f"✅ تمت المشاهدة والتفاعل من {session['phone_number']}"
-        except Exception as reaction_error:
-            logger.warning(f"تفاعل فاشل للستوري {session['phone_number']}: {reaction_error}")
-            return True, f"✅ تمت المشاهدة من {session['phone_number']} (تعذر التفاعل)"
+        except Exception:
+            # إذا فشل التفاعل على الستوري، نجرب كمنشور عادي
+            try:
+                await client(
+                    SendReactionRequest(
+                        peer=entity,
+                        msg_id=story_id,
+                        reaction=ReactionEmoji(emoticon=reaction),
+                    )
+                )
+                return True, f"✅ تمت المشاهدة والتفاعل من {session['phone_number']}"
+            except Exception as reaction_error:
+                logger.warning(f"تفاعل فاشل للستوري {session['phone_number']}: {reaction_error}")
+                return True, f"✅ تمت المشاهدة من {session['phone_number']} (تعذر التفاعل)"
     except Exception as e:
         return False, f"❌ فشل: {str(e)}"
     finally:
@@ -1211,6 +1254,7 @@ async def _execute_votes(session: Dict, params: Dict, is_first: bool) -> Tuple[b
         return False, f"❌ فشل التصويت: {str(e)}"
     finally:
         await client.disconnect()
+
 async def _execute_votes_ai(session, params, is_first):
     """تنفيذ تصويت مع تحقق - يقرأ الإيموجي المطلوب من رسالة التحقق ويضغط عليه.
        إذا لم يظهر زر تحقق، تعتبر العملية ناجحة مع استرداد نصف المبلغ.
@@ -1979,7 +2023,7 @@ def raksh_confirm_kb(service_type: str, quantity: int, total_cost: int, payment_
 def _get_link_instruction(service_type: str) -> str:
     """تعليمات الرابط حسب الخدمة"""
     instructions = {
-        "story": "https://t.me/username/s/123 أو https://t.me/username/story/123",
+        "story": "https://t.me/username/s/123 أو https://t.me/username/123",
         "forced_ref": "@BotUsername start123  أو  t.me/BotUsername?start=123",
         "forced_ref_ai": "@BotUsername start123  أو  t.me/BotUsername?start=123",
         "comment": "https://t.me/channel/123",
@@ -2024,11 +2068,13 @@ def _raksh_link_error(service_type: str, value: str) -> Optional[str]:
         return None
     
     if service_type == "story":
-        if not all(_parse_story_link(value)):
+        # التحقق من أن الرابط يحتوي t.me
+        if "t.me/" not in value and "telegram.me/" not in value:
             return (
-                "⚠️ رابط الستوري غير صحيح.\n\n"
+                "⚠️ الرابط يجب أن يكون رابط تيليجرام.\n\n"
                 "أرسله بهذا الشكل:\n"
-                "https://t.me/username/s/123"
+                "https://t.me/username/s/123\n"
+                "أو: https://t.me/username/123"
             )
         return None
     
@@ -2196,18 +2242,21 @@ async def handle_raksh_callback(
         
         _clear_raksh_state(context)
         context.user_data["raksh_service"] = service_type
-        context.user_data["raksh_step"] = "channel"
+        
+        # إزالة طلب القنوات والانتقال مباشرة لطلب الرابط
+        context.user_data["raksh_step"] = "link"
         
         await query.edit_message_text(
             f"{svc.name}\n\n"
             f"💰 السعر: {_raksh_rate_text(service_type, 'points')}\n"
             f"⭐ السعر: {_raksh_rate_text(service_type, 'stars')}\n\n"
-            "📢 *أرسل القنوات الإجبارية:*\n"
-            "يمكنك إرسال أكثر من قناة، كل قناة في سطر أو مفصولة بمسافة\n"
-            "مثال: @channel1\n@channel2\n\n"
-            "أو اضغط تخطي:",
+            f"🔗 *أرسل رابط المنشور أو الستوري:*\n"
+            f"{_get_link_instruction(service_type)}\n\n"
+            f"سيتم التفاعل تلقائياً بدون اختيار التفاعل.",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=raksh_channel_kb()
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+            ])
         )
         return
     
@@ -2522,7 +2571,7 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return True
         
         # خدمات تحتاج تفاعل
-        if svc and svc.has_reaction:
+        if svc and svc.has_reaction and service_type != "story":
             if service_type == "premium_reaction":
                 post_ref, post_id = _parse_post_link(text)
                 if not post_ref or post_id is None:
@@ -2581,7 +2630,7 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return True
         
-        # خدمات عادية
+        # خدمات عادية (بما فيها story)
         context.user_data["raksh_step"] = "quantity"
         max_qty = _get_request_limit(user.id, service_type)
         if max_qty < 1:
@@ -2761,6 +2810,7 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"العدد: {quantity}\n"
             f"💰 السعر بالنقاط: {points_cost} نقطة\n"
             f"⭐ السعر بالنجوم: {stars_cost} نجمة\n\n"
+            f"سيتم التفاعل تلقائياً بعد مشاهدة المنشور.\n\n"
             f"اختر طريقة الدفع:",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=raksh_payment_kb(service_type, quantity, points_cost, stars_cost)
