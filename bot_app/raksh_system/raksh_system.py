@@ -72,10 +72,10 @@ RAKSH_PAID_REACTION = "__raksh_paid_reaction__"
 RAKSH_PAID_REACTION_LABEL = "⭐ تفاعل مدفوع"
 RAKSH_CUSTOM_REACTION_PREFIX = "__raksh_custom_reaction__:"
 RAKSH_REACTION_LOOKUP_MAX_SESSIONS = 3
-RAKSH_REACTION_LOOKUP_TIMEOUT_SECONDS = 5
-RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS = 4
-RAKSH_MIN_DELAY_SECONDS = 60
-RAKSH_MAX_DELAY_SECONDS = 180
+RAKSH_REACTION_LOOKUP_TIMEOUT_SECONDS = 3
+RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS = 3
+RAKSH_MIN_DELAY_SECONDS = 1
+RAKSH_MAX_DELAY_SECONDS = 1
 RAKSH_VOTE_DELAY_SECONDS = 3
 RAKSH_MAX_EXECUTIONS_PER_DAY = 1000
 RAKSH_MAX_EXECUTIONS_PER_HOUR = 100
@@ -130,8 +130,9 @@ RAKSH_SERVICES: Dict[str, ServiceConfig] = {
         has_reaction=False,
         has_ai=False,
         needs_link=True,
-        min_delay=60,
-        max_delay=120
+        min_delay=1,
+        max_delay=1,
+        max_concurrent=5
     ),
     "poll": ServiceConfig(
         name="📊 رشق استفتاء",
@@ -183,8 +184,9 @@ RAKSH_SERVICES: Dict[str, ServiceConfig] = {
         has_reaction=True,
         has_ai=False,
         needs_link=True,
-        min_delay=30,
-        max_delay=60
+        min_delay=1,
+        max_delay=1,
+        max_concurrent=5
     ),
 }
 
@@ -1243,11 +1245,25 @@ async def _execute_comment(session: Dict, params: Dict, is_first: bool) -> Tuple
             return False, "تعذر تحديد مساحة التعليقات."
 
         await _join_discussion_group(client, discussion)
-        await client.send_message(
+        sent_message = await client.send_message(
             discussion_peer,
             comment_text,
             reply_to=discussion_message.id,
         )
+
+        # قراءة الرسالة بعد الإرسال للتأكد أن Telegram قبل التعليق فعلاً.
+        sent_id = getattr(sent_message, "id", None)
+        if not sent_id:
+            return False, "تم الإرسال بدون معرف رسالة قابل للتحقق"
+        verified_message = await asyncio.wait_for(
+            client.get_messages(discussion_peer, ids=sent_id),
+            timeout=RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS,
+        )
+        if isinstance(verified_message, (list, tuple)):
+            verified_message = verified_message[0] if verified_message else None
+        if not verified_message:
+            return False, "تعذر التحقق من ظهور التعليق"
+
         return True, f"✅ تم التعليق من {session['phone_number']}"
     except Exception as e:
         logger.error(f"خطأ عام في التعليق من {session['phone_number']}: {str(e)}")
@@ -1654,7 +1670,6 @@ async def _execute_premium_reaction(session: Dict, params: Dict, is_first: bool)
                     reaction=[_build_message_reaction(reaction)],
                 )
             )
-            await asyncio.sleep(1.0)
             label = "التفاعل المدفوع" if reaction == RAKSH_PAID_REACTION else "التفاعل"
             return True, f"✅ تم {label} من {session['phone_number']}"
         except Exception as e:
@@ -1989,16 +2004,18 @@ async def _execute_raksh_parallel(
             failed_details.append("الجلسة قيد الاستخدام")
             return
         
-        async with session_lock:
-            try:
-                ok, msg = await executor(
-                    session=session,
-                    params=params,
-                    is_first=(index == 0),
-                )
-            except Exception as e:
-                ok = False
-                msg = f"❌ خطأ: {str(e)}"
+        # تطبيق حد التوازي فعلياً؛ كان الـ semaphore معرّفاً لكنه غير مستخدم.
+        async with semaphore:
+            async with session_lock:
+                try:
+                    ok, msg = await executor(
+                        session=session,
+                        params=params,
+                        is_first=(index == 0),
+                    )
+                except Exception as e:
+                    ok = False
+                    msg = f"❌ خطأ: {str(e)}"
         
         if ok:
             success_count += 1
