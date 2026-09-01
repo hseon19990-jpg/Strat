@@ -23,7 +23,7 @@ from telethon import TelegramClient, functions
 from telethon.sessions import StringSession
 from telethon.tl.functions.channels import JoinChannelRequest, LeaveChannelRequest
 from telethon.tl.functions.messages import ImportChatInviteRequest, SendVoteRequest, StartBotRequest, GetBotCallbackAnswerRequest
-from telethon.tl.functions.contacts import ResolveUsernameRequest, SendContactRequest
+from telethon.tl.functions.contacts import ResolveUsernameRequest
 from telethon.tl.functions.stories import IncrementStoryViewsRequest, SendReactionRequest
 from telethon.tl.types import ReactionEmoji, InputMediaContact
 from urllib.parse import parse_qs, urlparse
