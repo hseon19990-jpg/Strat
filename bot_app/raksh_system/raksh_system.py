@@ -68,6 +68,7 @@ RAKSH_CUSTOM_REACTION_PREFIX = "__raksh_custom_reaction__:"
 RAKSH_REACTION_LOOKUP_MAX_SESSIONS = 3
 RAKSH_REACTION_LOOKUP_TIMEOUT_SECONDS = 5
 RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS = 4
+PREMIUM_REACTION_MAX_CONCURRENCY = 12
 RAKSH_MIN_DELAY_SECONDS = 60
 RAKSH_MAX_DELAY_SECONDS = 180
 RAKSH_VOTE_DELAY_SECONDS = 3
@@ -177,8 +178,9 @@ RAKSH_SERVICES: Dict[str, ServiceConfig] = {
         has_reaction=True,
         has_ai=False,
         needs_link=True,
-        min_delay=30,
-        max_delay=60
+        min_delay=0,
+        max_delay=0,
+        max_concurrent=PREMIUM_REACTION_MAX_CONCURRENCY,
     ),
 }
 
@@ -1126,7 +1128,7 @@ async def _open_post_via_link(client, link: str) -> Tuple[Optional[Any], Optiona
             parsed = urlparse(link if "://" in link else f"https://{link}")
             path = parsed.path.strip("/")
             parts = [p for p in path.split("/") if p]
-            
+
             if len(parts) >= 2 and parts[-1].isdigit():
                 # تحديد نوع الكيان
                 if parts[0] == "c" and len(parts) >= 3:
@@ -1218,7 +1220,7 @@ async def _execute_comment(session: Dict, params: Dict, is_first: bool) -> Tuple
             # إرسال التعليق كرد على البوست
             await client.send_message(entity, comment_text, reply_to=msg_id)
             await asyncio.sleep(0.5)  # انتظار بسيط للتأكيد
-            
+
             # التحقق من وصول التعليق
             messages = await client.get_messages(entity, limit=5)
             found_comment = False
@@ -1228,7 +1230,7 @@ async def _execute_comment(session: Dict, params: Dict, is_first: bool) -> Tuple
                     getattr(msg, "out", False)):
                     found_comment = True
                     break
-            
+
             if found_comment:
                 return True, f"✅ تم التعليق من {session['phone_number']}"
             else:
@@ -1236,7 +1238,7 @@ async def _execute_comment(session: Dict, params: Dict, is_first: bool) -> Tuple
                 return True, f"✅ تم إرسال التعليق من {session['phone_number']}"
         except Exception as e:
             logger.warning(f"فشل التعليق كرد على البوست من {session['phone_number']}: {e}")
-            
+
             # محاولة بديلة: إرسال كرسالة عادية
             try:
                 await client.send_message(entity, comment_text)
@@ -1659,15 +1661,15 @@ async def _execute_premium_reaction(session: Dict, params: Dict, is_first: bool)
         if reaction == RAKSH_PAID_REACTION:
             # تفاعل مدفوع
             try:
-                await client(
-                    SendReactionRequest(
+                await asyncio.wait_for(
+                    client(SendReactionRequest(
                         peer=entity,
                         msg_id=msg_id,
                         reaction=ReactionEmoji(emoticon="⭐"),
                         big=True,
-                    )
+                    )),
+                    timeout=RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS,
                 )
-                await asyncio.sleep(0.5)
                 return True, f"✅ تم التفاعل المدفوع من {session['phone_number']}"
             except Exception as e:
                 logger.warning(f"فشل التفاعل المدفوع من {session['phone_number']}: {e}")
@@ -1687,31 +1689,16 @@ async def _execute_premium_reaction(session: Dict, params: Dict, is_first: bool)
             # تفاعل عادي
             try:
                 # محاولة التفاعل بالإيموجي المحدد
-                await client(
-                    SendReactionRequest(
+                await asyncio.wait_for(
+                    client(SendReactionRequest(
                         peer=entity,
                         msg_id=msg_id,
                         reaction=ReactionEmoji(emoticon=reaction),
-                    )
+                    )),
+                    timeout=RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS,
                 )
-                await asyncio.sleep(0.5)
-                
-                # التحقق من نجاح التفاعل
-                try:
-                    messages = await client.get_messages(entity, ids=msg_id)
-                    if isinstance(messages, (list, tuple)):
-                        messages = messages[0] if messages else None
-                    
-                    if messages:
-                        reactions = getattr(getattr(messages, "reactions", None), "results", [])
-                        for item in reactions:
-                            if getattr(getattr(item, "reaction", None), "emoticon", None) == reaction:
-                                # إذا كان التفاعل من الحساب نفسه
-                                if getattr(item, "chosen", False):
-                                    return True, f"✅ تم التفاعل من {session['phone_number']}"
-                except Exception:
-                    pass
-                
+                # Telegram only returns successfully after accepting the
+                # request. Avoid a second get_messages round trip per account.
                 return True, f"✅ تم التفاعل من {session['phone_number']}"
             except Exception as e:
                 logger.warning(f"فشل التفاعل العادي من {session['phone_number']}: {e}")
@@ -1720,12 +1707,13 @@ async def _execute_premium_reaction(session: Dict, params: Dict, is_first: bool)
                 try:
                     entity2, msg_id2 = await _open_post_via_link(client, params["link"])
                     if entity2 and msg_id2:
-                        await client(
-                            SendReactionRequest(
+                        await asyncio.wait_for(
+                            client(SendReactionRequest(
                                 peer=entity2,
                                 msg_id=msg_id2,
                                 reaction=ReactionEmoji(emoticon=reaction),
-                            )
+                            )),
+                            timeout=RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS,
                         )
                         return True, f"✅ تم التفاعل من {session['phone_number']}"
                 except Exception:
@@ -1742,7 +1730,6 @@ async def _execute_premium_reaction(session: Dict, params: Dict, is_first: bool)
                                 reaction=ReactionEmoji(emoticon=alt_reaction),
                             )
                         )
-                        await asyncio.sleep(0.5)
                         return True, f"✅ تم التفاعل بـ {alt_reaction} من {session['phone_number']}"
                     except Exception:
                         continue
@@ -1877,7 +1864,7 @@ def _reserve_raksh_execution_slot(user_id: int, service_type: str, phone_number:
                 "SELECT pg_advisory_xact_lock(hashtext(%s))",
                 (f"raksh-hourly:{user_id}",),
             )
-            
+
             # التحقق من الحد اليومي
             if RAKSH_MAX_EXECUTIONS_PER_DAY > 0:
                 row = c.execute(
@@ -2061,43 +2048,44 @@ async def _execute_raksh_parallel(
     
     async def execute_one(session, index):
         nonlocal success_count
-        phone = session["phone_number"]
-        if phone in used_phones:
-            return
-        used_phones.add(phone)
-        
-        if not _reserve_raksh_execution_slot(user_id, service_type, phone):
-            failed_phones.append(phone)
-            failed_details.append("تم تجاوز حد التنفيذ")
-            return
-        
-        session_lock = _get_raksh_session_lock(phone)
-        if session_lock.locked():
-            failed_phones.append(phone)
-            failed_details.append("الجلسة قيد الاستخدام")
-            return
-        
-        async with session_lock:
-            try:
-                ok, msg = await executor(
-                    session=session,
-                    params=params,
-                    is_first=(index == 0),
-                )
-            except Exception as e:
-                ok = False
-                msg = f"❌ خطأ: {str(e)}"
-        
-        if ok:
-            success_count += 1
-            success_phones.append(phone)
-            success_details.append(msg)
-        else:
-            failed_phones.append(phone)
-            failed_details.append(msg)
-        
-        if progress_callback:
-            await progress_callback(index + 1, quantity, success_count, len(failed_details))
+        async with semaphore:
+            phone = session["phone_number"]
+            if phone in used_phones:
+                return
+            used_phones.add(phone)
+
+            if not _reserve_raksh_execution_slot(user_id, service_type, phone):
+                failed_phones.append(phone)
+                failed_details.append("تم تجاوز حد التنفيذ")
+                return
+
+            session_lock = _get_raksh_session_lock(phone)
+            if session_lock.locked():
+                failed_phones.append(phone)
+                failed_details.append("الجلسة قيد الاستخدام")
+                return
+
+            async with session_lock:
+                try:
+                    ok, msg = await executor(
+                        session=session,
+                        params=params,
+                        is_first=(index == 0),
+                    )
+                except Exception as e:
+                    ok = False
+                    msg = f"❌ خطأ: {str(e)}"
+
+            if ok:
+                success_count += 1
+                success_phones.append(phone)
+                success_details.append(msg)
+            else:
+                failed_phones.append(phone)
+                failed_details.append(msg)
+
+            if progress_callback:
+                await progress_callback(index + 1, quantity, success_count, len(failed_details))
     
     tasks = []
     for i, session in enumerate(sessions[:quantity]):

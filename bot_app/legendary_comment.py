@@ -51,6 +51,8 @@ STARS_PRICES = {
 LEGENDARY_STAY_HOURS = 24
 MIN_DELAY_MINUTES = 1
 MAX_DELAY_MINUTES = 8
+PREMIUM_REACTION_MAX_CONCURRENCY = 12
+PREMIUM_REACTION_ACCOUNT_TIMEOUT_SECONDS = 30
 # The verification vote flow used to process one account at a time and then
 # sleep for 60-180 seconds.  A 30-account test could therefore take 15+
 # minutes even when Telegram and the captcha provider were healthy.
@@ -275,7 +277,8 @@ def get_delay_seconds(
     """
     Get delay between accounts.
     - Owner: can set custom delay (e.g., "120", "60-180")
-    - votes_ai: no artificial delay (it runs in bounded parallel waves)
+    - votes_ai and premium reactions: no artificial delay (they run in
+      bounded parallel batches)
     - Other members: 1-8 minutes random
     """
     if is_owner and custom_delay:
@@ -293,6 +296,8 @@ def get_delay_seconds(
     # Verification votes are launched concurrently by execute_batch. Keep this
     # fallback at zero for any legacy caller that still asks for a delay.
     if service_type == "votes_ai":
+        return 0
+    if service_type == "premium_reaction":
         return 0
 
     # Default for the remaining legendary services: 1-8 minutes.
@@ -678,11 +683,14 @@ async def _execute_premium_reaction(
         post_entity = await client.get_entity(post_ref)
         
         from telethon.tl.types import ReactionEmoji
-        await client(functions.messages.SendReactionRequest(
-            peer=post_entity,
-            msg_id=post_id,
-            reaction=[ReactionEmoji(emoticon=reaction_text)]
-        ))
+        await asyncio.wait_for(
+            client(functions.messages.SendReactionRequest(
+                peer=post_entity,
+                msg_id=post_id,
+                reaction=[ReactionEmoji(emoticon=reaction_text)]
+            )),
+            timeout=20,
+        )
         
         return True, f"✅ تم التفاعل من {session['phone_number']}"
     except Exception as exc:
@@ -723,6 +731,13 @@ async def execute_batch(
             params=params,
             is_owner=is_owner,
             custom_delay=custom_delay,
+            progress_callback=progress_callback,
+        )
+    if service_type == "premium_reaction":
+        return await _execute_parallel_premium_reaction_batch(
+            quantity=quantity,
+            sessions=sessions,
+            params=params,
             progress_callback=progress_callback,
         )
     
@@ -813,6 +828,70 @@ async def execute_batch(
             logger.info(f"⏳ انتظار {delay} ثانية قبل التالي...")
             await asyncio.sleep(delay)
     
+    return success_count, success_phones, failed_details
+
+
+async def _execute_parallel_premium_reaction_batch(
+    quantity: int,
+    sessions: list,
+    params: dict,
+    progress_callback=None,
+) -> tuple[int, list[str], list[str]]:
+    """Run premium reactions concurrently without artificial waits."""
+    shuffled = sessions.copy()
+    random.shuffle(shuffled)
+    selected = shuffled[:quantity]
+    semaphore = asyncio.Semaphore(PREMIUM_REACTION_MAX_CONCURRENCY)
+
+    async def run_one(session: dict, index: int) -> tuple[bool, str]:
+        async with semaphore:
+            try:
+                return await asyncio.wait_for(
+                    _execute_premium_reaction(
+                        session=session,
+                        post_ref=params["post_ref"],
+                        post_id=params["post_id"],
+                        reaction_text=params["reaction_text"],
+                        channel_ref=params.get("channel_ref"),
+                        is_first=(index == 0),
+                    ),
+                    timeout=PREMIUM_REACTION_ACCOUNT_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                return False, (
+                    f"❌ فشل من {session['phone_number']}: "
+                    f"انتهت المهلة ({PREMIUM_REACTION_ACCOUNT_TIMEOUT_SECONDS}ث)"
+                )
+            except Exception as exc:
+                return False, f"❌ فشل من {session['phone_number']}: {str(exc)[:80]}"
+
+    results = await asyncio.gather(
+        *(run_one(session, index) for index, session in enumerate(selected)),
+        return_exceptions=True,
+    )
+
+    success_count = 0
+    success_phones = []
+    failed_details = []
+    for session, result in zip(selected, results):
+        if isinstance(result, BaseException):
+            ok = False
+            detail = f"❌ فشل من {session['phone_number']}: {str(result)[:80]}"
+        else:
+            ok, detail = result
+        if ok:
+            success_count += 1
+            success_phones.append(session["phone_number"])
+        else:
+            failed_details.append(detail)
+
+    if progress_callback and selected:
+        await progress_callback(
+            len(selected),
+            quantity,
+            success_count,
+            len(failed_details),
+        )
     return success_count, success_phones, failed_details
 
 
