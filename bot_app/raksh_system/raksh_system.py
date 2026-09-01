@@ -120,7 +120,7 @@ RAKSH_SERVICES: Dict[str, ServiceConfig] = {
         points_quantity=1,
         price_stars=5,
         stars_quantity=1,
-        has_channel=True,
+        has_channel=False,
         has_reaction=False,
         has_ai=False,
         needs_link=True,
@@ -173,7 +173,7 @@ RAKSH_SERVICES: Dict[str, ServiceConfig] = {
         points_quantity=1,
         price_stars=2,
         stars_quantity=1,
-        has_channel=True,
+        has_channel=False,
         has_reaction=True,
         has_ai=False,
         needs_link=True,
@@ -1167,7 +1167,7 @@ async def _open_post_via_link(client, link: str) -> Tuple[Optional[Any], Optiona
 # ─── تنفيذ خدمات محددة (متابعة) ───
 
 async def _execute_comment(session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
-    """تنفيذ رشق تعليق - فتح المنشور عبر الرابط أولاً"""
+    """تنفيذ رشق تعليق - فتح البوست عبر الرابط أولاً"""
     client = TelegramClient(
         StringSession(session["session_string"]),
         int(TELEGRAM_API_ID),
@@ -1179,7 +1179,7 @@ async def _execute_comment(session: Dict, params: Dict, is_first: bool) -> Tuple
             _mark_raksh_session_unauthorized(session.get("phone_number"))
             return False, "الجلسة غير مصرح بها"
         
-        # محاولة فتح المنشور عبر الرابط مباشرة
+        # محاولة فتح البوست عبر الرابط مباشرة
         entity = None
         msg_id = None
         
@@ -1192,7 +1192,7 @@ async def _execute_comment(session: Dict, params: Dict, is_first: bool) -> Tuple
                 # إذا فشل الحصول على الكيان، نجرب فتح الرابط مباشرة
                 entity, msg_id = await _open_post_via_link(client, params["link"])
                 if not entity:
-                    return False, "تعذر الوصول للمنشور"
+                    return False, "تعذر الوصول للبوست"
         else:
             # محاولة فتح الرابط مباشرة
             entity, msg_id = await _open_post_via_link(client, params["link"])
@@ -1203,21 +1203,15 @@ async def _execute_comment(session: Dict, params: Dict, is_first: bool) -> Tuple
             # إذا لم نستطع تحديد معرف الرسالة، نجرب الحصول عليه من الرابط
             _, msg_id = _parse_post_link(params["link"])
             if not msg_id:
-                return False, "تعذر تحديد المنشور"
+                return False, "تعذر تحديد البوست"
         
         comment_text = params.get("comment_text", "")
         if not comment_text:
             return False, "نص التعليق فارغ"
         
-        # محاولة الانضمام للقناة إذا لزم الأمر
+        # محاولة التعليق على البوست
         try:
-            await client(JoinChannelRequest(entity))
-        except Exception:
-            pass  # قد يكون الحساب مشتركاً بالفعل
-        
-        # محاولة التعليق على المنشور
-        try:
-            # إرسال التعليق كرد على المنشور
+            # إرسال التعليق كرد على البوست
             await client.send_message(entity, comment_text, reply_to=msg_id)
             await asyncio.sleep(1.0)  # انتظار بسيط للتأكيد
             
@@ -1237,7 +1231,7 @@ async def _execute_comment(session: Dict, params: Dict, is_first: bool) -> Tuple
                 # حتى لو لم نجد التعليق، نعتبره ناجحاً إذا لم يكن هناك خطأ
                 return True, f"✅ تم إرسال التعليق من {session['phone_number']}"
         except Exception as e:
-            logger.warning(f"فشل التعليق كرد على المنشور من {session['phone_number']}: {e}")
+            logger.warning(f"فشل التعليق كرد على البوست من {session['phone_number']}: {e}")
             
             # محاولة بديلة: إرسال كرسالة عادية
             try:
@@ -1246,7 +1240,7 @@ async def _execute_comment(session: Dict, params: Dict, is_first: bool) -> Tuple
             except Exception as e2:
                 logger.error(f"فشل التعليق من {session['phone_number']}: {str(e)} | {str(e2)}")
                 
-                # محاولة فتح المنشور عبر الرابط ثم إرسال التعليق
+                # محاولة فتح البوست عبر الرابط ثم إرسال التعليق
                 try:
                     # إعادة المحاولة مع فتح الرابط
                     entity2, msg_id2 = await _open_post_via_link(client, params["link"])
@@ -1608,7 +1602,7 @@ async def _execute_votes_ai(session, params, is_first):
         await client.disconnect()
 
 async def _execute_premium_reaction(session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
-    """تنفيذ رشق تفاعل مميز - فتح المنشور عبر الرابط أولاً"""
+    """تنفيذ رشق تفاعل مميز - فتح البوست عبر الرابط أولاً"""
     client = TelegramClient(
         StringSession(session["session_string"]),
         int(TELEGRAM_API_ID),
@@ -1620,7 +1614,7 @@ async def _execute_premium_reaction(session: Dict, params: Dict, is_first: bool)
             _mark_raksh_session_unauthorized(session.get("phone_number"))
             return False, "الجلسة غير مصرح بها"
         
-        # محاولة فتح المنشور عبر الرابط مباشرة
+        # محاولة فتح البوست عبر الرابط مباشرة
         entity = None
         msg_id = None
         
@@ -1633,7 +1627,7 @@ async def _execute_premium_reaction(session: Dict, params: Dict, is_first: bool)
                 # إذا فشل الحصول على الكيان، نجرب فتح الرابط مباشرة
                 entity, msg_id = await _open_post_via_link(client, params["link"])
                 if not entity:
-                    return False, "تعذر الوصول للمنشور"
+                    return False, "تعذر الوصول للبوست"
         else:
             # محاولة فتح الرابط مباشرة
             entity, msg_id = await _open_post_via_link(client, params["link"])
@@ -1644,18 +1638,12 @@ async def _execute_premium_reaction(session: Dict, params: Dict, is_first: bool)
             # إذا لم نستطع تحديد معرف الرسالة، نجرب الحصول عليه من الرابط
             _, msg_id = _parse_post_link(params["link"])
             if not msg_id:
-                return False, "تعذر تحديد المنشور"
-        
-        # محاولة الانضمام للقناة إذا لزم الأمر
-        try:
-            await client(JoinChannelRequest(entity))
-        except Exception:
-            pass  # قد يكون الحساب مشتركاً بالفعل
+                return False, "تعذر تحديد البوست"
         
         # اختيار تفاعل تلقائي
         reaction = params.get("reaction")
         if not reaction or reaction == "random":
-            # محاولة استخدام التفاعلات المتاحة من المنشور
+            # محاولة استخدام التفاعلات المتاحة من البوست
             available_reactions = params.get("available_reactions") or list(RAKSH_REACTIONS.values())
             reaction = random.choice(available_reactions)
         
@@ -1720,7 +1708,7 @@ async def _execute_premium_reaction(session: Dict, params: Dict, is_first: bool)
             except Exception as e:
                 logger.warning(f"فشل التفاعل العادي من {session['phone_number']}: {e}")
                 
-                # محاولة فتح المنشور عبر الرابط ثم التفاعل
+                # محاولة فتح البوست عبر الرابط ثم التفاعل
                 try:
                     entity2, msg_id2 = await _open_post_via_link(client, params["link"])
                     if entity2 and msg_id2:
@@ -2270,11 +2258,11 @@ def _get_link_instruction(service_type: str) -> str:
         "story": "https://t.me/username/s/123 أو https://t.me/username/123",
         "forced_ref": "@BotUsername start123  أو  t.me/BotUsername?start=123",
         "forced_ref_ai": "@BotUsername start123  أو  t.me/BotUsername?start=123",
-        "comment": "https://t.me/channel/123",
+        "comment": "https://t.me/username/123 (بوست)",
         "poll": "https://t.me/channel/123",
         "votes": "https://t.me/channel/123 أو رابط بوت تصويت",
         "votes_ai": "https://t.me/i8YYBot?start=compvote_xxx",
-        "premium_reaction": "https://t.me/channel/123",
+        "premium_reaction": "https://t.me/username/123 (بوست)",
     }
     return instructions.get(service_type, "أرسل الرابط المطلوب")
 
@@ -2319,6 +2307,16 @@ def _raksh_link_error(service_type: str, value: str) -> Optional[str]:
                 "أرسله بهذا الشكل:\n"
                 "https://t.me/username/s/123\n"
                 "أو: https://t.me/username/123"
+            )
+        return None
+    
+    if service_type in {"comment", "premium_reaction"}:
+        # التحقق من أن الرابط يحتوي t.me ورقم
+        if "t.me/" not in value and "telegram.me/" not in value:
+            return (
+                "⚠️ الرابط يجب أن يكون رابط تيليجرام لبوست.\n\n"
+                "أرسله بهذا الشكل:\n"
+                "https://t.me/username/123"
             )
         return None
     
@@ -2494,7 +2492,7 @@ async def handle_raksh_callback(
             f"{svc.name}\n\n"
             f"💰 السعر: {_raksh_rate_text(service_type, 'points')}\n"
             f"⭐ السعر: {_raksh_rate_text(service_type, 'stars')}\n\n"
-            f"🔗 *أرسل رابط المنشور أو الستوري:*\n"
+            f"🔗 *أرسل رابط البوست:*\n"
             f"{_get_link_instruction(service_type)}\n\n"
             f"سيتم التفاعل تلقائياً بدون اختيار التفاعل.",
             parse_mode=ParseMode.MARKDOWN,
@@ -2538,7 +2536,7 @@ async def handle_raksh_callback(
             if reaction_key == "random":
                 reaction = "random"
             elif available_reactions and reaction not in available_reactions:
-                await query.answer("⚠️ هذا التفاعل غير متاح في المنشور.", show_alert=True)
+                await query.answer("⚠️ هذا التفاعل غير متاح في البوست.", show_alert=True)
                 return
         
         context.user_data["raksh_reaction"] = reaction
@@ -2820,7 +2818,7 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 post_ref, post_id = _parse_post_link(text)
                 if not post_ref or post_id is None:
                     await update.message.reply_text(
-                        "⚠️ تعذر تحليل رابط المنشور."
+                        "⚠️ تعذر تحليل رابط البوست."
                     )
                     return True
                 reaction_options = await _fetch_raksh_reactions_from_pool(
@@ -2830,7 +2828,7 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 if not reaction_options:
                     await update.message.reply_text(
-                        "⚠️ تعذر قراءة التفاعلات المتاحة في هذا المنشور."
+                        "⚠️ تعذر قراءة التفاعلات المتاحة في هذا البوست."
                     )
                     return True
                 context.user_data["raksh_available_reactions"] = reaction_options
@@ -3054,7 +3052,7 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"العدد: {quantity}\n"
             f"💰 السعر بالنقاط: {points_cost} نقطة\n"
             f"⭐ السعر بالنجوم: {stars_cost} نجمة\n\n"
-            f"سيتم التفاعل تلقائياً بعد مشاهدة المنشور.\n\n"
+            f"سيتم التفاعل تلقائياً بعد فتح البوست.\n\n"
             f"اختر طريقة الدفع:",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=raksh_payment_kb(service_type, quantity, points_cost, stars_cost)
