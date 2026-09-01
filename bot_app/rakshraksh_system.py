@@ -1,28 +1,23 @@
 """
-نظام الرشق الجديد - منفصل تماماً عن بقية البوت
-
-الخدمات المتوفرة:
-1. رشق مشاهدة ستوري وتفاعل
-2. إحالة بوت إجباري
-3. إحالة بوت إجباري مع تحقق
-4. رشق تعليق
-5. رشق استفتاء
-6. رشق أصوات
-7. رشق تصويت مع تحقق
-8. رشق تفاعل مميز
+نظام الرشق المتقدم - منفصل تماماً عن بقية البوت
+نسخة محسّنة مع دالة تحقق شاملة
 """
 
-from .shared import *
-from .accounts import get_forced_ref_account_count
-from .database import db_conn
-from .security import add_points, deduct_points, get_user, is_user_banned
-from .services import get_raksh_accounts_label, md_escape
-from .users import get_setting, set_setting
-from .ui import main_menu_kb
+from ..shared import *
+from ..accounts import get_forced_ref_account_count
+from ..database import db_conn
+from ..security import add_points, deduct_points, get_user, is_user_banned
+from ..services import get_raksh_accounts_label, md_escape
+from ..users import get_setting, set_setting
+from ..ui import main_menu_kb
 from telethon import TelegramClient, functions
 from telethon.sessions import StringSession
 from telethon.tl.functions.channels import JoinChannelRequest, LeaveChannelRequest
-from telethon.tl.functions.messages import ImportChatInviteRequest, SendVoteRequest, StartBotRequest, GetBotCallbackAnswerRequest
+from telethon.tl.functions.messages import (
+    ImportChatInviteRequest,
+    SendVoteRequest,
+    StartBotRequest,
+)
 from telethon.tl.functions.contacts import ResolveUsernameRequest
 from telethon.tl.functions.stories import IncrementStoryViewsRequest, SendReactionRequest
 from telethon.tl.types import ReactionEmoji, InputMediaContact
@@ -30,6 +25,11 @@ from urllib.parse import parse_qs, urlparse
 import random
 import asyncio
 import re
+import time
+
+# ════════════════════════════════════════════════════════════
+# ═══ 1. الثوابت والإعدادات ═══
+# ════════════════════════════════════════════════════════════
 
 RAKSH_PAID_REACTION = "__raksh_paid_reaction__"
 RAKSH_PAID_REACTION_LABEL = "⭐ تفاعل مدفوع"
@@ -37,24 +37,10 @@ RAKSH_CUSTOM_REACTION_PREFIX = "__raksh_custom_reaction__:"
 RAKSH_REACTION_LOOKUP_MAX_SESSIONS = 3
 RAKSH_REACTION_LOOKUP_TIMEOUT_SECONDS = 5
 RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS = 4
-
-# يمنع تشغيل نفس جلسة Telegram بالتوازي داخل نفس العملية.
-_RAKSH_SESSION_LOCKS: dict[str, asyncio.Lock] = {}
-
-# عدد الحسابات التي ستعمل بالتوازي في قسم "تصويت يحتوي تحقق"
-RAKSH_VOTE_CONCURRENT = 5
-
-def _get_raksh_session_lock(phone_number: str) -> asyncio.Lock:
-    key = str(phone_number or "").strip()
-    lock = _RAKSH_SESSION_LOCKS.get(key)
-    if lock is None:
-        lock = asyncio.Lock()
-        _RAKSH_SESSION_LOCKS[key] = lock
-    return lock
-
-# ════════════════════════════════════════════════════════════
-# ═══ 1. ثوابت الخدمات ═══
-# ════════════════════════════════════════════════════════════
+RAKSH_MIN_DELAY_SECONDS = 60
+RAKSH_MAX_DELAY_SECONDS = 180
+RAKSH_VOTE_DELAY_SECONDS = 3
+RAKSH_MAX_EXECUTIONS_PER_HOUR = 100
 
 RAKSH_SERVICES = {
     "story": {
@@ -64,7 +50,7 @@ RAKSH_SERVICES = {
         "price_stars": 1,
         "stars_quantity": 10,
         "has_channel": True,
-        "has_reaction": True,
+        "has_reaction": False,  # تفاعل تلقائي بدون طلب
         "has_ai": False,
         "needs_link": True,
         "max_quantity": 999,
@@ -176,6 +162,32 @@ RAKSH_SERVICE_LABELS = {
     "premium_reaction": "✨ تفاعل مميز",
 }
 
+RAKSH_REACTIONS = {
+    "heart": "❤️",
+    "fire": "🔥",
+    "like": "👍",
+    "love": "😍",
+    "starstruck": "🤩",
+    "sparkles": "✨",
+    "hundred": "💯",
+    "clap": "👏",
+}
+
+# ════════════════════════════════════════════════════════════
+# ═══ 2. إدارة الجلسات ═══
+# ════════════════════════════════════════════════════════════
+
+_RAKSH_SESSION_LOCKS: dict[str, asyncio.Lock] = {}
+_RAKSH_SESSION_CACHE: dict[str, list] = {}
+_RAKSH_SESSION_CACHE_TIME: dict[str, float] = {}
+_RAKSH_SESSION_CACHE_TTL = 60
+
+def _get_raksh_session_lock(phone_number: str) -> asyncio.Lock:
+    key = str(phone_number or "").strip()
+    if key not in _RAKSH_SESSION_LOCKS:
+        _RAKSH_SESSION_LOCKS[key] = asyncio.Lock()
+    return _RAKSH_SESSION_LOCKS[key]
+
 def _positive_setting(key: str, fallback: int) -> int:
     try:
         value = int(get_setting(key) or fallback)
@@ -184,7 +196,6 @@ def _positive_setting(key: str, fallback: int) -> int:
         return fallback
 
 def get_raksh_price_config(service_type: str) -> dict[str, int]:
-    """إرجاع سعر كل باقة وعدد الوحدات التي تغطيها، مع دعم الإعدادات القديمة."""
     svc = RAKSH_SERVICES[service_type]
     keys = RAKSH_PRICE_KEYS[service_type]
     return {
@@ -195,7 +206,6 @@ def get_raksh_price_config(service_type: str) -> dict[str, int]:
     }
 
 def get_raksh_total(service_type: str, quantity: int, payment_method: str) -> int:
-    """حساب السعر بالتقريب للأعلى حسب صيغة «السعر لكل عدد»."""
     if quantity <= 0:
         return 0
     config = get_raksh_price_config(service_type)
@@ -212,40 +222,59 @@ def _raksh_rate_text(service_type: str, payment_method: str) -> str:
     return f"{config['points_price']} نقطة لكل {config['points_quantity']}"
 
 def _clear_raksh_state(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """إلغاء الطلب الحالي ومنع الرسالة التالية من متابعة خطوة قديمة."""
-    for key in (
-        "raksh_service",
-        "raksh_step",
-        "raksh_channels",
-        "raksh_link",
-        "raksh_reaction",
-        "raksh_available_reactions",
-        "raksh_comment",
-        "raksh_poll_option",
-        "raksh_delay_seconds",
-        "raksh_quantity",
-        "raksh_payment_method",
-        "raksh_price_edit_service",
-    ):
+    keys_to_clear = [
+        "raksh_service", "raksh_step", "raksh_channels", "raksh_link",
+        "raksh_reaction", "raksh_available_reactions", "raksh_comment",
+        "raksh_poll_option", "raksh_delay_seconds", "raksh_quantity",
+        "raksh_payment_method", "raksh_price_edit_service",
+    ]
+    for key in keys_to_clear:
         context.user_data.pop(key, None)
     context.user_data["state"] = "main_menu"
 
-# ════════════════════════════════════════════════════════════
-# ═══ 2. دوال مساعدة ═══
-# ════════════════════════════════════════════════════════════
+def _get_all_active_sessions(service_type: str | None = None) -> list[dict]:
+    cache_key = f"sessions_{service_type or 'all'}"
+    if cache_key in _RAKSH_SESSION_CACHE:
+        cache_time = _RAKSH_SESSION_CACHE_TIME.get(cache_key, 0)
+        if time.time() - cache_time < _RAKSH_SESSION_CACHE_TTL:
+            return _RAKSH_SESSION_CACHE[cache_key].copy()
 
-RAKSH_MIN_DELAY_SECONDS = 60
-RAKSH_MAX_DELAY_SECONDS = 3 * 60
-RAKSH_VOTE_DELAY_SECONDS = 3
-try:
-    RAKSH_MAX_EXECUTIONS_PER_HOUR = int(
-        os.getenv("RAKSH_MAX_EXECUTIONS_PER_HOUR", "0")
-    )
-except ValueError:
-    RAKSH_MAX_EXECUTIONS_PER_HOUR = 0
+    with db_conn() as c:
+        rows = c.execute(
+            """
+            SELECT id, phone_number, session_string, raksh_only, last_authorized
+            FROM number_stock
+            WHERE session_string IS NOT NULL
+              AND BTRIM(session_string) <> ''
+              AND deleted_at IS NULL
+              AND forced_ref_excluded IS NOT TRUE
+            ORDER BY last_authorized DESC NULLS LAST, id ASC
+            """
+        ).fetchall()
+        sessions = [dict(row) for row in rows]
+        _RAKSH_SESSION_CACHE[cache_key] = sessions
+        _RAKSH_SESSION_CACHE_TIME[cache_key] = time.time()
+        return sessions
+
+def get_available_sessions_count(service_type: str = None) -> int:
+    return len(_get_all_active_sessions(service_type))
+
+def _mark_raksh_session_unauthorized(phone_number: str) -> None:
+    if not phone_number:
+        return
+    try:
+        with db_conn() as c:
+            c.execute(
+                "UPDATE number_stock SET last_authorized=FALSE "
+                "WHERE phone_number=%s AND deleted_at IS NULL",
+                (phone_number,)
+            )
+        _RAKSH_SESSION_CACHE.clear()
+        _RAKSH_SESSION_CACHE_TIME.clear()
+    except Exception:
+        pass
 
 def _get_delay_seconds(service_type: str | None = None, custom_delay: int | None = None) -> int:
-    """إرجاع الفاصل بين الحسابات حسب نوع الخدمة والمالك."""
     if service_type in {"forced_ref", "forced_ref_ai"}:
         if custom_delay is not None:
             return custom_delay
@@ -256,29 +285,7 @@ def _get_delay_seconds(service_type: str | None = None, custom_delay: int | None
         return RAKSH_VOTE_DELAY_SECONDS
     return random.randint(RAKSH_MIN_DELAY_SECONDS, RAKSH_MAX_DELAY_SECONDS)
 
-def get_raksh_hourly_remaining(user_id: int) -> int:
-    """عدد التنفيذات المتبقية للمستخدم خلال آخر ساعة متحركة."""
-    if RAKSH_MAX_EXECUTIONS_PER_HOUR <= 0:
-        return 2_147_483_647
-    try:
-        with db_conn() as c:
-            row = c.execute(
-                """
-                SELECT COUNT(*) AS used
-                FROM raksh_execution_usage
-                WHERE user_id=%s
-                  AND executed_at >= NOW() - INTERVAL '1 hour'
-                """,
-                (user_id,),
-            ).fetchone()
-        used = int(row["used"] or 0) if row else 0
-        return max(0, RAKSH_MAX_EXECUTIONS_PER_HOUR - used)
-    except Exception:
-        logger.exception("فشل قراءة حد تنفيذات الرشق للمستخدم %s", user_id)
-        return 0
-
 def _reserve_raksh_execution_slot(user_id: int, service_type: str, phone_number: str) -> bool:
-    """حجز تنفيذ واحد بشكل ذري حتى لا تتجاوز الطلبات المتزامنة حد الساعة."""
     if RAKSH_MAX_EXECUTIONS_PER_HOUR <= 0:
         return True
     try:
@@ -308,225 +315,972 @@ def _reserve_raksh_execution_slot(user_id: int, service_type: str, phone_number:
             )
         return True
     except Exception:
-        logger.exception(
-            "فشل حجز تنفيذ رشق للمستخدم %s والخدمة %s",
-            user_id,
-            service_type,
-        )
+        logger.exception(f"فشل حجز تنفيذ للمستخدم {user_id}")
         return False
 
-def _get_all_active_sessions(service_type: str | None = None) -> list[dict]:
-    """جلب كل الجلسات المخزنة التي يمكن استخدامها لخدمات الرشق."""
-    with db_conn() as c:
-        rows = c.execute(
-            "SELECT id, phone_number, session_string, raksh_only "
-            "FROM number_stock "
-            "WHERE session_string IS NOT NULL "
-            "AND BTRIM(session_string) <> '' "
-            "AND deleted_at IS NULL "
-            "AND forced_ref_excluded IS NOT TRUE "
-            "ORDER BY raksh_only DESC, id ASC"
-        ).fetchall()
-    return [dict(row) for row in rows]
+# ════════════════════════════════════════════════════════════
+# ═══ 3. دوال التحليل ═══
+# ════════════════════════════════════════════════════════════
 
-def get_available_sessions_count(service_type: str | None = None) -> int:
-    return len(_get_all_active_sessions(service_type))
-
-def _parse_channel_ref(value: str) -> tuple[str | None, str | None]:
-    """تحويل رابط قناة إلى مرجع Telethon"""
+def _parse_story_link(value: str) -> tuple[str | None, int | None]:
     value = (value or "").strip().strip("<>")
+    try:
+        parsed = urlparse(value if "://" in value else f"https://{value}")
+        if parsed.netloc.lower() not in {"t.me", "telegram.me", "www.t.me", "www.telegram.me"}:
+            return None, None
+        parts = [part for part in parsed.path.strip("/").split("/") if part]
+        if len(parts) == 3 and parts[1] in {"s", "story"} and parts[2].isdigit():
+            return f"@{parts[0].lstrip('@')}", int(parts[2])
+        if (
+            len(parts) == 4
+            and parts[0] == "c"
+            and parts[1].isdigit()
+            and parts[2] in {"s", "story"}
+            and parts[3].isdigit()
+        ):
+            return f"-100{parts[1]}", int(parts[3])
+    except Exception:
+        pass
+    return None, None
+
+def _parse_post_link(value: str) -> tuple[str | None, int | None]:
+    value = (value or "").strip().strip("<>")
+    if not value.startswith("http"):
+        value = "https://" + value
+    try:
+        parsed = urlparse(value)
+        netloc = parsed.netloc.lower().replace("www.", "")
+        if netloc not in {"t.me", "telegram.me"}:
+            return None, None
+        parts = [part for part in parsed.path.strip("/").split("/") if part]
+        if parts and parts[0] == "s":
+            parts = parts[1:]
+        if len(parts) < 2 or len(parts) > 3 or not parts[-1].isdigit():
+            return None, None
+        if parts[0] == "c":
+            if len(parts) != 3 or not parts[1].isdigit():
+                return None, None
+            return f"-100{parts[1]}", int(parts[2])
+        if len(parts) != 2:
+            return None, None
+        return f"@{parts[0].lstrip('@')}", int(parts[1])
+    except Exception:
+        return None, None
+
+def _parse_bot_link(value: str) -> tuple[str | None, str | None]:
+    value = (value or "").strip()
     if not value:
         return None, None
-    if value.startswith("@"):
-        return value, value
-    parsed = urlparse(value if "://" in value else f"https://{value}")
-    if parsed.netloc.lower() not in {"t.me", "telegram.me", "www.t.me", "www.telegram.me"}:
-        return None, None
-    path = parsed.path.strip("/")
-    if not path:
-        return None, None
-    if path.startswith(("joinchat/", "+")):
-        token = path.removeprefix("joinchat/").removeprefix("+")
-        return f"invite:{token}", value
-    path_parts = [part for part in path.split("/") if part]
-    if len(path_parts) >= 2 and path_parts[0] == "c" and path_parts[1].isdigit():
-        return f"-100{path_parts[1]}", value
-    username = path_parts[1] if path_parts and path_parts[0] == "s" and len(path_parts) > 1 else (path_parts[0] if path_parts else "")
-    if username and username not in {"c", "joinchat"}:
-        return f"@{username.lstrip('@')}", value
+    try:
+        if "t.me/" in value or "telegram.me/" in value:
+            parsed = urlparse(value if "://" in value else f"https://{value}")
+            path = parsed.path.strip("/")
+            if path:
+                bot_username = path.split("/")[0]
+                query = parse_qs(parsed.query)
+                start_param = (
+                    query.get("start", [""])[0]
+                    or query.get("startapp", [""])[0]
+                    or query.get("startgroup", [""])[0]
+                )
+                return bot_username, start_param
+        else:
+            parts = value.split()
+            if parts:
+                bot_username = parts[0].lstrip("@")
+                start_param = parts[1] if len(parts) > 1 else ""
+                return bot_username, start_param
+    except Exception:
+        pass
     return None, None
 
 def _parse_channel_refs(value: str) -> list[str]:
-    """تحويل إدخال القنوات المتعدد إلى مراجع Telethon صالحة."""
-    refs: list[str] = []
-    for token in re.split(r"[\s,،]+", (value or "").strip()):
+    if not value:
+        return []
+    refs = []
+    tokens = re.split(r"[\s,،\n]+", value.strip())
+    for token in tokens:
         if not token:
             continue
-        channel_ref, _ = _parse_channel_ref(token)
-        if channel_ref and channel_ref not in refs:
-            refs.append(channel_ref)
-    return refs
-
-def _parse_post_link(value: str) -> tuple[str | None, int | None]:
-    """تحليل رابط منشور - دعم صيغ متعددة"""
-    value = (value or "").strip().strip("<>")
-    
-    if not value.startswith("http"):
-        value = "https://" + value
-    
-    parsed = urlparse(value)
-    
-    netloc = parsed.netloc.lower().replace("www.", "")
-    if netloc not in {"t.me", "telegram.me"}:
-        return None, None
-    
-    parts = [part for part in parsed.path.strip("/").split("/") if part]
-    
-    if parts and parts[0] == "s":
-        parts = parts[1:]
-    
-    if len(parts) < 2 or len(parts) > 3 or not parts[-1].isdigit():
-        return None, None
-    
-    if parts[0] == "c":
-        if len(parts) != 3 or not parts[1].isdigit():
-            return None, None
-        return f"-100{parts[1]}", int(parts[2])
-    
-    if len(parts) != 2:
-        return None, None
-    return f"@{parts[0].lstrip('@')}", int(parts[1])
-
-
-def _as_message_list(value) -> list:
-    """توحيد نتيجة Telethon عند طلب رسالة واحدة أو عدة رسائل."""
-    if value is None:
-        return []
-    if isinstance(value, (list, tuple)):
-        return list(value)
-    return [value]
-
-
-def _latest_message_id(messages) -> int:
-    """إرجاع آخر رقم رسالة مع تجاهل الكائنات غير المكتملة."""
-    ids = [
-        int(getattr(message, "id", 0) or 0)
-        for message in messages or []
-        if getattr(message, "id", None) is not None
-    ]
-    return max(ids, default=0)
-
-
-async def _get_fresh_bot_messages(
-    client,
-    bot_entity,
-    *,
-    after_id: int = 0,
-    limit: int = 30,
-    attempts: int = 5,
-    delay: float = 1.0,
-) -> list:
-    """قراءة ردود بوت المسابقة من الشبكة بعد تنفيذ خطوة تفاعلية."""
-    latest = []
-    for attempt in range(max(1, attempts)):
+        token = token.strip("<>")
         try:
-            latest = _as_message_list(
-                await client.get_messages(bot_entity, limit=limit)
-            )
+            if token.startswith("@"):
+                refs.append(token)
+            elif "t.me/" in token or "telegram.me/" in token:
+                parsed = urlparse(token if "://" in token else f"https://{token}")
+                path = parsed.path.strip("/")
+                if path.startswith(("joinchat/", "+")):
+                    token = path.removeprefix("joinchat/").removeprefix("+")
+                    refs.append(f"invite:{token}")
+                elif path:
+                    parts = [p for p in path.split("/") if p]
+                    if len(parts) >= 2 and parts[0] == "c" and parts[1].isdigit():
+                        refs.append(f"-100{parts[1]}")
+                    elif parts[0] not in {"c", "joinchat"}:
+                        refs.append(f"@{parts[0].lstrip('@')}")
+        except Exception:
+            continue
+    return list(dict.fromkeys(refs))
+
+def _find_bot_start_link(message) -> tuple[str | None, str | None]:
+    fallback = None
+    for row in getattr(message, "buttons", None) or []:
+        for button in row:
+            url = (getattr(button, "url", None) or "").strip()
+            if not url:
+                continue
+            bot_username, start_param = _parse_bot_link(url)
+            if bot_username:
+                if start_param:
+                    return bot_username, start_param
+                fallback = fallback or (bot_username, start_param)
+    return fallback or (None, None)
+
+def _extract_code_from_text(text: str) -> str | None:
+    if not text:
+        return None
+    if text.strip().startswith("/"):
+        return None
+    if text.strip().lower() in {"start", "/start", "بدء"}:
+        return None
+
+    common_words = {
+        "الآن", "أرسل", "النص", "التالي", "المرحلة", "الأولى", "بالضبط", "اكتب",
+        "type", "أدخل", "enter", "التحقق", "رابط", "الإحالة", "start", "ref",
+        "مرحباً", "يجب", "إكمال", "المتابعة", "حل", "العملية", "الحسابية",
+        "مشاركة", "جهة", "اتصال", "هاتف", "رقم", "الموبايل", "mobile", "phone",
+        "contact", "share"
+    }
+
+    patterns = [
+        r'(?:الآن\s*أرسل\s*النص\s*التالي|أرسل\s*النص\s*التالي|اكتب|type|أدخل|enter)\s*[:\-]?\s*([A-Za-z0-9]{3,50})',
+        r'النص\s*التالي\s*[:\-]?\s*([A-Za-z0-9]{3,50})',
+        r'([A-Za-z0-9]{3,50})\s*$',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            code = match.group(1).strip()
+            if code and len(code) >= 3 and code not in common_words:
+                return code
+
+    words = re.findall(r'\b[A-Za-z0-9]{3,50}\b', text)
+    if words:
+        filtered = [w for w in words if w not in common_words]
+        if filtered:
+            return filtered[-1]
+        return words[-1]
+
+    quote_match = re.search(r'["\']([A-Za-z0-9]{3,50})["\']', text)
+    if quote_match:
+        return quote_match.group(1).strip()
+
+    lines = text.splitlines()
+    for line in lines:
+        line = line.strip()
+        if 3 <= len(line) <= 50 and re.match(r'^[A-Za-z0-9]+$', line):
+            if line not in common_words:
+                return line
+
+    raw_matches = re.findall(r'[A-Za-z0-9]{3,50}', text)
+    if raw_matches:
+        filtered = [m for m in raw_matches if m not in common_words]
+        if filtered:
+            return filtered[-1]
+        return raw_matches[-1]
+
+    return None
+
+# ════════════════════════════════════════════════════════════
+# ═══ 4. دوال الانضمام للقنوات ═══
+# ════════════════════════════════════════════════════════════
+
+async def _join_channel_and_schedule_leave(client, channel_refs):
+    """الانضمام للقنوات الإجبارية في جميع الخدمات"""
+    if isinstance(channel_refs, str):
+        channel_refs = _parse_channel_refs(channel_refs)
+    if not channel_refs:
+        return
+
+    for ref in channel_refs:
+        try:
+            if ref.startswith("invite:"):
+                await client(ImportChatInviteRequest(ref.split(":", 1)[1]))
+            else:
+                entity = await client.get_entity(ref)
+                await client(JoinChannelRequest(entity))
+            logger.info(f"✅ تم الانضمام للقناة: {ref}")
         except Exception as exc:
-            logger.warning(
-                "تعذر تحديث رسائل بوت المسابقة (محاولة %s/%s): %s",
-                attempt + 1,
-                attempts,
-                str(exc)[:120],
-            )
-            latest = []
+            if "USER_ALREADY_PARTICIPANT" not in str(exc).upper():
+                logger.warning(f"تعذر الانضمام للقناة {ref}: {exc}")
 
-        if latest and _latest_message_id(latest) > int(after_id or 0):
-            return latest
-        if attempt < attempts - 1:
+async def _join_discussion_group(client, discussion):
+    messages = getattr(discussion, "messages", None) or []
+    if not messages:
+        raise RuntimeError("المنشور لا يملك نقاشاً")
+    discussion_message = messages[0]
+    peer = getattr(discussion_message, "peer_id", None)
+    channel_id = getattr(peer, "channel_id", None)
+    chats = getattr(discussion, "chats", None) or []
+    discussion_chat = next(
+        (chat for chat in chats if getattr(chat, "id", None) == channel_id),
+        None,
+    )
+    if discussion_chat is None:
+        raise RuntimeError("تعذر تحديد مجموعة النقاش")
+    try:
+        await client(JoinChannelRequest(discussion_chat))
+    except Exception as exc:
+        if "USER_ALREADY_PARTICIPANT" not in str(exc).upper():
+            raise
+    return discussion_chat
+
+# ════════════════════════════════════════════════════════════
+# ═══ 5. دوال التصويت ═══
+# ════════════════════════════════════════════════════════════
+
+def _normalize_digits(value: str) -> str:
+    return (value or "").translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
+
+def _select_poll_option(options, requested: str):
+    requested = (requested or "").strip()
+    normalized = _normalize_digits(requested)
+    if normalized.isdigit():
+        index = int(normalized) - 1
+        return options[index] if 0 <= index < len(options) else None
+    requested_folded = requested.casefold()
+    return next(
+        (
+            option
+            for option in options
+            if str(getattr(option, "text", "")).strip().casefold() == requested_folded
+        ),
+        None,
+    )
+
+async def _send_vote_and_check(client, peer, msg_id: int, option) -> bool:
+    await client(SendVoteRequest(peer=peer, msg_id=msg_id, options=[option]))
+    for delay in (0.0, 0.3, 0.5):
+        if delay:
             await asyncio.sleep(delay)
-    return latest
+        refreshed = await client.get_messages(peer, ids=msg_id)
+        if not refreshed:
+            continue
+        refreshed_message = refreshed[0] if isinstance(refreshed, (list, tuple)) else refreshed
+        poll_media = getattr(refreshed_message, "poll", None)
+        results = getattr(poll_media, "results", None)
+        result_items = getattr(results, "results", None) or []
+        if any(
+            getattr(result, "chosen", False)
+            for result in result_items
+        ):
+            return True
+    return False
 
+# ════════════════════════════════════════════════════════════
+# ═══ 6. حل التحقق الشامل للإحالة ═══
+# ════════════════════════════════════════════════════════════
+
+async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) -> bool:
+    """
+    حل التحقق للإحالة البوتية - يدعم:
+    1. إرسال كود نصي
+    2. حل مسائل رياضية
+    3. الضغط على أزرار التحقق
+    4. مشاركة جهة الاتصال
+    """
+    max_attempts = 20
+    base_id = 0
+
+    try:
+        out_messages = await client.get_messages(bot_entity, limit=10)
+        for msg in out_messages:
+            if msg.out:
+                base_id = msg.id
+                break
+    except Exception:
+        pass
+
+    for attempt in range(max_attempts):
+        try:
+            messages = await client.get_messages(bot_entity, limit=20)
+        except Exception:
+            await asyncio.sleep(1.0)
+            continue
+
+        incoming_messages = [msg for msg in messages if not msg.out]
+        incoming_messages.sort(key=lambda m: m.id)
+        new_messages = [msg for msg in incoming_messages if msg.id > base_id]
+
+        if not new_messages:
+            await asyncio.sleep(1.0)
+            continue
+
+        verification_message = None
+        for msg in new_messages:
+            msg_text = getattr(msg, 'message', '') or ''
+            if msg_text.strip().startswith("/"):
+                continue
+            if any(kw in msg_text for kw in ["أرسل", "التالي", "اكتب", "type", "اضغط", "اختر"]):
+                verification_message = msg
+                break
+
+        if verification_message is None:
+            verification_message = next(
+                (msg for msg in reversed(new_messages) if not getattr(msg, 'message', '').strip().startswith("/")),
+                None
+            )
+
+        if verification_message is None:
+            await asyncio.sleep(1.0)
+            continue
+
+        text = getattr(verification_message, 'message', '') or ''
+
+        # 1️⃣ إرسال الكود المطلوب
+        send_text = _extract_code_from_text(text)
+        if send_text:
+            try:
+                await client.send_message(bot_entity, send_text)
+                logger.info(f"✅ تم إرسال الكود: {send_text}")
+                return True
+            except Exception:
+                return False
+
+        # 2️⃣ حل مسألة رياضية
+        math_patterns = [
+            (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=\s*\?', 1, 2, 3),
+            (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=', 1, 2, 3),
+        ]
+        for pattern, *groups in math_patterns:
+            match = re.search(pattern, text)
+            if match:
+                try:
+                    if len(groups) == 3:
+                        a, op, b = int(match.group(groups[0])), match.group(groups[1]), int(match.group(groups[2]))
+                    else:
+                        a, b = int(match.group(groups[0])), int(match.group(groups[1]))
+                        op = '+'
+                    if op == '+': result = str(a + b)
+                    elif op == '-': result = str(a - b)
+                    elif op == '*': result = str(a * b)
+                    elif op == '/': result = str(a / b) if b != 0 else None
+                    else: result = None
+                    if result is not None:
+                        await client.send_message(bot_entity, result)
+                        logger.info(f"✅ تم حل المسألة: {a} {op} {b} = {result}")
+                        return True
+                except Exception:
+                    continue
+
+        # 3️⃣ مشاركة جهة الاتصال
+        if any(kw in text.lower() for kw in ["مشاركة", "جهة اتصال", "شارك", "contact", "share"]):
+            try:
+                me = await client.get_me()
+                await client.send_file(
+                    bot_entity,
+                    InputMediaContact(
+                        phone_number=me.phone,
+                        first_name=me.first_name or "",
+                        last_name=me.last_name or "",
+                        vcard="",
+                    ),
+                )
+                logger.info(f"✅ تم مشاركة جهة الاتصال من {phone_number}")
+                return True
+            except Exception as e:
+                logger.warning(f"فشل مشاركة جهة الاتصال: {e}")
+
+        # 4️⃣ الضغط على أزرار التحقق
+        buttons = []
+        for row in getattr(verification_message, 'buttons', None) or []:
+            for btn in row:
+                if not getattr(btn, 'url', None):
+                    buttons.append(btn)
+
+        if buttons:
+            for btn in buttons:
+                btn_text = (getattr(btn, 'text', '') or '').lower()
+                try:
+                    await btn.click()
+                    logger.info(f"✅ تم الضغط على الزر: {getattr(btn, 'text', '')}")
+                    return True
+                except Exception:
+                    continue
+
+        await asyncio.sleep(2.0)
+
+    return False
+
+# ════════════════════════════════════════════════════════════
+# ═══ 7. تنفيذ مشاهدة ستوري (تفاعل تلقائي) ═══
+# ════════════════════════════════════════════════════════════
+
+async def _execute_story(session, params, is_first):
+    """تنفيذ رشق مشاهدة ستوري مع تفاعل تلقائي"""
+    from telethon.tl.functions.stories import IncrementStoryViewsRequest, SendReactionRequest
+    from telethon.tl.types import ReactionEmoji
+
+    client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+    await asyncio.wait_for(client.connect(), timeout=15)
+    try:
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
+            _mark_raksh_session_unauthorized(session.get("phone_number"))
+            return False, "الجلسة غير مصرح بها"
+
+        # الانضمام للقنوات الإجبارية
+        if is_first and params.get("channel_ref"):
+            await _join_channel_and_schedule_leave(client, params["channel_ref"])
+
+        entity_ref, story_id = _parse_story_link(params["link"])
+        if not entity_ref or not story_id:
+            return False, "رابط الستوري غير صحيح"
+
+        entity = await client.get_entity(entity_ref)
+
+        # مشاهدة الستوري
+        await client(IncrementStoryViewsRequest(peer=entity, id=story_id))
+
+        # تفاعل تلقائي (اختيار عشوائي من الإيموجيات المتاحة)
+        try:
+            reaction = random.choice(list(RAKSH_REACTIONS.values()))
+            await client(
+                SendReactionRequest(
+                    peer=entity,
+                    story_id=story_id,
+                    reaction=ReactionEmoji(emoticon=reaction),
+                )
+            )
+            return True, f"✅ تمت المشاهدة والتفاعل من {session['phone_number']}"
+        except Exception as reaction_error:
+            logger.warning(f"تفاعل فاشل للستوري {session['phone_number']}: {reaction_error}")
+            return True, f"✅ تمت المشاهدة من {session['phone_number']} (تعذر التفاعل)"
+
+    except Exception as e:
+        return False, f"❌ فشل: {str(e)[:80]}"
+    finally:
+        await client.disconnect()
+
+# ════════════════════════════════════════════════════════════
+# ═══ 8. تنفيذ إحالة بوت إجباري مع تحقق ═══
+# ════════════════════════════════════════════════════════════
+
+async def _execute_forced_ref_ai(session, params, is_first):
+    """تنفيذ إحالة بوت إجباري مع تحقق شامل"""
+    client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+    await asyncio.wait_for(client.connect(), timeout=20)
+    try:
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+            _mark_raksh_session_unauthorized(session.get("phone_number"))
+            return False, "الجلسة غير مصرح بها"
+
+        # الانضمام للقنوات الإجبارية
+        if is_first and params.get("channel_ref"):
+            await _join_channel_and_schedule_leave(client, params["channel_ref"])
+
+        # تحليل رابط البوت
+        bot_username, start_param = _parse_bot_link(params["link"])
+        if not bot_username:
+            return False, "رابط البوت غير صحيح"
+
+        clean_username = bot_username.lstrip("@").strip()
+        resolved = await client(ResolveUsernameRequest(clean_username))
+        bot_entity = resolved.users[0] if resolved.users else resolved.chats[0]
+
+        # الضغط على رابط البوت
+        await client(StartBotRequest(
+            bot=bot_entity,
+            peer=bot_entity,
+            start_param=start_param or ""
+        ))
+        await asyncio.sleep(2.0)
+
+        # حل التحقق الشامل
+        success = await _solve_forced_ref_verification(client, bot_entity, session.get("phone_number"))
+
+        if success:
+            return True, f"✅ تمت الإحالة مع التحقق من {session['phone_number']}"
+        else:
+            return False, "فشل التحقق بعد محاولات متعددة"
+
+    except Exception as e:
+        return False, f"❌ فشل: {str(e)[:80]}"
+    finally:
+        await client.disconnect()
+
+# ════════════════════════════════════════════════════════════
+# ═══ 9. تنفيذ تصويت مع تحقق (رابط بوت مباشر أو رابط بوست) ═══
+# ════════════════════════════════════════════════════════════
+
+async def _execute_votes_ai(session, params, is_first):
+    """
+    تنفيذ تصويت مع تحقق - يدعم:
+    1. رابط بوت مباشر (t.me/Bot?start=xxx)
+    2. رابط بوست يحتوي على زر بوت
+    3. الانضمام للقنوات الإجبارية
+    """
+    client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+    await asyncio.wait_for(client.connect(), timeout=15)
+    try:
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
+            _mark_raksh_session_unauthorized(session.get("phone_number"))
+            return False, "الجلسة غير مصرح بها"
+
+        # الانضمام للقنوات الإجبارية
+        if is_first and params.get("channel_ref"):
+            await _join_channel_and_schedule_leave(client, params["channel_ref"])
+
+        # تحليل الرابط
+        bot_username = None
+        bot_start_param = None
+        link = params.get("link", "")
+
+        # 1. محاولة تحليل كرابط بوت مباشر
+        parsed_bot = _parse_bot_link(link)
+        if parsed_bot[0]:
+            bot_username = parsed_bot[0]
+            bot_start_param = parsed_bot[1] or ""
+            logger.info(f"✅ رابط بوت مباشر: @{bot_username}")
+        else:
+            # 2. محاولة تحليل كرابط بوست
+            post_ref, post_id = _parse_post_link(link)
+            if not post_ref or not post_id:
+                return False, "الرابط غير صالح (ليس بوتاً ولا بوستاً)"
+
+            try:
+                post_entity = await client.get_entity(post_ref)
+                messages = await client.get_messages(post_entity, ids=post_id)
+                if isinstance(messages, (list, tuple)):
+                    post_message = messages[0] if messages else None
+                else:
+                    post_message = messages
+
+                if not post_message:
+                    return False, "المنشور غير موجود"
+
+                bot_username, bot_start_param = _find_bot_start_link(post_message)
+
+                if not bot_username or not bot_start_param:
+                    # محاولة استخراج من نص المنشور
+                    post_text = getattr(post_message, "message", "") or ""
+                    bot_match = re.search(r't\.me/([A-Za-z0-9_]+bot)\?start=([A-Za-z0-9_]+)', post_text)
+                    if bot_match:
+                        bot_username = bot_match.group(1)
+                        bot_start_param = bot_match.group(2)
+
+                if not bot_username:
+                    return False, "المنشور لا يحتوي على رابط بوت صالح"
+
+                logger.info(f"✅ تم استخراج بوت من المنشور: @{bot_username}")
+
+            except Exception as e:
+                return False, f"تعذر الوصول إلى المنشور: {str(e)[:80]}"
+
+        if not bot_username:
+            return False, "لم يتم العثور على بوت صالح"
+
+        # الدخول إلى البوت
+        try:
+            bot_entity = await client.get_entity(bot_username)
+        except Exception:
+            try:
+                bot_entity = await client.get_entity(f"@{bot_username}")
+            except Exception as e:
+                return False, f"تعذر العثور على البوت @{bot_username}: {str(e)[:80]}"
+
+        await client(StartBotRequest(
+            bot=bot_entity,
+            peer=bot_entity,
+            start_param=bot_start_param or ""
+        ))
+        await asyncio.sleep(2.0)
+
+        # البحث عن رسالة التحقق
+        verification_message = None
+        for attempt in range(5):
+            msgs = await client.get_messages(bot_entity, limit=30)
+            if isinstance(msgs, (list, tuple)):
+                for msg in msgs:
+                    if getattr(msg, "buttons", None):
+                        has_callback = False
+                        for row in msg.buttons:
+                            for btn in row:
+                                if not getattr(btn, "url", None):
+                                    has_callback = True
+                                    break
+                            if has_callback:
+                                break
+                        if has_callback:
+                            verification_message = msg
+                            break
+                if verification_message:
+                    break
+            await asyncio.sleep(1.0)
+
+        if not verification_message:
+            return True, f"✅ تم التصويت من {session['phone_number']} (بدون تحقق)"
+
+        # استخراج الإيموجي المطلوب
+        verification_text = getattr(verification_message, "message", "") or ""
+        target_emoji = None
+        emoji_pattern = re.compile(r"[\U0001F300-\U0001FAFF\U00002600-\U000027BF]")
+        found_emojis = emoji_pattern.findall(verification_text)
+        if found_emojis:
+            target_emoji = found_emojis[-1]
+
+        # جمع الأزرار
+        all_buttons = []
+        for row in (getattr(verification_message, "buttons", None) or []):
+            for btn in row:
+                if not getattr(btn, "url", None):
+                    all_buttons.append(btn)
+
+        if not all_buttons:
+            return True, f"✅ تم التصويت من {session['phone_number']}"
+
+        # اختيار الزر المناسب
+        chosen_button = None
+
+        # 1. زر يطابق الإيموجي
+        if target_emoji:
+            for btn in all_buttons:
+                btn_text = getattr(btn, "text", "") or ""
+                if target_emoji in btn_text or btn_text == target_emoji:
+                    chosen_button = btn
+                    break
+
+        # 2. زر تحقق/متابعة
+        if not chosen_button:
+            verify_keywords = ["تحقق", "verify", "اضغط هنا", "continue", "التالي", "تأكيد"]
+            for btn in all_buttons:
+                btn_text = (getattr(btn, "text", "") or "").lower()
+                if any(kw in btn_text for kw in verify_keywords):
+                    chosen_button = btn
+                    break
+
+        # 3. أي زر إيموجي
+        if not chosen_button:
+            for btn in all_buttons:
+                btn_text = getattr(btn, "text", "") or ""
+                if emoji_pattern.search(btn_text):
+                    chosen_button = btn
+                    break
+
+        # 4. أي زر
+        if not chosen_button and all_buttons:
+            chosen_button = all_buttons[0]
+
+        if not chosen_button:
+            return False, "لم يتم العثور على زر مناسب"
+
+        try:
+            await chosen_button.click()
+            await asyncio.sleep(2.0)
+
+            success_keywords = [
+                "تم التصويت", "صوتك مسجل", "vote recorded",
+                "شكراً لتصويتك", "تم تسجيل تصويتك"
+            ]
+
+            final_msgs = await client.get_messages(bot_entity, limit=5)
+            for msg in final_msgs:
+                msg_text = getattr(msg, "message", "") or ""
+                if any(kw in msg_text for kw in success_keywords):
+                    return True, f"✅ تم التصويت مع التحقق من {session['phone_number']}"
+
+            return True, f"✅ تم تنفيذ التصويت من {session['phone_number']}"
+
+        except Exception as e:
+            return False, f"فشل الضغط على الزر: {str(e)[:80]}"
+
+    except Exception as e:
+        return False, f"❌ فشل: {str(e)[:80]}"
+    finally:
+        await client.disconnect()
+
+# ════════════════════════════════════════════════════════════
+# ═══ 10. دوال الخدمات الأخرى ═══
+# ════════════════════════════════════════════════════════════
+
+async def _execute_forced_ref(session, params, is_first):
+    """تنفيذ إحالة بوت إجباري (بدون تحقق)"""
+    client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+    await asyncio.wait_for(client.connect(), timeout=15)
+    try:
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
+            _mark_raksh_session_unauthorized(session.get("phone_number"))
+            return False, "الجلسة غير مصرح بها"
+
+        if is_first and params.get("channel_ref"):
+            await _join_channel_and_schedule_leave(client, params["channel_ref"])
+
+        bot_username, start_param = _parse_bot_link(params["link"])
+        if not bot_username:
+            return False, "رابط البوت غير صحيح"
+
+        clean_username = bot_username.lstrip("@").strip()
+        resolved = await client(ResolveUsernameRequest(clean_username))
+        bot_entity = resolved.users[0] if resolved.users else resolved.chats[0]
+
+        await client(StartBotRequest(
+            bot=bot_entity,
+            peer=bot_entity,
+            start_param=start_param or ""
+        ))
+        await asyncio.sleep(1.5)
+
+        return True, f"✅ تمت الإحالة من {session['phone_number']}"
+    except Exception as e:
+        return False, f"❌ فشل: {str(e)[:80]}"
+    finally:
+        await client.disconnect()
+
+async def _execute_comment(session, params, is_first):
+    """تنفيذ رشق تعليق"""
+    client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+    await asyncio.wait_for(client.connect(), timeout=15)
+    try:
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
+            _mark_raksh_session_unauthorized(session.get("phone_number"))
+            return False, "الجلسة غير مصرح بها"
+
+        if is_first and params.get("channel_ref"):
+            await _join_channel_and_schedule_leave(client, params["channel_ref"])
+
+        comment_text = (params.get("comment_text") or "").strip()
+        if not comment_text:
+            return False, "نص التعليق فارغ"
+
+        post_ref, post_id = _parse_post_link(params["link"])
+        if not post_ref or not post_id:
+            return False, "رابط المنشور غير صحيح"
+
+        post_entity = await client.get_entity(post_ref)
+        discussion = await client(functions.messages.GetDiscussionMessageRequest(peer=post_entity, msg_id=post_id))
+
+        if not getattr(discussion, "messages", None):
+            return False, "المنشور لا يملك نقاشاً"
+
+        discussion_message = discussion.messages[0]
+        discussion_peer = getattr(discussion_message, "peer_id", None)
+        if discussion_peer is None:
+            return False, "تعذر تحديد مساحة التعليقات"
+
+        discussion_chat = await _join_discussion_group(client, discussion)
+        sent_message = await client.send_message(
+            discussion_chat,
+            comment_text,
+            reply_to=discussion_message.id,
+        )
+
+        if not getattr(sent_message, "id", None):
+            return False, "تعذر تأكيد إرسال التعليق"
+
+        return True, f"✅ تم التعليق من {session['phone_number']}"
+    except Exception as e:
+        return False, f"❌ فشل: {str(e)[:80]}"
+    finally:
+        await client.disconnect()
+
+async def _execute_poll(session, params, is_first):
+    """تنفيذ رشق استفتاء"""
+    client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+    await asyncio.wait_for(client.connect(), timeout=15)
+    try:
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
+            _mark_raksh_session_unauthorized(session.get("phone_number"))
+            return False, "الجلسة غير مصرح بها"
+
+        if is_first and params.get("channel_ref"):
+            await _join_channel_and_schedule_leave(client, params["channel_ref"])
+
+        entity_ref, msg_id = _parse_post_link(params["link"])
+        if not entity_ref or not msg_id:
+            return False, "رابط الاستفتاء غير صحيح"
+
+        entity = await client.get_entity(entity_ref)
+        message = await client.get_messages(entity, ids=msg_id)
+        if not message:
+            return False, "المنشور غير موجود"
+
+        poll = getattr(message, "poll", None)
+        if not poll:
+            return False, "هذا المنشور ليس استفتاءً"
+
+        options = getattr(poll, "answers", [])
+        if not options:
+            return False, "الاستفتاء ليس له خيارات"
+
+        option_request = params.get("poll_option", "1")
+        option = _select_poll_option(options, option_request)
+        if not option:
+            return False, f"الخيار {option_request} غير موجود"
+
+        success = await _send_vote_and_check(client, entity, msg_id, option)
+        if not success:
+            return False, "تعذر تأكيد التصويت"
+
+        return True, f"✅ تم التصويت من {session['phone_number']}"
+    except Exception as e:
+        return False, f"❌ فشل: {str(e)[:80]}"
+    finally:
+        await client.disconnect()
+
+async def _execute_votes(session, params, is_first):
+    """تنفيذ رشق أصوات"""
+    client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+    await asyncio.wait_for(client.connect(), timeout=15)
+    try:
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
+            _mark_raksh_session_unauthorized(session.get("phone_number"))
+            return False, "الجلسة غير مصرح بها"
+
+        if is_first and params.get("channel_ref"):
+            await _join_channel_and_schedule_leave(client, params["channel_ref"])
+
+        channel_ref, msg_id = _parse_post_link(params["link"])
+        if not channel_ref:
+            return False, "رابط المنشور غير صحيح"
+
+        entity = await client.get_entity(channel_ref)
+        message = await client.get_messages(entity, ids=msg_id)
+        if not message:
+            return False, "المنشور غير موجود"
+
+        vote_button = None
+        for row in getattr(message, "buttons", None) or []:
+            for btn in row:
+                if getattr(btn, "url", None):
+                    continue
+                btn_text = (getattr(btn, "text", None) or "").lower()
+                if any(word in btn_text for word in ["تصويت", "صوت", "vote"]):
+                    vote_button = btn
+                    break
+            if vote_button:
+                break
+
+        if vote_button:
+            await vote_button.click()
+            await asyncio.sleep(1.0)
+            return True, f"✅ تم التصويت من {session['phone_number']}"
+        else:
+            return False, "لم يتم العثور على زر التصويت"
+    except Exception as e:
+        return False, f"❌ فشل: {str(e)[:80]}"
+    finally:
+        await client.disconnect()
+
+async def _execute_premium_reaction(session, params, is_first):
+    """تنفيذ رشق تفاعل مميز"""
+    client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+    await asyncio.wait_for(client.connect(), timeout=15)
+    try:
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
+            _mark_raksh_session_unauthorized(session.get("phone_number"))
+            return False, "الجلسة غير مصرح بها"
+
+        if is_first and params.get("channel_ref"):
+            await _join_channel_and_schedule_leave(client, params["channel_ref"])
+
+        post_ref, post_id = _parse_post_link(params["link"])
+        if not post_ref or not post_id:
+            return False, "رابط المنشور غير صحيح"
+
+        post_entity = await client.get_entity(post_ref)
+
+        reaction = params.get("reaction")
+        if not reaction or reaction == "random":
+            available_reactions = params.get("available_reactions") or list(RAKSH_REACTIONS.values())
+            reaction = random.choice(available_reactions)
+
+        if reaction == RAKSH_PAID_REACTION:
+            try:
+                from telethon.tl.types import ReactionPaid
+                reaction_value = ReactionPaid()
+            except ImportError:
+                return False, "التفاعل المدفوع غير مدعوم"
+        elif (custom_document_id := _custom_reaction_document_id(reaction)) is not None:
+            try:
+                from telethon.tl.types import ReactionCustomEmoji
+                reaction_value = ReactionCustomEmoji(document_id=custom_document_id)
+            except ImportError:
+                return False, "التفاعلات المميزة غير مدعومة"
+        else:
+            reaction_value = ReactionEmoji(emoticon=reaction)
+
+        await client(functions.messages.SendReactionRequest(
+            peer=post_entity,
+            msg_id=post_id,
+            reaction=[reaction_value],
+        ))
+        return True, f"✅ تم التفاعل المميز من {session['phone_number']}"
+    except Exception as e:
+        return False, f"❌ فشل: {str(e)[:80]}"
+    finally:
+        await client.disconnect()
+
+# ════════════════════════════════════════════════════════════
+# ═══ 11. دوال مساعدة للتفاعلات ═══
+# ════════════════════════════════════════════════════════════
 
 def _reaction_emoticons(reactions) -> list[str]:
-    """تحويل نتائج Telethon إلى قيم قابلة للاختيار والإرسال بدون تكرار."""
     result = []
-    for reaction in reactions or []:
-        reaction_type = reaction.__class__.__name__
-        if reaction_type == "ReactionPaid":
-            if RAKSH_PAID_REACTION not in result:
-                result.append(RAKSH_PAID_REACTION)
+    if not reactions:
+        return result
+    for reaction in reactions:
+        try:
+            reaction_type = reaction.__class__.__name__
+            if reaction_type == "ReactionPaid":
+                if RAKSH_PAID_REACTION not in result:
+                    result.append(RAKSH_PAID_REACTION)
+            elif reaction_type == "ReactionCustomEmoji":
+                document_id = getattr(reaction, "document_id", None)
+                if document_id is not None:
+                    custom_key = f"{RAKSH_CUSTOM_REACTION_PREFIX}{document_id}"
+                    if custom_key not in result:
+                        result.append(custom_key)
+            else:
+                emoticon = getattr(reaction, "emoticon", None)
+                if emoticon and emoticon not in result:
+                    result.append(emoticon)
+        except Exception:
             continue
-        if reaction_type == "ReactionCustomEmoji":
-            document_id = getattr(reaction, "document_id", None)
-            if document_id is not None:
-                custom_key = f"{RAKSH_CUSTOM_REACTION_PREFIX}{document_id}"
-                if custom_key not in result:
-                    result.append(custom_key)
-            continue
-        emoticon = getattr(reaction, "emoticon", None)
-        if emoticon and emoticon not in result:
-            result.append(emoticon)
     return result
 
-
 def _custom_reaction_document_id(value: str) -> int | None:
-    """Extract the Telegram custom-emoji document id from our safe UI value."""
     if not isinstance(value, str) or not value.startswith(RAKSH_CUSTOM_REACTION_PREFIX):
         return None
     raw_id = value[len(RAKSH_CUSTOM_REACTION_PREFIX):]
     return int(raw_id) if raw_id.isdigit() else None
 
-
-async def _fetch_raksh_reactions(
-    session: dict, post_ref: str, post_id: int
-) -> list[str]:
-    """قراءة التفاعلات المسموحة فعلياً في قناة المنشور."""
-    client = TelegramClient(
-        StringSession(session["session_string"]),
-        int(TELEGRAM_API_ID),
-        TELEGRAM_API_HASH,
-    )
-    await asyncio.wait_for(client.connect(), timeout=RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS)
+async def _fetch_raksh_reactions(session: dict, post_ref: str, post_id: int) -> list[str]:
+    client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     try:
-        if not await asyncio.wait_for(
-            client.is_user_authorized(),
-            timeout=RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS,
-        ):
+        await asyncio.wait_for(client.connect(), timeout=RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS)
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS):
             return []
 
-        post_entity = await asyncio.wait_for(
-            client.get_entity(post_ref),
-            timeout=RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS,
-        )
-        message = await asyncio.wait_for(
-            client.get_messages(post_entity, ids=post_id),
-            timeout=RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS,
-        )
+        post_entity = await asyncio.wait_for(client.get_entity(post_ref), timeout=RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS)
+        message = await asyncio.wait_for(client.get_messages(post_entity, ids=post_id), timeout=RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS)
         if isinstance(message, (list, tuple)):
             message = message[0] if message else None
+
         if message:
-            message_reactions = getattr(
-                getattr(message, "reactions", None),
-                "results",
-                [],
-            )
-            reactions = _reaction_emoticons(
-                getattr(item, "reaction", None) for item in message_reactions
-            )
+            message_reactions = getattr(getattr(message, "reactions", None), "results", [])
+            reactions = _reaction_emoticons(getattr(item, "reaction", None) for item in message_reactions)
             if reactions:
                 return reactions
 
         full_channel = await asyncio.wait_for(
             client(functions.channels.GetFullChannelRequest(channel=post_entity)),
-            timeout=RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS,
+            timeout=RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS
         )
         full_chat = getattr(full_channel, "full_chat", None)
-        available = getattr(full_chat, "available_reactions", None)
+
         if getattr(full_chat, "paid_reactions_available", False):
             return [RAKSH_PAID_REACTION]
 
+        available = getattr(full_chat, "available_reactions", None)
         configured = getattr(available, "reactions", None)
         reactions = _reaction_emoticons(configured)
         if reactions:
@@ -534,28 +1288,19 @@ async def _fetch_raksh_reactions(
 
         if available is not None and available.__class__.__name__ == "ChatReactionsAll":
             return list(RAKSH_REACTIONS.values())
+
         return []
     except Exception:
-        logger.exception(
-            "تعذر قراءة التفاعلات المسموحة للمنشور %s/%s",
-            post_ref,
-            post_id,
-        )
         return []
     finally:
         await client.disconnect()
 
-
-async def _fetch_raksh_reactions_from_pool(
-    sessions: list[dict], post_ref: str, post_id: int
-) -> list[str]:
-    """قراءة التفاعلات بسرعة من عدد محدود من الجلسات بالتوازي."""
-    if len(sessions) > RAKSH_REACTION_LOOKUP_MAX_SESSIONS:
-        candidates = random.sample(sessions, RAKSH_REACTION_LOOKUP_MAX_SESSIONS)
-    else:
-        candidates = list(sessions)
-    if not candidates:
+async def _fetch_raksh_reactions_from_pool(sessions: list[dict], post_ref: str, post_id: int) -> list[str]:
+    if not sessions:
         return []
+
+    max_samples = min(RAKSH_REACTION_LOOKUP_MAX_SESSIONS, len(sessions))
+    candidates = random.sample(sessions, max_samples) if max_samples > 0 else []
 
     async def lookup(session: dict) -> list[str]:
         try:
@@ -571,10 +1316,10 @@ async def _fetch_raksh_reactions_from_pool(
         for completed in asyncio.as_completed(tasks):
             try:
                 reactions = await completed
+                if reactions:
+                    return reactions
             except Exception:
                 continue
-            if reactions:
-                return reactions
         return []
     finally:
         for task in tasks:
@@ -582,885 +1327,9 @@ async def _fetch_raksh_reactions_from_pool(
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
 
-
-def _parse_story_link(value: str) -> tuple[str | None, int | None]:
-    """تحليل روابط الستوري العامة والخاصة بصيغتي /s/ و /story/."""
-    value = (value or "").strip().strip("<>")
-    parsed = urlparse(value if "://" in value else f"https://{value}")
-    if parsed.netloc.lower() not in {"t.me", "telegram.me", "www.t.me", "www.telegram.me"}:
-        return None, None
-    parts = [part for part in parsed.path.strip("/").split("/") if part]
-    if len(parts) == 3 and parts[1] in {"s", "story"} and parts[2].isdigit():
-        return f"@{parts[0].lstrip('@')}", int(parts[2])
-    if (
-        len(parts) == 4
-        and parts[0] == "c"
-        and parts[1].isdigit()
-        and parts[2] in {"s", "story"}
-        and parts[3].isdigit()
-    ):
-        return f"-100{parts[1]}", int(parts[3])
-    return None, None
-
-def _parse_bot_link(value: str) -> tuple[str | None, str | None]:
-    """تحليل رابط بوت إحالة"""
-    value = (value or "").strip()
-    if not value:
-        return None, None
-    if "t.me/" in value or "telegram.me/" in value:
-        parsed = urlparse(value if "://" in value else f"https://{value}")
-        path = parsed.path.strip("/")
-        if path:
-            bot_username = path.split("/")[0]
-            query = parse_qs(parsed.query)
-            start_param = (
-                query.get("start", [""])[0]
-                or query.get("startapp", [""])[0]
-                or query.get("startgroup", [""])[0]
-            )
-            return bot_username, start_param
-    else:
-        parts = value.split()
-        if len(parts) >= 1:
-            bot_username = parts[0].lstrip("@")
-            start_param = parts[1] if len(parts) > 1 else ""
-            return bot_username, start_param
-    return None, None
-
-
-def _find_bot_start_link(message) -> tuple[str | None, str | None]:
-    """استخراج رابط البوت ذي التوكن من زر منشور المسابقة."""
-    fallback = None
-    for row in getattr(message, "buttons", None) or []:
-        for button in row:
-            url = (getattr(button, "url", None) or "").strip()
-            if not url:
-                continue
-            bot_username, start_param = _parse_bot_link(url)
-            if bot_username:
-                if start_param:
-                    return bot_username, start_param
-                fallback = fallback or (bot_username, start_param)
-    return fallback or (None, None)
-
-
-async def _start_contest_bot_from_post(client, post_message):
-    """يفتح بوت المسابقة من زر المنشور باستخدام رابط البدء الموقّع."""
-    bot_username, start_param = _find_bot_start_link(post_message)
-    if not bot_username:
-        raise RuntimeError("لم يُعثر على رابط بوت المسابقة داخل زر المنشور.")
-    if not start_param:
-        raise RuntimeError("رابط بوت المسابقة لا يحتوي على توكن start.")
-
-    bot_entity = await client.get_entity(bot_username)
-    await client(
-        StartBotRequest(
-            bot=bot_entity,
-            peer=bot_entity,
-            start_param=start_param,
-        )
-    )
-    await asyncio.sleep(random.uniform(0.5, 1.0))
-    return bot_entity
-
-
-def _find_contest_vote_button(message):
-    """العثور على زر التصويت، مثل «❤️ 0»، مع تجاهل أزرار الروابط."""
-    candidates = []
-    callback_candidates = []
-    for row in getattr(message, "buttons", None) or []:
-        for button in row:
-            label = (getattr(button, "text", None) or "").strip()
-            callback_data = str(getattr(button, "data", None) or "").casefold()
-            if getattr(button, "url", None):
-                continue
-            if callback_data and any(
-                word in callback_data
-                for word in ("vote", "voting", "poll", "option", "contest", "صوت", "تصويت")
-            ):
-                callback_candidates.append(button)
-            if not label:
-                continue
-            folded = label.casefold()
-            if any(word in folded for word in ("تصويت", "صوت", "vote", "voting")):
-                return button
-            if any(
-                0x1F300 <= ord(char) <= 0x1FAFF or 0x2600 <= ord(char) <= 0x27BF
-                for char in label
-            ):
-                candidates.append(button)
-    if callback_candidates:
-        return callback_candidates[0]
-    return candidates[0] if candidates else None
-
-
-def _callback_answer_text(answer) -> str:
-    """قراءة رسالة جواب callback إن أعادها Telegram."""
-    return (
-        getattr(answer, "message", None)
-        or getattr(answer, "alert", None)
-        or getattr(answer, "text", None)
-        or ""
-    )
-
 # ════════════════════════════════════════════════════════════
-# ═══ 3. أزرار الواجهة ═══
+# ═══ 12. دوال التنفيذ الرئيسية ═══
 # ════════════════════════════════════════════════════════════
-
-def _raksh_setting_key(service_type: str) -> str:
-    return f"raksh_service_enabled_{service_type}"
-
-
-def _is_raksh_service_enabled(service_type: str) -> bool:
-    """الخدمات مفعلة افتراضياً حتى لا يتغير السلوك الحالي بعد التحديث."""
-    return get_setting(_raksh_setting_key(service_type)).strip().lower() not in {
-        "0", "false", "off", "hidden", "disabled"
-    }
-
-
-def _set_raksh_service_enabled(service_type: str, enabled: bool) -> None:
-    set_setting(_raksh_setting_key(service_type), "1" if enabled else "0")
-
-
-def raksh_menu_kb(is_owner: bool = False):
-    """قائمة الخدمات؛ المالك يرى زر التحكم، والأعضاء يرون المفعّل فقط."""
-    buttons = []
-    for key, svc in RAKSH_SERVICES.items():
-        if not is_owner and not _is_raksh_service_enabled(key):
-            continue
-        service_button = InlineKeyboardButton(
-            svc["name"], callback_data=f"raksh:start:{key}"
-        )
-        if is_owner:
-            enabled = _is_raksh_service_enabled(key)
-            buttons.append([
-                service_button,
-                InlineKeyboardButton(
-                    "✅ مفعلة" if enabled else "🚫 مخفية",
-                    callback_data=f"raksh:toggle:{key}",
-                ),
-            ])
-        else:
-            buttons.append([service_button])
-    if is_owner:
-        buttons.append([
-            InlineKeyboardButton(
-                f"🔥 إدارة {get_raksh_accounts_label()}",
-                callback_data="os:raksh_accounts",
-            )
-        ])
-    buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")])
-    return InlineKeyboardMarkup(buttons)
-
-def raksh_price_settings_kb():
-    """أزرار إعداد أسعار نظام الرشق للمالك."""
-    rows = []
-    for service_type, label in RAKSH_SERVICE_LABELS.items():
-        config = get_raksh_price_config(service_type)
-        rows.append([
-            InlineKeyboardButton(
-                f"{label}: ⭐ {config['stars_price']}/{config['stars_quantity']} | "
-                f"💰 {config['points_price']}/{config['points_quantity']}",
-                callback_data=f"raksh:price:{service_type}",
-            )
-        ])
-    rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
-    return InlineKeyboardMarkup(rows)
-
-def raksh_payment_kb(service_type: str, quantity: int, points_cost: int, stars_cost: int):
-    """أزرار اختيار طريقة الدفع"""
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"⭐ دفع بالنجوم ({stars_cost} نجمة)", callback_data=f"raksh:pay:stars:{service_type}:{quantity}")],
-        [InlineKeyboardButton(f"💰 دفع بالنقاط ({points_cost} نقطة)", callback_data=f"raksh:pay:points:{service_type}:{quantity}")],
-        [InlineKeyboardButton("🔙 رجوع", callback_data="raksh_menu")],
-    ])
-
-def raksh_channel_kb():
-    """أزرار تخطي القنوات"""
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("⏭️ تخطي (بدون قنوات)", callback_data="raksh:skip_channels")],
-        [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")],
-    ])
-
-RAKSH_REACTIONS = {
-    "heart": "❤️",
-    "fire": "🔥",
-    "like": "👍",
-    "love": "😍",
-    "starstruck": "🤩",
-    "sparkles": "✨",
-    "hundred": "💯",
-    "clap": "👏",
-}
-
-def raksh_reaction_kb(service_type: str, reactions=None):
-    """أزرار اختيار التفاعل (لخدمتي ستوري وتفاعل مميز)"""
-    buttons = []
-    row = []
-    reaction_items = (
-        list(RAKSH_REACTIONS.items())
-        if reactions is None
-        else [(reaction, reaction) for reaction in reactions]
-    )
-    for index, (reaction_key, reaction) in enumerate(reaction_items, start=1):
-        if reaction == RAKSH_PAID_REACTION:
-            callback_key = "paid"
-            reaction_label = RAKSH_PAID_REACTION_LABEL
-        elif _custom_reaction_document_id(reaction) is not None:
-            callback_key = f"custom_{_custom_reaction_document_id(reaction)}"
-            reaction_label = f"🎨 تفاعل مميز {index}"
-        else:
-            callback_key = reaction_key
-            reaction_label = reaction
-        row.append(
-            InlineKeyboardButton(
-                reaction_label,
-                callback_data=f"raksh:reaction:{service_type}:{callback_key}",
-            )
-        )
-        if len(row) == 4:
-            buttons.append(row)
-            row = []
-    if row:
-        buttons.append(row)
-    buttons.append([InlineKeyboardButton("🎲 عشوائي", callback_data=f"raksh:reaction:{service_type}:random")])
-    buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="raksh_menu")])
-    return InlineKeyboardMarkup(buttons)
-
-def raksh_confirm_kb(service_type: str, quantity: int, total_cost: int, payment_method: str):
-    """أزرار تأكيد الطلب"""
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ تأكيد الطلب", callback_data=f"raksh:confirm:{service_type}:{quantity}:{total_cost}:{payment_method}")],
-        [InlineKeyboardButton("❌ إلغاء", callback_data="raksh_cancel")],
-    ])
-
-# ════════════════════════════════════════════════════════════
-# ═══ 4. تنفيذ الخدمات ═══
-# ════════════════════════════════════════════════════════════
-
-async def _join_channel_and_schedule_leave(client, channel_ref: str):
-    """الانضمام للقناة والمغادرة بعد 24 ساعة"""
-    refs = channel_ref if isinstance(channel_ref, (list, tuple)) else _parse_channel_refs(channel_ref)
-    if not refs:
-        return
-    for ref in refs:
-        try:
-            if ref.startswith("invite:"):
-                await client(ImportChatInviteRequest(ref.split(":", 1)[1]))
-            else:
-                entity = await client.get_entity(ref)
-                await client(JoinChannelRequest(entity))
-        except Exception as exc:
-            logger.warning(
-                "تعذر الانضمام للقناة الاختيارية %s: %s",
-                ref,
-                str(exc)[:120],
-            )
-
-async def _join_discussion_group(client, discussion):
-    """الانضمام لمجموعة النقاش وإرجاع الكيان الصحيح لإرسال الرد."""
-    messages = getattr(discussion, "messages", None) or []
-    if not messages:
-        raise RuntimeError("المنشور لا يملك نقاشاً.")
-    discussion_message = messages[0]
-    peer = getattr(discussion_message, "peer_id", None)
-    channel_id = getattr(peer, "channel_id", None)
-    chats = getattr(discussion, "chats", None) or []
-    discussion_chat = next(
-        (chat for chat in chats if getattr(chat, "id", None) == channel_id),
-        None,
-    )
-    if discussion_chat is None:
-        raise RuntimeError("تعذر تحديد مجموعة النقاش.")
-    try:
-        await client(JoinChannelRequest(discussion_chat))
-    except Exception as exc:
-        if "USER_ALREADY_PARTICIPANT" not in str(exc).upper():
-            raise
-    return discussion_chat
-
-
-def _normalize_digits(value: str) -> str:
-    """توحيد الأرقام العربية قبل تحليل أرقام خيارات الاستفتاء."""
-    return (value or "").translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
-
-
-def _select_poll_option(options, requested: str):
-    """اختيار خيار الاستفتاء بالرقم أو بالنص."""
-    requested = (requested or "").strip()
-    normalized_requested = _normalize_digits(requested)
-    if normalized_requested.isdigit():
-        index = int(normalized_requested) - 1
-        return options[index] if 0 <= index < len(options) else None
-
-    requested_folded = requested.casefold()
-    return next(
-        (
-            option
-            for option in options
-            if str(getattr(option, "text", "")).strip().casefold() == requested_folded
-        ),
-        None,
-    )
-
-
-def _same_poll_option(left, right) -> bool:
-    """مقارنة خيارات Telethon سواء كانت bytes أو كائنات قابلة للمقارنة."""
-    if left is None or right is None:
-        return False
-    try:
-        return bytes(left) == bytes(right)
-    except (TypeError, ValueError):
-        return left == right
-
-
-async def _send_vote_and_check(client, peer, msg_id: int, option) -> bool:
-    """إرسال التصويت ثم محاولة التأكد من ظهور علامة chosen في النتائج."""
-    await client(SendVoteRequest(peer=peer, msg_id=msg_id, options=[option]))
-
-    for delay in (0.0, 0.3, 0.5):
-        if delay:
-            await asyncio.sleep(delay)
-        refreshed = await client.get_messages(peer, ids=msg_id)
-        if not refreshed:
-            continue
-        refreshed_message = refreshed[0] if isinstance(refreshed, (list, tuple)) else refreshed
-        poll_media = getattr(refreshed_message, "poll", None)
-        results = getattr(poll_media, "results", None)
-        result_items = getattr(results, "results", None) or []
-        if any(
-            _same_poll_option(getattr(result, "option", None), option)
-            and bool(getattr(result, "chosen", False))
-            for result in result_items
-        ):
-            return True
-
-    return False
-
-# ─── تنفيذ كل خدمة ───
-
-async def _execute_story(session, params, is_first):
-    """تنفيذ رشق مشاهدة ستوري وتفاعل"""
-    from telethon.tl.functions.stories import IncrementStoryViewsRequest, SendReactionRequest
-    from telethon.tl.types import ReactionEmoji
-    client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
-    await asyncio.wait_for(client.connect(), timeout=15)
-    try:
-        if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
-            return False, "الجلسة غير مصرح بها."
-        
-        # الانضمام للقناة إن وجدت
-        if is_first and params.get("channel_ref"):
-            await _join_channel_and_schedule_leave(client, params["channel_ref"])
-        
-        # تحليل رابط الستوري
-        entity_ref, story_id = _parse_story_link(params["link"])
-        if not entity_ref or not story_id:
-            return False, "رابط الستوري غير صحيح."
-        
-        entity = await client.get_entity(entity_ref)
-        
-        # مشاهدة الستوري
-        await client(IncrementStoryViewsRequest(peer=entity, id=story_id))
-        
-        # التفاعل على الستوري
-        reaction = params.get("reaction")
-        if not reaction or reaction == "random":
-            reaction = random.choice(list(RAKSH_REACTIONS.values()))
-        
-        try:
-            await client(
-                SendReactionRequest(
-                    peer=entity,
-                    story_id=story_id,
-                    reaction=ReactionEmoji(emoticon=reaction),
-                )
-            )
-            return True, f"✅ تمت المشاهدة والتفاعل من {session['phone_number']}"
-        except Exception as reaction_error:
-            logger.warning(
-                "Story view succeeded but reaction failed for %s: %s",
-                session["phone_number"],
-                str(reaction_error)[:120],
-            )
-            return True, f"✅ تمت المشاهدة من {session['phone_number']} (تعذر التفاعل)"
-    except Exception as e:
-        return False, f"❌ فشل: {str(e)[:80]}"
-    finally:
-        await client.disconnect()
-
-async def _execute_forced_ref(session, params, is_first):
-    """تنفيذ إحالة بوت إجباري"""
-    from telethon.tl.functions.contacts import ResolveUsernameRequest
-    from telethon.tl.functions.messages import StartBotRequest
-    client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
-    await asyncio.wait_for(client.connect(), timeout=15)
-    try:
-        if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
-            return False, "الجلسة غير مصرح بها."
-        if params.get("channel_ref"):
-            await _join_channel_and_schedule_leave(client, params["channel_ref"])
-        bot_username, start_param = _parse_bot_link(params["link"])
-        if not bot_username:
-            return False, "رابط البوت غير صحيح."
-        clean_username = bot_username.lstrip("@").strip()
-        resolved = await client(ResolveUsernameRequest(clean_username))
-        bot_entity = resolved.users[0] if resolved.users else resolved.chats[0]
-        await client(StartBotRequest(bot=bot_entity, peer=bot_entity, start_param=start_param or ""))
-        await asyncio.sleep(1.5)
-        return True, f"✅ تمت الإحالة من {session['phone_number']}"
-    except Exception as e:
-        return False, f"❌ فشل: {str(e)[:80]}"
-    finally:
-        await client.disconnect()
-
-async def _execute_forced_ref_ai(session, params, is_first):
-    """تنفيذ إحالة بوت إجباري مع تحقق - يدعم مشاركة جهة الاتصال واختيار الإيموجي الصحيح"""
-    from telethon.tl.functions.contacts import ResolveUsernameRequest
-    from telethon.tl.functions.messages import StartBotRequest
-    try:
-        from .referrals import solve_captcha_with_ai
-    except ImportError:
-        return False, "لا يمكن استيراد solve_captcha_with_ai"
-    
-    client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
-    await asyncio.wait_for(client.connect(), timeout=15)
-    try:
-        if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
-            return False, "الجلسة غير مصرح بها."
-        
-        if params.get("channel_ref"):
-            await _join_channel_and_schedule_leave(client, params["channel_ref"])
-        
-        bot_username, start_param = _parse_bot_link(params["link"])
-        if not bot_username:
-            return False, "رابط البوت غير صحيح."
-        
-        clean_username = bot_username.lstrip("@").strip()
-        resolved = await client(ResolveUsernameRequest(clean_username))
-        bot_entity = resolved.users[0] if resolved.users else resolved.chats[0]
-        
-        # إرسال /start
-        await client(StartBotRequest(bot=bot_entity, peer=bot_entity, start_param=start_param or ""))
-        await asyncio.sleep(2)
-        
-        # جلب رسائل البوت
-        msgs = await client.get_messages(bot_entity, limit=20)
-        
-        # ═══════════════════════════════════════════════════════════
-        # ═══ 1. التحقق من وجود زر مشاركة جهة الاتصال ═══
-        # ═══════════════════════════════════════════════════════════
-        contact_shared = False
-        for msg in msgs:
-            if not msg.buttons:
-                continue
-            for row in msg.buttons:
-                for button in row:
-                    button_text = getattr(button, "text", "") or ""
-                    if "مشاركة" in button_text or "جهة اتصال" in button_text or "شارك" in button_text:
-                        try:
-                            # مشاركة جهة الاتصال
-                            me = await client.get_me()
-                            await client.send_file(
-                                bot_entity,
-                                InputMediaContact(
-                                    phone_number=me.phone,
-                                    first_name=me.first_name or "",
-                                    last_name=me.last_name or "",
-                                    vcard="",
-                                ),
-                            )
-                            contact_shared = True
-                            logger.info(f"✅ تم مشاركة جهة الاتصال من {session['phone_number']}")
-                            await asyncio.sleep(2)
-                            break
-                        except Exception as e:
-                            logger.warning(f"فشل مشاركة جهة الاتصال: {e}")
-                    if contact_shared:
-                        break
-                if contact_shared:
-                    break
-        
-        # جلب الرسائل الجديدة بعد مشاركة جهة الاتصال
-        if contact_shared:
-            msgs = await client.get_messages(bot_entity, limit=20)
-        
-        # ═══════════════════════════════════════════════════════════
-        # ═══ 2. البحث عن أزرار إيموجي والضغط على الصحيح ═══
-        # ═══════════════════════════════════════════════════════════
-        emoji_pressed = False
-        for msg in msgs:
-            if not msg.buttons:
-                continue
-            for row in msg.buttons:
-                for button in row:
-                    button_text = getattr(button, "text", "") or ""
-                    # البحث عن زر إيموجي
-                    if any(0x1F300 <= ord(char) <= 0x1FAFF or 0x2600 <= ord(char) <= 0x27BF for char in button_text):
-                        try:
-                            await button.click()
-                            emoji_pressed = True
-                            logger.info(f"✅ تم الضغط على الإيموجي {button_text} من {session['phone_number']}")
-                            await asyncio.sleep(2)
-                            break
-                        except Exception as e:
-                            logger.warning(f"فشل الضغط على الإيموجي: {e}")
-                    if emoji_pressed:
-                        break
-                if emoji_pressed:
-                    break
-        
-        # ═══════════════════════════════════════════════════════════
-        # ═══ 3. حل التحقق باستخدام AI إذا لزم الأمر ═══
-        # ═══════════════════════════════════════════════════════════
-        if not emoji_pressed:
-            msgs = await client.get_messages(bot_entity, limit=15)
-            solved, detail = await solve_captcha_with_ai(client, bot_entity, msgs, session["phone_number"], max_attempts=2)
-            if not solved:
-                return False, f"فشل التحقق: {detail}"
-        
-        return True, f"✅ تمت الإحالة مع التحقق من {session['phone_number']}"
-    except Exception as e:
-        return False, f"❌ فشل: {str(e)[:80]}"
-    finally:
-        await client.disconnect()
-
-async def _execute_comment(session, params, is_first):
-    """تنفيذ رشق تعليق"""
-    client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
-    await asyncio.wait_for(client.connect(), timeout=15)
-    try:
-        if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
-            return False, "الجلسة غير مصرح بها."
-        comment_text = (params.get("comment_text") or "").strip()
-        if not comment_text:
-            return False, "نص التعليق فارغ."
-        if is_first and params.get("channel_ref"):
-            try:
-                await _join_channel_and_schedule_leave(client, params["channel_ref"])
-            except Exception as channel_error:
-                logger.warning(
-                    "تعذر انضمام أول حساب لقنوات الطلب %s: %s",
-                    session["phone_number"],
-                    str(channel_error)[:120],
-                )
-        post_ref, post_id = _parse_post_link(params["link"])
-        if not post_ref or not post_id:
-            return False, "رابط المنشور غير صحيح."
-        post_entity = await client.get_entity(post_ref)
-        discussion = await client(functions.messages.GetDiscussionMessageRequest(peer=post_entity, msg_id=post_id))
-        if not getattr(discussion, "messages", None):
-            return False, "المنشور لا يملك نقاشاً."
-        discussion_message = discussion.messages[0]
-        discussion_peer = getattr(discussion_message, "peer_id", None)
-        if discussion_peer is None:
-            return False, "تعذر تحديد مساحة التعليقات."
-        discussion_chat = await _join_discussion_group(client, discussion)
-        sent_message = await client.send_message(
-            discussion_chat,
-            comment_text,
-            reply_to=discussion_message.id,
-        )
-        if not getattr(sent_message, "id", None):
-            return False, "تعذر تأكيد إرسال التعليق."
-        return True, f"✅ تم التعليق من {session['phone_number']}"
-    except Exception as e:
-        return False, f"❌ فشل: {str(e)[:80]}"
-    finally:
-        await client.disconnect()
-
-async def _execute_poll(session, params, is_first):
-    """تنفيذ رشق استفتاء - محسّن للتعامل مع أنواع الاستفتاءات المختلفة"""
-    client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
-    await asyncio.wait_for(client.connect(), timeout=15)
-    try:
-        if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
-            return False, "الجلسة غير مصرح بها."
-        if is_first and params.get("channel_ref"):
-            await _join_channel_and_schedule_leave(client, params["channel_ref"])
-        
-        entity_ref, msg_id = _parse_post_link(params["link"])
-        if not entity_ref or not msg_id:
-            return False, "رابط الاستفتاء غير صحيح."
-        
-        entity = await client.get_entity(entity_ref)
-        messages = _as_message_list(await client.get_messages(entity, ids=msg_id))
-        if not messages:
-            return False, "المنشور غير موجود."
-        msg = messages[0]
-        
-        # التحقق من وجود استفتاء
-        if not hasattr(msg, "poll") or not msg.poll:
-            return False, "هذا المنشور ليس استفتاءً."
-        
-        poll = msg.poll.poll
-        options = getattr(poll, "answers", [])
-        if not options:
-            return False, "لا توجد خيارات للتصويت."
-        
-        # اختيار الخيار المطلوب أو عشوائي
-        poll_option = params.get("poll_option")
-        if poll_option:
-            chosen_option = _select_poll_option(options, poll_option)
-            if chosen_option is None:
-                return False, f"الخيار {poll_option} غير موجود."
-        else:
-            chosen_option = random.choice(options)
-        
-        # إرسال التصويت
-        verified = await _send_vote_and_check(client, entity, msg_id, chosen_option.option)
-        verification = " وتم التحقق من تسجيله" if verified else " وتم إرسال الطلب إلى Telegram"
-        return True, f"✅ تم التصويت{verification} من {session['phone_number']}"
-    except Exception as e:
-        return False, f"❌ فشل: {str(e)[:80]}"
-    finally:
-        await client.disconnect()
-
-async def _execute_votes(session, params, is_first):
-    """تنفيذ رشق أصوات"""
-    client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
-    await asyncio.wait_for(client.connect(), timeout=15)
-    try:
-        if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
-            return False, "الجلسة غير مصرح بها."
-        if is_first and params.get("channel_ref"):
-            await _join_channel_and_schedule_leave(client, params["channel_ref"])
-        post_ref, post_id = _parse_post_link(params["link"])
-        if not post_ref or not post_id:
-            return False, "رابط المنشور غير صحيح."
-        post_entity = await client.get_entity(post_ref)
-        messages = _as_message_list(await client.get_messages(post_entity, ids=post_id))
-        if not messages:
-            return False, "المنشور غير موجود."
-        msg = messages[0]
-        if not hasattr(msg, "poll") or not msg.poll:
-            return False, "هذا المنشور ليس استفتاءً."
-        poll = msg.poll.poll
-        options = getattr(poll, "answers", [])
-        if not options:
-            return False, "لا توجد خيارات."
-        chosen = random.choice(options)
-        verified = await _send_vote_and_check(
-            client,
-            post_entity,
-            post_id,
-            chosen.option,
-        )
-        verification = " وتم التحقق من تسجيله" if verified else " وتم إرسال الطلب إلى Telegram"
-        return True, f"✅ تم التصويت{verification} من {session['phone_number']}"
-    except Exception as e:
-        return False, f"❌ فشل: {str(e)[:80]}"
-    finally:
-        await client.disconnect()
-
-# ════════════════════════════════════════════════════════════
-# ═══ 4.5 دالة تصويت مع تحقق (المطورة) ═══
-# ════════════════════════════════════════════════════════════
-
-async def _execute_votes_ai(session, params, is_first):
-    """تنفيذ تصويت مع تحقق - يدعم الحسابات الجديدة والمفعّلة مسبقاً."""
-    client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
-    await asyncio.wait_for(client.connect(), timeout=15)
-    try:
-        if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
-            return False, "الجلسة غير مصرح بها."
-
-        # 1. تحليل رابط المنشور والانضمام للقناة
-        post_ref, post_id = _parse_post_link(params["link"])
-        if not post_ref or not post_id:
-            return False, "رابط المنشور غير صحيح."
-
-        post_entity = await client.get_entity(post_ref)
-        if params.get("channel_ref"):
-            await _join_channel_and_schedule_leave(client, params["channel_ref"])
-            await asyncio.sleep(0.5)
-
-        # 2. قراءة المنشور والعثور على زر التصويت المباشر (القلب)
-        messages = _as_message_list(await client.get_messages(post_entity, ids=post_id))
-        if not messages:
-            return False, "المنشور غير موجود."
-        post_message = messages[0]
-
-        # 3. محاولة الضغط على زر التصويت المباشر (إن وجد)
-        vote_button_clicked = False
-        for row in getattr(post_message, "buttons", None) or []:
-            for button in row:
-                # البحث عن زر التفاعل (قلب أو ما يشابه) وليس زر رابط
-                if getattr(button, "url", None):
-                    continue
-                label = (getattr(button, "text", None) or "").strip()
-                # نبحث عن زر به إيموجي (غالباً ❤️) أو نص يدل على التصويت
-                if any(0x1F300 <= ord(char) <= 0x1FAFF or 0x2600 <= ord(char) <= 0x27BF for char in label) or \
-                   any(word in label.casefold() for word in ("تصويت", "vote")):
-                    try:
-                        await button.click()
-                        vote_button_clicked = True
-                        logger.info(f"✅ الحساب {session['phone_number']} ضغط على زر التصويت المباشر: {label}")
-                        await asyncio.sleep(2.5)  # انتظار رد البوت
-                        break
-                    except Exception as e:
-                        logger.warning(f"فشل الضغط على زر التصويت المباشر: {e}")
-            if vote_button_clicked:
-                break
-
-        # 4. البحث عن رد البوت (سواء من زر التصويت أو من /start)
-        # نبحث عن رسالة تحتوي على أزرار إيموجي
-        bot_reply = None
-        bot_messages = _as_message_list(await client.get_messages(post_entity, limit=20))
-        for msg in bot_messages:
-            if msg.sender_id != post_entity.id:  # نتأكد أن الرسالة من البوت نفسه
-                continue
-            if getattr(msg, "buttons", None):
-                # تحقق من وجود أزرار إيموجي في الرد
-                for row in msg.buttons:
-                    for button in row:
-                        button_text = getattr(button, "text", "") or ""
-                        if any(0x1F300 <= ord(char) <= 0x1FAFF or 0x2600 <= ord(char) <= 0x27BF for char in button_text):
-                            bot_reply = msg
-                            break
-                    if bot_reply:
-                        break
-                if bot_reply:
-                    break
-
-        # 5. إذا لم نجد رداً بوتياً، قد يكون الحساب جديداً، لذا نرسل /start
-        if not bot_reply:
-            bot_username = None
-            # استخراج اسم البوت من نص المنشور
-            text = getattr(post_message, "message", "") or ""
-            bot_matches = re.findall(r'@([A-Za-z0-9_]+bot)', text) or re.findall(r't\.me/([A-Za-z0-9_]+bot)', text)
-            if bot_matches:
-                bot_username = bot_matches[0]
-                try:
-                    bot_entity = await client.get_entity(bot_username)
-                    await client.send_message(bot_entity, "/start")
-                    logger.info(f"✅ الحساب {session['phone_number']} أرسل /start إلى @{bot_username}")
-                    await asyncio.sleep(3)
-                    # نقرأ رسائل البوت بعد /start
-                    bot_messages = _as_message_list(await client.get_messages(bot_entity, limit=15))
-                    for msg in bot_messages:
-                        if getattr(msg, "buttons", None):
-                            bot_reply = msg
-                            break
-                except Exception as e:
-                    logger.warning(f"فشل إرسال /start: {e}")
-
-        # 6. الضغط على الإيموجي الصحيح من رسالة البوت
-        if bot_reply:
-            # ═══════════════════════════════════════════════════════
-            # ═══ اختيار الإيموجي الصحيح بدقة ═══
-            # ═══════════════════════════════════════════════════════
-            # نبحث عن الإيموجي المطلوب في نص الرسالة
-            reply_text = getattr(bot_reply, "message", "") or getattr(bot_reply, "text", "") or ""
-            
-            # استخراج الإيموجي المطلوب من نص الرسالة
-            target_emoji = None
-            # البحث عن إيموجي في النص
-            emoji_pattern = re.compile(r'[\U0001F300-\U0001FAFF]|[\u2600-\u27BF]')
-            found_emojis = emoji_pattern.findall(reply_text)
-            if found_emojis:
-                target_emoji = found_emojis[0]  # أول إيموجي في النص
-            
-            # البحث عن أزرار إيموجي في الرسالة
-            for row in getattr(bot_reply, "buttons", None) or []:
-                for button in row:
-                    button_text = getattr(button, "text", "") or ""
-                    
-                    # إذا كان لدينا إيموجي مستهدف، نبحث عن زر يطابقه
-                    if target_emoji and target_emoji in button_text:
-                        try:
-                            await button.click()
-                            logger.info(f"✅ الحساب {session['phone_number']} ضغط على الإيموجي الصحيح: {button_text}")
-                            await asyncio.sleep(2)
-                            # تحقق من نجاح التصويت
-                            success_keywords = ("تم التصويت", "صوتك مسجل", "vote recorded", "شكراً لتصويتك")
-                            final_msgs = _as_message_list(await client.get_messages(bot_reply.sender_id, limit=5))
-                            for final_msg in final_msgs:
-                                final_text = getattr(final_msg, "message", "") or ""
-                                if any(word in final_text.casefold() for word in success_keywords):
-                                    return True, f"✅ تم التصويت مع التحقق من {session['phone_number']}"
-                            return True, f"✅ تم تنفيذ التصويت (قد يحتاج تأكيد) من {session['phone_number']}"
-                        except Exception as e:
-                            logger.warning(f"فشل الضغط على الإيموجي الصحيح: {e}")
-                    
-                    # إذا لم نجد إيموجي مستهدف، نضغط على أي زر إيموجي
-                    elif any(0x1F300 <= ord(char) <= 0x1FAFF or 0x2600 <= ord(char) <= 0x27BF for char in button_text):
-                        try:
-                            await button.click()
-                            logger.info(f"✅ الحساب {session['phone_number']} ضغط على الإيموجي: {button_text}")
-                            await asyncio.sleep(2)
-                            success_keywords = ("تم التصويت", "صوتك مسجل", "vote recorded", "شكراً لتصويتك")
-                            final_msgs = _as_message_list(await client.get_messages(bot_reply.sender_id, limit=5))
-                            for final_msg in final_msgs:
-                                final_text = getattr(final_msg, "message", "") or ""
-                                if any(word in final_text.casefold() for word in success_keywords):
-                                    return True, f"✅ تم التصويت مع التحقق من {session['phone_number']}"
-                            return True, f"✅ تم تنفيذ التصويت (قد يحتاج تأكيد) من {session['phone_number']}"
-                        except Exception as e:
-                            logger.warning(f"فشل الضغط على الإيموجي: {e}")
-        else:
-            return False, "لم يتم العثور على رد بوت أو أزرار إيموجي."
-
-        return False, "فشل إكمال عملية التصويت."
-
-    except Exception as e:
-        return False, f"❌ فشل: {str(e)[:80]}"
-    finally:
-        await client.disconnect()
-
-# ════════════════════════════════════════════════════════════
-
-async def _execute_premium_reaction(session, params, is_first):
-    """تنفيذ رشق تفاعل مميز - يستخدم فقط الإيموجيات المقبولة من المنشور"""
-    client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
-    await asyncio.wait_for(client.connect(), timeout=15)
-    try:
-        if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
-            return False, "الجلسة غير مصرح بها."
-        if is_first and params.get("channel_ref"):
-            await _join_channel_and_schedule_leave(client, params["channel_ref"])
-        post_ref, post_id = _parse_post_link(params["link"])
-        if not post_ref or not post_id:
-            return False, "رابط المنشور غير صحيح."
-        post_entity = await client.get_entity(post_ref)
-        
-        # اختيار التفاعل
-        reaction = params.get("reaction")
-        available_reactions = params.get("available_reactions") or []
-        
-        if not reaction or reaction == "random":
-            if available_reactions:
-                reaction = random.choice(available_reactions)
-            else:
-                reaction = random.choice(list(RAKSH_REACTIONS.values()))
-        
-        # بناء كائن التفاعل
-        if reaction == RAKSH_PAID_REACTION:
-            try:
-                from telethon.tl.types import ReactionPaid
-            except ImportError:
-                return False, "إصدار Telethon الحالي لا يدعم التفاعل المدفوع."
-            reaction_value = ReactionPaid()
-        elif (custom_document_id := _custom_reaction_document_id(reaction)) is not None:
-            try:
-                from telethon.tl.types import ReactionCustomEmoji
-            except ImportError:
-                return False, "إصدار Telethon الحالي لا يدعم التفاعلات المميزة."
-            reaction_value = ReactionCustomEmoji(document_id=custom_document_id)
-        else:
-            reaction_value = ReactionEmoji(emoticon=reaction)
-        
-        # إرسال التفاعل
-        await client(functions.messages.SendReactionRequest(
-            peer=post_entity,
-            msg_id=post_id,
-            reaction=[reaction_value],
-        ))
-        return True, f"✅ تم التفاعل المميز من {session['phone_number']}"
-    except Exception as e:
-        return False, f"❌ فشل: {str(e)[:80]}"
-    finally:
-        await client.disconnect()
 
 EXECUTORS = {
     "story": _execute_story,
@@ -1474,7 +1343,6 @@ EXECUTORS = {
 }
 
 def _raksh_order_label(service_type: str) -> str:
-    """اسم مختصر مناسب لإشعارات الطلبات."""
     labels = {
         "comment": "تعليقات",
         "poll": "استفتاء",
@@ -1495,128 +1363,314 @@ async def execute_raksh_service(
     user_id: int,
     progress_callback=None,
 ):
-    """تنفيذ طلب رشق بعدد محدد من الحسابات"""
     if not sessions:
-        raise RuntimeError("لا توجد جلسات نشطة متاحة.")
+        raise RuntimeError("لا توجد جلسات نشطة متاحة")
+
     executor = EXECUTORS.get(service_type)
     if not executor:
         raise RuntimeError(f"خدمة غير معروفة: {service_type}")
 
-    if service_type == "votes_ai":
-        shuffled = sessions.copy()
-        random.shuffle(shuffled)
-        success_count = 0
-        success_phones = []
-        failed_phones = []
-        failed_details = []
-
-        for batch_start in range(0, min(quantity, len(shuffled)), RAKSH_VOTE_CONCURRENT):
-            batch = shuffled[batch_start:batch_start + RAKSH_VOTE_CONCURRENT]
-            tasks = []
-            for session in batch:
-                phone = session["phone_number"]
-                if phone in success_phones or phone in failed_phones:
-                    continue
-                if not _reserve_raksh_execution_slot(user_id, service_type, phone):
-                    continue
-
-                session_lock = _get_raksh_session_lock(phone)
-                if session_lock.locked():
-                    continue
-
-                async def _run_one(session=session, session_lock=session_lock):
-                    async with session_lock:
-                        try:
-                            return await executor(session=session, params=params, is_first=True)
-                        except Exception as e:
-                            return False, f"❌ خطأ: {str(e)[:80]}"
-                tasks.append(asyncio.create_task(_run_one()))
-
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            for session, result in zip(batch, results):
-                phone = session["phone_number"]
-                if isinstance(result, BaseException):
-                    ok, msg = False, f"❌ فشل: {str(result)[:80]}"
-                else:
-                    ok, msg = result
-                if ok:
-                    success_count += 1
-                    success_phones.append(phone)
-                else:
-                    failed_phones.append(phone)
-                    failed_details.append(msg)
-
-            if progress_callback:
-                await progress_callback(min(batch_start + RAKSH_VOTE_CONCURRENT, quantity),
-                                        quantity,
-                                        success_count,
-                                        len(failed_details))
-            await asyncio.sleep(0.05)
-
-        return success_count, success_phones, failed_phones, failed_details
-
     shuffled = sessions.copy()
     random.shuffle(shuffled)
+
     success_count = 0
     success_phones = []
     failed_phones = []
     failed_details = []
     used_phones = set()
+
     for i in range(quantity):
         if not shuffled:
             break
+
         session = shuffled.pop(0)
         phone = session["phone_number"]
+
         if phone in used_phones:
             continue
         used_phones.add(phone)
+
         if not _reserve_raksh_execution_slot(user_id, service_type, phone):
-            remaining = quantity - i
             failed_phones.append(phone)
-            failed_phones.extend(
-                candidate["phone_number"]
-                for candidate in shuffled[:remaining - 1]
-                if candidate["phone_number"] not in used_phones
-            )
-            failed_details.extend(
-                ["⏳ تم إيقاف بقية التنفيذ مؤقتاً."] * remaining
-            )
-            if progress_callback:
-                await progress_callback(
-                    quantity,
-                    quantity,
-                    success_count,
-                    len(failed_details),
-                )
-            break
+            failed_details.append("تم تجاوز حد التنفيذ")
+            continue
+
         session_lock = _get_raksh_session_lock(phone)
         if session_lock.locked():
-            ok = False
-            msg = "الجلسة قيد الاستخدام من تنفيذ آخر؛ لم يتم تشغيلها بالتوازي"
-        else:
-            async with session_lock:
-                try:
-                    ok, msg = await executor(
-                        session=session, params=params, is_first=(i == 0)
-                    )
-                except Exception as e:
-                    ok = False
-                    msg = f"❌ خطأ: {str(e)[:80]}"
+            failed_phones.append(phone)
+            failed_details.append("الجلسة قيد الاستخدام")
+            continue
+
+        async with session_lock:
+            try:
+                ok, msg = await executor(
+                    session=session,
+                    params=params,
+                    is_first=(i == 0),
+                )
+            except Exception as e:
+                ok = False
+                msg = f"❌ خطأ: {str(e)[:80]}"
+
         if ok:
             success_count += 1
             success_phones.append(phone)
         else:
             failed_phones.append(phone)
             failed_details.append(msg)
+
         if progress_callback:
             await progress_callback(i + 1, quantity, success_count, len(failed_details))
+
         if i < quantity - 1 and shuffled:
             delay = _get_delay_seconds(service_type, params.get("delay_seconds"))
             await asyncio.sleep(delay)
+
     return success_count, success_phones, failed_phones, failed_details
 
 # ════════════════════════════════════════════════════════════
-# ═══ 5. معالج الأزرار الرئيسي ═══
+# ═══ 13. دوال الواجهة والأزرار ═══
+# ════════════════════════════════════════════════════════════
+
+def _is_raksh_service_enabled(service_type: str) -> bool:
+    return get_setting(f"raksh_service_enabled_{service_type}").strip().lower() not in {
+        "0", "false", "off", "hidden", "disabled"
+    }
+
+def _set_raksh_service_enabled(service_type: str, enabled: bool) -> None:
+    set_setting(f"raksh_service_enabled_{service_type}", "1" if enabled else "0")
+
+def _get_max_quantity(service_type: str | None = None) -> int:
+    available = get_available_sessions_count(service_type)
+    if service_type and service_type in RAKSH_SERVICES:
+        max_q = RAKSH_SERVICES[service_type].get("max_quantity", 999)
+        return min(available, max_q)
+    return available
+
+def _get_request_limit(user_id: int, service_type: str | None = None) -> int:
+    return min(
+        _get_max_quantity(service_type),
+        get_raksh_hourly_remaining(user_id),
+    )
+
+def get_raksh_hourly_remaining(user_id: int) -> int:
+    if RAKSH_MAX_EXECUTIONS_PER_HOUR <= 0:
+        return 2_147_483_647
+    try:
+        with db_conn() as c:
+            row = c.execute(
+                """
+                SELECT COUNT(*) AS used
+                FROM raksh_execution_usage
+                WHERE user_id=%s
+                  AND executed_at >= NOW() - INTERVAL '1 hour'
+                """,
+                (user_id,),
+            ).fetchone()
+        used = int(row["used"] or 0) if row else 0
+        return max(0, RAKSH_MAX_EXECUTIONS_PER_HOUR - used)
+    except Exception:
+        return 0
+
+def _chunk_lines(lines: list[str], max_chars: int = 3500) -> list[str]:
+    chunks = []
+    current = []
+    current_length = 0
+    for line in lines:
+        line_length = len(line) + 1
+        if current and current_length + line_length > max_chars:
+            chunks.append("\n".join(current))
+            current = []
+            current_length = 0
+        current.append(line)
+        current_length += line_length
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
+
+def _raksh_link_error(service_type: str, value: str) -> str | None:
+    if not value.strip():
+        return "⚠️ الرابط لا يمكن أن يكون فارغاً"
+
+    if service_type in {"forced_ref", "forced_ref_ai"}:
+        bot_username, _ = _parse_bot_link(value)
+        if not bot_username:
+            return "⚠️ رابط البوت غير صحيح.\nأرسله بهذا الشكل:\n@BotUsername start123\nأو: t.me/BotUsername?start=123"
+        return None
+
+    if service_type == "story":
+        if not all(_parse_story_link(value)):
+            return "⚠️ رابط الستوري غير صحيح.\nأرسله بهذا الشكل:\nhttps://t.me/username/s/123"
+        return None
+
+    if service_type in {"votes_ai", "votes"}:
+        if not ("@" in value or "t.me/" in value):
+            return "⚠️ الرابط يجب أن يحتوي على @username أو t.me/"
+        return None
+
+    if not all(_parse_post_link(value)):
+        return "⚠️ الرابط غير صحيح لهذه الخدمة."
+    return None
+
+def _get_link_instruction(service_type: str) -> str:
+    instructions = {
+        "story": "https://t.me/username/s/123 أو https://t.me/username/story/123",
+        "forced_ref": "@BotUsername start123  أو  t.me/BotUsername?start=123",
+        "forced_ref_ai": "@BotUsername start123  أو  t.me/BotUsername?start=123",
+        "comment": "https://t.me/channel/123",
+        "poll": "https://t.me/channel/123",
+        "votes": "https://t.me/channel/123",
+        "votes_ai": "رابط بوت مباشر أو رابط بوست يحتوي زر بوت",
+        "premium_reaction": "https://t.me/channel/123",
+    }
+    return instructions.get(service_type, "أرسل الرابط المطلوب")
+
+def _parse_raksh_rate_updates(text: str) -> dict[str, tuple[int, int]]:
+    updates = {}
+    for line in (text or "").splitlines():
+        normalized = line.casefold().strip()
+        numbers = re.findall(r"\d+", normalized)
+        if len(numbers) < 2:
+            continue
+        price, bundle_quantity = int(numbers[0]), int(numbers[1])
+        if price < 1 or bundle_quantity < 1:
+            continue
+        if "نج" in normalized or "star" in normalized:
+            updates["stars"] = (price, bundle_quantity)
+        elif "نق" in normalized or "point" in normalized:
+            updates["points"] = (price, bundle_quantity)
+    return updates
+
+# ════════════════════════════════════════════════════════════
+# ═══ 14. أزرار الواجهة ═══
+# ════════════════════════════════════════════════════════════
+
+def raksh_menu_kb(is_owner: bool = False):
+    buttons = []
+    for key, svc in RAKSH_SERVICES.items():
+        if not is_owner and not _is_raksh_service_enabled(key):
+            continue
+        service_button = InlineKeyboardButton(
+            svc["name"], callback_data=f"raksh:start:{key}"
+        )
+        if is_owner:
+            enabled = _is_raksh_service_enabled(key)
+            buttons.append([
+                service_button,
+                InlineKeyboardButton(
+                    "✅ مفعلة" if enabled else "🚫 مخفية",
+                    callback_data=f"raksh:toggle:{key}",
+                ),
+            ])
+        else:
+            buttons.append([service_button])
+
+    if is_owner:
+        buttons.append([
+            InlineKeyboardButton(
+                f"🔥 إدارة {get_raksh_accounts_label()}",
+                callback_data="os:raksh_accounts",
+            )
+        ])
+        buttons.append([
+            InlineKeyboardButton(
+                "⚙️ إدارة الأسعار",
+                callback_data="raksh:settings",
+            )
+        ])
+
+    buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")])
+    return InlineKeyboardMarkup(buttons)
+
+def raksh_price_settings_kb():
+    rows = []
+    for service_type, label in RAKSH_SERVICE_LABELS.items():
+        config = get_raksh_price_config(service_type)
+        rows.append([
+            InlineKeyboardButton(
+                f"{label}: ⭐ {config['stars_price']}/{config['stars_quantity']} | "
+                f"💰 {config['points_price']}/{config['points_quantity']}",
+                callback_data=f"raksh:price:{service_type}",
+            )
+        ])
+    rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
+    return InlineKeyboardMarkup(rows)
+
+def raksh_payment_kb(service_type: str, quantity: int, points_cost: int, stars_cost: int):
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                f"⭐ دفع بالنجوم ({stars_cost} نجمة)",
+                callback_data=f"raksh:pay:stars:{service_type}:{quantity}"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                f"💰 دفع بالنقاط ({points_cost} نقطة)",
+                callback_data=f"raksh:pay:points:{service_type}:{quantity}"
+            )
+        ],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="raksh_menu")],
+    ])
+
+def raksh_channel_kb():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⏭️ تخطي (بدون قنوات)", callback_data="raksh:skip_channels")],
+        [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")],
+    ])
+
+def raksh_reaction_kb(service_type: str, reactions: list = None):
+    buttons = []
+    row = []
+
+    if reactions:
+        reaction_items = reactions
+    else:
+        reaction_items = list(RAKSH_REACTIONS.values())
+
+    for item in reaction_items:
+        if isinstance(item, dict):
+            reaction_label = item.get("label", "")
+            callback_key = item.get("callback", reaction_label)
+        else:
+            reaction_label = item
+            callback_key = item
+
+        row.append(
+            InlineKeyboardButton(
+                reaction_label,
+                callback_data=f"raksh:reaction:{service_type}:{callback_key}",
+            )
+        )
+        if len(row) == 4:
+            buttons.append(row)
+            row = []
+
+    if row:
+        buttons.append(row)
+
+    buttons.append([
+        InlineKeyboardButton(
+            "🎲 عشوائي",
+            callback_data=f"raksh:reaction:{service_type}:random"
+        )
+    ])
+    buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="raksh_menu")])
+    return InlineKeyboardMarkup(buttons)
+
+def raksh_confirm_kb(service_type: str, quantity: int, total_cost: int, payment_method: str):
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "✅ تأكيد الطلب",
+                callback_data=f"raksh:confirm:{service_type}:{quantity}:{total_cost}:{payment_method}"
+            )
+        ],
+        [InlineKeyboardButton("❌ إلغاء", callback_data="raksh_cancel")],
+    ])
+
+# ════════════════════════════════════════════════════════════
+# ═══ 15. معالج الأزرار الرئيسي ═══
 # ════════════════════════════════════════════════════════════
 
 async def handle_raksh_callback(
@@ -1627,7 +1681,6 @@ async def handle_raksh_callback(
     user=None,
     is_own=None,
 ):
-    """معالج جميع أزرار نظام الرشق"""
     query = query or update.callback_query
     data = query.data if data is None else data
     user = user or query.from_user
@@ -1694,7 +1747,7 @@ async def handle_raksh_callback(
             ]),
         )
         return
-    
+
     if data in {"raksh_menu", "raksh_cancel"}:
         _clear_raksh_state(context)
         if data == "raksh_cancel":
@@ -1712,7 +1765,7 @@ async def handle_raksh_callback(
             reply_markup=raksh_menu_kb(is_own)
         )
         return
-    
+
     if data.startswith("raksh:start:"):
         service_type = data.split(":")[2]
         svc = RAKSH_SERVICES.get(service_type)
@@ -1728,46 +1781,50 @@ async def handle_raksh_callback(
                 reply_markup=raksh_menu_kb(False),
             )
             return
-        
+
         _clear_raksh_state(context)
         context.user_data["raksh_service"] = service_type
         context.user_data["raksh_step"] = "channel"
-        
+
         await query.edit_message_text(
             f"{svc['name']}\n\n"
             f"💰 السعر: {_raksh_rate_text(service_type, 'points')}\n"
             f"⭐ السعر: {_raksh_rate_text(service_type, 'stars')}\n\n"
             "📢 *أرسل القنوات الإجبارية:*\n"
-            "مثال: @channel1 @channel2\n\n"
+            "يمكنك إرسال أكثر من قناة، كل قناة في سطر أو مفصولة بمسافة\n"
+            "مثال: @channel1\n@channel2\n\n"
             "أو اضغط تخطي:",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=raksh_channel_kb()
         )
         return
-    
+
     if data == "raksh:skip_channels":
         context.user_data["raksh_channels"] = []
         context.user_data["raksh_step"] = "link"
-        svc = RAKSH_SERVICES.get(context.user_data.get("raksh_service"))
         await query.edit_message_text(
             f"✅ تم تخطي القنوات.\n\n"
             f"🔗 *أرسل الرابط المطلوب:*\n"
             f"{_get_link_instruction(context.user_data.get('raksh_service'))}",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]])
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+            ])
         )
         return
-    
+
     if data.startswith("raksh:reaction:"):
         parts = data.split(":")
         service_type = parts[2]
         reaction_key = parts[3]
+
         if reaction_key == "paid":
             reaction = RAKSH_PAID_REACTION
         elif reaction_key.startswith("custom_") and reaction_key[7:].isdigit():
             reaction = f"{RAKSH_CUSTOM_REACTION_PREFIX}{reaction_key[7:]}"
         else:
             reaction = RAKSH_REACTIONS.get(reaction_key, reaction_key)
+
         if service_type == "premium_reaction":
             available_reactions = context.user_data.get("raksh_available_reactions") or []
             if reaction_key == "random":
@@ -1775,22 +1832,27 @@ async def handle_raksh_callback(
             elif available_reactions and reaction not in available_reactions:
                 await query.answer("⚠️ هذا التفاعل غير متاح في المنشور.", show_alert=True)
                 return
+
         context.user_data["raksh_reaction"] = reaction
         context.user_data["raksh_step"] = "quantity"
+
         reaction_label = (
             RAKSH_PAID_REACTION_LABEL
             if reaction == RAKSH_PAID_REACTION
             else reaction
         )
+
         await query.edit_message_text(
             f"✅ تم اختيار التفاعل: {reaction_label}\n\n"
             f"🔢 *أرسل عدد الوحدات المطلوبة:*\n"
             f"(الحد الأقصى: {_get_max_quantity(service_type)})",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="raksh_menu")]])
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 رجوع", callback_data="raksh_menu")]
+            ])
         )
         return
-    
+
     if data.startswith("raksh:pay:"):
         parts = data.split(":")
         if len(parts) != 5 or parts[2] not in {"stars", "points"}:
@@ -1803,22 +1865,23 @@ async def handle_raksh_callback(
         except ValueError:
             await query.answer("⚠️ العدد غير صالح.", show_alert=True)
             return
+
         svc = RAKSH_SERVICES.get(service_type)
         if not svc or quantity < 1:
             await query.answer("⚠️ الخدمة أو العدد غير صالح.", show_alert=True)
             return
-        request_limit = min(
-            _get_max_quantity(service_type),
-            get_raksh_hourly_remaining(user.id),
-        )
+
+        request_limit = _get_request_limit(user.id, service_type)
         if quantity > request_limit:
             await query.answer(
-                "⚠️ لا يمكن قبول هذا العدد حالياً. خفّض العدد أو حاول لاحقاً.",
+                f"⚠️ لا يمكن قبول هذا العدد حالياً. الحد المتاح: {request_limit} وحدة.",
                 show_alert=True,
             )
             return
+
         context.user_data["raksh_payment_method"] = method
         context.user_data["raksh_step"] = "payment_confirm"
+
         if method == "stars":
             total = get_raksh_total(service_type, quantity, "stars")
             await query.edit_message_text(
@@ -1845,11 +1908,11 @@ async def handle_raksh_callback(
                 reply_markup=raksh_confirm_kb(service_type, quantity, total, "points")
             )
         return
-    
+
     if data.startswith("raksh:confirm:"):
         parts = data.split(":")
-        if len(parts) != 6 or parts[1] != "confirm":
-            await query.answer("⚠️ بيانات تأكيد الطلب غير صالحة.", show_alert=True)
+        if len(parts) != 6:
+            await query.answer("⚠️ بيانات التأكيد غير صالحة.", show_alert=True)
             return
         service_type = parts[2]
         try:
@@ -1859,23 +1922,22 @@ async def handle_raksh_callback(
             await query.answer("⚠️ العدد أو السعر غير صالح.", show_alert=True)
             return
         payment_method = parts[5]
-        if service_type not in RAKSH_SERVICES or payment_method not in {"points", "stars"} or quantity < 1:
+
+        if service_type not in RAKSH_SERVICES or payment_method not in {"points", "stars"}:
             await query.answer("⚠️ بيانات الطلب غير صالحة.", show_alert=True)
             return
+
         if quantity > _get_request_limit(user.id, service_type):
             await query.edit_message_text(
                 "⚠️ لا يمكن قبول هذا الطلب حالياً. حاول لاحقاً.",
                 reply_markup=raksh_menu_kb(is_own),
             )
             return
+
         total_cost = get_raksh_total(service_type, quantity, payment_method)
         if button_total != total_cost:
-            logger.info(
-                "Raksh price refreshed before confirmation: service=%s quantity=%s",
-                service_type,
-                quantity,
-            )
-        
+            logger.info(f"تحديث سعر الرشق: {service_type} {quantity}")
+
         if payment_method == "points":
             if not deduct_points(user.id, total_cost):
                 current_user = get_user(user.id)
@@ -1909,318 +1971,21 @@ async def handle_raksh_callback(
                 prices=[LabeledPrice("خدمة الرشق", total_stars)],
             )
             return
-        
-        await _start_raksh_execution(update, context, query, service_type, quantity, payment_method, total_cost)
+
+        await _start_raksh_execution(
+            update, context, query, service_type, quantity, payment_method, total_cost
+        )
         return
 
 # ════════════════════════════════════════════════════════════
-# ═══ 6. دوال مساعدة للمعالجات ═══
-# ════════════════════════════════════════════════════════════
-
-def _get_link_instruction(service_type: str) -> str:
-    """نص تعليمات الرابط حسب الخدمة"""
-    instructions = {
-        "story": "https://t.me/username/s/123 أو https://t.me/username/story/123",
-        "forced_ref": "@BotUsername start123  أو  t.me/BotUsername?start=123",
-        "forced_ref_ai": "@BotUsername start123  أو  t.me/BotUsername?start=123",
-        "comment": "https://t.me/channel/123",
-        "poll": "https://t.me/channel/123",
-        "votes": "https://t.me/channel/123",
-        "votes_ai": "https://t.me/channel/123",
-        "premium_reaction": "https://t.me/channel/123",
-    }
-    return instructions.get(service_type, "أرسل الرابط المطلوب")
-
-def _parse_raksh_rate_updates(text: str) -> dict[str, tuple[int, int]]:
-    """قراءة أسطر مثل «نجوم 1 لكل 10» و«نقاط 30 لكل 1»."""
-    updates = {}
-    for line in (text or "").splitlines():
-        normalized = line.casefold().strip()
-        numbers = re.findall(r"\d+", normalized)
-        if len(numbers) < 2:
-            continue
-        price, bundle_quantity = int(numbers[0]), int(numbers[1])
-        if price < 1 or bundle_quantity < 1:
-            continue
-        if "نج" in normalized or "star" in normalized:
-            updates["stars"] = (price, bundle_quantity)
-        elif "نق" in normalized or "point" in normalized:
-            updates["points"] = (price, bundle_quantity)
-    return updates
-
-def _raksh_link_error(service_type: str, value: str) -> str | None:
-    """إرجاع رسالة واضحة قبل حفظ رابط لا يناسب الخدمة."""
-    if service_type in {"forced_ref", "forced_ref_ai"}:
-        valid = _parse_bot_link(value)[0] is not None
-        if not valid:
-            return (
-                "⚠️ رابط البوت غير صحيح.\n\n"
-                "أرسله بهذا الشكل:\n"
-                "@BotUsername start123\n"
-                "أو: t.me/BotUsername?start=123"
-            )
-        return None
-
-    if service_type == "story":
-        valid = all(_parse_story_link(value))
-    else:
-        valid = all(_parse_post_link(value))
-    if not valid:
-        return (
-            "⚠️ الرابط غير صحيح لهذه الخدمة.\n\n"
-            f"أرسل الرابط بهذا الشكل:\n{_get_link_instruction(service_type)}"
-        )
-    return None
-
-def _get_max_quantity(service_type: str | None = None) -> int:
-    """عدد الوحدات الأقصى حسب الجلسات المؤهلة المتاحة حالياً."""
-    # استخدم العدد الفعلي للجلسات المتاحة
-    available = get_available_sessions_count(service_type)
-    # أضف حد أقصى إضافي من إعدادات الخدمة (إن وجد)
-    if service_type and service_type in RAKSH_SERVICES:
-        max_q = RAKSH_SERVICES[service_type].get("max_quantity", 999)
-        return min(available, max_q)
-    return available
-
-def _get_request_limit(user_id: int, service_type: str | None = None) -> int:
-    """الحد الفعلي للطلب: الحسابات المتاحة أو رصيد الساعة، أيهما أقل."""
-    return min(
-        _get_max_quantity(service_type),
-        get_raksh_hourly_remaining(user_id),
-    )
-
-def _chunk_lines(lines: list[str], max_chars: int = 3500) -> list[str]:
-    """تقسيم قوائم الحسابات حتى تبقى رسائل تيليجرام ضمن الحجم المسموح."""
-    chunks: list[str] = []
-    current: list[str] = []
-    current_length = 0
-    for line in lines:
-        line_length = len(line) + 1
-        if current and current_length + line_length > max_chars:
-            chunks.append("\n".join(current))
-            current = []
-            current_length = 0
-        current.append(line)
-        current_length += line_length
-    if current:
-        chunks.append("\n".join(current))
-    return chunks
-
-async def _send_raksh_order_to_group(bot, user_id: int, quantity: int, payment_method: str, service_type: str) -> None:
-    """إرسال إشعار بدء الطلب إلى كروب الطلبات."""
-    if not ADMIN_GROUP_ID:
-        return
-    try:
-        await bot.send_message(
-            ADMIN_GROUP_ID,
-            f"طلب {_raksh_order_label(service_type)} العدد: {quantity}\n"
-            f"المستخدم: {user_id}\n"
-            f"طريقة الدفع: {payment_method}",
-        )
-    except Exception:
-        logger.exception("فشل إرسال طلب الرشق إلى كروب الطلبات")
-
-async def _send_raksh_owner_result(
-    bot,
-    service_type: str,
-    quantity: int,
-    success_phones: list[str],
-    failed_phones: list[str],
-    failed_details: list[str],
-) -> None:
-    """إرسال النتيجة للمالك مع أزرار طرد الحسابات الفاشلة."""
-    if not OWNER_ID:
-        return
-    try:
-        failed_count = len(failed_phones)
-        lines = [
-            f"نتيجة طلب {_raksh_order_label(service_type)} العدد: {quantity}",
-            f"✅ المنفذة: {len(success_phones)}",
-            f"❌ الفاشلة: {failed_count}",
-            "",
-            "✅ الحسابات المنفذة:",
-        ]
-        lines.extend(f"• {phone}" for phone in success_phones)
-        lines.extend(["", "❌ الحسابات الفاشلة:"])
-        if failed_phones:
-            for index, phone in enumerate(failed_phones):
-                detail = failed_details[index] if index < len(failed_details) else "فشل التنفيذ"
-                lines.append(f"• {phone} — {detail}")
-        else:
-            lines.append("• لا يوجد")
-
-        # بناء أزرار الطرد للحسابات الفاشلة (فقط التي ليس لها جلسة)
-        kick_buttons = []
-        with db_conn() as c:
-            for phone in failed_phones:
-                # نتحقق مما إذا كان الحساب له جلسة في قاعدة البيانات
-                row = c.execute(
-                    "SELECT session_string, id FROM number_stock WHERE phone_number=%s",
-                    (phone,)
-                ).fetchone()
-                # إذا لم يكن له جلسة، نضيف زر الطرد (لأنه حساب ميت)
-                if not row or not row["session_string"]:
-                    if row:
-                        kick_buttons.append([
-                            InlineKeyboardButton(
-                                f"🚫 طرد {phone}",
-                                callback_data=f"fref_kick:{row['id']}:{phone}"
-                            )
-                        ])
-
-        # إرسال التقرير
-        for chunk in _chunk_lines(lines):
-            await bot.send_message(OWNER_ID, chunk)
-
-        # إرسال الأزرار في رسالة منفصلة
-        if kick_buttons:
-            await bot.send_message(
-                OWNER_ID,
-                "⚠️ الحسابات الفاشلة التي ليس لها جلسة (يمكنك طردها):",
-                reply_markup=InlineKeyboardMarkup(kick_buttons)
-            )
-
-    except Exception as e:
-        logger.exception(f"فشل إرسال نتيجة حسابات طلب الرشق إلى المالك: {e}")
-
-# ════════════════════════════════════════════════════════════
-# ═══ 7. تنفيذ الطلب ═══
-# ════════════════════════════════════════════════════════════
-
-async def _start_raksh_execution(
-    update,
-    context,
-    query,
-    service_type: str,
-    quantity: int,
-    payment_method: str,
-    total_cost: int,
-    progress_message=None,
-):
-    """بدء تنفيذ طلب الرشق"""
-    user = query.from_user if query is not None else update.effective_user
-    
-    if progress_message is None:
-        progress_msg = await query.edit_message_text(
-            "✅ *بدأ التنفيذ الآن باستخدام الحسابات النشطة...*\n\n"
-            f"📊 0/{quantity}",
-            parse_mode=ParseMode.MARKDOWN
-        )
-    else:
-        progress_msg = progress_message
-        await progress_msg.edit_text(
-            "✅ *بدأ التنفيذ الآن باستخدام الحسابات النشطة...*\n\n"
-            f"📊 0/{quantity}",
-            parse_mode=ParseMode.MARKDOWN,
-        )
-    
-    sessions = _get_all_active_sessions(service_type)
-    if not sessions:
-        await progress_msg.edit_text(
-            "❌ لا توجد حسابات متاحة.",
-            reply_markup=raksh_menu_kb(user.id == OWNER_ID)
-        )
-        if payment_method == "points":
-            add_points(user.id, total_cost)
-        _clear_raksh_state(context)
-        return
-
-    await _send_raksh_order_to_group(
-        context.bot,
-        user.id,
-        quantity,
-        payment_method,
-        service_type,
-    )
-    
-    params = {
-        "channel_ref": context.user_data.get("raksh_channels"),
-        "reaction": context.user_data.get("raksh_reaction"),
-        "available_reactions": context.user_data.get("raksh_available_reactions"),
-        "link": context.user_data.get("raksh_link"),
-        "comment_text": context.user_data.get("raksh_comment"),
-        "poll_option": context.user_data.get("raksh_poll_option"),
-        "delay_seconds": context.user_data.get("raksh_delay_seconds"),
-    }
-    
-    async def update_progress(current, total, success, failed):
-        try:
-            await progress_msg.edit_text(
-                f"⏳ *جاري التنفيذ...*\n\n"
-                f"📊 {current}/{total}\n"
-                f"✅ نجح: {success}\n"
-                f"❌ فشل: {failed}",
-                parse_mode=ParseMode.MARKDOWN
-            )
-        except Exception:
-            pass
-    
-    success_count, success_phones, failed_phones, failed_details = await execute_raksh_service(
-        service_type=service_type,
-        quantity=quantity,
-        sessions=sessions,
-        params=params,
-        user_id=user.id,
-        progress_callback=update_progress
-    )
-    
-    # إرسال النتيجة للمالك مع أزرار الطرد
-    await _send_raksh_owner_result(
-        context.bot,
-        service_type,
-        quantity,
-        success_phones,
-        failed_phones,
-        failed_details,
-    )
-    
-    failed_count = quantity - success_count
-    refund = 0
-    if failed_count > 0 and payment_method == "points":
-        refund = max(
-            0,
-            total_cost - get_raksh_total(service_type, success_count, "points"),
-        )
-        add_points(user.id, refund)
-    
-    result_text = f"✅ *اكتمل الطلب!*\n\n"
-    result_text += f"الخدمة: {RAKSH_SERVICES[service_type]['name']}\n"
-    result_text += f"المطلوب: {quantity}\n"
-    result_text += f"✅ المنجز: {success_count}\n"
-    result_text += f"❌ الفاشل: {failed_count}\n"
-    if refund > 0:
-        result_text += f"💰 تم تعويضك: {refund} نقطة\n"
-    
-    if success_phones:
-        result_text += f"\n✅ *الحسابات الناجحة:*\n"
-        result_text += "\n".join(f"• `{p}`" for p in success_phones[:10])
-        if len(success_phones) > 10:
-            result_text += f"\n... و{len(success_phones)-10} أخرى"
-    
-    if failed_details:
-        result_text += f"\n\n❌ *الفاشلة:*\n"
-        result_text += "\n".join(f"• {d}" for d in failed_details[:5])
-        if len(failed_details) > 5:
-            result_text += f"\n... و{len(failed_details)-5} أخرى"
-    
-    await progress_msg.edit_text(
-        result_text,
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=main_menu_kb()
-    )
-    
-    _clear_raksh_state(context)
-
-# ════════════════════════════════════════════════════════════
-# ═══ 8. معالج النصوص ═══
+# ═══ 16. معالج النصوص ═══
 # ════════════════════════════════════════════════════════════
 
 async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالج النصوص لنظام الرشق"""
     user = update.effective_user
     text = update.message.text
     state = context.user_data.get("raksh_step")
-    
+
     if not state:
         return False
 
@@ -2233,18 +1998,17 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _clear_raksh_state(context)
             await update.message.reply_text("⚠️ انتهت جلسة تعديل الأسعار.")
             return True
+
         updates = _parse_raksh_rate_updates(text)
         if not updates:
             await update.message.reply_text(
-                "⚠️ لم أفهم الصيغة.\n"
-                "استخدم مثلاً:\n"
-                "⭐ نجوم 1 لكل 10\n"
-                "💰 نقاط 30 لكل 1",
+                "⚠️ لم أفهم الصيغة.\nاستخدم مثلاً:\n⭐ نجوم 1 لكل 10\n💰 نقاط 30 لكل 1",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔙 رجوع للأسعار", callback_data="raksh:settings")]
                 ]),
             )
             return True
+
         keys = RAKSH_PRICE_KEYS[service_type]
         if "stars" in updates:
             price, bundle_quantity = updates["stars"]
@@ -2254,6 +2018,7 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             price, bundle_quantity = updates["points"]
             set_setting(keys["points_price"], str(price))
             set_setting(keys["points_quantity"], str(bundle_quantity))
+
         config = get_raksh_price_config(service_type)
         await update.message.reply_text(
             f"✅ تم حفظ أسعار {RAKSH_SERVICE_LABELS[service_type]}.\n\n"
@@ -2263,27 +2028,302 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=raksh_price_settings_kb(),
         )
         return True
-    
+
     if state == "channel":
         channel_refs = _parse_channel_refs(text)
         if text.strip() and not channel_refs:
             await update.message.reply_text(
-                "⚠️ لم أتعرف على أي قناة.\n"
-                "أرسل @username أو رابط t.me للقناة، ويمكنك إرسال أكثر من قناة مفصولة بمسافة.",
+                "⚠️ لم أتعرف على أي قناة.\nأرسل @username أو رابط t.me للقناة.",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
                 ]),
             )
             return True
+
         context.user_data["raksh_channels"] = channel_refs
         context.user_data["raksh_step"] = "link"
         service_type = context.user_data.get("raksh_service")
+
         await update.message.reply_text(
             f"✅ تم حفظ القنوات.\n\n"
             f"🔗 *أرسل الرابط المطلوب:*\n"
             f"{_get_link_instruction(service_type)}",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]])
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+            ])
+        )
+        return True
+
+    if state == "link":
+        service_type = context.user_data.get("raksh_service")
+
+        link_error = _raksh_link_error(service_type, text)
+        if link_error:
+            await update.message.reply_text(
+                link_error,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                ]),
+            )
+            return True
+
+        context.user_data["raksh_link"] = text
+
+        # خدمات خاصة
+        if service_type in {"votes_ai"}:
+            context.user_data["raksh_step"] = "quantity"
+            max_qty = _get_request_limit(user.id, service_type)
+            if max_qty < 1:
+                await update.message.reply_text("⚠️ لا توجد حسابات متاحة حالياً.")
+                return True
+            await update.message.reply_text(
+                f"✅ تم حفظ الرابط.\n\n"
+                f"🔢 *أرسل عدد الوحدات المطلوبة:*\n"
+                f"(الحد الأقصى: {max_qty})",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                ])
+            )
+            return True
+
+        # خدمات تحتاج تفاعل
+        if service_type == "premium_reaction":
+            post_ref, post_id = _parse_post_link(text)
+            if not post_ref or post_id is None:
+                await update.message.reply_text("⚠️ تعذر تحليل رابط المنشور.")
+                return True
+
+            sessions = _get_all_active_sessions(service_type)
+            if not sessions:
+                await update.message.reply_text("⚠️ لا توجد حسابات متاحة حالياً.")
+                return True
+
+            reaction_options = await _fetch_raksh_reactions_from_pool(
+                sessions, post_ref, post_id
+            )
+
+            if not reaction_options:
+                reaction_options = list(RAKSH_REACTIONS.values())
+
+            # تحويل القائمة
+            formatted_reactions = []
+            for r in reaction_options:
+                if r == RAKSH_PAID_REACTION:
+                    formatted_reactions.append({"label": "⭐ تفاعل مدفوع", "callback": "paid"})
+                else:
+                    formatted_reactions.append({"label": r, "callback": r})
+
+            formatted_reactions.append({"label": "🎲 عشوائي", "callback": "random"})
+
+            context.user_data["raksh_available_reactions"] = formatted_reactions
+            context.user_data["raksh_step"] = "reaction"
+            await update.message.reply_text(
+                f"✅ تم حفظ الرابط.\n\n"
+                f"✨ *اختر التفاعل المطلوب من المنشور:*",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=raksh_reaction_kb(
+                    service_type,
+                    context.user_data.get("raksh_available_reactions")
+                )
+            )
+            return True
+
+        if service_type == "story":
+            # ستوري - تفاعل تلقائي، لا نطلب من المستخدم اختيار
+            context.user_data["raksh_step"] = "quantity"
+            max_qty = _get_request_limit(user.id, service_type)
+            if max_qty < 1:
+                await update.message.reply_text("⚠️ لا توجد حسابات متاحة حالياً.")
+                return True
+            await update.message.reply_text(
+                f"✅ تم حفظ الرابط.\n\n"
+                f"🔢 *أرسل عدد الوحدات المطلوبة:*\n"
+                f"(الحد الأقصى: {max_qty})",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                ])
+            )
+            return True
+
+        if service_type == "comment":
+            context.user_data["raksh_step"] = "comment_text"
+            await update.message.reply_text(
+                f"✅ تم حفظ الرابط.\n\n"
+                f"💬 *أرسل نص التعليق:*",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                ])
+            )
+            return True
+
+        if service_type == "poll":
+            context.user_data["raksh_step"] = "poll_option"
+            await update.message.reply_text(
+                f"✅ تم حفظ الرابط.\n\n"
+                f"🔢 *أرسل رقم الخيار المطلوب:*\n"
+                f"(مثال: 1 أو 2 أو 3)",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                ])
+            )
+            return True
+
+        context.user_data["raksh_step"] = "quantity"
+        max_qty = _get_request_limit(user.id, service_type)
+        if max_qty < 1:
+            await update.message.reply_text("⚠️ لا توجد حسابات متاحة حالياً.")
+            return True
+        await update.message.reply_text(
+            f"✅ تم حفظ الرابط.\n\n"
+            f"🔢 *أرسل عدد الوحدات المطلوبة:*\n"
+            f"(الحد الأقصى: {max_qty})",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+            ])
+        )
+        return True
+
+    if state == "comment_text":
+        context.user_data["raksh_comment"] = text
+        context.user_data["raksh_step"] = "quantity"
+        service_type = context.user_data.get("raksh_service")
+        max_qty = _get_request_limit(user.id, service_type)
+        if max_qty < 1:
+            await update.message.reply_text("⚠️ لا توجد حسابات متاحة حالياً.")
+            return True
+        await update.message.reply_text(
+            f"✅ تم حفظ التعليق.\n\n"
+            f"🔢 *أرسل عدد الوحدات المطلوبة:*\n"
+            f"(الحد الأقصى: {max_qty})",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+            ])
+        )
+        return True
+
+    if state == "poll_option":
+        normalized = _normalize_digits(text.strip())
+        if not normalized.isdigit():
+            await update.message.reply_text(
+                "⚠️ أرسل رقماً صحيحاً (مثال: 1 أو 2 أو 3).",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                ]),
+            )
+            return True
+        context.user_data["raksh_poll_option"] = normalized
+        context.user_data["raksh_step"] = "quantity"
+        service_type = context.user_data.get("raksh_service")
+        max_qty = _get_request_limit(user.id, service_type)
+        if max_qty < 1:
+            await update.message.reply_text("⚠️ لا توجد حسابات متاحة حالياً.")
+            return True
+        await update.message.reply_text(
+            f"✅ تم حفظ الخيار {normalized}.\n\n"
+            f"🔢 *أرسل عدد الوحدات المطلوبة:*\n"
+            f"(الحد الأقصى: {max_qty})",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+            ])
+        )
+        return True
+
+    if state == "quantity":
+        try:
+            quantity = int(text)
+        except ValueError:
+            await update.message.reply_text(
+                "⚠️ أرسل رقماً صحيحاً.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                ]),
+            )
+            return True
+
+        service_type = context.user_data.get("raksh_service")
+        max_qty = _get_request_limit(user.id, service_type)
+        if max_qty < 1:
+            await update.message.reply_text("⚠️ لا توجد حسابات متاحة حالياً.")
+            return True
+
+        if quantity < 1 or quantity > max_qty:
+            await update.message.reply_text(
+                f"⚠️ العدد المسموح بين 1 و {max_qty}.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                ]),
+            )
+            return True
+
+        svc = RAKSH_SERVICES.get(service_type)
+        points_cost = get_raksh_total(service_type, quantity, "points")
+        stars_cost = get_raksh_total(service_type, quantity, "stars")
+
+        context.user_data["raksh_quantity"] = quantity
+
+        if user.id == OWNER_ID and service_type in {"forced_ref", "forced_ref_ai"}:
+            context.user_data["raksh_step"] = "delay"
+            await update.message.reply_text(
+                "⏱️ *إعداد الفاصل الزمني*\n\n"
+                "أرسل عدد الثواني بين تفعيل حساب وآخر.\n"
+                "للأعضاء يبقى الوقت ثابتاً: 180 ثانية.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                ])
+            )
+            return True
+
+        context.user_data["raksh_step"] = "payment"
+        await update.message.reply_text(
+            f"📋 *مراجعة الطلب*\n\n"
+            f"الخدمة: {svc['name']}\n"
+            f"العدد: {quantity}\n"
+            f"💰 السعر بالنقاط: {points_cost} نقطة\n"
+            f"⭐ السعر بالنجوم: {stars_cost} نجمة\n\n"
+            f"اختر طريقة الدفع:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=raksh_payment_kb(service_type, quantity, points_cost, stars_cost)
+        )
+        return True
+
+    if state == "delay":
+        service_type = context.user_data.get("raksh_service")
+        if service_type not in {"forced_ref", "forced_ref_ai"} or user.id != OWNER_ID:
+            context.user_data["raksh_step"] = "quantity"
+            return True
+        try:
+            delay_seconds = int(text.strip())
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل عدد الثواني كرقم صحيح.")
+            return True
+        if delay_seconds < 0 or delay_seconds > 86400:
+            await update.message.reply_text("⚠️ أدخل رقماً بين 0 و 86400 ثانية.")
+            return True
+        context.user_data["raksh_delay_seconds"] = delay_seconds
+        quantity = int(context.user_data.get("raksh_quantity", 1))
+        svc = RAKSH_SERVICES.get(service_type)
+        points_cost = get_raksh_total(service_type, quantity, "points")
+        stars_cost = get_raksh_total(service_type, quantity, "stars")
+        context.user_data["raksh_step"] = "payment"
+        await update.message.reply_text(
+            f"✅ تم ضبط الفاصل: {delay_seconds} ثانية.\n\n"
+            f"📋 *مراجعة الطلب*\n\n"
+            f"الخدمة: {svc['name']}\n"
+            f"العدد: {quantity}\n"
+            f"💰 السعر بالنقاط: {points_cost} نقطة\n"
+            f"⭐ السعر بالنجوم: {stars_cost} نجمة\n\n"
+            f"اختر طريقة الدفع:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=raksh_payment_kb(service_type, quantity, points_cost, stars_cost)
         )
         return True
 
@@ -2291,10 +2331,8 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         normalized = re.sub(r"[\s_\-]+", "", (text or "").casefold())
         if normalized in {"نقاط", "النقاط", "بالنقاط", "points", "point"}:
             method = "points"
-            method_label = "النقاط"
         elif normalized in {"نجوم", "النجوم", "بالنجوم", "stars", "star"}:
             method = "stars"
-            method_label = "النجوم"
         else:
             await update.message.reply_text(
                 "⚠️ اكتب «نقاط» أو «نجوم»، أو اختر أحد الزرين الظاهرين.",
@@ -2324,8 +2362,7 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if method == "points":
             if not deduct_points(user.id, total):
                 await update.message.reply_text(
-                    f"❌ نقاطك غير كافية لإتمام الطلب.\n"
-                    f"التكلفة المطلوبة: {total} نقطة.",
+                    f"❌ نقاطك غير كافية.\nالتكلفة: {total} نقطة.",
                     reply_markup=raksh_menu_kb(user.id == OWNER_ID),
                 )
                 _clear_raksh_state(context)
@@ -2333,7 +2370,7 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             progress_message = await update.message.reply_text(
                 f"✅ تم الدفع بالنقاط وخصم {total} نقطة.\n"
-                "✅ بدأ التنفيذ الآن باستخدام الحسابات النشطة..."
+                "⏳ جاري التنفيذ..."
             )
             await _start_raksh_execution(
                 update,
@@ -2349,267 +2386,32 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         context.user_data["raksh_step"] = "payment_confirm"
         await update.message.reply_text(
-            f"✅ تم اختيار الدفع بـ{method_label}.\n\n"
+            f"✅ تم اختيار الدفع بالنجوم.\n\n"
             f"الخدمة: {svc['name']}\n"
             f"العدد: {quantity}\n"
-            f"التكلفة: {total} {'نقطة' if method == 'points' else 'نجمة'}\n\n"
+            f"التكلفة: {total} نجمة\n\n"
             "اضغط «تأكيد الطلب» للبدء.",
             reply_markup=raksh_confirm_kb(service_type, quantity, total, method),
         )
         return True
-    
-    if state == "link":
-        service_type = context.user_data.get("raksh_service")
-        svc = RAKSH_SERVICES.get(service_type)
-        link_error = _raksh_link_error(service_type, text)
-        if link_error:
-            await update.message.reply_text(
-                link_error,
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
-                ]),
-            )
-            return True
-        context.user_data["raksh_link"] = text
-        
-        if svc.get("has_reaction"):
-            reaction_options = None
-            if service_type == "premium_reaction":
-                post_ref, post_id = _parse_post_link(text)
-                if not post_ref or post_id is None:
-                    await update.message.reply_text(
-                        "⚠️ تعذر تحليل رابط المنشور. أرسل رابط منشور قناة صالحاً ثم أعد المحاولة."
-                    )
-                    return True
-                reaction_options = await _fetch_raksh_reactions_from_pool(
-                    _get_all_active_sessions(service_type),
-                    post_ref,
-                    post_id,
-                )
-                if not reaction_options:
-                    await update.message.reply_text(
-                        "⚠️ تعذر قراءة التفاعل المفعّل في هذا المنشور.\n"
-                        "تأكد أن الرابط لمنشور قناة وأن إحدى جلسات البوت تملك صلاحية الوصول إليه، ثم أعد المحاولة."
-                    )
-                    return True
-                context.user_data["raksh_available_reactions"] = reaction_options
 
-            context.user_data["raksh_step"] = "reaction"
-            await update.message.reply_text(
-                f"✅ تم حفظ الرابط.\n\n"
-                f"😊 *اختر التفاعل المطلوب:*",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=raksh_reaction_kb(service_type, reaction_options)
-            )
-            return True
-        
-        if service_type == "comment":
-            context.user_data["raksh_step"] = "comment_text"
-            await update.message.reply_text(
-                f"✅ تم حفظ الرابط.\n\n"
-                f"💬 *أرسل نص التعليق:*",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]])
-            )
-            return True
-        
-        if service_type == "poll":
-            context.user_data["raksh_step"] = "poll_option"
-            await update.message.reply_text(
-                f"✅ تم حفظ الرابط.\n\n"
-                f"🔢 *أرسل رقم الخيار المطلوب:*\n"
-                f"(مثال: 1 أو 2 أو 3)",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]])
-            )
-            return True
-        
-        context.user_data["raksh_step"] = "quantity"
-        service_type = context.user_data.get("raksh_service")
-        max_qty = _get_request_limit(user.id, service_type)
-        if max_qty < 1:
-            await update.message.reply_text(
-                "⚠️ لا توجد حسابات ذات جلسات متاحة حالياً لتنفيذ هذه الخدمة.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
-                ]),
-            )
-            return True
-        await update.message.reply_text(
-            f"✅ تم حفظ الرابط.\n\n"
-            f"🔢 *أرسل عدد الوحدات المطلوبة:*\n"
-            f"(الحد الأقصى: {max_qty})",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]])
-        )
-        return True
-    
-    if state == "comment_text":
-        context.user_data["raksh_comment"] = text
-        context.user_data["raksh_step"] = "quantity"
-        service_type = context.user_data.get("raksh_service")
-        max_qty = _get_request_limit(user.id, service_type)
-        if max_qty < 1:
-            await update.message.reply_text(
-                "⚠️ لا توجد حسابات ذات جلسات متاحة حالياً لتنفيذ هذه الخدمة.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
-                ]),
-            )
-            return True
-        await update.message.reply_text(
-            f"✅ تم حفظ التعليق.\n\n"
-            f"🔢 *أرسل عدد الوحدات المطلوبة:*\n"
-            f"(الحد الأقصى: {max_qty})",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]])
-        )
-        return True
-    
-    if state == "poll_option":
-        normalized_option = _normalize_digits(text.strip())
-        if not normalized_option.isdigit():
-            await update.message.reply_text(
-                "⚠️ أرسل رقماً صحيحاً (مثال: 1 أو 2 أو 3).",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
-                ]),
-            )
-            return True
-        context.user_data["raksh_poll_option"] = normalized_option
-        context.user_data["raksh_step"] = "quantity"
-        service_type = context.user_data.get("raksh_service")
-        max_qty = _get_request_limit(user.id, service_type)
-        if max_qty < 1:
-            await update.message.reply_text(
-                "⚠️ لا توجد حسابات ذات جلسات متاحة حالياً لتنفيذ هذه الخدمة.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
-                ]),
-            )
-            return True
-        await update.message.reply_text(
-            f"✅ تم حفظ الخيار {normalized_option}.\n\n"
-            f"🔢 *أرسل عدد الوحدات المطلوبة:*\n"
-            f"(الحد الأقصى: {max_qty})",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]])
-        )
-        return True
-    
-    if state == "delay":
-        service_type = context.user_data.get("raksh_service")
-        if service_type not in {"forced_ref", "forced_ref_ai", "votes_ai"} or user.id != OWNER_ID:
-            context.user_data["raksh_step"] = "quantity"
-            return True
-        try:
-            delay_seconds = int(text.strip())
-        except (TypeError, ValueError):
-            await update.message.reply_text("⚠️ أرسل عدد الثواني كرقم صحيح، مثل 3")
-            return True
-        if delay_seconds < 0 or delay_seconds > 86400:
-            await update.message.reply_text("⚠️ أدخل رقماً بين 0 و 86400 ثانية.")
-            return True
-        context.user_data["raksh_delay_seconds"] = delay_seconds
-        quantity = int(context.user_data.get("raksh_quantity", 1))
-        svc = RAKSH_SERVICES.get(service_type)
-        points_cost = get_raksh_total(service_type, quantity, "points")
-        stars_cost = get_raksh_total(service_type, quantity, "stars")
-        context.user_data["raksh_step"] = "payment"
-        await update.message.reply_text(
-            f"✅ تم ضبط الفاصل بين الحسابات: {delay_seconds} ثانية.\n\n"
-            f"📋 *مراجعة الطلب*\n\n"
-            f"الخدمة: {svc['name']}\n"
-            f"العدد: {quantity}\n"
-            f"💰 السعر بالنقاط: {points_cost} نقطة\n"
-            f"⭐ السعر بالنجوم: {stars_cost} نجمة\n\n"
-            f"اختر طريقة الدفع:",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=raksh_payment_kb(service_type, quantity, points_cost, stars_cost)
-        )
-        return True
-
-    if state == "quantity":
-        try:
-            quantity = int(text)
-        except ValueError:
-            await update.message.reply_text(
-                "⚠️ أرسل رقماً صحيحاً.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]])
-            )
-            return True
-        
-        service_type = context.user_data.get("raksh_service")
-        max_qty = _get_request_limit(user.id, service_type)
-        if max_qty < 1:
-            await update.message.reply_text(
-                "⚠️ لا توجد حسابات ذات جلسات متاحة حالياً لتنفيذ هذه الخدمة.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
-                ]),
-            )
-            return True
-        if quantity < 1 or quantity > max_qty:
-            await update.message.reply_text(
-                f"⚠️ العدد المسموح بين 1 و {max_qty}.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]])
-            )
-            return True
-        
-        service_type = context.user_data.get("raksh_service")
-        svc = RAKSH_SERVICES.get(service_type)
-        points_cost = get_raksh_total(service_type, quantity, "points")
-        stars_cost = get_raksh_total(service_type, quantity, "stars")
-        
-        context.user_data["raksh_quantity"] = quantity
-        if user.id == OWNER_ID and service_type in {"forced_ref", "forced_ref_ai", "votes_ai"}:
-            context.user_data["raksh_step"] = "delay"
-            delay_hint = (
-                "للأعضاء يُطبّق فاصل تلقائي عشوائي بين 60 و180 ثانية."
-                if service_type == "votes_ai"
-                else "للأعضاء يبقى الوقت ثابتاً: 180 ثانية (3 دقائق)."
-            )
-            await update.message.reply_text(
-                "⏱️ *إعداد الفاصل الزمني للمالك*\n\n"
-                "أرسل عدد الثواني بين تفعيل حساب وآخر.\n"
-                "مثال: 3\n"
-                f"{delay_hint}",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]])
-            )
-            return True
-        context.user_data["raksh_step"] = "payment"
-        
-        await update.message.reply_text(
-            f"📋 *مراجعة الطلب*\n\n"
-            f"الخدمة: {svc['name']}\n"
-            f"العدد: {quantity}\n"
-            f"💰 السعر بالنقاط: {points_cost} نقطة\n"
-            f"⭐ السعر بالنجوم: {stars_cost} نجمة\n\n"
-            f"اختر طريقة الدفع:",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=raksh_payment_kb(service_type, quantity, points_cost, stars_cost)
-        )
-        return True
-    
     return False
 
 # ════════════════════════════════════════════════════════════
-# ═══ 9. معالج الدفع بالنجوم ═══
+# ═══ 17. معالجات الدفع ═══
 # ════════════════════════════════════════════════════════════
 
 async def raksh_pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """التحقق من الدفع بالنجوم"""
     query = update.pre_checkout_query
     payload = query.invoice_payload
-    
+
     if payload.startswith("raksh_stars:"):
         parts = payload.split(":")
         user_id = int(parts[1])
         service_type = parts[2]
         quantity = int(parts[3])
         total_stars = int(parts[4])
-        
+
         if (
             query.from_user.id == user_id
             and query.total_amount == total_stars
@@ -2617,14 +2419,13 @@ async def raksh_pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE)
         ):
             await query.answer(ok=True)
             return
-    
+
     await query.answer(ok=False, error_message="حدث خطأ في التحقق من الدفع.")
 
 async def raksh_successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالج الدفع الناجح بالنجوم"""
     payment = update.message.successful_payment
     payload = payment.invoice_payload
-    
+
     if payload.startswith("raksh_stars:"):
         parts = payload.split(":")
         user_id = int(parts[1])
@@ -2646,17 +2447,17 @@ async def raksh_successful_payment(update: Update, context: ContextTypes.DEFAULT
                     reply_markup=raksh_menu_kb(user_id == OWNER_ID),
                 )
             except Exception:
-                logger.exception("فشل إعادة دفع النجوم لطلب رشق المستخدم %s", user_id)
+                logger.exception(f"فشل إعادة دفع النجوم للمستخدم {user_id}")
                 await update.message.reply_text(
                     "⚠️ تعذر بدء الطلب حالياً. تواصل مع المالك.",
                     reply_markup=raksh_menu_kb(user_id == OWNER_ID),
                 )
             return
-        
+
         context.user_data["raksh_service"] = service_type
         context.user_data["raksh_quantity"] = quantity
         context.user_data["raksh_payment_method"] = "stars"
-        
+
         await update.message.reply_text(
             "✅ *تم تأكيد الدفع بالنجوم!*\n\n"
             "⏳ جاري بدء التنفيذ...",
@@ -2677,24 +2478,223 @@ async def raksh_successful_payment(update: Update, context: ContextTypes.DEFAULT
         )
 
 # ════════════════════════════════════════════════════════════
-# ═══ 10. الأمر الرئيسي /raksh ═══
+# ═══ 18. تنفيذ الطلب ═══
+# ════════════════════════════════════════════════════════════
+
+async def _send_raksh_order_to_group(bot, user_id: int, quantity: int, payment_method: str, service_type: str):
+    if not ADMIN_GROUP_ID:
+        return
+    try:
+        await bot.send_message(
+            ADMIN_GROUP_ID,
+            f"📋 طلب {_raksh_order_label(service_type)}\n"
+            f"👤 المستخدم: {user_id}\n"
+            f"📦 العدد: {quantity}\n"
+            f"💳 طريقة الدفع: {payment_method}",
+        )
+    except Exception:
+        logger.exception("فشل إرسال إشعار الطلب")
+
+async def _send_raksh_owner_result(
+    bot,
+    service_type: str,
+    quantity: int,
+    success_phones: list[str],
+    failed_phones: list[str],
+    failed_details: list[str],
+):
+    if not OWNER_ID:
+        return
+    try:
+        lines = [
+            f"📊 نتيجة {_raksh_order_label(service_type)}",
+            f"📦 المطلوب: {quantity}",
+            f"✅ الناجح: {len(success_phones)}",
+            f"❌ الفاشل: {len(failed_phones)}",
+            "",
+        ]
+
+        if success_phones:
+            lines.append("✅ الناجحين:")
+            lines.extend(f"• {p}" for p in success_phones[:20])
+            if len(success_phones) > 20:
+                lines.append(f"... و{len(success_phones)-20} أخرى")
+
+        if failed_phones:
+            lines.append("")
+            lines.append("❌ الفاشلين:")
+            for idx, phone in enumerate(failed_phones[:10]):
+                detail = failed_details[idx] if idx < len(failed_details) else "فشل"
+                lines.append(f"• {phone} — {detail[:50]}")
+            if len(failed_phones) > 10:
+                lines.append(f"... و{len(failed_phones)-10} أخرى")
+
+        # أزرار الطرد للحسابات الفاشلة
+        kick_buttons = []
+        with db_conn() as c:
+            for phone in failed_phones:
+                row = c.execute(
+                    "SELECT session_string, id FROM number_stock WHERE phone_number=%s",
+                    (phone,)
+                ).fetchone()
+                if not row or not row["session_string"]:
+                    if row:
+                        kick_buttons.append([
+                            InlineKeyboardButton(
+                                f"🚫 طرد {phone}",
+                                callback_data=f"fref_kick:{row['id']}:{phone}"
+                            )
+                        ])
+
+        for chunk in _chunk_lines(lines):
+            await bot.send_message(OWNER_ID, chunk)
+
+        if kick_buttons:
+            await bot.send_message(
+                OWNER_ID,
+                "⚠️ الحسابات الفاشلة التي ليس لها جلسة (يمكنك طردها):",
+                reply_markup=InlineKeyboardMarkup(kick_buttons)
+            )
+
+    except Exception as e:
+        logger.exception(f"فشل إرسال النتيجة للمالك: {e}")
+
+async def _start_raksh_execution(
+    update,
+    context,
+    query,
+    service_type: str,
+    quantity: int,
+    payment_method: str,
+    total_cost: int,
+    progress_message=None,
+):
+    user = update.effective_user if update else query.from_user
+
+    if progress_message is None:
+        progress_msg = await query.edit_message_text(
+            "✅ *بدأ التنفيذ...*\n\n"
+            f"📊 0/{quantity}",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    else:
+        progress_msg = progress_message
+        await progress_msg.edit_text(
+            "✅ *بدأ التنفيذ...*\n\n"
+            f"📊 0/{quantity}",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+    sessions = _get_all_active_sessions(service_type)
+    if not sessions:
+        await progress_msg.edit_text(
+            "❌ لا توجد حسابات متاحة.",
+            reply_markup=raksh_menu_kb(user.id == OWNER_ID)
+        )
+        if payment_method == "points":
+            add_points(user.id, total_cost)
+        _clear_raksh_state(context)
+        return
+
+    await _send_raksh_order_to_group(
+        context.bot,
+        user.id,
+        quantity,
+        payment_method,
+        service_type,
+    )
+
+    params = {
+        "channel_ref": context.user_data.get("raksh_channels"),
+        "reaction": context.user_data.get("raksh_reaction"),
+        "available_reactions": context.user_data.get("raksh_available_reactions"),
+        "link": context.user_data.get("raksh_link"),
+        "comment_text": context.user_data.get("raksh_comment"),
+        "poll_option": context.user_data.get("raksh_poll_option"),
+        "delay_seconds": context.user_data.get("raksh_delay_seconds"),
+    }
+
+    async def update_progress(current, total, success, failed):
+        try:
+            await progress_msg.edit_text(
+                f"⏳ *جاري التنفيذ...*\n\n"
+                f"📊 {current}/{total}\n"
+                f"✅ نجح: {success}\n"
+                f"❌ فشل: {failed}",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception:
+            pass
+
+    success_count, success_phones, failed_phones, failed_details = await execute_raksh_service(
+        service_type=service_type,
+        quantity=quantity,
+        sessions=sessions,
+        params=params,
+        user_id=user.id,
+        progress_callback=update_progress
+    )
+
+    await _send_raksh_owner_result(
+        context.bot,
+        service_type,
+        quantity,
+        success_phones,
+        failed_phones,
+        failed_details,
+    )
+
+    failed_count = quantity - success_count
+    refund = 0
+    if failed_count > 0 and payment_method == "points":
+        refund = max(
+            0,
+            total_cost - get_raksh_total(service_type, success_count, "points"),
+        )
+        add_points(user.id, refund)
+
+    result_text = f"✅ *اكتمل الطلب!*\n\n"
+    result_text += f"الخدمة: {RAKSH_SERVICES[service_type]['name']}\n"
+    result_text += f"المطلوب: {quantity}\n"
+    result_text += f"✅ المنجز: {success_count}\n"
+    result_text += f"❌ الفاشل: {failed_count}\n"
+    if refund > 0:
+        result_text += f"💰 تم تعويضك: {refund} نقطة\n"
+
+    if success_phones:
+        result_text += f"\n✅ *الحسابات الناجحة:*\n"
+        result_text += "\n".join(f"• `{p}`" for p in success_phones[:10])
+        if len(success_phones) > 10:
+            result_text += f"\n... و{len(success_phones)-10} أخرى"
+
+    if failed_details:
+        result_text += f"\n\n❌ *الفاشلة:*\n"
+        result_text += "\n".join(f"• {d[:80]}" for d in failed_details[:5])
+        if len(failed_details) > 5:
+            result_text += f"\n... و{len(failed_details)-5} أخرى"
+
+    await progress_msg.edit_text(
+        result_text,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=main_menu_kb()
+    )
+
+    _clear_raksh_state(context)
+
+# ════════════════════════════════════════════════════════════
+# ═══ 19. الأمر الرئيسي ═══
 # ════════════════════════════════════════════════════════════
 
 async def cmd_raksh(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """الأمر /raksh - يعرض قائمة خدمات الرشق"""
     user = update.effective_user
     _clear_raksh_state(context)
-    
+
     if not (user.id == OWNER_ID) and is_user_banned(user.id):
         await update.message.reply_text("🚫 تم حظرك من استخدام هذا البوت.")
         return
 
-    try:
-        available_sessions = get_available_sessions_count()
-    except Exception:
-        logger.exception("فشل جلب عدد الحسابات عند تنفيذ /raksh")
-        available_sessions = 0
-    
+    available_sessions = get_available_sessions_count()
+
     await update.message.reply_text(
         f"🔥 *{md_escape(get_raksh_accounts_label())}*\n\n"
         "اختر الخدمة المطلوبة:\n"
