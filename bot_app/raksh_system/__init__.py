@@ -3,4 +3,4 @@
 نظام الرشق الجديد - منفصل تماماً عن بقية البوت
 """
 
-from .raksh_system import *
+from ..rakshraksh_system import *
