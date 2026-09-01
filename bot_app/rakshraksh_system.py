@@ -3,13 +3,13 @@
 نسخة محسّنة مع دالة تحقق شاملة
 """
 
-from .shared import *
-from .accounts import get_forced_ref_account_count
-from .database import db_conn
-from .security import add_points, deduct_points, get_user, is_user_banned
-from .services import get_raksh_accounts_label, md_escape
-from .users import get_setting, set_setting
-from .ui import main_menu_kb
+from ..shared import *
+from ..accounts import get_forced_ref_account_count
+from ..database import db_conn
+from ..security import add_points, deduct_points, get_user, is_user_banned
+from ..services import get_raksh_accounts_label, md_escape
+from ..users import get_setting, set_setting
+from ..ui import main_menu_kb
 from telethon import TelegramClient, functions
 from telethon.sessions import StringSession
 from telethon.tl.functions.channels import JoinChannelRequest, LeaveChannelRequest
@@ -183,7 +183,6 @@ _RAKSH_SESSION_CACHE_TIME: dict[str, float] = {}
 _RAKSH_SESSION_CACHE_TTL = 60
 
 def _mark_raksh_session_unauthorized(phone_number: str) -> None:
-    """تعليم جلسة بأنها غير مصرح بها"""
     if not phone_number:
         return
     try:
@@ -496,7 +495,6 @@ def _extract_code_from_text(text: str) -> str | None:
 # ════════════════════════════════════════════════════════════
 
 async def _join_channel_and_schedule_leave(client, channel_refs):
-    """الانضمام للقنوات الإجبارية في جميع الخدمات"""
     if isinstance(channel_refs, str):
         channel_refs = _parse_channel_refs(channel_refs)
     if not channel_refs:
@@ -578,35 +576,26 @@ async def _send_vote_and_check(client, peer, msg_id: int, option) -> bool:
     return False
 
 # ════════════════════════════════════════════════════════════
-# ═══ 6. دوال استخراج الإيموجي والتحقق ═══
+# ═══ 6. دوال استخراج الإيموجي ═══
 # ════════════════════════════════════════════════════════════
 
 def _extract_target_emoji(text: str) -> str | None:
-    """
-    استخراج الإيموجي المطلوب من نص رسالة التحقق
-    """
     if not text:
         return None
     
-    # نمط البحث عن الإيموجي
     emoji_pattern = re.compile(
         "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E0-\U0001F1FF]"
     )
     
-    # البحث عن الإيموجي في النص
     found_emojis = emoji_pattern.findall(text)
-    
     if found_emojis:
-        # نأخذ آخر إيموجي في النص (غالباً هو المطلوب)
         target = found_emojis[-1]
         logger.info(f"🎯 تم استخراج الإيموجي المطلوب: {target}")
         return target
     
-    # محاولة البحث عن إيموجي بعد كلمات مفتاحية
     keywords = ["اختر", "choose", "pick", "select", "الإيموجي", "emoji", "مطابق", "matching"]
     for kw in keywords:
         if kw in text.lower():
-            # البحث عن إيموجي بعد الكلمة المفتاحية
             parts = text.split(kw, 1)
             if len(parts) > 1:
                 after = parts[1]
@@ -614,13 +603,9 @@ def _extract_target_emoji(text: str) -> str | None:
                 if found:
                     logger.info(f"🎯 تم استخراج الإيموجي بعد كلمة '{kw}': {found[0]}")
                     return found[0]
-    
     return None
 
 def _find_matching_emoji_button(buttons, target_emoji: str):
-    """
-    البحث عن زر يطابق الإيموجي المستهدف
-    """
     if not buttons or not target_emoji:
         return None
     
@@ -629,137 +614,87 @@ def _find_matching_emoji_button(buttons, target_emoji: str):
         if target_emoji in btn_text or btn_text == target_emoji:
             logger.info(f"✅ تم العثور على زر يطابق الإيموجي: {btn_text}")
             return btn
-    
     return None
 
-async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) -> bool:
-    """
-    حل التحقق للإحالة البوتية - يدعم:
-    1. اختيار الإيموجي المشابه
-    2. إرسال كود نصي
-    3. حل مسائل رياضية
-    4. الضغط على أزرار التحقق
-    5. مشاركة جهة الاتصال
-    """
-    max_attempts = 20
-    base_id = 0
+# ════════════════════════════════════════════════════════════
+# ═══ 7. حل التحقق مع التكرار حتى النجاح ═══
+# ════════════════════════════════════════════════════════════
 
-    try:
-        out_messages = await client.get_messages(bot_entity, limit=10)
-        for msg in out_messages:
-            if msg.out:
-                base_id = msg.id
-                break
-    except Exception:
-        pass
-
-    for attempt in range(max_attempts):
+async def _solve_verification_with_retry(client, bot_entity, phone_number: str, max_retries: int = 10) -> bool:
+    """
+    حل التحقق مع التكرار حتى النجاح أو الوصول للحد الأقصى
+    """
+    success_keywords = [
+        "تم", "نجح", "مبروك", "أهلاً", "مرحباً", "welcome", "success",
+        "تم التحقق", "مقبول", "accepted", "verified", "شكراً",
+        "تم التسجيل", "تم التفعيل", "بنجاح", "تم التصويت",
+        "صوتك مسجل", "تم تسجيل التصويت", "vote recorded"
+    ]
+    
+    for attempt in range(max_retries):
+        logger.info(f"🔄 محاولة التحقق {attempt + 1}/{max_retries} للحساب {phone_number}")
+        
+        # جلب آخر رسائل البوت
         try:
             messages = await client.get_messages(bot_entity, limit=20)
         except Exception:
             await asyncio.sleep(1.0)
             continue
-
-        incoming_messages = [msg for msg in messages if not msg.out]
-        incoming_messages.sort(key=lambda m: m.id)
-        new_messages = [msg for msg in incoming_messages if msg.id > base_id]
-
-        if not new_messages:
-            await asyncio.sleep(1.0)
-            continue
-
-        verification_message = None
-        for msg in new_messages:
-            msg_text = getattr(msg, 'message', '') or ''
-            if msg_text.strip().startswith("/"):
+        
+        # التحقق من وجود رسالة نجاح
+        for msg in messages:
+            if msg.out:
                 continue
-            if any(kw in msg_text for kw in ["أرسل", "التالي", "اكتب", "type", "اضغط", "اختر"]):
-                verification_message = msg
+            msg_text = getattr(msg, 'message', '') or ''
+            if any(kw in msg_text for kw in success_keywords):
+                logger.info(f"✅ تم العثور على رسالة نجاح: {msg_text[:100]}")
+                return True
+        
+        # البحث عن رسالة تحتوي أزرار
+        verification_msg = None
+        for msg in messages:
+            if msg.out:
+                continue
+            if getattr(msg, "buttons", None):
+                verification_msg = msg
                 break
-
-        if verification_message is None:
-            verification_message = next(
-                (msg for msg in reversed(new_messages) if not getattr(msg, 'message', '').strip().startswith("/")),
-                None
-            )
-
-        if verification_message is None:
+        
+        if not verification_msg:
             await asyncio.sleep(1.0)
             continue
-
-        text = getattr(verification_message, 'message', '') or ''
-
-        # 1️⃣ البحث عن أزرار وإيموجي مشابه
-        buttons = []
-        for row in getattr(verification_message, 'buttons', None) or []:
-            for btn in row:
-                if not getattr(btn, 'url', None):
-                    buttons.append(btn)
-
-        if buttons:
-            # استخراج الإيموجي المستهدف من النص
-            target_emoji = _extract_target_emoji(text)
-            
-            if target_emoji:
-                # البحث عن زر يطابق الإيموجي
-                matching_button = _find_matching_emoji_button(buttons, target_emoji)
-                if matching_button:
-                    try:
-                        await matching_button.click()
-                        logger.info(f"✅ تم الضغط على الإيموجي المشابه: {target_emoji}")
-                        return True
-                    except Exception as e:
-                        logger.warning(f"فشل الضغط على الإيموجي المشابه: {e}")
-
-            # إذا لم نجد إيموجي مشابه، نضغط أي زر إيموجي
-            for btn in buttons:
-                btn_text = getattr(btn, 'text', '') or ''
-                emoji_pattern = re.compile(r"[\U0001F300-\U0001FAFF\U00002600-\U000027BF]")
-                if emoji_pattern.search(btn_text):
-                    try:
-                        await btn.click()
-                        logger.info(f"✅ تم الضغط على زر إيموجي: {btn_text}")
-                        return True
-                    except Exception:
-                        continue
-
-        # 2️⃣ إرسال الكود المطلوب
+        
+        text = getattr(verification_msg, 'message', '') or ''
+        
+        # 1. محاولة إرسال الكود
         send_text = _extract_code_from_text(text)
         if send_text:
             try:
                 await client.send_message(bot_entity, send_text)
-                logger.info(f"✅ تم إرسال الكود: {send_text}")
-                return True
+                logger.info(f"📤 تم إرسال الكود: {send_text}")
+                await asyncio.sleep(2.0)
+                continue
             except Exception:
-                return False
-
-        # 3️⃣ حل مسألة رياضية
-        math_patterns = [
-            (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=\s*\?', 1, 2, 3),
-            (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=', 1, 2, 3),
-        ]
-        for pattern, *groups in math_patterns:
-            match = re.search(pattern, text)
-            if match:
-                try:
-                    if len(groups) == 3:
-                        a, op, b = int(match.group(groups[0])), match.group(groups[1]), int(match.group(groups[2]))
-                    else:
-                        a, b = int(match.group(groups[0])), int(match.group(groups[1]))
-                        op = '+'
-                    if op == '+': result = str(a + b)
-                    elif op == '-': result = str(a - b)
-                    elif op == '*': result = str(a * b)
-                    elif op == '/': result = str(a / b) if b != 0 else None
-                    else: result = None
-                    if result is not None:
-                        await client.send_message(bot_entity, result)
-                        logger.info(f"✅ تم حل المسألة: {a} {op} {b} = {result}")
-                        return True
-                except Exception:
+                pass
+        
+        # 2. محاولة حل مسألة رياضية
+        math_match = re.search(r'(\d+)\s*([+\-*/])\s*(\d+)\s*=', text)
+        if math_match:
+            try:
+                a, op, b = int(math_match.group(1)), math_match.group(2), int(math_match.group(3))
+                if op == '+': result = str(a + b)
+                elif op == '-': result = str(a - b)
+                elif op == '*': result = str(a * b)
+                elif op == '/': result = str(a / b) if b != 0 else None
+                else: result = None
+                if result is not None:
+                    await client.send_message(bot_entity, result)
+                    logger.info(f"📤 تم إرسال حل المسألة: {result}")
+                    await asyncio.sleep(2.0)
                     continue
-
-        # 4️⃣ مشاركة جهة الاتصال
+            except Exception:
+                pass
+        
+        # 3. محاولة مشاركة جهة الاتصال
         if any(kw in text.lower() for kw in ["مشاركة", "جهة اتصال", "شارك", "contact", "share"]):
             try:
                 me = await client.get_me()
@@ -772,32 +707,74 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
                         vcard="",
                     ),
                 )
-                logger.info(f"✅ تم مشاركة جهة الاتصال من {phone_number}")
-                return True
+                logger.info(f"📤 تم مشاركة جهة الاتصال من {phone_number}")
+                await asyncio.sleep(2.0)
+                continue
             except Exception as e:
                 logger.warning(f"فشل مشاركة جهة الاتصال: {e}")
-
-        # 5️⃣ الضغط على أي زر تحقق
+        
+        # 4. محاولة الضغط على الإيموجي المناسب
+        buttons = []
+        for row in getattr(verification_msg, 'buttons', None) or []:
+            for btn in row:
+                if not getattr(btn, 'url', None):
+                    buttons.append(btn)
+        
         if buttons:
+            # استخراج الإيموجي المستهدف
+            target_emoji = _extract_target_emoji(text)
+            
+            if target_emoji:
+                matching_btn = _find_matching_emoji_button(buttons, target_emoji)
+                if matching_btn:
+                    try:
+                        await matching_btn.click()
+                        logger.info(f"🖱️ تم الضغط على الإيموجي المشابه: {target_emoji}")
+                        await asyncio.sleep(2.0)
+                        continue
+                    except Exception as e:
+                        logger.warning(f"فشل الضغط على الإيموجي المشابه: {e}")
+            
+            # إذا لم نجد إيموجي مشابه، نضغط أي زر
             for btn in buttons:
-                btn_text = (getattr(btn, 'text', '') or '').lower()
                 try:
                     await btn.click()
-                    logger.info(f"✅ تم الضغط على الزر: {getattr(btn, 'text', '')}")
-                    return True
+                    logger.info(f"🖱️ تم الضغط على زر: {getattr(btn, 'text', '')}")
+                    await asyncio.sleep(2.0)
+                    break
                 except Exception:
                     continue
-
+        
         await asyncio.sleep(2.0)
-
+    
+    # فحص نهائي للرسائل بعد كل المحاولات
+    try:
+        final_msgs = await client.get_messages(bot_entity, limit=10)
+        for msg in final_msgs:
+            if msg.out:
+                continue
+            msg_text = getattr(msg, 'message', '') or ''
+            if any(kw in msg_text for kw in success_keywords):
+                logger.info(f"✅ تم العثور على رسالة نجاح في الفحص النهائي")
+                return True
+    except Exception:
+        pass
+    
+    logger.warning(f"❌ فشل التحقق بعد {max_retries} محاولات للحساب {phone_number}")
     return False
 
 # ════════════════════════════════════════════════════════════
-# ═══ 7. تنفيذ مشاهدة ستوري ═══
+# ═══ 8. تنفيذ مشاهدة ستوري ═══
 # ════════════════════════════════════════════════════════════
 
 async def _execute_story(session, params, is_first):
-    """تنفيذ رشق مشاهدة ستوري - تدخل الحسابات الرابط وتتفاعل تلقائياً"""
+    """
+    تنفيذ رشق مشاهدة ستوري:
+    1. الانضمام للقنوات الإجبارية
+    2. الدخول إلى رابط الستوري
+    3. مشاهدة الستوري
+    4. التفاعل تلقائياً
+    """
     from telethon.tl.functions.stories import IncrementStoryViewsRequest, SendReactionRequest
     from telethon.tl.types import ReactionEmoji
 
@@ -808,24 +785,26 @@ async def _execute_story(session, params, is_first):
             _mark_raksh_session_unauthorized(session.get("phone_number"))
             return False, "الجلسة غير مصرح بها"
 
-        # الانضمام للقنوات الإجبارية
-        if is_first and params.get("channel_ref"):
+        # 1. الانضمام للقنوات الإجبارية
+        if params.get("channel_ref"):
             await _join_channel_and_schedule_leave(client, params["channel_ref"])
+            logger.info(f"✅ تم الانضمام للقنوات الإجبارية للحساب {session['phone_number']}")
 
-        # تحليل رابط الستوري
-        entity_ref, story_id = _parse_story_link(params["link"])
+        # 2. تحليل رابط الستوري
+        link = params.get("link", "")
+        entity_ref, story_id = _parse_story_link(link)
         if not entity_ref or not story_id:
-            return False, "رابط الستوري غير صحيح"
+            return False, f"رابط الستوري غير صحيح: {link}"
 
-        # الدخول للكيان (القناة/الحساب)
+        # 3. الدخول إلى الكيان (القناة/الحساب)
         entity = await client.get_entity(entity_ref)
-        logger.info(f"✅ تم الدخول إلى الكيان: {entity_ref}")
+        logger.info(f"✅ تم الدخول إلى الكيان: {entity_ref} للحساب {session['phone_number']}")
 
-        # مشاهدة الستوري
+        # 4. مشاهدة الستوري
         await client(IncrementStoryViewsRequest(peer=entity, id=story_id))
-        logger.info(f"✅ تم مشاهدة الستوري: {story_id}")
+        logger.info(f"✅ تم مشاهدة الستوري {story_id} من الحساب {session['phone_number']}")
 
-        # تفاعل تلقائي (اختيار عشوائي من الإيموجيات المتاحة)
+        # 5. التفاعل تلقائياً
         try:
             reaction = random.choice(list(RAKSH_REACTIONS.values()))
             await client(
@@ -835,23 +814,25 @@ async def _execute_story(session, params, is_first):
                     reaction=ReactionEmoji(emoticon=reaction),
                 )
             )
-            logger.info(f"✅ تم التفاعل على الستوري بـ {reaction}")
+            logger.info(f"✅ تم التفاعل على الستوري بـ {reaction} من الحساب {session['phone_number']}")
             return True, f"✅ تمت المشاهدة والتفاعل من {session['phone_number']}"
         except Exception as reaction_error:
             logger.warning(f"تفاعل فاشل للستوري {session['phone_number']}: {reaction_error}")
             return True, f"✅ تمت المشاهدة من {session['phone_number']} (تعذر التفاعل)"
 
     except Exception as e:
-        return False, f"❌ فشل: {str(e)[:80]}"
+        return False, f"❌ فشل مشاهدة ستوري: {str(e)[:80]}"
     finally:
         await client.disconnect()
 
 # ════════════════════════════════════════════════════════════
-# ═══ 8. تنفيذ إحالة بوت إجباري مع تحقق ═══
+# ═══ 9. تنفيذ إحالة بوت إجباري مع تحقق ═══
 # ════════════════════════════════════════════════════════════
 
 async def _execute_forced_ref_ai(session, params, is_first):
-    """تنفيذ إحالة بوت إجباري مع تحقق - يختار الإيموجي المشابه"""
+    """
+    تنفيذ إحالة بوت إجباري مع تحقق مع التكرار حتى النجاح
+    """
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     await asyncio.wait_for(client.connect(), timeout=20)
     try:
@@ -859,12 +840,13 @@ async def _execute_forced_ref_ai(session, params, is_first):
             _mark_raksh_session_unauthorized(session.get("phone_number"))
             return False, "الجلسة غير مصرح بها"
 
-        # الانضمام للقنوات الإجبارية
-        if is_first and params.get("channel_ref"):
+        # 1. الانضمام للقنوات الإجبارية
+        if params.get("channel_ref"):
             await _join_channel_and_schedule_leave(client, params["channel_ref"])
+            logger.info(f"✅ تم الانضمام للقنوات الإجبارية للحساب {session['phone_number']}")
 
-        # تحليل رابط البوت
-        bot_username, start_param = _parse_bot_link(params["link"])
+        # 2. تحليل رابط البوت
+        bot_username, start_param = _parse_bot_link(params.get("link", ""))
         if not bot_username:
             return False, "رابط البوت غير صحيح"
 
@@ -872,16 +854,17 @@ async def _execute_forced_ref_ai(session, params, is_first):
         resolved = await client(ResolveUsernameRequest(clean_username))
         bot_entity = resolved.users[0] if resolved.users else resolved.chats[0]
 
-        # الضغط على رابط البوت
+        # 3. الضغط على رابط البوت
         await client(StartBotRequest(
             bot=bot_entity,
             peer=bot_entity,
             start_param=start_param or ""
         ))
+        logger.info(f"✅ تم فتح البوت @{bot_username} للحساب {session['phone_number']}")
         await asyncio.sleep(2.0)
 
-        # حل التحقق الشامل (يتضمن اختيار الإيموجي المشابه)
-        success = await _solve_forced_ref_verification(client, bot_entity, session.get("phone_number"))
+        # 4. حل التحقق مع التكرار حتى النجاح
+        success = await _solve_verification_with_retry(client, bot_entity, session.get("phone_number"), max_retries=15)
 
         if success:
             return True, f"✅ تمت الإحالة مع التحقق من {session['phone_number']}"
@@ -894,12 +877,12 @@ async def _execute_forced_ref_ai(session, params, is_first):
         await client.disconnect()
 
 # ════════════════════════════════════════════════════════════
-# ═══ 9. تنفيذ تصويت مع تحقق ═══
+# ═══ 10. تنفيذ تصويت مع تحقق ═══
 # ════════════════════════════════════════════════════════════
 
 async def _execute_votes_ai(session, params, is_first):
     """
-    تنفيذ تصويت مع تحقق - يختار الإيموجي المشابه من رسالة التحقق
+    تنفيذ تصويت مع تحقق مع التكرار حتى النجاح
     يدعم:
     1. رابط بوت مباشر (t.me/Bot?start=xxx)
     2. رابط بوست يحتوي على زر بوت
@@ -912,23 +895,24 @@ async def _execute_votes_ai(session, params, is_first):
             _mark_raksh_session_unauthorized(session.get("phone_number"))
             return False, "الجلسة غير مصرح بها"
 
-        # الانضمام للقنوات الإجبارية
-        if is_first and params.get("channel_ref"):
+        # 1. الانضمام للقنوات الإجبارية
+        if params.get("channel_ref"):
             await _join_channel_and_schedule_leave(client, params["channel_ref"])
+            logger.info(f"✅ تم الانضمام للقنوات الإجبارية للحساب {session['phone_number']}")
 
-        # تحليل الرابط
+        # 2. تحليل الرابط
         bot_username = None
         bot_start_param = None
         link = params.get("link", "")
 
-        # 1. محاولة تحليل كرابط بوت مباشر
+        # 2a. محاولة تحليل كرابط بوت مباشر
         parsed_bot = _parse_bot_link(link)
         if parsed_bot[0]:
             bot_username = parsed_bot[0]
             bot_start_param = parsed_bot[1] or ""
             logger.info(f"✅ رابط بوت مباشر: @{bot_username}")
         else:
-            # 2. محاولة تحليل كرابط بوست
+            # 2b. محاولة تحليل كرابط بوست
             post_ref, post_id = _parse_post_link(link)
             if not post_ref or not post_id:
                 return False, "الرابط غير صالح (ليس بوتاً ولا بوستاً)"
@@ -947,7 +931,6 @@ async def _execute_votes_ai(session, params, is_first):
                 bot_username, bot_start_param = _find_bot_start_link(post_message)
 
                 if not bot_username or not bot_start_param:
-                    # محاولة استخراج من نص المنشور
                     post_text = getattr(post_message, "message", "") or ""
                     bot_match = re.search(r't\.me/([A-Za-z0-9_]+bot)\?start=([A-Za-z0-9_]+)', post_text)
                     if bot_match:
@@ -965,7 +948,7 @@ async def _execute_votes_ai(session, params, is_first):
         if not bot_username:
             return False, "لم يتم العثور على بوت صالح"
 
-        # الدخول إلى البوت
+        # 3. الدخول إلى البوت
         try:
             bot_entity = await client.get_entity(bot_username)
         except Exception:
@@ -979,106 +962,16 @@ async def _execute_votes_ai(session, params, is_first):
             peer=bot_entity,
             start_param=bot_start_param or ""
         ))
+        logger.info(f"✅ تم فتح البوت @{bot_username} للحساب {session['phone_number']}")
         await asyncio.sleep(2.0)
 
-        # البحث عن رسالة التحقق
-        verification_message = None
-        for attempt in range(5):
-            msgs = await client.get_messages(bot_entity, limit=30)
-            if isinstance(msgs, (list, tuple)):
-                for msg in msgs:
-                    if getattr(msg, "buttons", None):
-                        has_callback = False
-                        for row in msg.buttons:
-                            for btn in row:
-                                if not getattr(btn, "url", None):
-                                    has_callback = True
-                                    break
-                            if has_callback:
-                                break
-                        if has_callback:
-                            verification_message = msg
-                            break
-                if verification_message:
-                    break
-            await asyncio.sleep(1.0)
+        # 4. حل التحقق مع التكرار حتى النجاح
+        success = await _solve_verification_with_retry(client, bot_entity, session.get("phone_number"), max_retries=15)
 
-        if not verification_message:
-            return True, f"✅ تم التصويت من {session['phone_number']} (بدون تحقق)"
-
-        # استخراج الإيموجي المطلوب من رسالة التحقق
-        verification_text = getattr(verification_message, "message", "") or ""
-        target_emoji = _extract_target_emoji(verification_text)
-
-        # جمع الأزرار من رسالة التحقق
-        all_buttons = []
-        for row in (getattr(verification_message, "buttons", None) or []):
-            for btn in row:
-                if not getattr(btn, "url", None):
-                    all_buttons.append(btn)
-
-        if not all_buttons:
-            return True, f"✅ تم التصويت من {session['phone_number']}"
-
-        # اختيار الزر المناسب
-        chosen_button = None
-
-        # 1. البحث عن زر يطابق الإيموجي المستهدف
-        if target_emoji:
-            chosen_button = _find_matching_emoji_button(all_buttons, target_emoji)
-            if chosen_button:
-                logger.info(f"✅ تم العثور على زر يطابق الإيموجي المستهدف: {target_emoji}")
-
-        # 2. البحث عن زر تحقق/متابعة
-        if not chosen_button:
-            verify_keywords = ["تحقق", "verify", "اضغط هنا", "continue", "التالي", "تأكيد"]
-            for btn in all_buttons:
-                btn_text = (getattr(btn, "text", "") or "").lower()
-                if any(kw in btn_text for kw in verify_keywords):
-                    chosen_button = btn
-                    logger.info(f"✅ تم العثور على زر تحقق: {btn_text}")
-                    break
-
-        # 3. البحث عن أي زر إيموجي
-        if not chosen_button:
-            emoji_pattern = re.compile(r"[\U0001F300-\U0001FAFF\U00002600-\U000027BF]")
-            for btn in all_buttons:
-                btn_text = getattr(btn, "text", "") or ""
-                if emoji_pattern.search(btn_text):
-                    chosen_button = btn
-                    logger.info(f"✅ تم العثور على زر إيموجي: {btn_text}")
-                    break
-
-        # 4. أي زر متاح
-        if not chosen_button and all_buttons:
-            chosen_button = all_buttons[0]
-            logger.info(f"✅ تم اختيار الزر الأول: {getattr(chosen_button, 'text', '')}")
-
-        if not chosen_button:
-            return False, "لم يتم العثور على زر مناسب للضغط"
-
-        # الضغط على الزر المختار
-        try:
-            await chosen_button.click()
-            logger.info(f"✅ تم الضغط على الزر: {getattr(chosen_button, 'text', '')}")
-            await asyncio.sleep(2.0)
-
-            # التحقق من نجاح التصويت
-            success_keywords = [
-                "تم التصويت", "صوتك مسجل", "vote recorded",
-                "شكراً لتصويتك", "تم تسجيل تصويتك"
-            ]
-
-            final_msgs = await client.get_messages(bot_entity, limit=5)
-            for msg in final_msgs:
-                msg_text = getattr(msg, "message", "") or ""
-                if any(kw in msg_text for kw in success_keywords):
-                    return True, f"✅ تم التصويت مع التحقق من {session['phone_number']}"
-
-            return True, f"✅ تم تنفيذ التصويت من {session['phone_number']}"
-
-        except Exception as e:
-            return False, f"فشل الضغط على الزر: {str(e)[:80]}"
+        if success:
+            return True, f"✅ تم التصويت مع التحقق من {session['phone_number']}"
+        else:
+            return False, "فشل التحقق بعد محاولات متعددة"
 
     except Exception as e:
         return False, f"❌ فشل: {str(e)[:80]}"
@@ -1086,11 +979,10 @@ async def _execute_votes_ai(session, params, is_first):
         await client.disconnect()
 
 # ════════════════════════════════════════════════════════════
-# ═══ 10. دوال الخدمات الأخرى ═══
+# ═══ 11. دوال الخدمات الأخرى ═══
 # ════════════════════════════════════════════════════════════
 
 async def _execute_forced_ref(session, params, is_first):
-    """تنفيذ إحالة بوت إجباري (بدون تحقق)"""
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     await asyncio.wait_for(client.connect(), timeout=15)
     try:
@@ -1098,10 +990,10 @@ async def _execute_forced_ref(session, params, is_first):
             _mark_raksh_session_unauthorized(session.get("phone_number"))
             return False, "الجلسة غير مصرح بها"
 
-        if is_first and params.get("channel_ref"):
+        if params.get("channel_ref"):
             await _join_channel_and_schedule_leave(client, params["channel_ref"])
 
-        bot_username, start_param = _parse_bot_link(params["link"])
+        bot_username, start_param = _parse_bot_link(params.get("link", ""))
         if not bot_username:
             return False, "رابط البوت غير صحيح"
 
@@ -1123,7 +1015,6 @@ async def _execute_forced_ref(session, params, is_first):
         await client.disconnect()
 
 async def _execute_comment(session, params, is_first):
-    """تنفيذ رشق تعليق"""
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     await asyncio.wait_for(client.connect(), timeout=15)
     try:
@@ -1131,14 +1022,14 @@ async def _execute_comment(session, params, is_first):
             _mark_raksh_session_unauthorized(session.get("phone_number"))
             return False, "الجلسة غير مصرح بها"
 
-        if is_first and params.get("channel_ref"):
+        if params.get("channel_ref"):
             await _join_channel_and_schedule_leave(client, params["channel_ref"])
 
         comment_text = (params.get("comment_text") or "").strip()
         if not comment_text:
             return False, "نص التعليق فارغ"
 
-        post_ref, post_id = _parse_post_link(params["link"])
+        post_ref, post_id = _parse_post_link(params.get("link", ""))
         if not post_ref or not post_id:
             return False, "رابط المنشور غير صحيح"
 
@@ -1170,7 +1061,6 @@ async def _execute_comment(session, params, is_first):
         await client.disconnect()
 
 async def _execute_poll(session, params, is_first):
-    """تنفيذ رشق استفتاء"""
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     await asyncio.wait_for(client.connect(), timeout=15)
     try:
@@ -1178,10 +1068,10 @@ async def _execute_poll(session, params, is_first):
             _mark_raksh_session_unauthorized(session.get("phone_number"))
             return False, "الجلسة غير مصرح بها"
 
-        if is_first and params.get("channel_ref"):
+        if params.get("channel_ref"):
             await _join_channel_and_schedule_leave(client, params["channel_ref"])
 
-        entity_ref, msg_id = _parse_post_link(params["link"])
+        entity_ref, msg_id = _parse_post_link(params.get("link", ""))
         if not entity_ref or not msg_id:
             return False, "رابط الاستفتاء غير صحيح"
 
@@ -1214,7 +1104,6 @@ async def _execute_poll(session, params, is_first):
         await client.disconnect()
 
 async def _execute_votes(session, params, is_first):
-    """تنفيذ رشق أصوات"""
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     await asyncio.wait_for(client.connect(), timeout=15)
     try:
@@ -1222,10 +1111,10 @@ async def _execute_votes(session, params, is_first):
             _mark_raksh_session_unauthorized(session.get("phone_number"))
             return False, "الجلسة غير مصرح بها"
 
-        if is_first and params.get("channel_ref"):
+        if params.get("channel_ref"):
             await _join_channel_and_schedule_leave(client, params["channel_ref"])
 
-        channel_ref, msg_id = _parse_post_link(params["link"])
+        channel_ref, msg_id = _parse_post_link(params.get("link", ""))
         if not channel_ref:
             return False, "رابط المنشور غير صحيح"
 
@@ -1258,7 +1147,6 @@ async def _execute_votes(session, params, is_first):
         await client.disconnect()
 
 async def _execute_premium_reaction(session, params, is_first):
-    """تنفيذ رشق تفاعل مميز"""
     client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     await asyncio.wait_for(client.connect(), timeout=15)
     try:
@@ -1266,10 +1154,10 @@ async def _execute_premium_reaction(session, params, is_first):
             _mark_raksh_session_unauthorized(session.get("phone_number"))
             return False, "الجلسة غير مصرح بها"
 
-        if is_first and params.get("channel_ref"):
+        if params.get("channel_ref"):
             await _join_channel_and_schedule_leave(client, params["channel_ref"])
 
-        post_ref, post_id = _parse_post_link(params["link"])
+        post_ref, post_id = _parse_post_link(params.get("link", ""))
         if not post_ref or not post_id:
             return False, "رابط المنشور غير صحيح"
 
@@ -1307,7 +1195,7 @@ async def _execute_premium_reaction(session, params, is_first):
         await client.disconnect()
 
 # ════════════════════════════════════════════════════════════
-# ═══ 11. دوال مساعدة للتفاعلات ═══
+# ═══ 12. دوال مساعدة للتفاعلات ═══
 # ════════════════════════════════════════════════════════════
 
 def _reaction_emoticons(reactions) -> list[str]:
@@ -1415,7 +1303,7 @@ async def _fetch_raksh_reactions_from_pool(sessions: list[dict], post_ref: str, 
         await asyncio.gather(*tasks, return_exceptions=True)
 
 # ════════════════════════════════════════════════════════════
-# ═══ 12. دوال التنفيذ الرئيسية ═══
+# ═══ 13. دوال التنفيذ الرئيسية ═══
 # ════════════════════════════════════════════════════════════
 
 EXECUTORS = {
@@ -1516,7 +1404,7 @@ async def execute_raksh_service(
     return success_count, success_phones, failed_phones, failed_details
 
 # ════════════════════════════════════════════════════════════
-# ═══ 13. دوال الواجهة والأزرار ═══
+# ═══ 14. دوال الواجهة والأزرار ═══
 # ════════════════════════════════════════════════════════════
 
 def _is_raksh_service_enabled(service_type: str) -> bool:
@@ -1629,7 +1517,7 @@ def _parse_raksh_rate_updates(text: str) -> dict[str, tuple[int, int]]:
     return updates
 
 # ════════════════════════════════════════════════════════════
-# ═══ 14. أزرار الواجهة ═══
+# ═══ 15. أزرار الواجهة ═══
 # ════════════════════════════════════════════════════════════
 
 def raksh_menu_kb(is_owner: bool = False):
@@ -1757,7 +1645,7 @@ def raksh_confirm_kb(service_type: str, quantity: int, total_cost: int, payment_
     ])
 
 # ════════════════════════════════════════════════════════════
-# ═══ 15. معالج الأزرار الرئيسي ═══
+# ═══ 16. معالج الأزرار الرئيسي ═══
 # ════════════════════════════════════════════════════════════
 
 async def handle_raksh_callback(
@@ -2065,7 +1953,7 @@ async def handle_raksh_callback(
         return
 
 # ════════════════════════════════════════════════════════════
-# ═══ 16. معالج النصوص ═══
+# ═══ 17. معالج النصوص ═══
 # ════════════════════════════════════════════════════════════
 
 async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2194,7 +2082,6 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not reaction_options:
                 reaction_options = list(RAKSH_REACTIONS.values())
 
-            # تحويل القائمة
             formatted_reactions = []
             for r in reaction_options:
                 if r == RAKSH_PAID_REACTION:
@@ -2485,7 +2372,7 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return False
 
 # ════════════════════════════════════════════════════════════
-# ═══ 17. معالجات الدفع ═══
+# ═══ 18. معالجات الدفع ═══
 # ════════════════════════════════════════════════════════════
 
 async def raksh_pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2565,7 +2452,7 @@ async def raksh_successful_payment(update: Update, context: ContextTypes.DEFAULT
         )
 
 # ════════════════════════════════════════════════════════════
-# ═══ 18. تنفيذ الطلب ═══
+# ═══ 19. تنفيذ الطلب ═══
 # ════════════════════════════════════════════════════════════
 
 async def _send_raksh_order_to_group(bot, user_id: int, quantity: int, payment_method: str, service_type: str):
@@ -2616,7 +2503,6 @@ async def _send_raksh_owner_result(
             if len(failed_phones) > 10:
                 lines.append(f"... و{len(failed_phones)-10} أخرى")
 
-        # أزرار الطرد للحسابات الفاشلة
         kick_buttons = []
         with db_conn() as c:
             for phone in failed_phones:
@@ -2769,7 +2655,7 @@ async def _start_raksh_execution(
     _clear_raksh_state(context)
 
 # ════════════════════════════════════════════════════════════
-# ═══ 19. الأمر الرئيسي ═══
+# ═══ 20. الأمر الرئيسي ═══
 # ════════════════════════════════════════════════════════════
 
 async def cmd_raksh(update: Update, context: ContextTypes.DEFAULT_TYPE):
