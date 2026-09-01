@@ -1179,6 +1179,10 @@ async def _execute_comment(session: Dict, params: Dict, is_first: bool) -> Tuple
             _mark_raksh_session_unauthorized(session.get("phone_number"))
             return False, "الجلسة غير مصرح بها"
         
+        # الانضمام للقناة الإجبارية أولاً
+        if is_first and params.get("channel_ref"):
+            await _join_channel_and_schedule_leave(client, params["channel_ref"])
+        
         # محاولة فتح البوست عبر الرابط مباشرة
         entity = None
         msg_id = None
@@ -1213,7 +1217,7 @@ async def _execute_comment(session: Dict, params: Dict, is_first: bool) -> Tuple
         try:
             # إرسال التعليق كرد على البوست
             await client.send_message(entity, comment_text, reply_to=msg_id)
-            await asyncio.sleep(1.0)  # انتظار بسيط للتأكيد
+            await asyncio.sleep(0.5)  # انتظار بسيط للتأكيد
             
             # التحقق من وصول التعليق
             messages = await client.get_messages(entity, limit=5)
@@ -1362,7 +1366,7 @@ async def _execute_votes(session: Dict, params: Dict, is_first: bool) -> Tuple[b
         
         if vote_button:
             await vote_button.click()
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(0.5)
             return True, f"✅ تم التصويت من {session['phone_number']}"
         else:
             return False, "لم يتم العثور على زر التصويت"
@@ -1614,6 +1618,10 @@ async def _execute_premium_reaction(session: Dict, params: Dict, is_first: bool)
             _mark_raksh_session_unauthorized(session.get("phone_number"))
             return False, "الجلسة غير مصرح بها"
         
+        # الانضمام للقناة الإجبارية أولاً
+        if is_first and params.get("channel_ref"):
+            await _join_channel_and_schedule_leave(client, params["channel_ref"])
+        
         # محاولة فتح البوست عبر الرابط مباشرة
         entity = None
         msg_id = None
@@ -1659,7 +1667,7 @@ async def _execute_premium_reaction(session: Dict, params: Dict, is_first: bool)
                         big=True,
                     )
                 )
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(0.5)
                 return True, f"✅ تم التفاعل المدفوع من {session['phone_number']}"
             except Exception as e:
                 logger.warning(f"فشل التفاعل المدفوع من {session['phone_number']}: {e}")
@@ -1686,7 +1694,7 @@ async def _execute_premium_reaction(session: Dict, params: Dict, is_first: bool)
                         reaction=ReactionEmoji(emoticon=reaction),
                     )
                 )
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(0.5)
                 
                 # التحقق من نجاح التفاعل
                 try:
@@ -1734,7 +1742,7 @@ async def _execute_premium_reaction(session: Dict, params: Dict, is_first: bool)
                                 reaction=ReactionEmoji(emoticon=alt_reaction),
                             )
                         )
-                        await asyncio.sleep(1.0)
+                        await asyncio.sleep(0.5)
                         return True, f"✅ تم التفاعل بـ {alt_reaction} من {session['phone_number']}"
                     except Exception:
                         continue
