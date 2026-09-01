@@ -2908,7 +2908,34 @@ async def _execute_votes_ai(session, params, is_first):
         return False, f"❌ فشل: {str(e)[:80]}"
     finally:
         await client.disconnect()
-
+async def _get_all_channel_reactions(client, channel_ref, msg_id):
+    """
+    جلب كل التفاعلات الموجودة على المنشور (تشمل المدفوعة والعادية)
+    """
+    reactions_list = []
+    try:
+        entity = await client.get_entity(channel_ref)
+        message = await client.get_messages(entity, ids=msg_id)
+        if isinstance(message, (list, tuple)):
+            message = message[0] if message else None
+        
+        if message:
+            # استخراج كل التفاعلات الموجودة على المنشور
+            reactions_results = getattr(getattr(message, "reactions", None), "results", [])
+            for reaction in reactions_results:
+                reaction_type = getattr(reaction, "reaction", None)
+                if reaction_type:
+                    # التفاعل المدفوع (Premium)
+                    if reaction_type.__class__.__name__ == "ReactionPaid":
+                        reactions_list.append({"type": "paid", "label": "⭐ تفاعل مدفوع", "available": True})
+                    # التفاعل العادي
+                    else:
+                        emoticon = getattr(reaction_type, "emoticon", None)
+                        if emoticon:
+                            reactions_list.append({"type": "normal", "label": emoticon, "available": True})
+    except Exception as e:
+        logger.warning(f"تعذر جلب التفاعلات: {e}")
+    return reactions_list
 async def _execute_premium_reaction(session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
     """تنفيذ رشق تفاعل مميز"""
     client = TelegramClient(
