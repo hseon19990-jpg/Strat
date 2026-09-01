@@ -19,11 +19,17 @@ from telethon.tl.functions.messages import (
     SendVoteRequest, 
     StartBotRequest,
     SendMessageRequest,
-    SendMediaRequest
+    SendMediaRequest,
+    SendReactionRequest as SendMessageReactionRequest,
 )
 from telethon.tl.functions.contacts import ResolveUsernameRequest
 from telethon.tl.functions.stories import IncrementStoryViewsRequest, SendReactionRequest
-from telethon.tl.types import ReactionEmoji, InputMediaContact
+from telethon.tl.types import (
+    ReactionCustomEmoji,
+    ReactionEmoji,
+    ReactionPaid,
+    InputMediaContact,
+)
 from urllib.parse import parse_qs, urlparse
 import random
 import asyncio
@@ -569,6 +575,18 @@ def _custom_reaction_document_id(value: str) -> Optional[int]:
         return None
     raw_id = value[len(RAKSH_CUSTOM_REACTION_PREFIX):]
     return int(raw_id) if raw_id.isdigit() else None
+
+
+def _build_message_reaction(value: str):
+    """تحويل اختيار الواجهة إلى نوع التفاعل الذي تقبله Telegram للمنشورات."""
+    if value == RAKSH_PAID_REACTION:
+        return ReactionPaid()
+
+    custom_document_id = _custom_reaction_document_id(value)
+    if custom_document_id is not None:
+        return ReactionCustomEmoji(document_id=custom_document_id)
+
+    return ReactionEmoji(emoticon=value)
 
 async def _fetch_raksh_reactions(
     session: Dict, post_ref: str, post_id: int
@@ -1167,7 +1185,7 @@ async def _open_post_via_link(client, link: str) -> Tuple[Optional[Any], Optiona
 # ─── تنفيذ خدمات محددة (متابعة) ───
 
 async def _execute_comment(session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
-    """تنفيذ رشق تعليق - فتح البوست عبر الرابط أولاً"""
+    """تنفيذ تعليق حقيقي على منشور قناة عبر مجموعة النقاش المرتبطة."""
     client = TelegramClient(
         StringSession(session["session_string"]),
         int(TELEGRAM_API_ID),
@@ -1209,48 +1227,28 @@ async def _execute_comment(session: Dict, params: Dict, is_first: bool) -> Tuple
         if not comment_text:
             return False, "نص التعليق فارغ"
         
-        # محاولة التعليق على البوست
-        try:
-            # إرسال التعليق كرد على البوست
-            await client.send_message(entity, comment_text, reply_to=msg_id)
-            await asyncio.sleep(1.0)  # انتظار بسيط للتأكيد
-            
-            # التحقق من وصول التعليق
-            messages = await client.get_messages(entity, limit=5)
-            found_comment = False
-            for msg in messages:
-                if (getattr(msg, "reply_to_msg_id", None) == msg_id and 
-                    getattr(msg, "message", "") == comment_text and 
-                    getattr(msg, "out", False)):
-                    found_comment = True
-                    break
-            
-            if found_comment:
-                return True, f"✅ تم التعليق من {session['phone_number']}"
-            else:
-                # حتى لو لم نجد التعليق، نعتبره ناجحاً إذا لم يكن هناك خطأ
-                return True, f"✅ تم إرسال التعليق من {session['phone_number']}"
-        except Exception as e:
-            logger.warning(f"فشل التعليق كرد على البوست من {session['phone_number']}: {e}")
-            
-            # محاولة بديلة: إرسال كرسالة عادية
-            try:
-                await client.send_message(entity, comment_text)
-                return True, f"✅ تم إرسال التعليق من {session['phone_number']}"
-            except Exception as e2:
-                logger.error(f"فشل التعليق من {session['phone_number']}: {str(e)} | {str(e2)}")
-                
-                # محاولة فتح البوست عبر الرابط ثم إرسال التعليق
-                try:
-                    # إعادة المحاولة مع فتح الرابط
-                    entity2, msg_id2 = await _open_post_via_link(client, params["link"])
-                    if entity2 and msg_id2:
-                        await client.send_message(entity2, comment_text, reply_to=msg_id2)
-                        return True, f"✅ تم التعليق من {session['phone_number']}"
-                except Exception as e3:
-                    return False, f"❌ فشل التعليق: {str(e3)}"
-                
-                return False, f"❌ فشل التعليق: {str(e2)}"
+        # تعليق القناة يُرسل إلى مجموعة النقاش، وليس إلى كيان القناة مباشرة.
+        discussion = await client(
+            functions.messages.GetDiscussionMessageRequest(
+                peer=entity,
+                msg_id=msg_id,
+            )
+        )
+        if not getattr(discussion, "messages", None):
+            return False, "المنشور لا يملك مجموعة نقاش مفعلة."
+
+        discussion_message = discussion.messages[0]
+        discussion_peer = getattr(discussion_message, "peer_id", None)
+        if discussion_peer is None:
+            return False, "تعذر تحديد مساحة التعليقات."
+
+        await _join_discussion_group(client, discussion)
+        await client.send_message(
+            discussion_peer,
+            comment_text,
+            reply_to=discussion_message.id,
+        )
+        return True, f"✅ تم التعليق من {session['phone_number']}"
     except Exception as e:
         logger.error(f"خطأ عام في التعليق من {session['phone_number']}: {str(e)}")
         return False, f"❌ فشل التعليق: {str(e)}"
@@ -1647,99 +1645,21 @@ async def _execute_premium_reaction(session: Dict, params: Dict, is_first: bool)
             available_reactions = params.get("available_reactions") or list(RAKSH_REACTIONS.values())
             reaction = random.choice(available_reactions)
         
-        # التحقق من أن التفاعل مسموح
-        if reaction == RAKSH_PAID_REACTION:
-            # تفاعل مدفوع
-            try:
-                await client(
-                    SendReactionRequest(
-                        peer=entity,
-                        msg_id=msg_id,
-                        reaction=ReactionEmoji(emoticon="⭐"),
-                        big=True,
-                    )
+        try:
+            # هذا هو طلب المنشورات؛ طلب stories.SendReactionRequest لا يقبل msg_id.
+            await client(
+                SendMessageReactionRequest(
+                    peer=entity,
+                    msg_id=msg_id,
+                    reaction=[_build_message_reaction(reaction)],
                 )
-                await asyncio.sleep(1.0)
-                return True, f"✅ تم التفاعل المدفوع من {session['phone_number']}"
-            except Exception as e:
-                logger.warning(f"فشل التفاعل المدفوع من {session['phone_number']}: {e}")
-                # محاولة تفاعل عادي كبديل
-                try:
-                    await client(
-                        SendReactionRequest(
-                            peer=entity,
-                            msg_id=msg_id,
-                            reaction=ReactionEmoji(emoticon="❤️"),
-                        )
-                    )
-                    return True, f"✅ تم التفاعل من {session['phone_number']}"
-                except Exception as e2:
-                    return False, f"فشل التفاعل: {str(e2)}"
-        else:
-            # تفاعل عادي
-            try:
-                # محاولة التفاعل بالإيموجي المحدد
-                await client(
-                    SendReactionRequest(
-                        peer=entity,
-                        msg_id=msg_id,
-                        reaction=ReactionEmoji(emoticon=reaction),
-                    )
-                )
-                await asyncio.sleep(1.0)
-                
-                # التحقق من نجاح التفاعل
-                try:
-                    messages = await client.get_messages(entity, ids=msg_id)
-                    if isinstance(messages, (list, tuple)):
-                        messages = messages[0] if messages else None
-                    
-                    if messages:
-                        reactions = getattr(getattr(messages, "reactions", None), "results", [])
-                        for item in reactions:
-                            if getattr(getattr(item, "reaction", None), "emoticon", None) == reaction:
-                                # إذا كان التفاعل من الحساب نفسه
-                                if getattr(item, "chosen", False):
-                                    return True, f"✅ تم التفاعل من {session['phone_number']}"
-                except Exception:
-                    pass
-                
-                return True, f"✅ تم التفاعل من {session['phone_number']}"
-            except Exception as e:
-                logger.warning(f"فشل التفاعل العادي من {session['phone_number']}: {e}")
-                
-                # محاولة فتح البوست عبر الرابط ثم التفاعل
-                try:
-                    entity2, msg_id2 = await _open_post_via_link(client, params["link"])
-                    if entity2 and msg_id2:
-                        await client(
-                            SendReactionRequest(
-                                peer=entity2,
-                                msg_id=msg_id2,
-                                reaction=ReactionEmoji(emoticon=reaction),
-                            )
-                        )
-                        return True, f"✅ تم التفاعل من {session['phone_number']}"
-                except Exception:
-                    pass
-                
-                # محاولة تفاعلات بديلة
-                alternative_reactions = ["❤️", "👍", "🔥", "😍", "🤩", "✨"]
-                for alt_reaction in alternative_reactions:
-                    try:
-                        await client(
-                            SendReactionRequest(
-                                peer=entity,
-                                msg_id=msg_id,
-                                reaction=ReactionEmoji(emoticon=alt_reaction),
-                            )
-                        )
-                        await asyncio.sleep(1.0)
-                        return True, f"✅ تم التفاعل بـ {alt_reaction} من {session['phone_number']}"
-                    except Exception:
-                        continue
-                
-                return False, f"فشل التفاعل: {str(e)}"
+            )
+            await asyncio.sleep(1.0)
+            label = "التفاعل المدفوع" if reaction == RAKSH_PAID_REACTION else "التفاعل"
+            return True, f"✅ تم {label} من {session['phone_number']}"
+        except Exception as e:
+            logger.warning(f"فشل التفاعل من {session['phone_number']}: {e}")
+            return False, f"❌ فشل التفاعل: {str(e)}"
     except Exception as e:
         logger.error(f"خطأ عام في التفاعل المميز من {session['phone_number']}: {str(e)}")
         return False, f"❌ فشل: {str(e)}"
@@ -2827,10 +2747,11 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     post_id,
                 )
                 if not reaction_options:
-                    await update.message.reply_text(
-                        "⚠️ تعذر قراءة التفاعلات المتاحة في هذا البوست."
-                    )
-                    return True
+                    # تعذر قراءة قائمة التفاعلات لا يعني أن المنشور غير قابل
+                    # للتفاعل؛ Telegram يقبل التفاعلات الأساسية في كثير من
+                    # المنشورات العامة. سيُرجع التنفيذ خطأً واضحاً إن كانت
+                    # التفاعلات معطلة فعلاً أو غير مسموحة لهذا الحساب.
+                    reaction_options = list(RAKSH_REACTIONS.values())
                 context.user_data["raksh_available_reactions"] = reaction_options
             
             context.user_data["raksh_step"] = "reaction"
