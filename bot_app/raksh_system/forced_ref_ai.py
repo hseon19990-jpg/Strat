@@ -27,6 +27,24 @@ class ForcedRefAIService(RakshService):
         max_delay=3
     )
 
+    # ─── تجاوز دالة جلب الجلسات لإزالة أي استبعاد ───
+    def get_sessions(self) -> List[Dict]:
+        """
+        جلب جميع الحسابات النشطة (بدون استبعاد forced_ref_excluded)
+        هذه الدالة تتجاوز الدالة الأم لضمان عدم فقدان أي حساب.
+        """
+        with db_conn() as c:
+            query = """
+                SELECT id, phone_number, session_string, raksh_only, last_authorized
+                FROM number_stock
+                WHERE session_string IS NOT NULL
+                  AND BTRIM(session_string) <> ''
+                  AND deleted_at IS NULL
+                ORDER BY last_authorized DESC NULLS LAST, id ASC
+            """
+            rows = c.execute(query).fetchall()
+            return [dict(row) for row in rows]
+
     # ─── 1. دوال البداية ───
 
     def get_initial_state(self) -> str:
