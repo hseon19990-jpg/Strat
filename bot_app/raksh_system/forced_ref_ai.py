@@ -1,6 +1,6 @@
 # forced_ref_ai.py
 from .common import *
-from telethon.tl.types import InputMediaContact, KeyboardButtonRequestPhone
+from telethon.tl.types import InputMediaContact, KeyboardButtonRequestPhone, KeyboardButton
 
 class ForcedRefAIService(RakshService):
     """خدمة إحالة بوت إجباري مع تحقق - كل شيء في مكان واحد"""
@@ -21,10 +21,11 @@ class ForcedRefAIService(RakshService):
         max_delay=3
     )
     
-    # (بقية الدوال كما هي - لم تتغير)
+    # 1️⃣ البدء بطلب القنوات الإجبارية
     def get_initial_state(self) -> str:
         return "channel"
     
+    # 2️⃣ رسالة البداية
     def get_start_message(self) -> str:
         return (
             f"{self.config.name}\n\n"
@@ -38,15 +39,18 @@ class ForcedRefAIService(RakshService):
             f"✍️ اكتب 'تخطي' لعدم وجود قنوات"
         )
     
+    # 3️⃣ أزرار البداية (تخطي / إلغاء)
     def get_start_keyboard(self) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("⏭️ تخطي (بدون قنوات)", callback_data="raksh_forced_ref_ai:skip_channels")],
             [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
         ])
     
+    # 4️⃣ تعليمات الرابط
     def get_link_instruction(self) -> str:
         return "@BotUsername start123  أو  t.me/BotUsername?start=123"
     
+    # 5️⃣ التحقق من الرابط
     def validate_link(self, value: str) -> Optional[str]:
         if not value.strip():
             return "⚠️ الرابط لا يمكن أن يكون فارغاً"
@@ -60,8 +64,10 @@ class ForcedRefAIService(RakshService):
             )
         return None
     
+    # 6️⃣ معالجة النص (القنوات ← الرابط ← العدد ← الدفع)
     async def handle_text(self, update, context, text, user, state, is_own) -> bool:
         """معالجة النص لخدمة الإحالة مع التحقق"""
+        
         if state == "channel":
             if text.strip().lower() in {"تخطي", "skip", "لا", "none", "بدون"}:
                 context.user_data["raksh_channels"] = []
@@ -80,6 +86,7 @@ class ForcedRefAIService(RakshService):
                 context.user_data["raksh_channels"] = channel_refs
             
             context.user_data["raksh_step"] = "link"
+            
             await update.message.reply_text(
                 f"✅ تم حفظ القنوات الإجبارية ({len(context.user_data['raksh_channels'])} قناة).\n\n"
                 f"🔗 *أرسل رابط البوت:*\n"
@@ -159,6 +166,7 @@ class ForcedRefAIService(RakshService):
             
             context.user_data["raksh_quantity"] = quantity
             context.user_data["raksh_step"] = "payment"
+            
             points_cost = self.get_total(quantity, "points")
             stars_cost = self.get_total(quantity, "stars")
             
@@ -198,11 +206,14 @@ class ForcedRefAIService(RakshService):
         
         return False
     
+    # 7️⃣ معالجة الأزرار
     async def handle_callback(self, update, context, query, data_parts, user, is_own) -> bool:
         """معالجة الأزرار لخدمة الإحالة مع التحقق"""
+        
         if data_parts[0] == "skip_channels":
             context.user_data["raksh_channels"] = []
             context.user_data["raksh_step"] = "link"
+            
             await query.edit_message_text(
                 f"✅ تم تخطي القنوات.\n\n"
                 f"🔗 *أرسل رابط البوت:*\n"
@@ -320,7 +331,57 @@ class ForcedRefAIService(RakshService):
         
         return False
     
-    # ═══ دالة حل التحقق المحسّنة (بدون ClickRequest) ═══
+    # ═══ دالة مساعدة: إرسال جهة الاتصال أو الضغط على زرها ═══
+    async def _share_contact(self, client, bot_entity, verification_message, phone_number) -> bool:
+        """محاولة مشاركة جهة الاتصال بأي طريقة"""
+        # 1. إرسال جهة الاتصال مباشرة (الطريقة الأكثر موثوقية)
+        try:
+            me = await client.get_me()
+            if not me or not me.phone:
+                return False
+            contact = InputMediaContact(
+                phone_number=me.phone,
+                first_name=me.first_name or "User",
+                last_name=me.last_name or ""
+            )
+            await client.send_message(bot_entity, file=contact)
+            logger.info(f"📱 تم إرسال جهة الاتصال مباشرة من {phone_number}")
+            return True
+        except Exception as e:
+            logger.warning(f"فشل إرسال جهة الاتصال مباشرة: {e}")
+
+        # 2. محاولة الضغط على زر إذا كان موجوداً
+        buttons = []
+        for row in (getattr(verification_message, 'buttons', None) or []):
+            for btn in row:
+                if not getattr(btn, 'url', None):
+                    buttons.append(btn)
+        reply_markup = getattr(verification_message, 'reply_markup', None)
+        if reply_markup and hasattr(reply_markup, 'rows'):
+            for row in reply_markup.rows:
+                for btn in row.buttons:
+                    buttons.append(btn)
+
+        for btn in buttons:
+            if isinstance(btn, KeyboardButtonRequestPhone):
+                try:
+                    await btn.click(share_phone=True)
+                    logger.info(f"✅ ضغط على زر مشاركة جهة الاتصال من {phone_number}")
+                    return True
+                except Exception as e:
+                    logger.warning(f"فشل الضغط على زر الطلب: {e}")
+            elif isinstance(btn, KeyboardButton):
+                text = getattr(btn, 'text', '').lower()
+                if any(kw in text for kw in ['مشاركة', 'share', 'phone', 'هاتف', 'اتصال', 'contact']):
+                    try:
+                        await btn.click()
+                        logger.info(f"✅ ضغط على زر '{getattr(btn, 'text', '')}' من {phone_number}")
+                        return True
+                    except Exception as e:
+                        logger.warning(f"فشل الضغط على الزر: {e}")
+        return False
+
+    # ═══ دالة حل التحقق المحسّنة ═══
     async def _solve_verification(self, client, bot_entity, phone_number: str) -> bool:
         """حل التحقق بشكل ذكي مع مشاركة جهة الاتصال وإعادة محاولة الضغط"""
         max_attempts = 30
@@ -336,23 +397,6 @@ class ForcedRefAIService(RakshService):
         except Exception as e:
             logger.warning(f"تعذر تحديد الرسالة المرجعية: {e}")
 
-        async def share_contact_if_requested():
-            try:
-                me = await client.get_me()
-                if not me or not me.phone:
-                    return False
-                contact = InputMediaContact(
-                    phone_number=me.phone,
-                    first_name=me.first_name or "User",
-                    last_name=me.last_name or ""
-                )
-                await client.send_message(bot_entity, file=contact)
-                logger.info(f"📱 تم مشاركة جهة الاتصال يدوياً من {phone_number}")
-                return True
-            except Exception as e:
-                logger.warning(f"فشل مشاركة جهة الاتصال: {e}")
-                return False
-
         def extract_target_emoji(text: str):
             emoji_pattern = re.compile(
                 "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E0-\U0001F1FF]"
@@ -363,7 +407,11 @@ class ForcedRefAIService(RakshService):
         for attempt in range(max_attempts):
             try:
                 messages = await client.get_messages(bot_entity, limit=20)
-            except Exception:
+            except Exception as exc:
+                if "two different IP" in str(exc) or "AuthKeyDuplicated" in str(exc):
+                    logger.error(f"⚠️ الجلسة {phone_number} تستخدم من IP مختلف - سيتم تعطيلها")
+                    _mark_raksh_session_unauthorized(phone_number)
+                    return False
                 await asyncio.sleep(1.0)
                 continue
 
@@ -380,7 +428,7 @@ class ForcedRefAIService(RakshService):
                 msg_text = getattr(msg, 'message', '') or ''
                 if msg_text.strip().startswith("/"):
                     continue
-                if any(kw in msg_text for kw in ["أرسل", "التالي", "بالضبط", "اكتب", "retype", "type", "اضغط", "اختر", "انقر"]):
+                if any(kw in msg_text for kw in ["أرسل", "التالي", "بالضبط", "اكتب", "retype", "type", "اضغط", "اختر", "انقر", "مشاركة", "share", "contact"]):
                     verification_message = msg
                     break
 
@@ -396,54 +444,22 @@ class ForcedRefAIService(RakshService):
 
             text = getattr(verification_message, 'message', '') or ''
 
-            # جمع كل الأزرار (المضمّنة + لوحة المفاتيح)
-            all_buttons = []
-            for row in (getattr(verification_message, 'buttons', None) or []):
-                for btn in row:
-                    if not getattr(btn, 'url', None):
-                        all_buttons.append(btn)
-
-            reply_markup = getattr(verification_message, 'reply_markup', None)
-            if reply_markup and hasattr(reply_markup, 'rows'):
-                for row in reply_markup.rows:
-                    for btn in row.buttons:
-                        if not getattr(btn, 'url', None):
-                            all_buttons.append(btn)
-
-            # 1️⃣ الضغط على زر مشاركة جهة الاتصال
-            phone_button = None
-            for btn in all_buttons:
-                if isinstance(btn, KeyboardButtonRequestPhone):
-                    phone_button = btn
-                    break
-
-            if phone_button is not None:
-                try:
-                    # ✅ الضغط مع مشاركة رقم الهاتف
-                    await phone_button.click(share_phone=True)
-                    logger.info(f"✅ تم الضغط على زر مشاركة جهة الاتصال من {phone_number}")
+            # ═══ 1️⃣ إذا طلب مشاركة جهة اتصال - نفّذها فوراً ═══
+            if any(keyword in text.lower() for keyword in ["مشاركة جهة اتصال", "share contact", "phone number", "رقم هاتف"]):
+                if await self._share_contact(client, bot_entity, verification_message, phone_number):
                     await asyncio.sleep(2.0)
                     try:
                         updated = await client.get_messages(bot_entity, ids=verification_message.id)
                         if isinstance(updated, (list, tuple)):
                             updated = updated[0] if updated else None
                         if updated is None or not getattr(updated, 'buttons', None) and not getattr(updated, 'reply_markup', None):
+                            logger.info(f"✅ اختفت الرسالة بعد مشاركة جهة الاتصال من {phone_number}")
                             return True
                     except Exception:
                         pass
-                except Exception as e:
-                    logger.warning(f"فشل الضغط على زر مشاركة جهة الاتصال: {e}")
-                    if await share_contact_if_requested():
-                        return True
+                    continue
 
-            # 2️⃣ إذا طلب النص مشاركة جهة الاتصال
-            if any(keyword in text.lower() for keyword in ["مشاركة جهة اتصال", "share contact", "phone number", "رقم هاتف"]):
-                if await share_contact_if_requested():
-                    return True
-                await asyncio.sleep(1.0)
-                continue
-
-            # 3️⃣ استخراج الكود
+            # ═══ 2️⃣ استخراج الكود ═══
             send_text = _extract_code_from_text(text)
             if send_text:
                 try:
@@ -453,7 +469,7 @@ class ForcedRefAIService(RakshService):
                 except Exception:
                     return False
 
-            # 4️⃣ حل المسائل الرياضية
+            # ═══ 3️⃣ حل المسائل الرياضية ═══
             math_patterns = [
                 (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=\s*\?', 1, 2, 3),
                 (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=', 1, 2, 3),
@@ -483,7 +499,19 @@ class ForcedRefAIService(RakshService):
                     except Exception:
                         continue
 
-            # 5️⃣ الضغط على الأزرار العادية
+            # ═══ 4️⃣ الضغط على الأزرار العادية ═══
+            all_buttons = []
+            for row in (getattr(verification_message, 'buttons', None) or []):
+                for btn in row:
+                    if not getattr(btn, 'url', None):
+                        all_buttons.append(btn)
+            reply_markup = getattr(verification_message, 'reply_markup', None)
+            if reply_markup and hasattr(reply_markup, 'rows'):
+                for row in reply_markup.rows:
+                    for btn in row.buttons:
+                        if not getattr(btn, 'url', None):
+                            all_buttons.append(btn)
+
             if all_buttons:
                 target_emoji = extract_target_emoji(text)
                 prioritized = []
@@ -514,7 +542,11 @@ class ForcedRefAIService(RakshService):
                         current_msg = await client.get_messages(bot_entity, ids=verification_message.id)
                         if isinstance(current_msg, (list, tuple)):
                             current_msg = current_msg[0] if current_msg else None
-                    except Exception:
+                    except Exception as exc:
+                        if "two different IP" in str(exc):
+                            logger.error(f"⚠️ الجلسة {phone_number} تستخدم من IP مختلف - سيتم تعطيلها")
+                            _mark_raksh_session_unauthorized(phone_number)
+                            return False
                         current_msg = None
 
                     if current_msg is None or (not getattr(current_msg, 'buttons', None) and not getattr(current_msg, 'reply_markup', None)):
@@ -550,12 +582,15 @@ class ForcedRefAIService(RakshService):
                         continue
 
                     try:
-                        # ✅ الضغط العادي
                         await button_to_click.click()
                         pressed_ids.add(id(button_to_click))
                         logger.info(f"🖱️ ضغط على زر '{getattr(button_to_click, 'text', '')}' من {phone_number}")
                         await asyncio.sleep(2.0)
-                    except Exception:
+                    except Exception as exc:
+                        if "two different IP" in str(exc):
+                            logger.error(f"⚠️ الجلسة {phone_number} تستخدم من IP مختلف - سيتم تعطيلها")
+                            _mark_raksh_session_unauthorized(phone_number)
+                            return False
                         continue
 
                 continue
@@ -603,6 +638,10 @@ class ForcedRefAIService(RakshService):
             else:
                 return False, "فشل التحقق بعد محاولات متعددة"
         except Exception as e:
+            if "two different IP" in str(e) or "AuthKeyDuplicated" in str(e):
+                logger.error(f"⚠️ الجلسة {session.get('phone_number')} تستخدم من IP مختلف - سيتم تعطيلها")
+                _mark_raksh_session_unauthorized(session.get("phone_number"))
+                return False, "الجلسة تستخدم من IP مختلف - تم تعطيلها مؤقتاً"
             return False, f"❌ فشل: {str(e)}"
         finally:
             await client.disconnect()
