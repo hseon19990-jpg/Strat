@@ -724,7 +724,9 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
             for button in row or []:
                 label = getattr(button, "text", "") or ""
                 url = getattr(button, "url", "") or ""
-                if url and ("t.me/" in url or "telegram.me/" in url):
+                # أزرار الروابط مخصصة للاشتراك/التنقل وليست إجابات تحقق.
+                # لا نعرضها لمحرك AI ولا نسمح له باختيارها.
+                if url:
                     continue
                 if label or _button_custom_emoji_id(button) is not None:
                     entries.append((str(label).strip(), button))
@@ -1153,15 +1155,60 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                     )
                     if not button_entries:
                         continue
+
+                    # إذا احتوت الرسالة على زر تحقق صريح، فهذا هو الزر
+                    # المقصود حتى لو كانت الرسالة تحتوي أزراراً أخرى.
+                    # لا نترك AI يخمّن بين زر التحقق وأزرار عشوائية.
+                    verify_button_words = (
+                        "تحقق", "verify", "check", "continue", "next",
+                        "متابعة", "التالي", "ابدأ", "start",
+                    )
+                    subscription_words = (
+                        "اشترك", "اشتراك", "قناة", "channel", "join",
+                        "subscribe",
+                    )
+                    labeled_verify_buttons = [
+                        button
+                        for label, button in button_entries
+                        if any(word in _normalise_button_label(label)
+                               for word in verify_button_words)
+                        and not any(word in _normalise_button_label(label)
+                                    for word in subscription_words)
+                    ]
+                    if len(labeled_verify_buttons) == 1:
+                        chosen = labeled_verify_buttons[0]
+                        processed_ids.add(msg_id)
+                        await chosen.click()
+                        result, msgs = await _wait_and_check()
+                        if result == "unknown":
+                            numeric_result, numeric_msgs = await _reply_to_numeric_code(msgs)
+                            if numeric_result is not None:
+                                result, msgs = numeric_result, numeric_msgs
+                        detail = f"ضغط زر التحقق: {getattr(chosen, 'text', '')}"
+                        all_details.append(detail)
+                        if result == "success":
+                            return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
+                        if result == "fail":
+                            break
+                        # قد تكون هذه مجرد المرحلة الأولى، فنعيد قراءة
+                        # الرسائل لمعالجة التحقق الذي ظهر بعدها.
+                        continue
+
+                    # كلمة «تحقق» وحدها في رسالة اشتراك لا تكفي لاعتبار
+                    # كل أزرار الرسالة كابتشا. نسمح بـ AI فقط عندما تكون
+                    # الرسالة تطلب اختياراً فعلياً من عدة إجابات.
+                    explicit_choice_markers = (
+                        "اختر", "الزر الصحيح", "الإيموجي", "الصورة المطابقة",
+                        "correct button", "choose", "select", "pick",
+                        "which button", "click the", "press the",
+                        "captcha", "كابتشا",
+                    )
+                    has_explicit_button_challenge = any(
+                        marker in msg_text_lower
+                        for marker in explicit_choice_markers
+                    )
                     is_verif = (
-                        any(k in msg_text_lower for k in CAPTCHA_KW)
-                        or any(k in msg_text_lower for k in MATH_KW)
-                        or any(k in msg_text_lower for k in REACTION_KW)
-                        or "select" in msg_text_lower
-                        or "choose" in msg_text_lower
-                        or "click" in msg_text_lower
-                        or "press" in msg_text_lower
-                        or "pick" in msg_text_lower
+                        has_explicit_button_challenge
                         or (
                             len(btn_labels) >= 2
                             and all(bool(_emoji_signatures(lbl)) for lbl in btn_labels)
