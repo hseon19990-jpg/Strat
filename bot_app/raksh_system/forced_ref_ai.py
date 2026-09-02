@@ -342,6 +342,7 @@ class ForcedRefAIService(RakshService):
         """حل التحقق بذكاء - إرسال جهة الاتصال عند الطلب + إعادة محاولة الضغط على الأزرار"""
         max_attempts = 50
         base_id = 0
+        handled_contact_messages = set()
 
         try:
             out_messages = await client.get_messages(bot_entity, limit=10)
@@ -395,18 +396,35 @@ class ForcedRefAIService(RakshService):
                 await asyncio.sleep(1.0)
                 continue
 
+            # لا نعالج رسالة طلب الاتصال القديمة مرة أخرى بعد إرسال الرقم.
+            # بعض البوتات تبقي لوحة المفاتيح على الرسالة نفسها، لذلك لا يجوز
+            # اعتبار بقاء reply_markup دليلاً على فشل الإرسال.
+            pending_messages = [
+                msg for msg in new_messages
+                if msg.id not in handled_contact_messages
+            ]
+            if not pending_messages:
+                await asyncio.sleep(1.0)
+                continue
+
             verification_message = None
-            for msg in new_messages:
+            for msg in pending_messages:
                 msg_text = getattr(msg, 'message', '') or ''
                 if msg_text.strip().startswith("/"):
                     continue
-                if any(kw in msg_text for kw in ["أرسل", "التالي", "بالضبط", "اكتب", "retype", "type", "اضغط", "اختر", "انقر", "مشاركة", "share", "contact"]):
+                if any(kw in msg_text.lower() for kw in [
+                    "أرسل", "التالي", "بالضبط", "اكتب", "retype", "type",
+                    "اضغط", "اختر", "انقر", "مشاركة", "share", "contact"
+                ]):
                     verification_message = msg
                     break
 
             if verification_message is None:
                 verification_message = next(
-                    (msg for msg in reversed(new_messages) if not getattr(msg, 'message', '').strip().startswith("/")),
+                    (
+                        msg for msg in reversed(pending_messages)
+                        if not getattr(msg, 'message', '').strip().startswith("/")
+                    ),
                     None
                 )
 
@@ -431,31 +449,35 @@ class ForcedRefAIService(RakshService):
                             all_buttons.append(btn)
 
             # ═══ 1️⃣ إرسال جهة الاتصال إذا طلبها البوت ═══
-            contact_requested = False
-            if any(kw in text.lower() for kw in ["مشاركة جهة اتصال", "share contact", "phone number", "رقم هاتف"]):
-                contact_requested = True
+            normalized_text = text.casefold()
+            contact_terms = (
+                "جهة الاتصال", "جهة اتصال", "contact",
+                "رقم الهاتف", "رقم هاتف", "phone number",
+            )
+            request_terms = (
+                "مشاركة", "شارك", "أرسل", "ارسل", "send",
+                "share", "provide",
+            )
+            contact_requested = (
+                any(term in normalized_text for term in contact_terms)
+                and any(term in normalized_text for term in request_terms)
+            )
 
             # ✅ البحث عن زر مشاركة جهة الاتصال
             phone_btn = None
             for btn in all_buttons:
-                if isinstance(btn, KeyboardButtonRequestPhone):
+                if (
+                    isinstance(btn, KeyboardButtonRequestPhone)
+                    or btn.__class__.__name__ == "KeyboardButtonRequestPhone"
+                ):
                     phone_btn = btn
                     break
 
             if contact_requested or phone_btn is not None:
-                # ✅ إرسال جهة الاتصال يدوياً (الطريقة الأضمن)
+                # ✅ إرسال جهة الاتصال مرة واحدة لهذا الطلب.
+                handled_contact_messages.add(verification_message.id)
                 if await send_contact_manually():
                     await asyncio.sleep(2.0)
-                    # تحقق من اختفاء الرسالة
-                    try:
-                        updated = await client.get_messages(bot_entity, ids=verification_message.id)
-                        if isinstance(updated, (list, tuple)):
-                            updated = updated[0] if updated else None
-                        if updated is None or not getattr(updated, 'buttons', None) and not getattr(updated, 'reply_markup', None):
-                            logger.info(f"✅ اختفت الرسالة بعد مشاركة جهة الاتصال من {phone_number}")
-                            return True
-                    except Exception:
-                        pass
                     # ✅ بعد الإرسال، نضغط على زر متابعة إذا كان موجوداً
                     continue_btn = None
                     for btn in all_buttons:
@@ -469,7 +491,9 @@ class ForcedRefAIService(RakshService):
                             logger.info(f"✅ تم الضغط على زر 'متابعة' من {phone_number}")
                         except Exception:
                             pass
+                    # لا نعيد إرسال الرقم؛ ننتظر رسالة البوت الجديدة في الدورة التالية.
                     continue
+                return False
 
             # ═══ 2️⃣ استخراج الكود ═══
             send_text = _extract_code_from_text(text)
