@@ -358,36 +358,6 @@ class ForcedRefAIService(RakshService):
 
     async def _solve_verification(self, client, bot_entity, phone_number: str) -> bool:
         """
-        حل سلسلة التحقق باستخدام المحرك المشترك المدعوم بالذكاء الاصطناعي.
-
-        بعض البوتات تعرض تحدياً جديداً بعد الضغط على زر التحقق الأول؛ لذلك
-        يجب أن يبقى الحل داخل حلقة متعددة المراحل بدلاً من اعتبار أول ضغط
-        نجاحاً نهائياً.
-        """
-        try:
-            from ..referrals import solve_captcha_with_ai
-
-            messages = await client.get_messages(bot_entity, limit=15)
-            solved, detail = await solve_captcha_with_ai(
-                client,
-                bot_entity,
-                messages,
-                phone_number,
-                max_attempts=5,
-            )
-            logger.info(
-                "🤖 نتيجة محرك التحقق للحساب %s: solved=%s detail=%s",
-                phone_number,
-                solved,
-                detail,
-            )
-            return bool(solved)
-        except Exception as exc:
-            logger.exception("❌ تعذر تشغيل محرك التحقق للحساب %s: %s", phone_number, exc)
-            return False
-
-    async def _solve_static_verification(self, client, bot_entity, phone_number: str) -> bool:
-        """
         حل التحقق بذكاء:
         1. إذا طلب البوت مشاركة رقم الهاتف (زر KeyboardButtonRequestPhone) – نرسل الرقم ونضغط متابعة.
         2. وإلا نستخدم المنطق القديم: استخراج الكود، حل المسائل، الضغط على الأزرار العادية.
