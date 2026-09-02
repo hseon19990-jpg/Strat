@@ -343,6 +343,7 @@ class ForcedRefAIService(RakshService):
         max_attempts = 50
         base_id = 0
         handled_contact_messages = set()
+        handled_button_messages = set()
 
         try:
             out_messages = await client.get_messages(bot_entity, limit=10)
@@ -401,7 +402,10 @@ class ForcedRefAIService(RakshService):
             # اعتبار بقاء reply_markup دليلاً على فشل الإرسال.
             pending_messages = [
                 msg for msg in new_messages
-                if msg.id not in handled_contact_messages
+                if (
+                    msg.id not in handled_contact_messages
+                    and msg.id not in handled_button_messages
+                )
             ]
             if not pending_messages:
                 await asyncio.sleep(1.0)
@@ -481,8 +485,14 @@ class ForcedRefAIService(RakshService):
                     # ✅ بعد الإرسال، نضغط على زر متابعة إذا كان موجوداً
                     continue_btn = None
                     for btn in all_buttons:
-                        btn_text = (getattr(btn, 'text', '') or '').lower()
-                        if any(kw in btn_text for kw in ["متابعة", "التالي", "تحقق", "continue", "next", "verify", "تم", "done"]):
+                        btn_text = (getattr(btn, 'text', '') or '').strip().casefold()
+                        if btn_text in {
+                            "متابعة", "التالي", "تحقق", "continue",
+                            "next", "verify", "done",
+                        } or any(
+                            btn_text.startswith(prefix)
+                            for prefix in ("متابعة ", "التالي ", "continue ", "next ")
+                        ):
                             continue_btn = btn
                             break
                     if continue_btn:
@@ -546,83 +556,95 @@ class ForcedRefAIService(RakshService):
                 if found_emojis:
                     target_emoji = found_emojis[-1]
 
+                # لا نضغط أزراراً عشوائية أو أزرار مشاركة الرقم مرة أخرى.
+                safe_buttons = [
+                    b for b in all_buttons
+                    if b.__class__.__name__ != "KeyboardButtonRequestPhone"
+                ]
                 prioritized = []
                 if target_emoji:
-                    exact = [b for b in all_buttons if getattr(b, 'text', '') == target_emoji]
+                    exact = [
+                        b for b in safe_buttons
+                        if getattr(b, 'text', '') == target_emoji
+                    ]
                     prioritized.extend(exact)
-                    partial = [b for b in all_buttons if target_emoji in (getattr(b, 'text', '') or '') and b not in exact]
+                    partial = [
+                        b for b in safe_buttons
+                        if target_emoji in (getattr(b, 'text', '') or '')
+                        and b not in exact
+                    ]
                     prioritized.extend(partial)
 
                 verify_keywords = ['تحقق', 'verify', 'اضغط هنا', 'continue', 'التالي', 'متابعة']
-                verify_buttons = [b for b in all_buttons if any(kw in (getattr(b, 'text', '') or '').lower() for kw in verify_keywords) and b not in prioritized]
+                verify_buttons = [
+                    b for b in safe_buttons
+                    if any(
+                        kw in (getattr(b, 'text', '') or '').casefold()
+                        for kw in verify_keywords
+                    ) and b not in prioritized
+                ]
                 prioritized.extend(verify_buttons)
 
-                remaining = [b for b in all_buttons if b not in prioritized]
-                prioritized.extend(remaining)
+                # إذا لم يذكر نص التحقق إيموجياً أو زر تحقق واضحاً، لا نغامر
+                # بالضغط على بقية الأزرار لأنها قد تكون أزراراً وظيفية عادية.
+                if not prioritized:
+                    handled_button_messages.add(verification_message.id)
+                    await asyncio.sleep(1.0)
+                    continue
 
-                seen = set()
-                unique_buttons = []
-                for b in prioritized:
-                    if id(b) not in seen:
-                        seen.add(id(b))
-                        unique_buttons.append(b)
+                button_text = getattr(prioritized[0], 'text', '') or ''
+                handled_button_messages.add(verification_message.id)
 
-                pressed_ids = set()
-                for _ in range(30):
-                    try:
-                        current_msg = await client.get_messages(bot_entity, ids=verification_message.id)
-                        if isinstance(current_msg, (list, tuple)):
-                            current_msg = current_msg[0] if current_msg else None
-                    except Exception as exc:
-                        if "two different IP" in str(exc):
-                            logger.error(f"⚠️ الجلسة {phone_number} تستخدم من IP مختلف - سيتم تعطيلها")
-                            _mark_raksh_session_unauthorized(phone_number)
-                            return False
-                        current_msg = None
+                try:
+                    current_msg = await client.get_messages(
+                        bot_entity, ids=verification_message.id
+                    )
+                    if isinstance(current_msg, (list, tuple)):
+                        current_msg = current_msg[0] if current_msg else None
+                except Exception as exc:
+                    if "two different IP" in str(exc):
+                        logger.error(f"⚠️ الجلسة {phone_number} تستخدم من IP مختلف - سيتم تعطيلها")
+                        _mark_raksh_session_unauthorized(phone_number)
+                        return False
+                    current_msg = None
 
-                    if current_msg is None or (not getattr(current_msg, 'buttons', None) and not getattr(current_msg, 'reply_markup', None)):
-                        logger.info(f"✅ اختفت الأزرار - تم التحقق بنجاح من {phone_number}")
+                button_to_click = None
+                for row in (getattr(current_msg, 'buttons', None) or []):
+                    for btn in row:
+                        if (
+                            not getattr(btn, 'url', None)
+                            and getattr(btn, 'text', '') == button_text
+                        ):
+                            button_to_click = btn
+                            break
+                    if button_to_click:
+                        break
+
+                if button_to_click is None:
+                    continue
+
+                try:
+                    await button_to_click.click()
+                    logger.info(f"🖱️ ضغط على زر التحقق '{button_text}' من {phone_number}")
+                    await asyncio.sleep(2.0)
+
+                    refreshed = await client.get_messages(
+                        bot_entity, ids=verification_message.id
+                    )
+                    if isinstance(refreshed, (list, tuple)):
+                        refreshed = refreshed[0] if refreshed else None
+                    if refreshed is None or (
+                        not getattr(refreshed, 'buttons', None)
+                        and not getattr(refreshed, 'reply_markup', None)
+                    ):
+                        logger.info(f"✅ اختفت أزرار التحقق من {phone_number}")
                         return True
-
-                    button_to_click = None
-                    for b in unique_buttons:
-                        if id(b) not in pressed_ids:
-                            for row in (getattr(current_msg, 'buttons', None) or []):
-                                for btn in row:
-                                    if not getattr(btn, 'url', None) and getattr(btn, 'text', '') == getattr(b, 'text', ''):
-                                        button_to_click = btn
-                                        break
-                                if button_to_click:
-                                    break
-                            if button_to_click:
-                                break
-                            reply_markup = getattr(current_msg, 'reply_markup', None)
-                            if reply_markup and hasattr(reply_markup, 'rows'):
-                                for row in reply_markup.rows:
-                                    for btn in row.buttons:
-                                        if not getattr(btn, 'url', None) and getattr(btn, 'text', '') == getattr(b, 'text', ''):
-                                            button_to_click = btn
-                                            break
-                                    if button_to_click:
-                                        break
-                            if button_to_click:
-                                break
-
-                    if button_to_click is None:
-                        pressed_ids.clear()
-                        continue
-
-                    try:
-                        await button_to_click.click()
-                        pressed_ids.add(id(button_to_click))
-                        logger.info(f"🖱️ ضغط على زر '{getattr(button_to_click, 'text', '')}' من {phone_number}")
-                        await asyncio.sleep(2.0)
-                    except Exception as exc:
-                        if "two different IP" in str(exc):
-                            logger.error(f"⚠️ الجلسة {phone_number} تستخدم من IP مختلف - سيتم تعطيلها")
-                            _mark_raksh_session_unauthorized(phone_number)
-                            return False
-                        continue
+                except Exception as exc:
+                    if "two different IP" in str(exc):
+                        logger.error(f"⚠️ الجلسة {phone_number} تستخدم من IP مختلف - سيتم تعطيلها")
+                        _mark_raksh_session_unauthorized(phone_number)
+                        return False
+                    continue
 
                 continue
 
