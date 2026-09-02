@@ -15,8 +15,8 @@ class ForcedRefService(RakshService):
         has_reaction=False,
         has_ai=False,
         needs_link=True,
-        min_delay=180,
-        max_delay=180
+        min_delay=3,
+        max_delay=3
     )
     
     def get_link_instruction(self) -> str:
