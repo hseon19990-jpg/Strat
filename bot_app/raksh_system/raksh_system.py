@@ -834,6 +834,8 @@ class RakshService:
 # ═══ 8. الخدمات - كل خدمة في كلاس واحد ═══
 # ════════════════════════════════════════════════════════
 
+
+
 class StoryService(RakshService):
     """خدمة مشاهدة ستوري وتفاعل - كل شيء في مكان واحد"""
     
@@ -971,13 +973,13 @@ class StoryService(RakshService):
                 reply_markup=InlineKeyboardMarkup([
                     [
                         InlineKeyboardButton(
-                            f"💰 دفع بالنقاط ({points_cost})",
+                            f"💰 دفع بالنقاط ({points_cost} نقطة)",
                             callback_data=f"raksh_story:confirm:points:{quantity}:{points_cost}"
                         )
                     ],
                     [
                         InlineKeyboardButton(
-                            f"⭐ دفع بالنجوم ({stars_cost})",
+                            f"⭐ دفع بالنجوم ({stars_cost} نجمة)",
                             callback_data=f"raksh_story:confirm:stars:{quantity}:{stars_cost}"
                         )
                     ],
@@ -1000,7 +1002,7 @@ class StoryService(RakshService):
     async def handle_callback(self, update, context, query, data_parts, user, is_own) -> bool:
         """معالجة الأزرار لخدمة الستوري"""
         
-        if data_parts[0] == "confirm" and len(data_parts) == 5:
+        if data_parts[0] == "confirm" and len(data_parts) >= 4:
             payment_method = data_parts[1]
             try:
                 quantity = int(data_parts[2])
@@ -1021,13 +1023,12 @@ class StoryService(RakshService):
                 return True
             
             total_cost = self.get_total(quantity, payment_method)
-            if button_total != total_cost:
-                logger.info(f"تحديث سعر الرشق: story {quantity}")
             
             if payment_method == "points":
                 if not deduct_points(user.id, total_cost):
                     await query.edit_message_text(
-                        "❌ *نقاطك غير كافية!*",
+                        "❌ *نقاطك غير كافية!*\n"
+                        f"التكلفة المطلوبة: {total_cost} نقطة",
                         parse_mode=ParseMode.MARKDOWN,
                         reply_markup=raksh_menu_kb(is_own)
                     )
@@ -1035,7 +1036,11 @@ class StoryService(RakshService):
                 
                 await query.edit_message_text(
                     "✅ *تم تأكيد الطلب وخصم النقاط!*\n\n"
-                    "⏳ جاري بدء التنفيذ...",
+                    f"📋 تفاصيل الطلب:\n"
+                    f"🔗 الرابط: `{context.user_data.get('raksh_link', '')}`\n"
+                    f"🔢 العدد: {quantity}\n"
+                    f"💰 تم خصم: {total_cost} نقطة\n\n"
+                    f"⏳ جاري بدء التنفيذ...",
                     parse_mode=ParseMode.MARKDOWN
                 )
                 
