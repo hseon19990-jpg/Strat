@@ -1,297 +1,128 @@
-# story.py
-from .common import *
+# داخل raksh_system.py
 
-class StoryService(RakshService):
-    """خدمة مشاهدة ستوري وتفاعل - كل شيء في مكان واحد"""
+async def _start_raksh_execution(
+    update,
+    context,
+    query,
+    service_type: str,
+    quantity: int,
+    payment_method: str,
+    total_cost: int,
+    progress_message=None,
+):
+    """بدء تنفيذ الرشق فوراً"""
+    user = update.effective_user if update else query.from_user
     
-    service_type = "story"
-    label = "📱 مشاهدة ستوري وتفاعل"
-    config = ServiceConfig(
-        name=label,
-        price_points=30,
-        points_quantity=1,
-        price_stars=1,
-        stars_quantity=10,
-        has_channel=False,
-        has_reaction=True,
-        has_ai=False,
-        needs_link=True,
-        min_delay=3,
-        max_delay=3
+    if progress_message is None:
+        progress_msg = await query.edit_message_text(
+            "✅ *بدأ التنفيذ الآن...*\n\n"
+            f"📊 0/{quantity}",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    else:
+        progress_msg = progress_message
+        await progress_msg.edit_text(
+            "✅ *بدأ التنفيذ الآن...*\n\n"
+            f"📊 0/{quantity}",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    
+    svc = get_raksh_service(service_type)
+    
+    # 🔥 1. جلب الحسابات فوراً (بدون أي انتظار)
+    sessions = svc.get_sessions() if svc else []
+    if not sessions:
+        await progress_msg.edit_text(
+            "❌ لا توجد حسابات متاحة.",
+            reply_markup=raksh_menu_kb(user.id == OWNER_ID)
+        )
+        if payment_method == "points":
+            add_points(user.id, total_cost)
+        _clear_raksh_state(context)
+        return
+    
+    await _send_raksh_order_to_group(
+        context.bot,
+        user.id,
+        quantity,
+        payment_method,
+        service_type,
     )
     
-    def get_link_instruction(self) -> str:
-        return (
-            "أرسل رابط الستوري بأحد هذه الصيغ:\n"
-            "• https://t.me/username/s/123\n"
-            "• https://t.me/username/story/123\n"
-            "• https://t.me/c/123456789/123"
-        )
+    params = svc.get_execution_params(context) if svc else {}
     
-    def validate_link(self, value: str) -> Optional[str]:
-        if not value.strip():
-            return "⚠️ الرابط لا يمكن أن يكون فارغاً"
-        
-        entity_ref, story_id = _parse_story_link(value)
-        if not entity_ref or not story_id:
-            return (
-                "⚠️ رابط الستوري غير صحيح.\n\n"
-                "أرسله بهذا الشكل:\n"
-                "https://t.me/username/s/123\n"
-                "أو: https://t.me/username/story/123\n"
-                "أو: https://t.me/c/123456789/123"
-            )
-        return None
-    
-    def get_start_message(self) -> str:
-        return (
-            f"{self.config.name}\n\n"
-            f"💰 السعر: {self.get_rate_text('points')}\n"
-            f"⭐ السعر: {self.get_rate_text('stars')}\n\n"
-            f"🔗 *أرسل رابط الستوري:*\n"
-            f"{self.get_link_instruction()}"
-        )
-
-    # ─── تدفق المستخدم: الرابط ← العدد ← الدفع ← التأكيد ───
-    
-    async def handle_text(self, update, context, text, user, state, is_own) -> bool:
-        """معالجة النص لخدمة الستوري"""
-        
-        if state == "link":
-            link_error = self.validate_link(text)
-            if link_error:
-                await update.message.reply_text(
-                    link_error,
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
-                    ]),
-                )
-                return True
-            
-            context.user_data["raksh_link"] = text
-            context.user_data["raksh_step"] = "quantity"
-            
-            max_qty = self.get_request_limit(user.id)
-            if max_qty < 1:
-                await update.message.reply_text(
-                    "⚠️ لا توجد حسابات متاحة حالياً.",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
-                    ]),
-                )
-                return True
-            
-            await update.message.reply_text(
-                f"✅ تم حفظ رابط الستوري.\n\n"
-                f"🔢 *أرسل عدد المشاهدات المطلوبة:*\n"
-                f"(الحد الأقصى: {max_qty})",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
-                ])
-            )
-            return True
-        
-        if state == "quantity":
-            try:
-                quantity = int(text)
-            except ValueError:
-                await update.message.reply_text(
-                    "⚠️ أرسل رقماً صحيحاً.",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
-                    ]),
-                )
-                return True
-            
-            max_qty = self.get_request_limit(user.id)
-            if max_qty < 1:
-                await update.message.reply_text(
-                    "⚠️ لا توجد حسابات متاحة حالياً.",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
-                    ]),
-                )
-                return True
-            
-            if quantity < 1 or quantity > max_qty:
-                await update.message.reply_text(
-                    f"⚠️ العدد المسموح بين 1 و {max_qty}.",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
-                    ]),
-                )
-                return True
-            
-            context.user_data["raksh_quantity"] = quantity
-            context.user_data["raksh_step"] = "payment_choice"
-            
-            points_cost = self.get_total(quantity, "points")
-            stars_cost = self.get_total(quantity, "stars")
-            
-            await update.message.reply_text(
-                f"📋 *مراجعة طلب مشاهدة الستوري*\n\n"
-                f"🔗 الرابط: `{context.user_data['raksh_link']}`\n"
-                f"🔢 العدد: {quantity}\n"
-                f"💰 السعر بالنقاط: {points_cost} نقطة\n"
-                f"⭐ السعر بالنجوم: {stars_cost} نجمة\n\n"
-                f"اختر طريقة الدفع:",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup([
-                    [
-                        InlineKeyboardButton(
-                            f"💰 دفع بالنقاط ({points_cost} نقطة)",
-                            callback_data=f"raksh_story:confirm:points:{quantity}:{points_cost}"
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            f"⭐ دفع بالنجوم ({stars_cost} نجمة)",
-                            callback_data=f"raksh_story:confirm:stars:{quantity}:{stars_cost}"
-                        )
-                    ],
-                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
-                ])
-            )
-            return True
-        
-        if state == "payment_choice":
-            await update.message.reply_text(
-                "⚠️ استخدم الأزرار لاختيار طريقة الدفع.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
-                ])
-            )
-            return True
-        
-        return False
-    
-    async def handle_callback(self, update, context, query, data_parts, user, is_own) -> bool:
-        """معالجة الأزرار لخدمة الستوري - التأكيد"""
-        
-        if data_parts[0] == "confirm" and len(data_parts) >= 4:
-            payment_method = data_parts[1]
-            try:
-                quantity = int(data_parts[2])
-                button_total = int(data_parts[3])
-            except ValueError:
-                await query.answer("⚠️ العدد أو السعر غير صالح.", show_alert=True)
-                return True
-            
-            if payment_method not in {"points", "stars"}:
-                await query.answer("⚠️ طريقة الدفع غير صالحة.", show_alert=True)
-                return True
-            
-            if quantity > self.get_request_limit(user.id):
-                await query.edit_message_text(
-                    "⚠️ لا يمكن قبول هذا الطلب حالياً. حاول لاحقاً.",
-                    reply_markup=raksh_menu_kb(is_own),
-                )
-                return True
-            
-            total_cost = self.get_total(quantity, payment_method)
-            
-            if payment_method == "points":
-                if not deduct_points(user.id, total_cost):
-                    await query.edit_message_text(
-                        "❌ *نقاطك غير كافية!*\n"
-                        f"التكلفة المطلوبة: {total_cost} نقطة",
-                        parse_mode=ParseMode.MARKDOWN,
-                        reply_markup=raksh_menu_kb(is_own)
-                    )
-                    return True
-                
-                await query.edit_message_text(
-                    "✅ *تم تأكيد الطلب وخصم النقاط!*\n\n"
-                    f"📋 تفاصيل الطلب:\n"
-                    f"🔗 الرابط: `{context.user_data.get('raksh_link', '')}`\n"
-                    f"🔢 العدد: {quantity}\n"
-                    f"💰 تم خصم: {total_cost} نقطة\n\n"
-                    f"⏳ جاري بدء التنفيذ...",
-                    parse_mode=ParseMode.MARKDOWN
-                )
-                
-                await _start_raksh_execution(
-                    update, context, query, "story", quantity, "points", total_cost
-                )
-                return True
-            
-            else:
-                await query.edit_message_text(
-                    "⭐ *جاري تجهيز فاتورة الدفع بالنجوم...*",
-                    parse_mode=ParseMode.MARKDOWN,
-                )
-                await context.bot.send_invoice(
-                    chat_id=user.id,
-                    title=self.config.name,
-                    description=f"{quantity} مشاهدة ستوري | {total_cost} نجمة",
-                    payload=f"raksh_stars:{user.id}:{self.service_type}:{quantity}:{total_cost}",
-                    provider_token="",
-                    currency="XTR",
-                    prices=[LabeledPrice("مشاهدة ستوري", total_cost)],
-                )
-                return True
-        
-        return False
-
-    # ─── طريقة العمل: الحسابات تفتح الرابط وتتفاعل عشوائياً، وبعد كل نجاح تظهر ✅ ───
-    
-    async def execute(self, session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
-        """تنفيذ مشاهدة ستوري وتفاعل عشوائي"""
-        client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
-        await asyncio.wait_for(client.connect(), timeout=15)
+    # 🔥 2. دالة التقدم المحدثة (تظهر ✅ مع كل حساب ينجح)
+    async def update_progress(current, total, success, failed):
         try:
-            if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
-                _mark_raksh_session_unauthorized(session.get("phone_number"))
-                return False, "الجلسة غير مصرح بها"
-            
-            entity_ref, story_id = _parse_story_link(params["link"])
-            if not entity_ref or not story_id:
-                return False, "رابط الستوري غير صحيح"
-            
-            try:
-                entity = await client.get_entity(entity_ref)
-            except Exception as e:
-                return False, f"تعذر الوصول للكيان: {str(e)[:80]}"
-            
-            # ✅ 1. الحساب يفتح الستوري فعلياً (طلب بياناته أولاً ثم زيادة المشاهدة)
-            try:
-                # GetStoryViewsRequest: يطلب الستوري كما يفعل المستخدم عند فتحه
-                await client(GetStoryViewsRequest(
-                    peer=entity,
-                    id=story_id
-                ))
-                # IncrementStoryViewsRequest: يخبر تيليجرام بأن الحساب شاهده
-                await client(IncrementStoryViewsRequest(
-                    peer=entity,
-                    id=story_id
-                ))
-                logger.info(f"👁️ تم فتح الستوري {story_id} من {session['phone_number']}")
-            except Exception as e:
-                logger.warning(f"تعذر فتح الستوري {story_id}: {str(e)[:80]}")
-                return False, f"تعذر مشاهدة الستوري: {str(e)[:80]}"
-
-            # ✅ 2. الحساب يتفاعل بشكل عشوائي على الستوري
-            try:
-                random_reactions = ["❤️", "🔥", "👍", "😍", "🤩", "✨", "💯", "👏", "😂", "😮", "👎", "💔", "🥰", "🤔"]
-                
-                chosen_reaction = random.choice(random_reactions)
-                
-                await client(SendReactionRequest(
-                    peer=entity,
-                    story_id=story_id,
-                    reaction=ReactionEmoji(emoticon=chosen_reaction)
-                ))
-                
-                # رسالة النجاح تحتوي ✅
-                return True, f"✅ تمت مشاهدة الستوري وتفاعل ({chosen_reaction}) من {session['phone_number']}"
-                
-            except Exception as reaction_error:
-                logger.warning(f"تفاعل فاشل للستوري {session['phone_number']}: {reaction_error}")
-                # المشاهدة نجحت حتى لو فشل التفاعل
-                return True, f"✅ تمت مشاهدة الستوري من {session['phone_number']}"
-                
-        except Exception as e:
-            return False, f"❌ فشل: {str(e)[:80]}"
-        finally:
-            await client.disconnect()
+            await progress_msg.edit_text(
+                f"⏳ *جاري التنفيذ...*\n\n"
+                f"📊 {current}/{total}\n"
+                f"✅ نجح: {success}\n"
+                f"❌ فشل: {failed}",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception:
+            pass
+    
+    # 🔥 3. التشغيل الفوري (لا يوجد sleep قبل أول عملية)
+    success_count, success_phones, success_details, failed_phones, failed_details = await execute_raksh_service(
+        service_type=service_type,
+        quantity=quantity,
+        sessions=sessions,
+        params=params,
+        user_id=user.id,
+        progress_callback=update_progress
+    )
+    
+    await _send_raksh_owner_result(
+        context.bot,
+        service_type,
+        quantity,
+        success_phones,
+        failed_phones,
+        failed_details,
+    )
+    
+    # حساب التعويض
+    refund = 0
+    special_count = 0
+    if payment_method == "points":
+        failed_refund = max(0, total_cost - get_raksh_total(service_type, success_count, "points"))
+        special_count = sum(1 for msg in success_details if "بدون زر تحقق" in msg or RAKSH_NO_VERIFICATION_MESSAGE in msg)
+        if special_count > 0:
+            special_refund = int(get_raksh_total(service_type, special_count, "points") / 2)
+            refund = failed_refund + special_refund
+            if refund > 0:
+                add_points(user.id, refund)
+    
+    # عرض النتيجة النهائية
+    failed_count = quantity - success_count
+    result_text = f"✅ *اكتمل الطلب!*\n\n"
+    result_text += f"الخدمة: {svc.config.name if svc else service_type}\n"
+    result_text += f"المطلوب: {quantity}\n"
+    result_text += f"✅ المنجز: {success_count}\n"
+    result_text += f"❌ الفاشل: {failed_count}\n"
+    if refund > 0:
+        result_text += f"💰 تم تعويضك: {refund} نقطة\n"
+    if special_count > 0:
+        result_text += f"🔁 استرداد نصف المبلغ لـ {special_count} حساب (بدون زر تحقق)\n"
+    
+    if success_phones:
+        result_text += f"\n✅ *الحسابات الناجحة ({len(success_phones)}):*\n"
+        result_text += "\n".join(f"• `{p}`" for p in success_phones[:10])
+        if len(success_phones) > 10:
+            result_text += f"\n... و{len(success_phones)-10} أخرى"
+    
+    if failed_details:
+        result_text += f"\n\n❌ *الفاشلة ({len(failed_details)}):*\n"
+        result_text += "\n".join(f"• {d[:80]}" for d in failed_details[:5])
+        if len(failed_details) > 5:
+            result_text += f"\n... و{len(failed_details)-5} أخرى"
+    
+    await progress_msg.edit_text(
+        result_text,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=main_menu_kb()
+    )
+    
+    _clear_raksh_state(context)
