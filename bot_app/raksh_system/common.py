@@ -46,11 +46,8 @@ RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS = 4
 RAKSH_MIN_DELAY_SECONDS = 3
 RAKSH_MAX_DELAY_SECONDS = 3
 RAKSH_VOTE_DELAY_SECONDS = 3
-
-# ═══ تعديل: إزالة الحدود نهائيًا ═══
-RAKSH_MAX_EXECUTIONS_PER_DAY = 2147483647   # لا حد
-RAKSH_MAX_EXECUTIONS_PER_HOUR = 2147483647  # لا حد
-
+RAKSH_MAX_EXECUTIONS_PER_DAY = 1000
+RAKSH_MAX_EXECUTIONS_PER_HOUR = 100
 RAKSH_NO_VERIFICATION_MESSAGE = "بدون زر تحقق"
 
 # ════════════════════════════════════════════════════════
@@ -61,7 +58,7 @@ _RAKSH_SESSION_LOCKS: Dict[str, asyncio.Lock] = {}
 _RAKSH_VOTE_FLOW_LOCK = asyncio.Lock()
 _RAKSH_SESSION_CACHE: Dict[str, Dict] = {}
 _RAKSH_SESSION_CACHE_TIME: Dict[str, float] = {}
-_RAKSH_SESSION_CACHE_TTL = 5  # تم تقليلها إلى 5 ثوانٍ لتحديث أسرع
+_RAKSH_SESSION_CACHE_TTL = 60
 
 def _get_raksh_session_lock(phone_number: str) -> asyncio.Lock:
     """الحصول على قفل جلسة مع إدارة الذاكرة"""
@@ -99,14 +96,45 @@ def _clear_raksh_state(context: ContextTypes.DEFAULT_TYPE) -> None:
         context.user_data.pop(key, None)
     context.user_data["state"] = "main_menu"
 
-# ═══ تعديل: إزالة الحدود نهائيًا ═══
 def get_raksh_hourly_remaining(user_id: int) -> int:
-    """عدد التنفيذات المتبقية خلال الساعة - بلا حد"""
-    return RAKSH_MAX_EXECUTIONS_PER_HOUR  # دائمًا رقم ضخم
+    """عدد التنفيذات المتبقية خلال الساعة"""
+    if RAKSH_MAX_EXECUTIONS_PER_HOUR <= 0:
+        return 2_147_483_647
+    try:
+        with db_conn() as c:
+            row = c.execute(
+                """
+                SELECT COUNT(*) AS used
+                FROM raksh_execution_usage
+                WHERE user_id=%s
+                  AND executed_at >= NOW() - INTERVAL '1 hour'
+                """,
+                (user_id,),
+            ).fetchone()
+        used = int(row["used"] or 0) if row else 0
+        return max(0, RAKSH_MAX_EXECUTIONS_PER_HOUR - used)
+    except Exception:
+        logger.exception(f"فشل قراءة حد التنفيذ للمستخدم {user_id}")
+        return 0
 
 def get_raksh_daily_remaining(user_id: int) -> int:
-    """عدد التنفيذات المتبقية خلال اليوم - بلا حد"""
-    return RAKSH_MAX_EXECUTIONS_PER_DAY  # دائمًا رقم ضخم
+    """عدد التنفيذات المتبقية خلال اليوم"""
+    try:
+        with db_conn() as c:
+            row = c.execute(
+                """
+                SELECT COUNT(*) AS used
+                FROM raksh_execution_usage
+                WHERE user_id=%s
+                  AND executed_at >= NOW() - INTERVAL '1 day'
+                """,
+                (user_id,),
+            ).fetchone()
+        used = int(row["used"] or 0) if row else 0
+        return max(0, RAKSH_MAX_EXECUTIONS_PER_DAY - used)
+    except Exception:
+        logger.exception(f"فشل قراءة الحد اليومي للمستخدم {user_id}")
+        return RAKSH_MAX_EXECUTIONS_PER_DAY
 
 def _get_sessions_for_service(service_type: str) -> List[Dict]:
     """جلب الجلسات المناسبة لنوع الخدمة مع التخزين المؤقت"""
@@ -497,12 +525,8 @@ def _extract_code_from_text(text: str) -> Optional[str]:
     
     return None
 
-# ════════════════════════════════════════════════════════
-# ═══ 6. دالة حل التحقق (مع دعم جهة الاتصال ومعالجة الأخطاء) ═══
-# ════════════════════════════════════════════════════════
-
 async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) -> bool:
-    """حل التحقق المضمون مع دعم مشاركة جهة الاتصال ومعالجة الأخطاء"""
+    """حل التحقق المضمون"""
     max_attempts = 20
     base_id = 0
 
@@ -537,7 +561,7 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
             msg_text = getattr(msg, 'message', '') or ''
             if msg_text.strip().startswith("/"):
                 continue
-            if any(kw in msg_text for kw in ["أرسل", "التالي", "بالضبط", "اكتب", "retype", "type", "اضغط", "اختر", "انقر", "شارك", "contact", "phone"]):
+            if any(kw in msg_text for kw in ["أرسل", "التالي", "بالضبط", "اكتب", "retype", "type", "اضغط", "اختر", "انقر"]):
                 verification_message = msg
                 break
         
@@ -553,10 +577,7 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
         
         text = getattr(verification_message, 'message', '') or ''
         
-        # إزالة علامات الاقتباس والأحرف غير المرغوبة من النص لتحسين التحويل
-        cleaned_text = re.sub(r"[\"'`]", "", text)
-        
-        send_text = _extract_code_from_text(cleaned_text)
+        send_text = _extract_code_from_text(text)
         if send_text:
             try:
                 await client.send_message(bot_entity, send_text)
@@ -565,7 +586,6 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
             except Exception:
                 return False
         
-        # حل مسألة رياضية مع معالجة الأخطاء
         math_patterns = [
             (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=\s*\?', 1, 2, 3),
             (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=', 1, 2, 3),
@@ -575,7 +595,7 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
             (r'(\d+)\s*\/\s*(\d+)\s*=', 1, 2),
         ]
         for pattern, *groups in math_patterns:
-            match = re.search(pattern, cleaned_text)
+            match = re.search(pattern, text)
             if match:
                 try:
                     if len(groups) == 3:
@@ -597,7 +617,6 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
                 except Exception:
                     continue
         
-        # الأزرار (بما فيها مشاركة جهة الاتصال)
         buttons = []
         for row in getattr(verification_message, 'buttons', None) or []:
             for btn in row:
@@ -606,23 +625,7 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
         
         if buttons:
             for btn in buttons:
-                # ✅ دعم زر مشاركة جهة الاتصال
-                if hasattr(btn, 'request_contact') and btn.request_contact:
-                    try:
-                        await btn.click()
-                        logger.info(f"✅ تم الضغط على زر مشاركة جهة الاتصال: {getattr(btn, 'text', '')}")
-                        return True
-                    except Exception:
-                        continue
-                # ✅ دعم زر مشاركة رقم الهاتف
-                if hasattr(btn, 'request_phone') and btn.request_phone:
-                    try:
-                        await btn.click()
-                        logger.info(f"✅ تم الضغط على زر مشاركة رقم الهاتف: {getattr(btn, 'text', '')}")
-                        return True
-                    except Exception:
-                        continue
-                # باقي الأزرار
+                btn_text = (getattr(btn, 'text', '') or '').lower()
                 try:
                     await btn.click()
                     logger.info(f"✅ تم الضغط على الزر: {getattr(btn, 'text', '')}")
@@ -633,10 +636,6 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
         await asyncio.sleep(2.0)
     
     return False
-
-# ════════════════════════════════════════════════════════
-# ═══ 7. دوال مساعدة أخرى ═══
-# ════════════════════════════════════════════════════════
 
 async def _join_channel_and_schedule_leave(client, channel_ref: str):
     """الانضمام للقناة وجدولة المغادرة"""
@@ -718,7 +717,7 @@ async def _send_vote_and_check(client, peer, msg_id: int, option) -> bool:
     return False
 
 # ════════════════════════════════════════════════════════
-# ═══ 8. ServiceConfig ═══
+# ═══ 6. ServiceConfig ═══
 # ════════════════════════════════════════════════════════
 
 @dataclass
@@ -737,7 +736,7 @@ class ServiceConfig:
     max_concurrent: int = 1
 
 # ════════════════════════════════════════════════════════
-# ═══ 9. RakshService - الفئة الأساسية ═══
+# ═══ 7. RakshService - الفئة الأساسية ═══
 # ════════════════════════════════════════════════════════
 
 class RakshService:
@@ -872,15 +871,7 @@ class RakshService:
         }
 
 # ════════════════════════════════════════════════════════
-# ═══ 10. دوال حجز التنفيذ (بدون حدود) ═══
-# ════════════════════════════════════════════════════════
-
-def _reserve_raksh_execution_slot(user_id: int, service_type: str, phone_number: str) -> bool:
-    """حجز تنفيذ واحد - بدون أي حد"""
-    return True  # ✅ تجاهل الحدود نهائيًا
-
-# ════════════════════════════════════════════════════════
-# ═══ 11. التصدير ═══
+# ═══ 8. الخدمات - كل خدمة في كلاس واحد ═══
 # ════════════════════════════════════════════════════════
 
 __all__ = [name for name in globals() if not name.startswith("__")]
