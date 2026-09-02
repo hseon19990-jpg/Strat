@@ -1238,3 +1238,42 @@ async def cmd_raksh(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=raksh_menu_kb(user.id == OWNER_ID)
     )
+
+# في نهاية raksh_system.py بعد كل الدوال
+
+__all__ = [
+    'RAKSH_SERVICES',
+    'RAKSH_SERVICE_LABELS',
+    'get_raksh_service',
+    'get_raksh_price_config',
+    'get_raksh_total',
+    '_raksh_rate_text',
+    '_raksh_order_label',
+    '_get_delay_seconds',
+    '_reserve_raksh_execution_slot',
+    'execute_raksh_service',
+    '_execute_raksh_sequential',
+    '_execute_raksh_parallel',
+    '_is_raksh_service_enabled',
+    '_set_raksh_service_enabled',
+    'raksh_menu_kb',
+    'raksh_price_settings_kb',
+    'raksh_payment_kb',
+    'raksh_channel_kb',
+    'raksh_reaction_kb',
+    'raksh_confirm_kb',
+    '_get_link_instruction',
+    '_parse_raksh_rate_updates',
+    '_raksh_link_error',
+    '_get_max_quantity',
+    '_get_request_limit',
+    '_chunk_lines',
+    'handle_raksh_callback',
+    'handle_raksh_text',
+    'raksh_pre_checkout',
+    'raksh_successful_payment',
+    '_send_raksh_order_to_group',
+    '_send_raksh_owner_result',
+    '_start_raksh_execution',  # ✅ مهم جداً
+    'cmd_raksh',
+]
