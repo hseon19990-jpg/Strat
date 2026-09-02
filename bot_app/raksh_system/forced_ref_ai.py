@@ -6,6 +6,7 @@
 
 from .common import *
 from telethon.tl.types import InputMediaContact, KeyboardButtonRequestPhone
+import time
 
 
 class ForcedRefAIService(RakshService):
@@ -354,7 +355,7 @@ class ForcedRefAIService(RakshService):
 
         return False
 
-    # ─── 4. حل التحقق المدمج (يدعم مشاركة الرقم + المنطق القديم) ───
+    # ─── 4. حل التحقق المدمج (يدعم جميع الأنواع) ───
 
     async def _solve_verification(self, client, bot_entity, phone_number: str) -> bool:
         """
@@ -363,7 +364,7 @@ class ForcedRefAIService(RakshService):
         2. وإلا نستخدم المنطق القديم: استخراج الكود، حل المسائل، الضغط على الأزرار
         3. يستمر في حل التحقق حتى يتم اجتيازه بالكامل
         """
-        MAX_ATTEMPTS = 10  # عدد مرات حل التحقق المتتالية
+        MAX_ATTEMPTS = 15  # زيادة عدد المحاولات
 
         for attempt in range(MAX_ATTEMPTS):
             # ─── المرحلة 1: البحث عن طلب مشاركة رقم الهاتف ───
@@ -483,7 +484,7 @@ class ForcedRefAIService(RakshService):
                 msg_text = getattr(msg, 'message', '') or ''
                 if not msg_text.strip() or msg_text.strip().startswith("/"):
                     continue
-                if any(kw in msg_text for kw in ['أرسل', 'اكتب', 'type', 'اضغط', 'انقر', 'choose', '؟', 'math', 'حل', 'code', 'رمز']):
+                if any(kw in msg_text for kw in ['أرسل', 'اكتب', 'type', 'اضغط', 'انقر', 'choose', '؟', 'math', 'حل', 'code', 'رمز', 'captcha', 'تأكيد أنك لست روبوت']):
                     verification_msg = msg
                     break
                 if msg.reply_markup:
@@ -494,7 +495,7 @@ class ForcedRefAIService(RakshService):
                 # إذا لم نجد رسالة تحقق، نتحقق مما إذا كنا قد نجحنا بالفعل
                 for msg in incoming_messages:
                     msg_text = (getattr(msg, 'message', '') or '').strip().casefold()
-                    if any(kw in msg_text for kw in ['تم', 'نجاح', 'مرحباً', 'welcome', 'success', 'done', 'مبروك']):
+                    if any(kw in msg_text for kw in ['تم', 'نجاح', 'مرحباً', 'welcome', 'success', 'done', 'مبروك', 'تم التسجيل']):
                         logger.info(f"✅ تم التحقق بنجاح من {phone_number}")
                         return True
                 await asyncio.sleep(1.0)
@@ -526,7 +527,24 @@ class ForcedRefAIService(RakshService):
                     except Exception as e:
                         logger.warning(f"⚠️ فشل إرسال حل المسألة: {e}")
 
-            # 3. الضغط على الأزرار
+            # 3. معالجة الكابتشا
+            if not solved and any(kw in text.casefold() for kw in ['captcha', 'تأكيد أنك لست روبوت', 'انقر على الصور']):
+                try:
+                    captcha_buttons = []
+                    if verification_msg.reply_markup:
+                        for row in verification_msg.reply_markup.rows:
+                            for btn in row.buttons:
+                                if btn.text and ('✅' in btn.text or '✔' in btn.text or 'تحقق' in btn.text):
+                                    captcha_buttons.append(btn)
+                    
+                    if captcha_buttons:
+                        await captcha_buttons[0].click()
+                        logger.info("✅ تم حل الكابتشا")
+                        solved = True
+                except Exception as e:
+                    logger.warning(f"⚠️ فشل حل الكابتشا: {e}")
+
+            # 4. الضغط على الأزرار
             if not solved and verification_msg.reply_markup:
                 buttons = []
                 for row in verification_msg.reply_markup.rows:
@@ -569,6 +587,8 @@ class ForcedRefAIService(RakshService):
                             await btn.click()
                             logger.info(f"🖱️ تم الضغط على الزر: {btn_text}")
                             solved = True
+                            # انتظار تغيير في الرسالة بعد الضغط
+                            await self._wait_for_verification_change(client, bot_entity, verification_msg.id)
                             break
                         except Exception as e:
                             logger.warning(f"⚠️ فشل الضغط على الزر: {e}")
@@ -589,7 +609,7 @@ class ForcedRefAIService(RakshService):
                 if msg.out:
                     continue
                 msg_text = (getattr(msg, 'message', '') or '').strip().casefold()
-                if any(kw in msg_text for kw in ['تم', 'نجاح', 'مرحباً', 'welcome', 'success', 'done', 'مبروك']):
+                if any(kw in msg_text for kw in ['تم', 'نجاح', 'مرحباً', 'welcome', 'success', 'done', 'مبروك', 'تم التسجيل']):
                     logger.info(f"✅ تم التحقق بنجاح من {phone_number}")
                     return True
         except Exception:
@@ -629,161 +649,91 @@ class ForcedRefAIService(RakshService):
                     continue
         return None
 
-    async def _solve_legacy_verification(self, client, bot_entity, phone_number: str) -> bool:
-        """
-        المنطق القديم: استخراج الكود، حل المسائل، الضغط على الأزرار
-        (نسخة محسنة من _solve_forced_ref_verification في common.py)
-        """
-        max_attempts = 30
-        base_id = 0
-
-        try:
-            out_messages = await client.get_messages(bot_entity, limit=10)
-            for msg in out_messages:
-                if msg.out:
-                    base_id = msg.id
-                    logger.info(f"🔑 نقطة البداية هي رسالة الحساب رقم: {base_id}")
-                    break
-        except Exception as e:
-            logger.warning(f"تعذر تحديد الرسالة المرجعية: {e}")
-
-        for attempt in range(max_attempts):
+    async def _wait_for_verification_change(self, client, bot_entity, msg_id: int, timeout: int = 5) -> bool:
+        """انتظار تغيير في الرسالة بعد الضغط على زر"""
+        start_time = time.time()
+        while time.time() - start_time < timeout:
             try:
-                messages = await client.get_messages(bot_entity, limit=20)
-            except Exception as exc:
-                if "two different IP" in str(exc) or "AuthKeyDuplicated" in str(exc):
-                    logger.error(f"⚠️ الجلسة {phone_number} تستخدم من IP مختلف - سيتم تعطيلها")
-                    _mark_raksh_session_unauthorized(phone_number)
-                    return False
-                await asyncio.sleep(1.0)
-                continue
-
-            incoming_messages = [msg for msg in messages if not msg.out]
-            incoming_messages.sort(key=lambda m: m.id)
-
-            new_messages = [msg for msg in incoming_messages if msg.id > base_id]
-            if not new_messages:
-                await asyncio.sleep(1.0)
-                continue
-
-            verification_message = None
-            for msg in new_messages:
-                msg_text = getattr(msg, 'message', '') or ''
-                if msg_text.strip().startswith("/"):
-                    continue
-                if any(kw in msg_text for kw in ["أرسل", "التالي", "بالضبط", "اكتب", "retype", "type", "اضغط", "اختر", "انقر"]):
-                    verification_message = msg
-                    break
-
-            if verification_message is None:
-                verification_message = next(
-                    (msg for msg in reversed(new_messages) if not getattr(msg, 'message', '').strip().startswith("/")),
-                    None
-                )
-
-            if verification_message is None:
-                await asyncio.sleep(1.0)
-                continue
-
-            text = getattr(verification_message, 'message', '') or ''
-
-            # 1. استخراج الكود
-            send_text = _extract_code_from_text(text)
-            if send_text:
-                try:
-                    await client.send_message(bot_entity, send_text)
-                    logger.info(f"✅ تم إرسال الكود: {send_text}")
+                msg = await client.get_messages(bot_entity, ids=msg_id)
+                if isinstance(msg, (list, tuple)):
+                    msg = msg[0] if msg else None
+                
+                # إذا اختفت الرسالة أو تغيرت الأزرار
+                if msg is None or not getattr(msg, 'buttons', None):
                     return True
-                except Exception:
-                    return False
+                    
+            except Exception:
+                continue
+                
+            await asyncio.sleep(0.5)
+            
+        return False
 
-            # 2. حل المسائل الرياضية
-            math_patterns = [
-                (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=\s*\?', 1, 2, 3),
-                (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=', 1, 2, 3),
-                (r'(\d+)\s*\+\s*(\d+)\s*=', 1, 2),
-                (r'(\d+)\s*\-\s*(\d+)\s*=', 1, 2),
-                (r'(\d+)\s*\*\s*(\d+)\s*=', 1, 2),
-                (r'(\d+)\s*\/\s*(\d+)\s*=', 1, 2),
-            ]
-            for pattern, *groups in math_patterns:
-                match = re.search(pattern, text)
-                if match:
-                    try:
-                        if len(groups) == 3:
-                            a, op, b = int(match.group(groups[0])), match.group(groups[1]), int(match.group(groups[2]))
-                        else:
-                            a, b = int(match.group(groups[0])), int(match.group(groups[1]))
-                            op = '+'
-                        if op == '+': result = str(a + b)
-                        elif op == '-': result = str(a - b)
-                        elif op == '*': result = str(a * b)
-                        elif op == '/': result = str(a / b) if b != 0 else None
-                        else: result = None
-                        if result is not None:
-                            await client.send_message(bot_entity, result)
-                            logger.info(f"✅ تم حل المسألة: {a} {op} {b} = {result}")
-                            return True
-                    except Exception:
-                        continue
-
-            # 3. الضغط على الأزرار
-            buttons = []
-            for row in getattr(verification_message, 'buttons', None) or []:
-                for btn in row:
-                    if not getattr(btn, 'url', None):
-                        buttons.append(btn)
-
-            if buttons:
-                # استخراج الإيموجي المطلوب
-                emoji_pattern = re.compile(
-                    "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E0-\U0001F1FF]"
-                )
-                target_emoji = None
-                found_emojis = emoji_pattern.findall(text)
-                if found_emojis:
-                    target_emoji = found_emojis[-1]
-
-                # ترتيب الأزرار حسب الأولوية
-                prioritized = []
-                if target_emoji:
-                    exact = [b for b in buttons if getattr(b, 'text', '') == target_emoji]
-                    prioritized.extend(exact)
-                    partial = [b for b in buttons if target_emoji in (getattr(b, 'text', '') or '') and b not in exact]
-                    prioritized.extend(partial)
-
-                verify_keywords = ['تحقق', 'verify', 'اضغط هنا', 'continue', 'التالي', 'متابعة']
-                verify_buttons = [
-                    b for b in buttons
-                    if any(kw in (getattr(b, 'text', '') or '').casefold() for kw in verify_keywords)
-                    and b not in prioritized
+    async def _verify_success(self, client, bot_entity, phone_number: str) -> bool:
+        """التحقق النهائي من نجاح العملية"""
+        try:
+            messages = await client.get_messages(bot_entity, limit=3)
+            for msg in messages:
+                if msg.out:
+                    continue
+                msg_text = (getattr(msg, 'message', '') or '').strip().casefold()
+                
+                # التحقق من رسائل النجاح
+                success_keywords = [
+                    'تم التسجيل', 'نتمنى لك', 'مرحباً بك', 
+                    'welcome', 'success', 'done', 'مفعل'
                 ]
-                prioritized.extend(verify_buttons)
+                
+                # التحقق من رسائل الفشل
+                failure_keywords = [
+                    'التحقق غير صحيح', 'لقد فشلت', 'error', 
+                    'invalid', 'مرفوض', 'خاطئ'
+                ]
+                
+                if any(kw in msg_text for kw in success_keywords):
+                    return True
+                elif any(kw in msg_text for kw in failure_keywords):
+                    return False
+                    
+            return False
+        except Exception as e:
+            logger.warning(f"خطأ في التحقق النهائي: {e}")
+            return False
 
-                # إذا لم نجد زراً محدداً، نضغط على أول زر
-                if not prioritized:
-                    prioritized = buttons
+    def _get_error_cleanup_message(self, error: str) -> str:
+        """رسائل تنظيف واضحة للأخطاء"""
+        if "two different IP" in str(error):
+            return "⚠️ تم تعطيل الحساب بسبب استخدامه من IP مختلف"
+        elif "AuthKeyDuplicated" in str(error):
+            return "⚠️ تم تعطيل الحساب بسبب تكرار الجلسة"
+        elif "FloodWaitError" in str(error):
+            return "⚠️ تم تقييد الحساب مؤقتاً بسبب سرعة الطلبات"
+        else:
+            return f"❌ حدث خطأ غير متوقع: {str(error)}"
 
-                for btn in prioritized:
-                    try:
-                        await btn.click()
-                        logger.info(f"🖱️ تم الضغط على الزر: {getattr(btn, 'text', '')}")
-                        await asyncio.sleep(2.0)
-                        # التحقق من اختفاء الأزرار
-                        refreshed = await client.get_messages(bot_entity, ids=verification_message.id)
-                        if isinstance(refreshed, (list, tuple)):
-                            refreshed = refreshed[0] if refreshed else None
-                        if refreshed is None or not getattr(refreshed, 'buttons', None):
-                            logger.info(f"✅ اختفت الأزرار بعد الضغط، نجاح من {phone_number}")
-                            return True
-                    except Exception:
-                        continue
-
-            await asyncio.sleep(2.0)
-
-        # بعد كل المحاولات، نعتبر العملية ناجحة إذا لم يحدث خطأ واضح
-        logger.warning(f"⚠️ لم نتمكن من حل التحقق لكننا سنعتبره ناجحاً (legacy) من {phone_number}")
-        return True
+    async def _retry_verification(self, client, bot_entity, phone_number: str, max_retries: int = 2) -> bool:
+        """إعادة محاولة حل التحقق"""
+        for attempt in range(max_retries):
+            try:
+                success = await self._solve_verification(client, bot_entity, phone_number)
+                if success:
+                    return True
+                    
+                logger.info(f"إعادة محاولة التحقق من {phone_number} ({attempt + 1}/{max_retries})")
+                
+                # إرسال رسالة "بدء من جديد" إذا أمكن
+                try:
+                    await client.send_message(bot_entity, "/start")
+                except Exception:
+                    pass
+                    
+                await asyncio.sleep(5.0)
+                
+            except Exception as e:
+                logger.error(f"فشل إعادة المحاولة {attempt + 1}: {e}")
+                continue
+                
+        return False
 
     # ─── 5. التنفيذ الرئيسي ───
 
@@ -823,18 +773,29 @@ class ForcedRefAIService(RakshService):
             ))
             await asyncio.sleep(2.0)
 
-            # حل التحقق باستخدام الدالة المدمجة
-            success = await self._solve_verification(client, bot_entity, session.get("phone_number"))
+            # التحقق من وصول رسالة البداية
+            start_messages = await client.get_messages(bot_entity, limit=2)
+            if not any(not msg.out for msg in start_messages):
+                return False, "لم يتم استلام رسالة من البوت"
+
+            # حل التحقق باستخدام الدالة المدمجة مع إعادة المحاولة
+            success = await self._retry_verification(client, bot_entity, session.get("phone_number"))
 
             if success:
-                return True, f"✅ تمت الإحالة مع التحقق من {session['phone_number']}"
+                # التحقق النهائي
+                final_success = await self._verify_success(client, bot_entity, session.get("phone_number"))
+                if final_success:
+                    return True, f"✅ تمت الإحالة بنجاح من {session['phone_number']}"
+                else:
+                    # إذا فشل التحقق النهائي، نعتبرها ناجحة لأن الإحالة تمت
+                    return True, f"✅ تمت الإحالة من {session['phone_number']} (بدون تأكيد نهائي)"
             else:
                 return False, "فشل التحقق بعد محاولات متعددة"
+                
         except Exception as e:
-            if "two different IP" in str(e) or "AuthKeyDuplicated" in str(e):
-                logger.error(f"⚠️ الجلسة {session.get('phone_number')} تستخدم من IP مختلف - سيتم تعطيلها")
+            error_msg = self._get_error_cleanup_message(str(e))
+            if "IP مختلف" in error_msg:
                 _mark_raksh_session_unauthorized(session.get("phone_number"))
-                return False, "الجلسة تستخدم من IP مختلف - تم تعطيلها مؤقتاً"
-            return False, f"❌ فشل: {str(e)}"
+            return False, error_msg
         finally:
             await client.disconnect()
