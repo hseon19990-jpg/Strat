@@ -51,6 +51,8 @@ class StoryService(RakshService):
             f"🔗 *أرسل رابط الستوري:*\n"
             f"{self.get_link_instruction()}"
         )
+
+    # ─── تدفق المستخدم: الرابط ← العدد ← الدفع ← التأكيد ───
     
     async def handle_text(self, update, context, text, user, state, is_own) -> bool:
         """معالجة النص لخدمة الستوري"""
@@ -122,7 +124,7 @@ class StoryService(RakshService):
                 return True
             
             context.user_data["raksh_quantity"] = quantity
-            context.user_data["raksh_step"] = "confirm"
+            context.user_data["raksh_step"] = "payment_choice"
             
             points_cost = self.get_total(quantity, "points")
             stars_cost = self.get_total(quantity, "stars")
@@ -153,9 +155,9 @@ class StoryService(RakshService):
             )
             return True
         
-        if state == "confirm":
+        if state == "payment_choice":
             await update.message.reply_text(
-                "⚠️ استخدم الأزرار للتأكيد.",
+                "⚠️ استخدم الأزرار لاختيار طريقة الدفع.",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
                 ])
@@ -165,7 +167,7 @@ class StoryService(RakshService):
         return False
     
     async def handle_callback(self, update, context, query, data_parts, user, is_own) -> bool:
-        """معالجة الأزرار لخدمة الستوري"""
+        """معالجة الأزرار لخدمة الستوري - التأكيد"""
         
         if data_parts[0] == "confirm" and len(data_parts) >= 4:
             payment_method = data_parts[1]
@@ -231,6 +233,8 @@ class StoryService(RakshService):
                 return True
         
         return False
+
+    # ─── طريقة العمل: الحسابات تفتح الرابط وتتفاعل عشوائياً، وبعد كل نجاح تظهر ✅ ───
     
     async def execute(self, session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
         """تنفيذ مشاهدة ستوري وتفاعل عشوائي"""
@@ -250,45 +254,41 @@ class StoryService(RakshService):
             except Exception as e:
                 return False, f"تعذر الوصول للكيان: {str(e)[:80]}"
             
-            # ✅ 1. فتح الستوري فعلياً (جلب بياناته) - هذا يجعل الحساب "يشاهد" الستوري
+            # ✅ 1. الحساب يفتح الستوري فعلياً (طلب بياناته أولاً ثم زيادة المشاهدة)
             try:
-                # استخدام GetStoryViewsRequest لتأكيد الستوري موجود وقابل للمشاهدة
+                # GetStoryViewsRequest: يطلب الستوري كما يفعل المستخدم عند فتحه
                 await client(GetStoryViewsRequest(
                     peer=entity,
                     id=story_id
                 ))
-                # استخدام IncrementStoryViewsRequest لإخبار تيليجرام بأن الحساب شاهد الستوري
+                # IncrementStoryViewsRequest: يخبر تيليجرام بأن الحساب شاهده
                 await client(IncrementStoryViewsRequest(
                     peer=entity,
                     id=story_id
                 ))
                 logger.info(f"👁️ تم فتح الستوري {story_id} من {session['phone_number']}")
             except Exception as e:
-                # إذا فشل، قد يكون الستوري خاص أو محذوف
                 logger.warning(f"تعذر فتح الستوري {story_id}: {str(e)[:80]}")
                 return False, f"تعذر مشاهدة الستوري: {str(e)[:80]}"
-            
-            # ✅ 2. إضافة تفاعل عشوائي
+
+            # ✅ 2. الحساب يتفاعل بشكل عشوائي على الستوري
             try:
-                # قائمة تفاعلات عشوائية
                 random_reactions = ["❤️", "🔥", "👍", "😍", "🤩", "✨", "💯", "👏", "😂", "😮", "👎", "💔", "🥰", "🤔"]
                 
-                # اختيار تفاعل عشوائي
                 chosen_reaction = random.choice(random_reactions)
                 
-                # إرسال التفاعل على الستوري
                 await client(SendReactionRequest(
                     peer=entity,
                     story_id=story_id,
                     reaction=ReactionEmoji(emoticon=chosen_reaction)
                 ))
                 
-                # إرجاع رسالة نجاح تتضمن التفاعل العشوائي
+                # رسالة النجاح تحتوي ✅
                 return True, f"✅ تمت مشاهدة الستوري وتفاعل ({chosen_reaction}) من {session['phone_number']}"
                 
             except Exception as reaction_error:
-                # إذا فشل التفاعل، نعتبر المشاهدة ناجحة (لأن المهم هو "الفتح")
                 logger.warning(f"تفاعل فاشل للستوري {session['phone_number']}: {reaction_error}")
+                # المشاهدة نجحت حتى لو فشل التفاعل
                 return True, f"✅ تمت مشاهدة الستوري من {session['phone_number']}"
                 
         except Exception as e:
