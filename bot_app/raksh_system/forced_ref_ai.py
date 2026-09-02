@@ -1,6 +1,6 @@
 # forced_ref_ai.py
 from .common import *
-from telethon.tl.types import InputMediaContact, KeyboardButtonRequestPhone
+from telethon.tl.types import InputMediaContact, KeyboardButtonRequestPhone, KeyboardButton
 
 class ForcedRefAIService(RakshService):
     """خدمة إحالة بوت إجباري مع تحقق - كل شيء في مكان واحد"""
@@ -346,7 +346,7 @@ class ForcedRefAIService(RakshService):
         
         return False
     
-    # ═══ دالة تحسين التحقق من إحالة البوت ═══
+    # ═══ دالة حل التحقق المحسّنة ═══
     async def _solve_verification(self, client, bot_entity, phone_number: str) -> bool:
         """حل التحقق بشكل ذكي مع مشاركة جهة الاتصال وإعادة محاولة الضغط"""
         max_attempts = 30
@@ -362,8 +362,8 @@ class ForcedRefAIService(RakshService):
         except Exception as e:
             logger.warning(f"تعذر تحديد الرسالة المرجعية: {e}")
 
+        # دالة مشاركة جهة الاتصال يدوياً
         async def share_contact_if_requested():
-            """إرسال جهة الاتصال يدوياً إذا طلبها البوت"""
             try:
                 me = await client.get_me()
                 if not me or not me.phone:
@@ -423,41 +423,55 @@ class ForcedRefAIService(RakshService):
 
             text = getattr(verification_message, 'message', '') or ''
 
-            # 1️⃣ فحص الأزرار أولاً - الضغط على زر مشاركة جهة الاتصال
+            # ═══ جمع كل الأزرار (المضمّنة + لوحة المفاتيح العادية) ═══
             all_buttons = []
+
+            # 1) الأزرار المضمّنة (inline) - من message.buttons
             for row in (getattr(verification_message, 'buttons', None) or []):
                 for btn in row:
                     if not getattr(btn, 'url', None):
                         all_buttons.append(btn)
 
+            # 2) أزرار لوحة المفاتيح العادية (reply keyboard) - من reply_markup
+            reply_markup = getattr(verification_message, 'reply_markup', None)
+            if reply_markup and hasattr(reply_markup, 'rows'):
+                for row in reply_markup.rows:
+                    for btn in row.buttons:
+                        if not getattr(btn, 'url', None):
+                            all_buttons.append(btn)
+
+            # ═══ 1️⃣ البحث عن زر مشاركة جهة الاتصال والضغط عليه ═══
             for btn in all_buttons:
                 if isinstance(btn, KeyboardButtonRequestPhone):
                     try:
                         await btn.click()
                         logger.info(f"✅ تم الضغط على زر مشاركة جهة الاتصال من {phone_number}")
                         await asyncio.sleep(2.0)
-                        # تحقق من اختفاء الرسالة أو وجود رسالة جديدة
+                        # تحقق من اختفاء الرسالة أو ظهور رسالة جديدة
                         try:
                             updated = await client.get_messages(bot_entity, ids=verification_message.id)
                             if isinstance(updated, (list, tuple)):
                                 updated = updated[0] if updated else None
-                            if updated is None or not getattr(updated, 'buttons', None):
+                            if updated is None or not getattr(updated, 'buttons', None) and not getattr(updated, 'reply_markup', None):
                                 return True
                         except Exception:
                             pass
                     except Exception as e:
                         logger.warning(f"فشل الضغط على زر مشاركة جهة الاتصال: {e}")
-                    # بعد الضغط، نكمل فحص الرسالة الجديدة
+                    # بعد الضغط، نكمل البحث عن رسالة جديدة (وليس break هنا)
+                    # لأننا نريد متابعة التعامل مع الرسالة الجديدة التي قد تظهر
+                    # لكن نكسر الحلقة بعد أول ضغط ناجح
+                    # نستخدم break لعدم الضغط على نفس الزر مرتين
                     break
 
-            # 2️⃣ إذا طلب النص مشاركة جهة الاتصال ولم نضغط زراً
+            # ═══ 2️⃣ إذا طلب النص مشاركة جهة الاتصال ولم نضغط زراً ═══
             if any(keyword in text.lower() for keyword in ["مشاركة جهة اتصال", "share contact", "phone number", "رقم هاتف"]):
                 if await share_contact_if_requested():
                     return True
                 await asyncio.sleep(1.0)
                 continue
 
-            # 3️⃣ استخراج الكود
+            # ═══ 3️⃣ استخراج الكود ═══
             send_text = _extract_code_from_text(text)
             if send_text:
                 try:
@@ -467,7 +481,7 @@ class ForcedRefAIService(RakshService):
                 except Exception:
                     return False
 
-            # 4️⃣ حل المسائل الرياضية
+            # ═══ 4️⃣ حل المسائل الرياضية ═══
             math_patterns = [
                 (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=\s*\?', 1, 2, 3),
                 (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=', 1, 2, 3),
@@ -497,7 +511,7 @@ class ForcedRefAIService(RakshService):
                     except Exception:
                         continue
 
-            # 5️⃣ الضغط على الأزرار العادية
+            # ═══ 5️⃣ الضغط على الأزرار العادية (مع أولوية الإيموجي) ═══
             if all_buttons:
                 target_emoji = extract_target_emoji(text)
                 prioritized = []
@@ -531,13 +545,14 @@ class ForcedRefAIService(RakshService):
                     except Exception:
                         current_msg = None
 
-                    if current_msg is None or not getattr(current_msg, 'buttons', None):
+                    if current_msg is None or (not getattr(current_msg, 'buttons', None) and not getattr(current_msg, 'reply_markup', None)):
                         logger.info(f"✅ اختفت الأزرار - تم التحقق بنجاح من {phone_number}")
                         return True
 
                     button_to_click = None
                     for b in unique_buttons:
                         if id(b) not in pressed_ids:
+                            # البحث في الأزرار المضمّنة
                             for row in (getattr(current_msg, 'buttons', None) or []):
                                 for btn in row:
                                     if not getattr(btn, 'url', None) and getattr(btn, 'text', '') == getattr(b, 'text', ''):
@@ -545,6 +560,18 @@ class ForcedRefAIService(RakshService):
                                         break
                                 if button_to_click:
                                     break
+                            if button_to_click:
+                                break
+                            # البحث في لوحة المفاتيح العادية
+                            reply_markup = getattr(current_msg, 'reply_markup', None)
+                            if reply_markup and hasattr(reply_markup, 'rows'):
+                                for row in reply_markup.rows:
+                                    for btn in row.buttons:
+                                        if not getattr(btn, 'url', None) and getattr(btn, 'text', '') == getattr(b, 'text', ''):
+                                            button_to_click = btn
+                                            break
+                                    if button_to_click:
+                                        break
                             if button_to_click:
                                 break
 
