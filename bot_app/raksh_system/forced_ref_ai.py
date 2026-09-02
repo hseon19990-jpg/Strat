@@ -366,7 +366,8 @@ class ForcedRefAIService(RakshService):
                     file=InputMediaContact(
                         phone_number=phone,
                         first_name=me.first_name or "User",
-                        last_name=me.last_name or ""
+                        last_name=me.last_name or "",
+                        vcard="",
                     )
                 )
                 logger.info(f"📱 تم إرسال جهة الاتصال يدوياً من {phone_number}")
