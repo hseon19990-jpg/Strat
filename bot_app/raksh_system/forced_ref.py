@@ -16,32 +16,12 @@ class ForcedRefService(RakshService):
         has_ai=False,
         needs_link=True,
         min_delay=3,
-        max_delay=3,
-        max_concurrent=1  # تنفيذ تسلسلي لضمان الانضمام للقنوات أولاً
+        max_delay=3
     )
     
-    def get_link_instruction(self) -> str:
-        return (
-            "أرسل رابط الإحالة بهذا الشكل:\n"
-            "@BotUsername start123\n"
-            "أو: t.me/BotUsername?start=123"
-        )
-    
-    def validate_link(self, value: str) -> Optional[str]:
-        if not value.strip():
-            return "⚠️ الرابط لا يمكن أن يكون فارغاً"
-        bot_username, _ = _parse_bot_link(value)
-        if not bot_username:
-            return (
-                "⚠️ رابط البوت غير صحيح.\n\n"
-                "أرسله بهذا الشكل:\n"
-                "@BotUsername start123\n"
-                "أو: t.me/BotUsername?start=123"
-            )
-        return None
-    
     def get_initial_state(self) -> str:
-        return "channel"  # ✅ تبدأ بطلب القنوات الإجبارية
+        """البدء بطلب القنوات الإجبارية"""
+        return "channel"
     
     def get_start_message(self) -> str:
         return (
@@ -61,6 +41,22 @@ class ForcedRefService(RakshService):
             [InlineKeyboardButton("⏭️ تخطي (بدون قنوات)", callback_data="raksh_forced_ref:skip_channels")],
             [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
         ])
+    
+    def get_link_instruction(self) -> str:
+        return "@BotUsername start123  أو  t.me/BotUsername?start=123"
+    
+    def validate_link(self, value: str) -> Optional[str]:
+        if not value.strip():
+            return "⚠️ الرابط لا يمكن أن يكون فارغاً"
+        bot_username, _ = _parse_bot_link(value)
+        if not bot_username:
+            return (
+                "⚠️ رابط البوت غير صحيح.\n\n"
+                "أرسله بهذا الشكل:\n"
+                "@BotUsername start123\n"
+                "أو: t.me/BotUsername?start=123"
+            )
+        return None
     
     async def handle_text(self, update, context, text, user, state, is_own) -> bool:
         """معالجة النص لخدمة الإحالة الإجبارية"""
@@ -87,7 +83,7 @@ class ForcedRefService(RakshService):
             
             await update.message.reply_text(
                 f"✅ تم حفظ القنوات الإجبارية ({len(context.user_data['raksh_channels'])} قناة).\n\n"
-                f"🔗 *أرسل رابط الإحالة:*\n"
+                f"🔗 *أرسل رابط البوت:*\n"
                 f"{self.get_link_instruction()}",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
@@ -96,7 +92,7 @@ class ForcedRefService(RakshService):
             )
             return True
         
-        # ═══ الخطوة 2: استقبال رابط الإحالة ═══
+        # ═══ الخطوة 2: استقبال رابط البوت ═══
         if state == "link":
             link_error = self.validate_link(text)
             if link_error:
@@ -122,7 +118,7 @@ class ForcedRefService(RakshService):
                 return True
             
             await update.message.reply_text(
-                f"✅ تم حفظ رابط الإحالة.\n\n"
+                f"✅ تم حفظ رابط البوت.\n\n"
                 f"🔢 *أرسل عدد الإحالات المطلوبة:*\n"
                 f"(الحد الأقصى: {max_qty})",
                 parse_mode=ParseMode.MARKDOWN,
@@ -173,7 +169,7 @@ class ForcedRefService(RakshService):
             await update.message.reply_text(
                 f"📋 *تفاصيل الطلب*\n\n"
                 f"📢 القنوات الإجبارية: {len(context.user_data.get('raksh_channels', []))} قناة\n"
-                f"🔗 رابط الإحالة: `{context.user_data['raksh_link']}`\n"
+                f"🔗 رابط البوت: `{context.user_data['raksh_link']}`\n"
                 f"🔢 العدد: {quantity}\n\n"
                 f"💳 *اختر طريقة الدفع:*",
                 parse_mode=ParseMode.MARKDOWN,
@@ -217,7 +213,7 @@ class ForcedRefService(RakshService):
             
             await query.edit_message_text(
                 f"✅ تم تخطي القنوات.\n\n"
-                f"🔗 *أرسل رابط الإحالة:*\n"
+                f"🔗 *أرسل رابط البوت:*\n"
                 f"{self.get_link_instruction()}",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
@@ -252,7 +248,7 @@ class ForcedRefService(RakshService):
             await query.edit_message_text(
                 f"📋 *تأكيد الطلب*\n\n"
                 f"📢 القنوات الإجبارية: {len(context.user_data.get('raksh_channels', []))} قناة\n"
-                f"🔗 رابط الإحالة: `{context.user_data.get('raksh_link', '')}`\n"
+                f"🔗 رابط البوت: `{context.user_data.get('raksh_link', '')}`\n"
                 f"🔢 العدد: {quantity}\n"
                 f"💳 طريقة الدفع: {'💰 نقاط' if payment_method == 'points' else '⭐ نجوم'}\n"
                 f"💰 التكلفة: {total_cost} {'نقطة' if payment_method == 'points' else 'نجمة'}\n\n"
@@ -350,13 +346,13 @@ class ForcedRefService(RakshService):
                 _mark_raksh_session_unauthorized(session.get("phone_number"))
                 return False, "الجلسة غير مصرح بها"
             
-            # ═══ الانضمام للقنوات الإجبارية أولاً (لجميع الحسابات) ═══
+            # ═══ الانضمام للقنوات الإجبارية أولاً ═══
             channels = params.get("channel_ref") or []
             if channels:
                 for channel_ref in channels:
                     try:
                         await _join_channel_and_schedule_leave(client, channel_ref)
-                        await asyncio.sleep(1.0)  # مهلة قصيرة بين القنوات
+                        await asyncio.sleep(1.0)
                     except Exception as e:
                         logger.warning(f"فشل الانضمام للقناة {channel_ref}: {e}")
             
