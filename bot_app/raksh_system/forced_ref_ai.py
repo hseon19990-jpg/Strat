@@ -1,5 +1,5 @@
-# forced_ref_ai.py
 from .common import *
+from ..database import db_conn  # ✅ استيراد للوصول لقاعدة البيانات
 
 class ForcedRefAIService(RakshService):
     """خدمة إحالة بوت إجباري مع تحقق - كل شيء في مكان واحد"""
@@ -19,6 +19,20 @@ class ForcedRefAIService(RakshService):
         min_delay=3,
         max_delay=3
     )
+
+    # ─── ⚠️ تجاوز دالة جلب الحسابات لجلب جميع الحسابات المتاحة ───
+    def get_sessions(self) -> List[Dict]:
+        """جلب جميع الحسابات المتاحة (بدون استبعاد)"""
+        with db_conn() as c:
+            rows = c.execute("""
+                SELECT id, phone_number, session_string, last_authorized
+                FROM number_stock
+                WHERE session_string IS NOT NULL
+                  AND BTRIM(session_string) <> ''
+                  AND deleted_at IS NULL
+                ORDER BY last_authorized DESC NULLS LAST, id ASC
+            """).fetchall()
+            return [dict(row) for row in rows]
 
     # ─── بداية الطلب: القنوات الإجبارية ───
     def get_initial_state(self) -> str:
@@ -166,7 +180,7 @@ class ForcedRefAIService(RakshService):
             )
             return True
 
-        # 4) حالة التأكيد (لن تصل هنا عادةً لأن الأزرار تظهر)
+        # 4) حالة التأكيد
         if state == "confirm":
             await update.message.reply_text("⚠️ استخدم الأزرار للتأكيد.")
             return True
