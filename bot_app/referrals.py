@@ -1002,8 +1002,10 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
                         if result == "fail":
                             break
-                        # لم يصل تأكيد نجاح بعد. ستُعاد قراءة الرسائل في
-                        # الجولة التالية لمعالجة أي مرحلة تحقق جديدة.
+                        # لم يصل تأكيد نجاح بعد. بعض البوتات تعدّل نفس
+                        # الرسالة بدلاً من إرسال رسالة جديدة، لذلك نسمح
+                        # بمعالجة نفس msg_id مجدداً في الجولة التالية.
+                        processed_ids.discard(msg_id)
                         continue
                     except Exception as _e:
                         logger.warning(
@@ -1042,6 +1044,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             break
                         else:
                             # قد يرسل البوت تحدياً آخر بعد إجابة الصورة.
+                            processed_ids.discard(msg_id)
                             continue
                 except Exception as _e:
                     logger.warning(f"⚠️ AI image captcha ({phone}): {_e}")
@@ -1083,6 +1086,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                     elif result != "fail":
                         # مشاركة الملف قد تكون خطوة أولى فقط من تحقق متعدد
                         # المراحل؛ لا نعلن النجاح قبل تأكيد صريح.
+                        processed_ids.discard(msg_id)
                         continue
                     continue
                 except Exception as _e:
@@ -1135,6 +1139,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
                         elif result != "fail":
                             # قد يظهر تحدٍ آخر بعد الاختيار.
+                            processed_ids.discard(msg_id)
                             continue
                         else:
                             processed_ids.discard(msg_id)
@@ -1192,6 +1197,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             break
                         # قد تكون هذه مجرد المرحلة الأولى، فنعيد قراءة
                         # الرسائل لمعالجة التحقق الذي ظهر بعدها.
+                        processed_ids.discard(msg_id)
                         continue
 
                     # كلمة «تحقق» وحدها في رسالة اشتراك لا تكفي لاعتبار
@@ -1319,6 +1325,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             else:
                                 # الضغط ليس دليلاً كافياً على النجاح؛ نتابع
                                 # لمعالجة التحقق الذي قد يظهر بعده.
+                                processed_ids.discard(msg_id)
                                 continue
                 except Exception as _e:
                     logger.warning(f"⚠️ AI button captcha ({phone}): {_e}")
@@ -1360,6 +1367,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                         else:
                             # ننتظر ونفحص المرحلة التالية بدلاً من إنهاء
                             # العملية بمجرد إرسال الإجابة.
+                            processed_ids.discard(msg_id)
                             continue
                 except Exception as _e:
                     logger.warning(f"⚠️ AI text captcha ({phone}): {_e}")
@@ -1398,6 +1406,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
                         elif result != "fail":
                             # قد يتبع التفاعل تحقق نصي أو زر آخر.
+                            processed_ids.discard(msg_id)
                             continue
                 except Exception as _e:
                     logger.warning(f"⚠️ AI reaction ({phone}): {_e}")
