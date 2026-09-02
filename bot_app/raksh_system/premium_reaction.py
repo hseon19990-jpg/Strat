@@ -84,24 +84,3 @@ class PremiumReactionService(RakshService):
             await client.disconnect()
 
 # ════════════════════════════════════════════════════════
-# ═══ 9. تسجيل الخدمات ═══
-# ════════════════════════════════════════════════════════
-
-RAKSH_SERVICES: Dict[str, RakshService] = {
-    StoryService.service_type: StoryService(),
-    ForcedRefService.service_type: ForcedRefService(),
-    ForcedRefAIService.service_type: ForcedRefAIService(),
-    CommentService.service_type: CommentService(),
-    PollService.service_type: PollService(),
-    VotesService.service_type: VotesService(),
-    VotesAIService.service_type: VotesAIService(),
-    PremiumReactionService.service_type: PremiumReactionService(),
-}
-
-RAKSH_SERVICE_LABELS = {
-    svc_type: svc.label for svc_type, svc in RAKSH_SERVICES.items()
-}
-
-# ════════════════════════════════════════════════════════
-# ═══ 10. دوال مساعدة عامة ═══
-# ════════════════════════════════════════════════════════
