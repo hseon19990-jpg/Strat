@@ -96,6 +96,46 @@ def _clear_raksh_state(context: ContextTypes.DEFAULT_TYPE) -> None:
         context.user_data.pop(key, None)
     context.user_data["state"] = "main_menu"
 
+def get_raksh_hourly_remaining(user_id: int) -> int:
+    """عدد التنفيذات المتبقية خلال الساعة"""
+    if RAKSH_MAX_EXECUTIONS_PER_HOUR <= 0:
+        return 2_147_483_647
+    try:
+        with db_conn() as c:
+            row = c.execute(
+                """
+                SELECT COUNT(*) AS used
+                FROM raksh_execution_usage
+                WHERE user_id=%s
+                  AND executed_at >= NOW() - INTERVAL '1 hour'
+                """,
+                (user_id,),
+            ).fetchone()
+        used = int(row["used"] or 0) if row else 0
+        return max(0, RAKSH_MAX_EXECUTIONS_PER_HOUR - used)
+    except Exception:
+        logger.exception(f"فشل قراءة حد التنفيذ للمستخدم {user_id}")
+        return 0
+
+def get_raksh_daily_remaining(user_id: int) -> int:
+    """عدد التنفيذات المتبقية خلال اليوم"""
+    try:
+        with db_conn() as c:
+            row = c.execute(
+                """
+                SELECT COUNT(*) AS used
+                FROM raksh_execution_usage
+                WHERE user_id=%s
+                  AND executed_at >= NOW() - INTERVAL '1 day'
+                """,
+                (user_id,),
+            ).fetchone()
+        used = int(row["used"] or 0) if row else 0
+        return max(0, RAKSH_MAX_EXECUTIONS_PER_DAY - used)
+    except Exception:
+        logger.exception(f"فشل قراءة الحد اليومي للمستخدم {user_id}")
+        return RAKSH_MAX_EXECUTIONS_PER_DAY
+
 def _get_sessions_for_service(service_type: str) -> List[Dict]:
     """جلب الجلسات المناسبة لنوع الخدمة مع التخزين المؤقت"""
     cache_key = f"sessions_{service_type}"
