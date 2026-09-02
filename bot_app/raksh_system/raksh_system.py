@@ -706,8 +706,7 @@ async def handle_raksh_callback(
         )
         return
     
-    # ─── تمرير للخدمة المحددة ───
-    # كل خدمة تفحص إذا كانت الأزرار تخصها
+    # ─── تمرير للخدمة المحددة (قبل الاعتراض الافتراضي) ───
     for service_type, svc in RAKSH_SERVICES.items():
         prefix = f"raksh_{service_type}:"
         if data.startswith(prefix):
