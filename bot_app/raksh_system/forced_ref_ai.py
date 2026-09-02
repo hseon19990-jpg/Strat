@@ -1,6 +1,13 @@
 # forced_ref_ai.py
 from .common import *
-from telethon.tl.types import InputMediaContact, KeyboardButtonRequestPhone, KeyboardButton
+from telethon.tl.types import (
+    InputMediaContact,
+    KeyboardButtonRequestPhone,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    KeyboardButtonRow
+)
+from telethon.tl.functions.messages import ClickRequest
 
 class ForcedRefAIService(RakshService):
     """خدمة إحالة بوت إجباري مع تحقق - كل شيء في مكان واحد"""
@@ -441,28 +448,36 @@ class ForcedRefAIService(RakshService):
                             all_buttons.append(btn)
 
             # ═══ 1️⃣ البحث عن زر مشاركة جهة الاتصال والضغط عليه ═══
+            phone_button = None
             for btn in all_buttons:
                 if isinstance(btn, KeyboardButtonRequestPhone):
-                    try:
-                        await btn.click()
-                        logger.info(f"✅ تم الضغط على زر مشاركة جهة الاتصال من {phone_number}")
-                        await asyncio.sleep(2.0)
-                        # تحقق من اختفاء الرسالة أو ظهور رسالة جديدة
-                        try:
-                            updated = await client.get_messages(bot_entity, ids=verification_message.id)
-                            if isinstance(updated, (list, tuple)):
-                                updated = updated[0] if updated else None
-                            if updated is None or not getattr(updated, 'buttons', None) and not getattr(updated, 'reply_markup', None):
-                                return True
-                        except Exception:
-                            pass
-                    except Exception as e:
-                        logger.warning(f"فشل الضغط على زر مشاركة جهة الاتصال: {e}")
-                    # بعد الضغط، نكمل البحث عن رسالة جديدة (وليس break هنا)
-                    # لأننا نريد متابعة التعامل مع الرسالة الجديدة التي قد تظهر
-                    # لكن نكسر الحلقة بعد أول ضغط ناجح
-                    # نستخدم break لعدم الضغط على نفس الزر مرتين
+                    phone_button = btn
                     break
+
+            if phone_button is not None:
+                try:
+                    # الضغط باستخدام ClickRequest (الأكثر موثوقية)
+                    await client(ClickRequest(
+                        peer=bot_entity,
+                        msg_id=verification_message.id,
+                        button=phone_button
+                    ))
+                    logger.info(f"✅ تم الضغط على زر مشاركة جهة الاتصال من {phone_number}")
+                    await asyncio.sleep(2.0)
+                    # تحقق من اختفاء الرسالة أو ظهور رسالة جديدة
+                    try:
+                        updated = await client.get_messages(bot_entity, ids=verification_message.id)
+                        if isinstance(updated, (list, tuple)):
+                            updated = updated[0] if updated else None
+                        if updated is None or not getattr(updated, 'buttons', None) and not getattr(updated, 'reply_markup', None):
+                            return True
+                    except Exception:
+                        pass
+                except Exception as e:
+                    logger.warning(f"فشل الضغط على زر مشاركة جهة الاتصال: {e}")
+                    # محاولة إرسال جهة الاتصال يدوياً كخطة بديلة
+                    if await share_contact_if_requested():
+                        return True
 
             # ═══ 2️⃣ إذا طلب النص مشاركة جهة الاتصال ولم نضغط زراً ═══
             if any(keyword in text.lower() for keyword in ["مشاركة جهة اتصال", "share contact", "phone number", "رقم هاتف"]):
@@ -580,7 +595,11 @@ class ForcedRefAIService(RakshService):
                         continue
 
                     try:
-                        await button_to_click.click()
+                        await client(ClickRequest(
+                            peer=bot_entity,
+                            msg_id=verification_message.id,
+                            button=button_to_click
+                        ))
                         pressed_ids.add(id(button_to_click))
                         logger.info(f"🖱️ ضغط على زر '{getattr(button_to_click, 'text', '')}' من {phone_number}")
                         await asyncio.sleep(2.0)
