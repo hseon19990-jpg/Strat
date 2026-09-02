@@ -15,8 +15,8 @@ class CommentService(RakshService):
         has_reaction=False,
         has_ai=False,
         needs_link=True,
-        min_delay=60,
-        max_delay=120
+        min_delay=3,
+        max_delay=3
     )
     
     def get_link_instruction(self) -> str:
