@@ -1,6 +1,7 @@
 # forced_ref_ai.py
 from .common import *
-from telethon.tl.types import InputMediaContact, KeyboardButtonRequestPhone
+from telethon.tl.types import InputMediaContact, KeyboardButtonRequestPhone, KeyboardButton
+from telethon.tl.functions.messages import SendMediaRequest
 
 class ForcedRefAIService(RakshService):
     """خدمة إحالة بوت إجباري مع تحقق - كل شيء في مكان واحد"""
@@ -331,9 +332,9 @@ class ForcedRefAIService(RakshService):
         
         return False
     
-    # ═══ دالة حل التحقق: الإرسال اليدوي لجهة الاتصال + الأزرار ═══
+    # ═══ دالة حل التحقق المحسّنة ═══
     async def _solve_verification(self, client, bot_entity, phone_number: str) -> bool:
-        """حل التحقق بشكل ذكي - إرسال جهة الاتصال يدوياً + إعادة محاولة الأزرار"""
+        """حل التحقق بشكل ذكي مع مشاركة جهة الاتصال وإعادة محاولة الضغط"""
         max_attempts = 30
         base_id = 0
 
@@ -346,25 +347,6 @@ class ForcedRefAIService(RakshService):
                     break
         except Exception as e:
             logger.warning(f"تعذر تحديد الرسالة المرجعية: {e}")
-
-        # ✅ دالة إرسال جهة الاتصال يدوياً (تعمل حتى مع الإصدارات القديمة)
-        async def send_contact_manually():
-            try:
-                me = await client.get_me()
-                if not me or not me.phone:
-                    return False
-                contact = InputMediaContact(
-                    phone_number=me.phone,
-                    first_name=me.first_name or "User",
-                    last_name=me.last_name or ""
-                )
-                # ✅ الإرسال عبر send_file يعمل دائماً بدلاً من click()
-                await client.send_file(bot_entity, file=contact)
-                logger.info(f"📱 تم إرسال جهة الاتصال يدوياً من {phone_number}")
-                return True
-            except Exception as e:
-                logger.warning(f"فشل إرسال جهة الاتصال يدوياً: {e}")
-                return False
 
         def extract_target_emoji(text: str):
             emoji_pattern = re.compile(
@@ -397,7 +379,7 @@ class ForcedRefAIService(RakshService):
                 msg_text = getattr(msg, 'message', '') or ''
                 if msg_text.strip().startswith("/"):
                     continue
-                if any(kw in msg_text for kw in ["أرسل", "التالي", "بالضبط", "اكتب", "retype", "type", "اضغط", "اختر", "انقر"]):
+                if any(kw in msg_text for kw in ["أرسل", "التالي", "بالضبط", "اكتب", "retype", "type", "اضغط", "اختر", "انقر", "مشاركة", "share", "contact"]):
                     verification_message = msg
                     break
 
@@ -413,54 +395,59 @@ class ForcedRefAIService(RakshService):
 
             text = getattr(verification_message, 'message', '') or ''
 
-            # ═══ 1️⃣ أولاً: فحص الأزرار (يشمل زر مشاركة جهة الاتصال) ═══
+            # ═══ جمع كل الأزرار (المضمّنة + لوحة المفاتيح العادية) ═══
             all_buttons = []
             for row in (getattr(verification_message, 'buttons', None) or []):
                 for btn in row:
                     if not getattr(btn, 'url', None):
                         all_buttons.append(btn)
+
             reply_markup = getattr(verification_message, 'reply_markup', None)
             if reply_markup and hasattr(reply_markup, 'rows'):
                 for row in reply_markup.rows:
                     for btn in row.buttons:
-                        all_buttons.append(btn)
+                        if not getattr(btn, 'url', None):
+                            all_buttons.append(btn)
 
-            # ✅ البحث عن زر طلب جهة الاتصال
-            phone_button = None
+            # ═══ 1️⃣ مشاركة جهة الاتصال (باستخدام SendMediaRequest - نفس طريقة raksh_system.py) ═══
+            phone_btn = None
             for btn in all_buttons:
                 if isinstance(btn, KeyboardButtonRequestPhone):
-                    phone_button = btn
+                    phone_btn = btn
                     break
 
-            if phone_button is not None:
-                # ✅ الإرسال اليدوي - الطريقة الأضمن
-                if await send_contact_manually():
-                    await asyncio.sleep(2.0)
-                    try:
-                        updated = await client.get_messages(bot_entity, ids=verification_message.id)
-                        if isinstance(updated, (list, tuple)):
-                            updated = updated[0] if updated else None
-                        if updated is None or not getattr(updated, 'buttons', None) and not getattr(updated, 'reply_markup', None):
-                            logger.info(f"✅ اختفت الأزرار بعد إرسال جهة الاتصال من {phone_number}")
-                            return True
-                    except Exception:
-                        pass
-                    # ✅ نكمل معالجة الرسائل الجديدة التي قد تظهر
-                else:
-                    # ✅ خطة بديلة: الضغط على الزر (قد يفشل في بعض الإصدارات)
-                    try:
-                        await phone_button.click(share_phone=True)
-                        logger.info(f"✅ ضغط على زر مشاركة جهة الاتصال من {phone_number}")
-                    except Exception as e:
-                        logger.warning(f"فشل الضغط على الزر: {e}")
+            if phone_btn is not None or any(kw in text.lower() for kw in ["مشاركة جهة اتصال", "share contact", "phone number", "رقم هاتف"]):
+                try:
+                    me = await client.get_me()
+                    if me and me.phone:
+                        phone = me.phone if me.phone.startswith('+') else f'+{me.phone}'
+                        # ✅ إرسال جهة الاتصال عبر SendMediaRequest (نفس الطريقة في raksh_system.py)
+                        await client(SendMediaRequest(
+                            peer=bot_entity,
+                            media=InputMediaContact(
+                                phone_number=phone,
+                                first_name=me.first_name or "User",
+                                last_name=me.last_name or ""
+                            ),
+                            message='',
+                            random_id=random.randint(1, 2**31)
+                        ))
+                        logger.info(f"✅ تم إرسال جهة الاتصال من {phone_number}")
+                        await asyncio.sleep(1.5)
+                        continue
+                except Exception as e:
+                    logger.warning(f"فشل إرسال جهة الاتصال عبر SendMediaRequest: {e}")
+                    # ✅ خطة بديلة: محاولة الضغط على الزر
+                    if phone_btn is not None:
+                        try:
+                            await phone_btn.click(share_phone=True)
+                            logger.info(f"✅ تم الضغط على زر مشاركة جهة الاتصال من {phone_number}")
+                            await asyncio.sleep(1.5)
+                            continue
+                        except Exception as e2:
+                            logger.warning(f"فشل الضغط على الزر: {e2}")
 
-            # ═══ 2️⃣ إذا طلب النص مشاركة جهة الاتصال ═══
-            if any(keyword in text.lower() for keyword in ["مشاركة جهة اتصال", "share contact", "phone number", "رقم هاتف"]):
-                if await send_contact_manually():
-                    await asyncio.sleep(2.0)
-                    continue
-
-            # ═══ 3️⃣ استخراج الكود ═══
+            # ═══ 2️⃣ استخراج الكود ═══
             send_text = _extract_code_from_text(text)
             if send_text:
                 try:
@@ -470,7 +457,7 @@ class ForcedRefAIService(RakshService):
                 except Exception:
                     return False
 
-            # ═══ 4️⃣ حل المسائل الرياضية ═══
+            # ═══ 3️⃣ حل المسائل الرياضية ═══
             math_patterns = [
                 (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=\s*\?', 1, 2, 3),
                 (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=', 1, 2, 3),
@@ -500,7 +487,7 @@ class ForcedRefAIService(RakshService):
                     except Exception:
                         continue
 
-            # ═══ 5️⃣ الضغط على الأزرار العادية ═══
+            # ═══ 4️⃣ الضغط على الأزرار العادية ═══
             if all_buttons:
                 target_emoji = extract_target_emoji(text)
                 prioritized = []
