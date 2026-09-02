@@ -1,11 +1,16 @@
 # forced_ref_ai.py
 from .common import *
-from telethon.tl.types import InputMediaContact, KeyboardButtonRequestPhone, KeyboardButton
-from telethon.tl.functions.messages import SendMediaRequest
+from telethon.tl.types import (
+    InputMediaContact,
+    KeyboardButtonRequestPhone,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    KeyboardButtonRow,
+)
 
 class ForcedRefAIService(RakshService):
     """خدمة إحالة بوت إجباري مع تحقق - كل شيء في مكان واحد"""
-    
+
     service_type = "forced_ref_ai"
     label = "🤖 إحالة بوت إجباري مع تحقق"
     config = ServiceConfig(
@@ -21,11 +26,11 @@ class ForcedRefAIService(RakshService):
         min_delay=3,
         max_delay=3
     )
-    
+
     # 1️⃣ البدء بطلب القنوات الإجبارية
     def get_initial_state(self) -> str:
         return "channel"
-    
+
     # 2️⃣ رسالة البداية
     def get_start_message(self) -> str:
         return (
@@ -39,18 +44,18 @@ class ForcedRefAIService(RakshService):
             f"أو أرسل روابط t.me\n\n"
             f"✍️ اكتب 'تخطي' لعدم وجود قنوات"
         )
-    
+
     # 3️⃣ أزرار البداية (تخطي / إلغاء)
     def get_start_keyboard(self) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("⏭️ تخطي (بدون قنوات)", callback_data="raksh_forced_ref_ai:skip_channels")],
             [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
         ])
-    
+
     # 4️⃣ تعليمات الرابط
     def get_link_instruction(self) -> str:
         return "@BotUsername start123  أو  t.me/BotUsername?start=123"
-    
+
     # 5️⃣ التحقق من الرابط
     def validate_link(self, value: str) -> Optional[str]:
         if not value.strip():
@@ -64,11 +69,11 @@ class ForcedRefAIService(RakshService):
                 "أو: t.me/BotUsername?start=123"
             )
         return None
-    
+
     # 6️⃣ معالجة النص (القنوات ← الرابط ← العدد ← الدفع)
     async def handle_text(self, update, context, text, user, state, is_own) -> bool:
         """معالجة النص لخدمة الإحالة مع التحقق"""
-        
+
         if state == "channel":
             if text.strip().lower() in {"تخطي", "skip", "لا", "none", "بدون"}:
                 context.user_data["raksh_channels"] = []
@@ -85,9 +90,9 @@ class ForcedRefAIService(RakshService):
                     )
                     return True
                 context.user_data["raksh_channels"] = channel_refs
-            
+
             context.user_data["raksh_step"] = "link"
-            
+
             await update.message.reply_text(
                 f"✅ تم حفظ القنوات الإجبارية ({len(context.user_data['raksh_channels'])} قناة).\n\n"
                 f"🔗 *أرسل رابط البوت:*\n"
@@ -98,7 +103,7 @@ class ForcedRefAIService(RakshService):
                 ])
             )
             return True
-        
+
         if state == "link":
             link_error = self.validate_link(text)
             if link_error:
@@ -109,10 +114,10 @@ class ForcedRefAIService(RakshService):
                     ]),
                 )
                 return True
-            
+
             context.user_data["raksh_link"] = text
             context.user_data["raksh_step"] = "quantity"
-            
+
             max_qty = self.get_request_limit(user.id)
             if max_qty < 1:
                 await update.message.reply_text(
@@ -122,7 +127,7 @@ class ForcedRefAIService(RakshService):
                     ]),
                 )
                 return True
-            
+
             await update.message.reply_text(
                 f"✅ تم حفظ رابط البوت.\n\n"
                 f"🔢 *أرسل عدد الإحالات المطلوبة:*\n"
@@ -133,7 +138,7 @@ class ForcedRefAIService(RakshService):
                 ])
             )
             return True
-        
+
         if state == "quantity":
             try:
                 quantity = int(text)
@@ -145,7 +150,7 @@ class ForcedRefAIService(RakshService):
                     ]),
                 )
                 return True
-            
+
             max_qty = self.get_request_limit(user.id)
             if max_qty < 1:
                 await update.message.reply_text(
@@ -155,7 +160,7 @@ class ForcedRefAIService(RakshService):
                     ]),
                 )
                 return True
-            
+
             if quantity < 1 or quantity > max_qty:
                 await update.message.reply_text(
                     f"⚠️ العدد المسموح بين 1 و {max_qty}.",
@@ -164,13 +169,13 @@ class ForcedRefAIService(RakshService):
                     ]),
                 )
                 return True
-            
+
             context.user_data["raksh_quantity"] = quantity
             context.user_data["raksh_step"] = "payment"
-            
+
             points_cost = self.get_total(quantity, "points")
             stars_cost = self.get_total(quantity, "stars")
-            
+
             await update.message.reply_text(
                 f"📋 *تفاصيل الطلب*\n\n"
                 f"📢 القنوات الإجبارية: {len(context.user_data.get('raksh_channels', []))} قناة\n"
@@ -195,7 +200,7 @@ class ForcedRefAIService(RakshService):
                 ])
             )
             return True
-        
+
         if state == "confirm":
             await update.message.reply_text(
                 "⚠️ استخدم الأزرار للتأكيد.",
@@ -204,17 +209,17 @@ class ForcedRefAIService(RakshService):
                 ])
             )
             return True
-        
+
         return False
-    
+
     # 7️⃣ معالجة الأزرار
     async def handle_callback(self, update, context, query, data_parts, user, is_own) -> bool:
         """معالجة الأزرار لخدمة الإحالة مع التحقق"""
-        
+
         if data_parts[0] == "skip_channels":
             context.user_data["raksh_channels"] = []
             context.user_data["raksh_step"] = "link"
-            
+
             await query.edit_message_text(
                 f"✅ تم تخطي القنوات.\n\n"
                 f"🔗 *أرسل رابط البوت:*\n"
@@ -225,7 +230,7 @@ class ForcedRefAIService(RakshService):
                 ])
             )
             return True
-        
+
         if data_parts[0] == "payment" and len(data_parts) >= 4:
             payment_method = data_parts[1]
             try:
@@ -233,18 +238,18 @@ class ForcedRefAIService(RakshService):
             except ValueError:
                 await query.answer("⚠️ العدد أو السعر غير صالح.", show_alert=True)
                 return True
-            
+
             if payment_method not in {"points", "stars"}:
                 await query.answer("⚠️ طريقة الدفع غير صالحة.", show_alert=True)
                 return True
-            
+
             if quantity > self.get_request_limit(user.id):
                 await query.edit_message_text(
                     "⚠️ لا يمكن قبول هذا الطلب حالياً. حاول لاحقاً.",
                     reply_markup=raksh_menu_kb(is_own),
                 )
                 return True
-            
+
             total_cost = self.get_total(quantity, payment_method)
             await query.edit_message_text(
                 f"📋 *تأكيد الطلب*\n\n"
@@ -269,7 +274,7 @@ class ForcedRefAIService(RakshService):
                 ])
             )
             return True
-        
+
         if data_parts[0] == "confirm" and len(data_parts) >= 4:
             payment_method = data_parts[1]
             try:
@@ -277,20 +282,20 @@ class ForcedRefAIService(RakshService):
             except ValueError:
                 await query.answer("⚠️ العدد أو السعر غير صالح.", show_alert=True)
                 return True
-            
+
             if payment_method not in {"points", "stars"}:
                 await query.answer("⚠️ طريقة الدفع غير صالحة.", show_alert=True)
                 return True
-            
+
             if quantity > self.get_request_limit(user.id):
                 await query.edit_message_text(
                     "⚠️ لا يمكن قبول هذا الطلب حالياً. حاول لاحقاً.",
                     reply_markup=raksh_menu_kb(is_own),
                 )
                 return True
-            
+
             total_cost = self.get_total(quantity, payment_method)
-            
+
             if payment_method == "points":
                 if not deduct_points(user.id, total_cost):
                     await query.edit_message_text(
@@ -300,7 +305,7 @@ class ForcedRefAIService(RakshService):
                         reply_markup=raksh_menu_kb(is_own)
                     )
                     return True
-                
+
                 await query.edit_message_text(
                     "✅ *تم تأكيد الطلب وخصم النقاط!*\n\n"
                     f"📋 تفاصيل الطلب:\n"
@@ -329,13 +334,13 @@ class ForcedRefAIService(RakshService):
                     prices=[LabeledPrice("إحالة بوت إجباري مع تحقق", total_cost)],
                 )
                 return True
-        
+
         return False
-    
-    # ═══ دالة حل التحقق المحسّنة ═══
+
+    # ═══ دالة حل التحقق المحسّنة (مع مشاركة جهة الاتصال) ═══
     async def _solve_verification(self, client, bot_entity, phone_number: str) -> bool:
-        """حل التحقق بشكل ذكي مع مشاركة جهة الاتصال وإعادة محاولة الضغط"""
-        max_attempts = 30
+        """حل التحقق بذكاء - إرسال جهة الاتصال عند الطلب + إعادة محاولة الضغط على الأزرار"""
+        max_attempts = 50
         base_id = 0
 
         try:
@@ -348,12 +353,27 @@ class ForcedRefAIService(RakshService):
         except Exception as e:
             logger.warning(f"تعذر تحديد الرسالة المرجعية: {e}")
 
-        def extract_target_emoji(text: str):
-            emoji_pattern = re.compile(
-                "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E0-\U0001F1FF]"
-            )
-            found_emojis = emoji_pattern.findall(text)
-            return found_emojis[-1] if found_emojis else None
+        # ✅ دالة إرسال جهة الاتصال (تعمل في جميع الحالات)
+        async def send_contact_manually():
+            try:
+                me = await client.get_me()
+                if not me or not me.phone:
+                    return False
+                phone = me.phone if me.phone.startswith('+') else f'+{me.phone}'
+                # إرسال جهة الاتصال مباشرة عبر send_file
+                await client.send_file(
+                    bot_entity,
+                    file=InputMediaContact(
+                        phone_number=phone,
+                        first_name=me.first_name or "User",
+                        last_name=me.last_name or ""
+                    )
+                )
+                logger.info(f"📱 تم إرسال جهة الاتصال يدوياً من {phone_number}")
+                return True
+            except Exception as e:
+                logger.warning(f"فشل إرسال جهة الاتصال يدوياً: {e}")
+                return False
 
         for attempt in range(max_attempts):
             try:
@@ -395,7 +415,7 @@ class ForcedRefAIService(RakshService):
 
             text = getattr(verification_message, 'message', '') or ''
 
-            # ═══ جمع كل الأزرار (المضمّنة + لوحة المفاتيح العادية) ═══
+            # جمع كل الأزرار (المضمّنة + لوحة المفاتيح العادية)
             all_buttons = []
             for row in (getattr(verification_message, 'buttons', None) or []):
                 for btn in row:
@@ -409,43 +429,46 @@ class ForcedRefAIService(RakshService):
                         if not getattr(btn, 'url', None):
                             all_buttons.append(btn)
 
-            # ═══ 1️⃣ مشاركة جهة الاتصال (باستخدام SendMediaRequest - نفس طريقة raksh_system.py) ═══
+            # ═══ 1️⃣ إرسال جهة الاتصال إذا طلبها البوت ═══
+            contact_requested = False
+            if any(kw in text.lower() for kw in ["مشاركة جهة اتصال", "share contact", "phone number", "رقم هاتف"]):
+                contact_requested = True
+
+            # ✅ البحث عن زر مشاركة جهة الاتصال
             phone_btn = None
             for btn in all_buttons:
                 if isinstance(btn, KeyboardButtonRequestPhone):
                     phone_btn = btn
                     break
 
-            if phone_btn is not None or any(kw in text.lower() for kw in ["مشاركة جهة اتصال", "share contact", "phone number", "رقم هاتف"]):
-                try:
-                    me = await client.get_me()
-                    if me and me.phone:
-                        phone = me.phone if me.phone.startswith('+') else f'+{me.phone}'
-                        # ✅ إرسال جهة الاتصال عبر SendMediaRequest (نفس الطريقة في raksh_system.py)
-                        await client(SendMediaRequest(
-                            peer=bot_entity,
-                            media=InputMediaContact(
-                                phone_number=phone,
-                                first_name=me.first_name or "User",
-                                last_name=me.last_name or ""
-                            ),
-                            message='',
-                            random_id=random.randint(1, 2**31)
-                        ))
-                        logger.info(f"✅ تم إرسال جهة الاتصال من {phone_number}")
-                        await asyncio.sleep(1.5)
-                        continue
-                except Exception as e:
-                    logger.warning(f"فشل إرسال جهة الاتصال عبر SendMediaRequest: {e}")
-                    # ✅ خطة بديلة: محاولة الضغط على الزر
-                    if phone_btn is not None:
+            if contact_requested or phone_btn is not None:
+                # ✅ إرسال جهة الاتصال يدوياً (الطريقة الأضمن)
+                if await send_contact_manually():
+                    await asyncio.sleep(2.0)
+                    # تحقق من اختفاء الرسالة
+                    try:
+                        updated = await client.get_messages(bot_entity, ids=verification_message.id)
+                        if isinstance(updated, (list, tuple)):
+                            updated = updated[0] if updated else None
+                        if updated is None or not getattr(updated, 'buttons', None) and not getattr(updated, 'reply_markup', None):
+                            logger.info(f"✅ اختفت الرسالة بعد مشاركة جهة الاتصال من {phone_number}")
+                            return True
+                    except Exception:
+                        pass
+                    # ✅ بعد الإرسال، نضغط على زر متابعة إذا كان موجوداً
+                    continue_btn = None
+                    for btn in all_buttons:
+                        btn_text = (getattr(btn, 'text', '') or '').lower()
+                        if any(kw in btn_text for kw in ["متابعة", "التالي", "تحقق", "continue", "next", "verify", "تم", "done"]):
+                            continue_btn = btn
+                            break
+                    if continue_btn:
                         try:
-                            await phone_btn.click(share_phone=True)
-                            logger.info(f"✅ تم الضغط على زر مشاركة جهة الاتصال من {phone_number}")
-                            await asyncio.sleep(1.5)
-                            continue
-                        except Exception as e2:
-                            logger.warning(f"فشل الضغط على الزر: {e2}")
+                            await continue_btn.click()
+                            logger.info(f"✅ تم الضغط على زر 'متابعة' من {phone_number}")
+                        except Exception:
+                            pass
+                    continue
 
             # ═══ 2️⃣ استخراج الكود ═══
             send_text = _extract_code_from_text(text)
@@ -489,9 +512,16 @@ class ForcedRefAIService(RakshService):
 
             # ═══ 4️⃣ الضغط على الأزرار العادية ═══
             if all_buttons:
-                target_emoji = extract_target_emoji(text)
-                prioritized = []
+                # استخراج الإيموجي المطلوب
+                emoji_pattern = re.compile(
+                    "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E0-\U0001F1FF]"
+                )
+                target_emoji = None
+                found_emojis = emoji_pattern.findall(text)
+                if found_emojis:
+                    target_emoji = found_emojis[-1]
 
+                prioritized = []
                 if target_emoji:
                     exact = [b for b in all_buttons if getattr(b, 'text', '') == target_emoji]
                     prioritized.extend(exact)
