@@ -18,7 +18,7 @@ class StoryService(RakshService):
         needs_link=True,
         min_delay=3,
         max_delay=3,
-        max_concurrent=12  # ✅ 12 حساب بالتوازي
+        max_concurrent=12
     )
     
     def get_link_instruction(self) -> str:
@@ -125,7 +125,7 @@ class StoryService(RakshService):
                 return True
             
             context.user_data["raksh_quantity"] = quantity
-            context.user_data["raksh_step"] = "payment"  # ✅ الخطوة الجديدة
+            context.user_data["raksh_step"] = "payment"
             
             # عرض أزرار اختيار طريقة الدفع
             points_cost = self.get_total(quantity, "points")
@@ -170,8 +170,8 @@ class StoryService(RakshService):
     async def handle_callback(self, update, context, query, data_parts, user, is_own) -> bool:
         """معالجة الأزرار لخدمة الستوري"""
         
-        # الخطوة 3: اختيار طريقة الدفع
-        if data_parts[0] == "payment" and len(data_parts) >= 5:
+        # ✅ تصحيح: len >= 4 وليس >= 5
+        if data_parts[0] == "payment" and len(data_parts) >= 4:
             payment_method = data_parts[1]
             try:
                 quantity = int(data_parts[2])
@@ -217,8 +217,8 @@ class StoryService(RakshService):
             )
             return True
         
-        # الخطوة 4: التأكيد النهائي وبدء التنفيذ
-        if data_parts[0] == "confirm" and len(data_parts) >= 5:
+        # ✅ تصحيح: confirm
+        if data_parts[0] == "confirm" and len(data_parts) >= 4:
             payment_method = data_parts[1]
             try:
                 quantity = int(data_parts[2])
@@ -261,7 +261,7 @@ class StoryService(RakshService):
                 )
                 
                 await _start_raksh_execution(
-                    update, context, query, self.service_type, quantity, "points", total_cost  # ✅ تصحيح
+                    update, context, query, self.service_type, quantity, "points", total_cost
                 )
                 return True
             
@@ -301,18 +301,17 @@ class StoryService(RakshService):
             except Exception as e:
                 return False, f"تعذر الوصول للكيان: {str(e)[:80]}"
             
-            # ✅ محاولة مشاهدة الستوري بعدة طرق
+            # مشاهدة الستوري
             view_success = False
             
-            # الطريقة 1: IncrementStoryViewsRequest (الأفضل)
+            # الطريقة 1
             try:
                 await client(IncrementStoryViewsRequest(peer=entity, id=story_id))
                 view_success = True
-                logger.info(f"👁️ تمت مشاهدة الستوري {story_id} من {session['phone_number']}")
             except Exception:
                 pass
             
-            # الطريقة 2: SendReactionRequest (تعتبر مشاهدة)
+            # الطريقة 2
             if not view_success:
                 try:
                     await client(SendReactionRequest(
@@ -321,23 +320,21 @@ class StoryService(RakshService):
                         reaction=ReactionEmoji(emoticon="❤️")
                     ))
                     view_success = True
-                    logger.info(f"👁️ تمت مشاهدة الستوري {story_id} من {session['phone_number']}")
                 except Exception:
                     pass
             
-            # الطريقة 3: get_messages (الوصول للستوري)
+            # الطريقة 3
             if not view_success:
                 try:
                     await client.get_messages(entity, ids=story_id)
                     view_success = True
-                    logger.info(f"👁️ تم الوصول للستوري {story_id} من {session['phone_number']}")
                 except Exception:
                     pass
             
             if not view_success:
                 return False, "تعذر مشاهدة الستوري"
             
-            # ✅ إضافة تفاعل عشوائي
+            # تفاعل عشوائي
             try:
                 reaction = params.get("reaction") or "❤️"
                 if reaction == "random":
