@@ -1068,81 +1068,81 @@ class StoryService(RakshService):
         return False
     
     async def execute(self, session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
-    """تنفيذ مشاهدة ستوري وتفاعل"""
-    client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
-    await asyncio.wait_for(client.connect(), timeout=15)
-    try:
-        if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
-            _mark_raksh_session_unauthorized(session.get("phone_number"))
-            return False, "الجلسة غير مصرح بها"
-        
-        entity_ref, story_id = _parse_story_link(params["link"])
-        if not entity_ref or not story_id:
-            return False, "رابط الستوري غير صحيح"
-        
+        """تنفيذ مشاهدة ستوري وتفاعل"""
+        client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+        await asyncio.wait_for(client.connect(), timeout=15)
         try:
-            entity = await client.get_entity(entity_ref)
-        except Exception as e:
-            return False, f"تعذر الوصول للكيان: {str(e)[:80]}"
-        
-        # ✅ محاولة مشاهدة الستوري بعدة طرق
-        view_success = False
-        
-        # الطريقة 1: IncrementStoryViewsRequest
-        try:
-            await client(IncrementStoryViewsRequest(peer=entity, id=story_id))
-            view_success = True
-            logger.info(f"👁️ تمت مشاهدة الستوري {story_id} من {session['phone_number']}")
-        except Exception:
-            pass
-        
-        # الطريقة 2: SendReactionRequest (تعتبر مشاهدة)
-        if not view_success:
+            if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
+                _mark_raksh_session_unauthorized(session.get("phone_number"))
+                return False, "الجلسة غير مصرح بها"
+            
+            entity_ref, story_id = _parse_story_link(params["link"])
+            if not entity_ref or not story_id:
+                return False, "رابط الستوري غير صحيح"
+            
             try:
-                await client(SendReactionRequest(
-                    peer=entity,
-                    story_id=story_id,
-                    reaction=ReactionEmoji(emoticon="❤️")
-                ))
+                entity = await client.get_entity(entity_ref)
+            except Exception as e:
+                return False, f"تعذر الوصول للكيان: {str(e)[:80]}"
+            
+            # ✅ محاولة مشاهدة الستوري بعدة طرق
+            view_success = False
+            
+            # الطريقة 1: IncrementStoryViewsRequest
+            try:
+                await client(IncrementStoryViewsRequest(peer=entity, id=story_id))
                 view_success = True
                 logger.info(f"👁️ تمت مشاهدة الستوري {story_id} من {session['phone_number']}")
             except Exception:
                 pass
-        
-        # الطريقة 3: get_messages
-        if not view_success:
+            
+            # الطريقة 2: SendReactionRequest (تعتبر مشاهدة)
+            if not view_success:
+                try:
+                    await client(SendReactionRequest(
+                        peer=entity,
+                        story_id=story_id,
+                        reaction=ReactionEmoji(emoticon="❤️")
+                    ))
+                    view_success = True
+                    logger.info(f"👁️ تمت مشاهدة الستوري {story_id} من {session['phone_number']}")
+                except Exception:
+                    pass
+            
+            # الطريقة 3: get_messages
+            if not view_success:
+                try:
+                    await client.get_messages(entity, ids=story_id)
+                    view_success = True
+                    logger.info(f"👁️ تم الوصول للستوري {story_id} من {session['phone_number']}")
+                except Exception:
+                    pass
+            
+            if not view_success:
+                return False, "تعذر مشاهدة الستوري"
+            
+            # ✅ إضافة تفاعل تلقائي
             try:
-                await client.get_messages(entity, ids=story_id)
-                view_success = True
-                logger.info(f"👁️ تم الوصول للستوري {story_id} من {session['phone_number']}")
-            except Exception:
-                pass
-        
-        if not view_success:
-            return False, "تعذر مشاهدة الستوري"
-        
-        # ✅ إضافة تفاعل تلقائي
-        try:
-            reaction = params.get("reaction") or "❤️"
-            if reaction == "random":
-                reaction = random.choice(["❤️", "🔥", "👍", "😍", "🤩", "✨", "💯", "👏", "😂", "😮"])
-            
-            await client(
-                SendReactionRequest(
-                    peer=entity,
-                    story_id=story_id,
-                    reaction=ReactionEmoji(emoticon=reaction),
+                reaction = params.get("reaction") or "❤️"
+                if reaction == "random":
+                    reaction = random.choice(["❤️", "🔥", "👍", "😍", "🤩", "✨", "💯", "👏", "😂", "😮"])
+                
+                await client(
+                    SendReactionRequest(
+                        peer=entity,
+                        story_id=story_id,
+                        reaction=ReactionEmoji(emoticon=reaction),
+                    )
                 )
-            )
-            return True, f"✅ تمت المشاهدة والتفاعل من {session['phone_number']}"
-        except Exception as reaction_error:
-            logger.warning(f"تفاعل فاشل للستوري {session['phone_number']}: {reaction_error}")
-            return True, f"✅ تمت المشاهدة من {session['phone_number']}"
-            
-    except Exception as e:
-        return False, f"❌ فشل: {str(e)[:80]}"
-    finally:
-        await client.disconnect()
+                return True, f"✅ تمت المشاهدة والتفاعل من {session['phone_number']}"
+            except Exception as reaction_error:
+                logger.warning(f"تفاعل فاشل للستوري {session['phone_number']}: {reaction_error}")
+                return True, f"✅ تمت المشاهدة من {session['phone_number']}"
+                
+        except Exception as e:
+            return False, f"❌ فشل: {str(e)[:80]}"
+        finally:
+            await client.disconnect()
 class ForcedRefService(RakshService):
     """خدمة إحالة بوت إجباري - كل شيء في مكان واحد"""
     
