@@ -1,6 +1,5 @@
 # story.py
 from .common import *
-from .raksh_system import _start_raksh_execution  # ✅ إضافة الاستيراد
 
 class StoryService(RakshService):
     """خدمة مشاهدة ستوري وتفاعل - كل شيء في مكان واحد"""
@@ -57,7 +56,6 @@ class StoryService(RakshService):
     async def handle_text(self, update, context, text, user, state, is_own) -> bool:
         """معالجة النص لخدمة الستوري"""
         
-        # الخطوة 1: استقبال الرابط
         if state == "link":
             link_error = self.validate_link(text)
             if link_error:
@@ -93,7 +91,6 @@ class StoryService(RakshService):
             )
             return True
         
-        # الخطوة 2: استقبال العدد
         if state == "quantity":
             try:
                 quantity = int(text)
@@ -128,7 +125,6 @@ class StoryService(RakshService):
             context.user_data["raksh_quantity"] = quantity
             context.user_data["raksh_step"] = "payment"
             
-            # عرض أزرار اختيار طريقة الدفع
             points_cost = self.get_total(quantity, "points")
             stars_cost = self.get_total(quantity, "stars")
             
@@ -156,7 +152,6 @@ class StoryService(RakshService):
             )
             return True
         
-        # الخطوة 3: انتظار التأكيد
         if state == "confirm":
             await update.message.reply_text(
                 "⚠️ استخدم الأزرار للتأكيد.",
@@ -171,7 +166,6 @@ class StoryService(RakshService):
     async def handle_callback(self, update, context, query, data_parts, user, is_own) -> bool:
         """معالجة الأزرار لخدمة الستوري"""
         
-        # ✅ تصحيح: len >= 4 وليس >= 5
         if data_parts[0] == "payment" and len(data_parts) >= 4:
             payment_method = data_parts[1]
             try:
@@ -194,7 +188,6 @@ class StoryService(RakshService):
             
             total_cost = self.get_total(quantity, payment_method)
             
-            # عرض شاشة التأكيد النهائي
             await query.edit_message_text(
                 f"📋 *تأكيد الطلب*\n\n"
                 f"🔗 الرابط: `{context.user_data.get('raksh_link', '')}`\n"
@@ -218,7 +211,6 @@ class StoryService(RakshService):
             )
             return True
         
-        # ✅ تصحيح: confirm
         if data_parts[0] == "confirm" and len(data_parts) >= 4:
             payment_method = data_parts[1]
             try:
@@ -261,7 +253,8 @@ class StoryService(RakshService):
                     parse_mode=ParseMode.MARKDOWN
                 )
                 
-                # ✅ استدعاء الدالة المستوردة
+                # ✅ استيراد محلي لتجنب Circular Import
+                from .raksh_system import _start_raksh_execution
                 await _start_raksh_execution(
                     update, context, query, self.service_type, quantity, "points", total_cost
                 )
@@ -303,10 +296,8 @@ class StoryService(RakshService):
             except Exception as e:
                 return False, f"تعذر الوصول للكيان: {str(e)[:80]}"
             
-            # ✅ محاولة مشاهدة الستوري بعدة طرق
             view_success = False
             
-            # الطريقة 1: IncrementStoryViewsRequest (الأفضل)
             try:
                 await client(IncrementStoryViewsRequest(peer=entity, id=story_id))
                 view_success = True
@@ -314,7 +305,6 @@ class StoryService(RakshService):
             except Exception:
                 pass
             
-            # الطريقة 2: SendReactionRequest (تعتبر مشاهدة)
             if not view_success:
                 try:
                     await client(SendReactionRequest(
@@ -327,7 +317,6 @@ class StoryService(RakshService):
                 except Exception:
                     pass
             
-            # الطريقة 3: get_messages (الوصول للستوري)
             if not view_success:
                 try:
                     await client.get_messages(entity, ids=story_id)
@@ -339,7 +328,6 @@ class StoryService(RakshService):
             if not view_success:
                 return False, "تعذر مشاهدة الستوري"
             
-            # ✅ إضافة تفاعل عشوائي
             try:
                 reaction = params.get("reaction") or "❤️"
                 if reaction == "random":
