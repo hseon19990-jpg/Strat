@@ -19,10 +19,11 @@ class ForcedRefAIService(RakshService):
         max_delay=3
     )
     
+    # 1️⃣ البدء بطلب القنوات الإجبارية
     def get_initial_state(self) -> str:
-        """البدء بطلب القنوات الإجبارية"""
         return "channel"
     
+    # 2️⃣ رسالة البداية
     def get_start_message(self) -> str:
         return (
             f"{self.config.name}\n\n"
@@ -36,15 +37,18 @@ class ForcedRefAIService(RakshService):
             f"✍️ اكتب 'تخطي' لعدم وجود قنوات"
         )
     
+    # 3️⃣ أزرار البداية (تخطي / إلغاء)
     def get_start_keyboard(self) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("⏭️ تخطي (بدون قنوات)", callback_data="raksh_forced_ref_ai:skip_channels")],
             [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
         ])
     
+    # 4️⃣ تعليمات الرابط
     def get_link_instruction(self) -> str:
         return "@BotUsername start123  أو  t.me/BotUsername?start=123"
     
+    # 5️⃣ التحقق من الرابط
     def validate_link(self, value: str) -> Optional[str]:
         if not value.strip():
             return "⚠️ الرابط لا يمكن أن يكون فارغاً"
@@ -58,6 +62,7 @@ class ForcedRefAIService(RakshService):
             )
         return None
     
+    # 6️⃣ معالجة النص (القنوات ← الرابط ← العدد ← الدفع)
     async def handle_text(self, update, context, text, user, state, is_own) -> bool:
         """معالجة النص لخدمة الإحالة مع التحقق"""
         
@@ -191,7 +196,7 @@ class ForcedRefAIService(RakshService):
             )
             return True
         
-        # ═══ الخطوة 4: انتظار التأكيد ═══
+        # ═══ الخطوة 4: انتظار التأكيد (يمكن تجاهلها لأن الأزرار تظهر مباشرة) ═══
         if state == "confirm":
             await update.message.reply_text(
                 "⚠️ استخدم الأزرار للتأكيد.",
@@ -203,6 +208,7 @@ class ForcedRefAIService(RakshService):
         
         return False
     
+    # 7️⃣ معالجة الأزرار
     async def handle_callback(self, update, context, query, data_parts, user, is_own) -> bool:
         """معالجة الأزرار لخدمة الإحالة مع التحقق"""
         
@@ -313,6 +319,7 @@ class ForcedRefAIService(RakshService):
                     parse_mode=ParseMode.MARKDOWN
                 )
                 
+                # استيراد محلي لتجنب مشاكل الاستيراد الدائري
                 from .raksh_system import _start_raksh_execution
                 await _start_raksh_execution(
                     update, context, query, self.service_type, quantity, "points", total_cost
@@ -337,6 +344,7 @@ class ForcedRefAIService(RakshService):
         
         return False
     
+    # 8️⃣ التنفيذ الفعلي (الانضمام للقنوات + فتح البوت + حل التحقق)
     async def execute(self, session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
         """تنفيذ إحالة بوت إجباري مع تحقق شامل"""
         client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
@@ -346,7 +354,7 @@ class ForcedRefAIService(RakshService):
                 _mark_raksh_session_unauthorized(session.get("phone_number"))
                 return False, "الجلسة غير مصرح بها"
             
-            # ═══ الانضمام للقنوات الإجبارية أولاً ═══
+            # 1️⃣ الانضمام للقنوات الإجبارية
             channels = params.get("channel_ref") or []
             if channels:
                 for channel_ref in channels:
@@ -356,7 +364,7 @@ class ForcedRefAIService(RakshService):
                     except Exception as e:
                         logger.warning(f"فشل الانضمام للقناة {channel_ref}: {e}")
             
-            # ═══ تنفيذ الإحالة بعد الانضمام للقنوات ═══
+            # 2️⃣ تحليل رابط البوت
             bot_username, start_param = _parse_bot_link(params["link"])
             if not bot_username:
                 return False, "رابط البوت غير صحيح"
@@ -365,6 +373,7 @@ class ForcedRefAIService(RakshService):
             resolved = await client(ResolveUsernameRequest(clean_username))
             bot_entity = resolved.users[0] if resolved.users else resolved.chats[0]
             
+            # 3️⃣ فتح البوت مع start_param
             await client(StartBotRequest(
                 bot=bot_entity,
                 peer=bot_entity,
@@ -372,7 +381,7 @@ class ForcedRefAIService(RakshService):
             ))
             await asyncio.sleep(2.0)
             
-            # ═══ حل التحقق ═══
+            # 4️⃣ حل التحقق الشامل (من common.py)
             success = await _solve_forced_ref_verification(client, bot_entity, session.get("phone_number"))
             
             if success:
