@@ -16,11 +16,16 @@ class ForcedRefService(RakshService):
         has_ai=False,
         needs_link=True,
         min_delay=3,
-        max_delay=3
+        max_delay=3,
+        max_concurrent=1  # تنفيذ تسلسلي لضمان الانضمام للقنوات أولاً
     )
     
     def get_link_instruction(self) -> str:
-        return "@BotUsername start123  أو  t.me/BotUsername?start=123"
+        return (
+            "أرسل رابط الإحالة بهذا الشكل:\n"
+            "@BotUsername start123\n"
+            "أو: t.me/BotUsername?start=123"
+        )
     
     def validate_link(self, value: str) -> Optional[str]:
         if not value.strip():
@@ -35,18 +40,327 @@ class ForcedRefService(RakshService):
             )
         return None
     
+    def get_initial_state(self) -> str:
+        return "channel"  # ✅ تبدأ بطلب القنوات الإجبارية
+    
+    def get_start_message(self) -> str:
+        return (
+            f"{self.config.name}\n\n"
+            f"💰 السعر: {self.get_rate_text('points')}\n"
+            f"⭐ السعر: {self.get_rate_text('stars')}\n\n"
+            f"📢 *أرسل القنوات الإجبارية:*\n"
+            f"كل قناة في سطر منفصل:\n"
+            f"@channel1\n"
+            f"@channel2\n"
+            f"أو أرسل روابط t.me\n\n"
+            f"✍️ اكتب 'تخطي' لعدم وجود قنوات"
+        )
+    
+    def get_start_keyboard(self) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("⏭️ تخطي (بدون قنوات)", callback_data="raksh_forced_ref:skip_channels")],
+            [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+        ])
+    
+    async def handle_text(self, update, context, text, user, state, is_own) -> bool:
+        """معالجة النص لخدمة الإحالة الإجبارية"""
+        
+        # ═══ الخطوة 1: استقبال القنوات الإجبارية ═══
+        if state == "channel":
+            if text.strip().lower() in {"تخطي", "skip", "لا", "none", "بدون"}:
+                context.user_data["raksh_channels"] = []
+            else:
+                channel_refs = _parse_channel_refs(text)
+                if not channel_refs:
+                    await update.message.reply_text(
+                        "⚠️ لم أتعرف على أي قناة.\n"
+                        "أرسل @username أو رابط t.me للقناة، ويمكنك إرسال أكثر من قناة مفصولة بمسافة أو سطر.\n"
+                        "أو اكتب 'تخطي' لعدم وجود قنوات.",
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                        ]),
+                    )
+                    return True
+                context.user_data["raksh_channels"] = channel_refs
+            
+            context.user_data["raksh_step"] = "link"
+            
+            await update.message.reply_text(
+                f"✅ تم حفظ القنوات الإجبارية ({len(context.user_data['raksh_channels'])} قناة).\n\n"
+                f"🔗 *أرسل رابط الإحالة:*\n"
+                f"{self.get_link_instruction()}",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                ])
+            )
+            return True
+        
+        # ═══ الخطوة 2: استقبال رابط الإحالة ═══
+        if state == "link":
+            link_error = self.validate_link(text)
+            if link_error:
+                await update.message.reply_text(
+                    link_error,
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                    ]),
+                )
+                return True
+            
+            context.user_data["raksh_link"] = text
+            context.user_data["raksh_step"] = "quantity"
+            
+            max_qty = self.get_request_limit(user.id)
+            if max_qty < 1:
+                await update.message.reply_text(
+                    "⚠️ لا توجد حسابات متاحة حالياً.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                    ]),
+                )
+                return True
+            
+            await update.message.reply_text(
+                f"✅ تم حفظ رابط الإحالة.\n\n"
+                f"🔢 *أرسل عدد الإحالات المطلوبة:*\n"
+                f"(الحد الأقصى: {max_qty})",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                ])
+            )
+            return True
+        
+        # ═══ الخطوة 3: استقبال العدد ═══
+        if state == "quantity":
+            try:
+                quantity = int(text)
+            except ValueError:
+                await update.message.reply_text(
+                    "⚠️ أرسل رقماً صحيحاً.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                    ]),
+                )
+                return True
+            
+            max_qty = self.get_request_limit(user.id)
+            if max_qty < 1:
+                await update.message.reply_text(
+                    "⚠️ لا توجد حسابات متاحة حالياً.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                    ]),
+                )
+                return True
+            
+            if quantity < 1 or quantity > max_qty:
+                await update.message.reply_text(
+                    f"⚠️ العدد المسموح بين 1 و {max_qty}.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                    ]),
+                )
+                return True
+            
+            context.user_data["raksh_quantity"] = quantity
+            context.user_data["raksh_step"] = "payment"
+            
+            points_cost = self.get_total(quantity, "points")
+            stars_cost = self.get_total(quantity, "stars")
+            
+            await update.message.reply_text(
+                f"📋 *تفاصيل الطلب*\n\n"
+                f"📢 القنوات الإجبارية: {len(context.user_data.get('raksh_channels', []))} قناة\n"
+                f"🔗 رابط الإحالة: `{context.user_data['raksh_link']}`\n"
+                f"🔢 العدد: {quantity}\n\n"
+                f"💳 *اختر طريقة الدفع:*",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton(
+                            f"💰 دفع بالنقاط ({points_cost} نقطة)",
+                            callback_data=f"raksh_forced_ref:payment:points:{quantity}:{points_cost}"
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            f"⭐ دفع بالنجوم ({stars_cost} نجمة)",
+                            callback_data=f"raksh_forced_ref:payment:stars:{quantity}:{stars_cost}"
+                        )
+                    ],
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                ])
+            )
+            return True
+        
+        # ═══ الخطوة 4: انتظار التأكيد ═══
+        if state == "confirm":
+            await update.message.reply_text(
+                "⚠️ استخدم الأزرار للتأكيد.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                ])
+            )
+            return True
+        
+        return False
+    
+    async def handle_callback(self, update, context, query, data_parts, user, is_own) -> bool:
+        """معالجة الأزرار لخدمة الإحالة الإجبارية"""
+        
+        # ═══ تخطي القنوات ═══
+        if data_parts[0] == "skip_channels":
+            context.user_data["raksh_channels"] = []
+            context.user_data["raksh_step"] = "link"
+            
+            await query.edit_message_text(
+                f"✅ تم تخطي القنوات.\n\n"
+                f"🔗 *أرسل رابط الإحالة:*\n"
+                f"{self.get_link_instruction()}",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                ])
+            )
+            return True
+        
+        # ═══ اختيار طريقة الدفع ═══
+        if data_parts[0] == "payment" and len(data_parts) >= 4:
+            payment_method = data_parts[1]
+            try:
+                quantity = int(data_parts[2])
+                button_total = int(data_parts[3])
+            except ValueError:
+                await query.answer("⚠️ العدد أو السعر غير صالح.", show_alert=True)
+                return True
+            
+            if payment_method not in {"points", "stars"}:
+                await query.answer("⚠️ طريقة الدفع غير صالحة.", show_alert=True)
+                return True
+            
+            if quantity > self.get_request_limit(user.id):
+                await query.edit_message_text(
+                    "⚠️ لا يمكن قبول هذا الطلب حالياً. حاول لاحقاً.",
+                    reply_markup=raksh_menu_kb(is_own),
+                )
+                return True
+            
+            total_cost = self.get_total(quantity, payment_method)
+            
+            await query.edit_message_text(
+                f"📋 *تأكيد الطلب*\n\n"
+                f"📢 القنوات الإجبارية: {len(context.user_data.get('raksh_channels', []))} قناة\n"
+                f"🔗 رابط الإحالة: `{context.user_data.get('raksh_link', '')}`\n"
+                f"🔢 العدد: {quantity}\n"
+                f"💳 طريقة الدفع: {'💰 نقاط' if payment_method == 'points' else '⭐ نجوم'}\n"
+                f"💰 التكلفة: {total_cost} {'نقطة' if payment_method == 'points' else 'نجمة'}\n\n"
+                f"*هل تريد تأكيد الطلب؟*",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton(
+                            "✅ تأكيد الطلب",
+                            callback_data=f"raksh_forced_ref:confirm:{payment_method}:{quantity}:{total_cost}"
+                        ),
+                        InlineKeyboardButton(
+                            "❌ إلغاء",
+                            callback_data="raksh_cancel"
+                        )
+                    ]
+                ])
+            )
+            return True
+        
+        # ═══ التأكيد النهائي وبدء التنفيذ ═══
+        if data_parts[0] == "confirm" and len(data_parts) >= 4:
+            payment_method = data_parts[1]
+            try:
+                quantity = int(data_parts[2])
+                button_total = int(data_parts[3])
+            except ValueError:
+                await query.answer("⚠️ العدد أو السعر غير صالح.", show_alert=True)
+                return True
+            
+            if payment_method not in {"points", "stars"}:
+                await query.answer("⚠️ طريقة الدفع غير صالحة.", show_alert=True)
+                return True
+            
+            if quantity > self.get_request_limit(user.id):
+                await query.edit_message_text(
+                    "⚠️ لا يمكن قبول هذا الطلب حالياً. حاول لاحقاً.",
+                    reply_markup=raksh_menu_kb(is_own),
+                )
+                return True
+            
+            total_cost = self.get_total(quantity, payment_method)
+            
+            if payment_method == "points":
+                if not deduct_points(user.id, total_cost):
+                    await query.edit_message_text(
+                        "❌ *نقاطك غير كافية!*\n"
+                        f"التكلفة المطلوبة: {total_cost} نقطة",
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=raksh_menu_kb(is_own)
+                    )
+                    return True
+                
+                await query.edit_message_text(
+                    "✅ *تم تأكيد الطلب وخصم النقاط!*\n\n"
+                    f"📋 تفاصيل الطلب:\n"
+                    f"📢 القنوات الإجبارية: {len(context.user_data.get('raksh_channels', []))} قناة\n"
+                    f"🔗 الرابط: `{context.user_data.get('raksh_link', '')}`\n"
+                    f"🔢 العدد: {quantity}\n"
+                    f"💰 تم خصم: {total_cost} نقطة\n\n"
+                    f"⏳ جاري الانضمام للقنوات وبدء الإحالة...",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                
+                from .raksh_system import _start_raksh_execution
+                await _start_raksh_execution(
+                    update, context, query, self.service_type, quantity, "points", total_cost
+                )
+                return True
+            
+            else:
+                await query.edit_message_text(
+                    "⭐ *جاري تجهيز فاتورة الدفع بالنجوم...*",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+                await context.bot.send_invoice(
+                    chat_id=user.id,
+                    title=self.config.name,
+                    description=f"{quantity} إحالة | {total_cost} نجمة",
+                    payload=f"raksh_stars:{user.id}:{self.service_type}:{quantity}:{total_cost}",
+                    provider_token="",
+                    currency="XTR",
+                    prices=[LabeledPrice("إحالة بوت إجباري", total_cost)],
+                )
+                return True
+        
+        return False
+    
     async def execute(self, session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
-        """تنفيذ إحالة بوت إجباري"""
+        """تنفيذ إحالة بوت إجباري مع الانضمام للقنوات"""
         client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
-        await asyncio.wait_for(client.connect(), timeout=15)
+        await asyncio.wait_for(client.connect(), timeout=20)
         try:
-            if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
+            if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
                 _mark_raksh_session_unauthorized(session.get("phone_number"))
                 return False, "الجلسة غير مصرح بها"
             
-            if is_first and params.get("channel_ref"):
-                await _join_channel_and_schedule_leave(client, params["channel_ref"])
+            # ═══ الانضمام للقنوات الإجبارية أولاً (لجميع الحسابات) ═══
+            channels = params.get("channel_ref") or []
+            if channels:
+                for channel_ref in channels:
+                    try:
+                        await _join_channel_and_schedule_leave(client, channel_ref)
+                        await asyncio.sleep(1.0)  # مهلة قصيرة بين القنوات
+                    except Exception as e:
+                        logger.warning(f"فشل الانضمام للقناة {channel_ref}: {e}")
             
+            # ═══ تنفيذ الإحالة بعد الانضمام للقنوات ═══
             bot_username, start_param = _parse_bot_link(params["link"])
             if not bot_username:
                 return False, "رابط البوت غير صحيح"
