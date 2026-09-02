@@ -1,29 +1,28 @@
 from .common import *
 
-class ForcedRefAIService(RakshService):
-    """خدمة إحالة بوت إجباري مع تحقق - كل شيء في مكان واحد"""
+class ForcedRefService(RakshService):
+    """خدمة إحالة بوت إجباري - كل شيء في مكان واحد"""
     
-    service_type = "forced_ref_ai"
-    label = "🤖 إحالة بوت إجباري مع تحقق"
+    service_type = "forced_ref"
+    label = "🔑 إحالة بوت إجباري"
     config = ServiceConfig(
         name=label,
-        price_points=300,
+        price_points=250,
         points_quantity=1,
-        price_stars=15,
+        price_stars=10,
         stars_quantity=1,
         has_channel=True,
         has_reaction=False,
-        has_ai=True,
+        has_ai=False,
         needs_link=True,
         min_delay=3,
         max_delay=3
     )
     
-    # 1️⃣ البدء بطلب القنوات الإجبارية
     def get_initial_state(self) -> str:
+        """البدء بطلب القنوات الإجبارية"""
         return "channel"
     
-    # 2️⃣ رسالة البداية
     def get_start_message(self) -> str:
         return (
             f"{self.config.name}\n\n"
@@ -37,18 +36,15 @@ class ForcedRefAIService(RakshService):
             f"✍️ اكتب 'تخطي' لعدم وجود قنوات"
         )
     
-    # 3️⃣ أزرار البداية (تخطي / إلغاء)
     def get_start_keyboard(self) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([
-            [InlineKeyboardButton("⏭️ تخطي (بدون قنوات)", callback_data="raksh_forced_ref_ai:skip_channels")],
+            [InlineKeyboardButton("⏭️ تخطي (بدون قنوات)", callback_data="raksh_forced_ref:skip_channels")],
             [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
         ])
     
-    # 4️⃣ تعليمات الرابط
     def get_link_instruction(self) -> str:
         return "@BotUsername start123  أو  t.me/BotUsername?start=123"
     
-    # 5️⃣ التحقق من الرابط
     def validate_link(self, value: str) -> Optional[str]:
         if not value.strip():
             return "⚠️ الرابط لا يمكن أن يكون فارغاً"
@@ -62,9 +58,8 @@ class ForcedRefAIService(RakshService):
             )
         return None
     
-    # 6️⃣ معالجة النص (القنوات ← الرابط ← العدد ← الدفع)
     async def handle_text(self, update, context, text, user, state, is_own) -> bool:
-        """معالجة النص لخدمة الإحالة مع التحقق"""
+        """معالجة النص لخدمة الإحالة الإجبارية"""
         
         # ═══ الخطوة 1: استقبال القنوات الإجبارية ═══
         if state == "channel":
@@ -182,13 +177,13 @@ class ForcedRefAIService(RakshService):
                     [
                         InlineKeyboardButton(
                             f"💰 دفع بالنقاط ({points_cost} نقطة)",
-                            callback_data=f"raksh_forced_ref_ai:payment:points:{quantity}:{points_cost}"
+                            callback_data=f"raksh_forced_ref:payment:points:{quantity}:{points_cost}"
                         )
                     ],
                     [
                         InlineKeyboardButton(
                             f"⭐ دفع بالنجوم ({stars_cost} نجمة)",
-                            callback_data=f"raksh_forced_ref_ai:payment:stars:{quantity}:{stars_cost}"
+                            callback_data=f"raksh_forced_ref:payment:stars:{quantity}:{stars_cost}"
                         )
                     ],
                     [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
@@ -196,7 +191,7 @@ class ForcedRefAIService(RakshService):
             )
             return True
         
-        # ═══ الخطوة 4: انتظار التأكيد (يمكن تجاهلها لأن الأزرار تظهر مباشرة) ═══
+        # ═══ الخطوة 4: انتظار التأكيد ═══
         if state == "confirm":
             await update.message.reply_text(
                 "⚠️ استخدم الأزرار للتأكيد.",
@@ -208,9 +203,8 @@ class ForcedRefAIService(RakshService):
         
         return False
     
-    # 7️⃣ معالجة الأزرار
     async def handle_callback(self, update, context, query, data_parts, user, is_own) -> bool:
-        """معالجة الأزرار لخدمة الإحالة مع التحقق"""
+        """معالجة الأزرار لخدمة الإحالة الإجبارية"""
         
         # ═══ تخطي القنوات ═══
         if data_parts[0] == "skip_channels":
@@ -264,7 +258,7 @@ class ForcedRefAIService(RakshService):
                     [
                         InlineKeyboardButton(
                             "✅ تأكيد الطلب",
-                            callback_data=f"raksh_forced_ref_ai:confirm:{payment_method}:{quantity}:{total_cost}"
+                            callback_data=f"raksh_forced_ref:confirm:{payment_method}:{quantity}:{total_cost}"
                         ),
                         InlineKeyboardButton(
                             "❌ إلغاء",
@@ -315,7 +309,7 @@ class ForcedRefAIService(RakshService):
                     f"🔗 الرابط: `{context.user_data.get('raksh_link', '')}`\n"
                     f"🔢 العدد: {quantity}\n"
                     f"💰 تم خصم: {total_cost} نقطة\n\n"
-                    f"⏳ جاري الانضمام للقنوات وحل التحقق...",
+                    f"⏳ جاري الانضمام للقنوات وبدء الإحالة...",
                     parse_mode=ParseMode.MARKDOWN
                 )
                 
@@ -334,19 +328,18 @@ class ForcedRefAIService(RakshService):
                 await context.bot.send_invoice(
                     chat_id=user.id,
                     title=self.config.name,
-                    description=f"{quantity} إحالة مع تحقق | {total_cost} نجمة",
+                    description=f"{quantity} إحالة | {total_cost} نجمة",
                     payload=f"raksh_stars:{user.id}:{self.service_type}:{quantity}:{total_cost}",
                     provider_token="",
                     currency="XTR",
-                    prices=[LabeledPrice("إحالة بوت إجباري مع تحقق", total_cost)],
+                    prices=[LabeledPrice("إحالة بوت إجباري", total_cost)],
                 )
                 return True
         
         return False
     
-    # 8️⃣ التنفيذ الفعلي (الانضمام للقنوات + فتح البوت + حل التحقق)
     async def execute(self, session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
-        """تنفيذ إحالة بوت إجباري مع تحقق شامل"""
+        """تنفيذ إحالة بوت إجباري مع الانضمام للقنوات"""
         client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
         await asyncio.wait_for(client.connect(), timeout=20)
         try:
@@ -364,7 +357,7 @@ class ForcedRefAIService(RakshService):
                     except Exception as e:
                         logger.warning(f"فشل الانضمام للقناة {channel_ref}: {e}")
             
-            # 2️⃣ تحليل رابط البوت
+            # 2️⃣ تنفيذ الإحالة بعد الانضمام للقنوات
             bot_username, start_param = _parse_bot_link(params["link"])
             if not bot_username:
                 return False, "رابط البوت غير صحيح"
@@ -373,21 +366,14 @@ class ForcedRefAIService(RakshService):
             resolved = await client(ResolveUsernameRequest(clean_username))
             bot_entity = resolved.users[0] if resolved.users else resolved.chats[0]
             
-            # 3️⃣ فتح البوت مع start_param
             await client(StartBotRequest(
                 bot=bot_entity,
                 peer=bot_entity,
                 start_param=start_param or ""
             ))
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(1.5)
             
-            # 4️⃣ حل التحقق الشامل (من common.py)
-            success = await _solve_forced_ref_verification(client, bot_entity, session.get("phone_number"))
-            
-            if success:
-                return True, f"✅ تمت الإحالة مع التحقق من {session['phone_number']}"
-            else:
-                return False, "فشل التحقق بعد محاولات متعددة"
+            return True, f"✅ تمت الإحالة من {session['phone_number']}"
         except Exception as e:
             return False, f"❌ فشل: {str(e)}"
         finally:
