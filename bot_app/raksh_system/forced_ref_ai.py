@@ -1,6 +1,6 @@
 # forced_ref_ai.py
 from .common import *
-from telethon.tl.types import InputMediaContact, KeyboardButtonRequestPhone, KeyboardButton
+from telethon.tl.types import InputMediaContact, KeyboardButtonRequestPhone
 
 class ForcedRefAIService(RakshService):
     """خدمة إحالة بوت إجباري مع تحقق - كل شيء في مكان واحد"""
@@ -331,59 +331,9 @@ class ForcedRefAIService(RakshService):
         
         return False
     
-    # ═══ دالة مساعدة: إرسال جهة الاتصال أو الضغط على زرها ═══
-    async def _share_contact(self, client, bot_entity, verification_message, phone_number) -> bool:
-        """محاولة مشاركة جهة الاتصال بأي طريقة"""
-        # 1. إرسال جهة الاتصال مباشرة (الطريقة الأكثر موثوقية)
-        try:
-            me = await client.get_me()
-            if not me or not me.phone:
-                return False
-            contact = InputMediaContact(
-                phone_number=me.phone,
-                first_name=me.first_name or "User",
-                last_name=me.last_name or ""
-            )
-            await client.send_message(bot_entity, file=contact)
-            logger.info(f"📱 تم إرسال جهة الاتصال مباشرة من {phone_number}")
-            return True
-        except Exception as e:
-            logger.warning(f"فشل إرسال جهة الاتصال مباشرة: {e}")
-
-        # 2. محاولة الضغط على زر إذا كان موجوداً
-        buttons = []
-        for row in (getattr(verification_message, 'buttons', None) or []):
-            for btn in row:
-                if not getattr(btn, 'url', None):
-                    buttons.append(btn)
-        reply_markup = getattr(verification_message, 'reply_markup', None)
-        if reply_markup and hasattr(reply_markup, 'rows'):
-            for row in reply_markup.rows:
-                for btn in row.buttons:
-                    buttons.append(btn)
-
-        for btn in buttons:
-            if isinstance(btn, KeyboardButtonRequestPhone):
-                try:
-                    await btn.click(share_phone=True)
-                    logger.info(f"✅ ضغط على زر مشاركة جهة الاتصال من {phone_number}")
-                    return True
-                except Exception as e:
-                    logger.warning(f"فشل الضغط على زر الطلب: {e}")
-            elif isinstance(btn, KeyboardButton):
-                text = getattr(btn, 'text', '').lower()
-                if any(kw in text for kw in ['مشاركة', 'share', 'phone', 'هاتف', 'اتصال', 'contact']):
-                    try:
-                        await btn.click()
-                        logger.info(f"✅ ضغط على زر '{getattr(btn, 'text', '')}' من {phone_number}")
-                        return True
-                    except Exception as e:
-                        logger.warning(f"فشل الضغط على الزر: {e}")
-        return False
-
-    # ═══ دالة حل التحقق المحسّنة ═══
+    # ═══ دالة حل التحقق: الإرسال اليدوي لجهة الاتصال + الأزرار ═══
     async def _solve_verification(self, client, bot_entity, phone_number: str) -> bool:
-        """حل التحقق بشكل ذكي مع مشاركة جهة الاتصال وإعادة محاولة الضغط"""
+        """حل التحقق بشكل ذكي - إرسال جهة الاتصال يدوياً + إعادة محاولة الأزرار"""
         max_attempts = 30
         base_id = 0
 
@@ -396,6 +346,25 @@ class ForcedRefAIService(RakshService):
                     break
         except Exception as e:
             logger.warning(f"تعذر تحديد الرسالة المرجعية: {e}")
+
+        # ✅ دالة إرسال جهة الاتصال يدوياً (تعمل حتى مع الإصدارات القديمة)
+        async def send_contact_manually():
+            try:
+                me = await client.get_me()
+                if not me or not me.phone:
+                    return False
+                contact = InputMediaContact(
+                    phone_number=me.phone,
+                    first_name=me.first_name or "User",
+                    last_name=me.last_name or ""
+                )
+                # ✅ الإرسال عبر send_file يعمل دائماً بدلاً من click()
+                await client.send_file(bot_entity, file=contact)
+                logger.info(f"📱 تم إرسال جهة الاتصال يدوياً من {phone_number}")
+                return True
+            except Exception as e:
+                logger.warning(f"فشل إرسال جهة الاتصال يدوياً: {e}")
+                return False
 
         def extract_target_emoji(text: str):
             emoji_pattern = re.compile(
@@ -428,7 +397,7 @@ class ForcedRefAIService(RakshService):
                 msg_text = getattr(msg, 'message', '') or ''
                 if msg_text.strip().startswith("/"):
                     continue
-                if any(kw in msg_text for kw in ["أرسل", "التالي", "بالضبط", "اكتب", "retype", "type", "اضغط", "اختر", "انقر", "مشاركة", "share", "contact"]):
+                if any(kw in msg_text for kw in ["أرسل", "التالي", "بالضبط", "اكتب", "retype", "type", "اضغط", "اختر", "انقر"]):
                     verification_message = msg
                     break
 
@@ -444,22 +413,54 @@ class ForcedRefAIService(RakshService):
 
             text = getattr(verification_message, 'message', '') or ''
 
-            # ═══ 1️⃣ إذا طلب مشاركة جهة اتصال - نفّذها فوراً ═══
-            if any(keyword in text.lower() for keyword in ["مشاركة جهة اتصال", "share contact", "phone number", "رقم هاتف"]):
-                if await self._share_contact(client, bot_entity, verification_message, phone_number):
+            # ═══ 1️⃣ أولاً: فحص الأزرار (يشمل زر مشاركة جهة الاتصال) ═══
+            all_buttons = []
+            for row in (getattr(verification_message, 'buttons', None) or []):
+                for btn in row:
+                    if not getattr(btn, 'url', None):
+                        all_buttons.append(btn)
+            reply_markup = getattr(verification_message, 'reply_markup', None)
+            if reply_markup and hasattr(reply_markup, 'rows'):
+                for row in reply_markup.rows:
+                    for btn in row.buttons:
+                        all_buttons.append(btn)
+
+            # ✅ البحث عن زر طلب جهة الاتصال
+            phone_button = None
+            for btn in all_buttons:
+                if isinstance(btn, KeyboardButtonRequestPhone):
+                    phone_button = btn
+                    break
+
+            if phone_button is not None:
+                # ✅ الإرسال اليدوي - الطريقة الأضمن
+                if await send_contact_manually():
                     await asyncio.sleep(2.0)
                     try:
                         updated = await client.get_messages(bot_entity, ids=verification_message.id)
                         if isinstance(updated, (list, tuple)):
                             updated = updated[0] if updated else None
                         if updated is None or not getattr(updated, 'buttons', None) and not getattr(updated, 'reply_markup', None):
-                            logger.info(f"✅ اختفت الرسالة بعد مشاركة جهة الاتصال من {phone_number}")
+                            logger.info(f"✅ اختفت الأزرار بعد إرسال جهة الاتصال من {phone_number}")
                             return True
                     except Exception:
                         pass
+                    # ✅ نكمل معالجة الرسائل الجديدة التي قد تظهر
+                else:
+                    # ✅ خطة بديلة: الضغط على الزر (قد يفشل في بعض الإصدارات)
+                    try:
+                        await phone_button.click(share_phone=True)
+                        logger.info(f"✅ ضغط على زر مشاركة جهة الاتصال من {phone_number}")
+                    except Exception as e:
+                        logger.warning(f"فشل الضغط على الزر: {e}")
+
+            # ═══ 2️⃣ إذا طلب النص مشاركة جهة الاتصال ═══
+            if any(keyword in text.lower() for keyword in ["مشاركة جهة اتصال", "share contact", "phone number", "رقم هاتف"]):
+                if await send_contact_manually():
+                    await asyncio.sleep(2.0)
                     continue
 
-            # ═══ 2️⃣ استخراج الكود ═══
+            # ═══ 3️⃣ استخراج الكود ═══
             send_text = _extract_code_from_text(text)
             if send_text:
                 try:
@@ -469,7 +470,7 @@ class ForcedRefAIService(RakshService):
                 except Exception:
                     return False
 
-            # ═══ 3️⃣ حل المسائل الرياضية ═══
+            # ═══ 4️⃣ حل المسائل الرياضية ═══
             math_patterns = [
                 (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=\s*\?', 1, 2, 3),
                 (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=', 1, 2, 3),
@@ -499,19 +500,7 @@ class ForcedRefAIService(RakshService):
                     except Exception:
                         continue
 
-            # ═══ 4️⃣ الضغط على الأزرار العادية ═══
-            all_buttons = []
-            for row in (getattr(verification_message, 'buttons', None) or []):
-                for btn in row:
-                    if not getattr(btn, 'url', None):
-                        all_buttons.append(btn)
-            reply_markup = getattr(verification_message, 'reply_markup', None)
-            if reply_markup and hasattr(reply_markup, 'rows'):
-                for row in reply_markup.rows:
-                    for btn in row.buttons:
-                        if not getattr(btn, 'url', None):
-                            all_buttons.append(btn)
-
+            # ═══ 5️⃣ الضغط على الأزرار العادية ═══
             if all_buttons:
                 target_emoji = extract_target_emoji(text)
                 prioritized = []
