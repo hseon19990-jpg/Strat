@@ -358,144 +358,284 @@ class ForcedRefAIService(RakshService):
 
     async def _solve_verification(self, client, bot_entity, phone_number: str) -> bool:
         """
-        حل التحقق بذكاء:
-        1. إذا طلب البوت مشاركة رقم الهاتف (زر KeyboardButtonRequestPhone) – نرسل الرقم ونضغط متابعة.
-        2. وإلا نستخدم المنطق القديم: استخراج الكود، حل المسائل، الضغط على الأزرار العادية.
+        حل التحقق بذكاء مع دعم متعدد المراحل:
+        1. إذا طلب البوت مشاركة رقم الهاتف - نرسل الرقم
+        2. وإلا نستخدم المنطق القديم: استخراج الكود، حل المسائل، الضغط على الأزرار
+        3. يستمر في حل التحقق حتى يتم اجتيازه بالكامل
         """
-        MAX_WAIT = 12
-        CHECK_INTERVAL = 1.0
+        MAX_ATTEMPTS = 10  # عدد مرات حل التحقق المتتالية
+        WAIT_BETWEEN = 1.0
 
-        # ─── المرحلة 1: البحث عن طلب مشاركة رقم الهاتف ───
-        contact_request_msg = None
-        for _ in range(MAX_WAIT):
-            try:
-                messages = await client.get_messages(bot_entity, limit=5)
-            except Exception:
-                await asyncio.sleep(CHECK_INTERVAL)
-                continue
-
-            for msg in messages:
-                if msg.out:
-                    continue
-                if msg.reply_markup:
-                    for row in msg.reply_markup.rows:
-                        for btn in row.buttons:
-                            if isinstance(btn, KeyboardButtonRequestPhone):
-                                contact_request_msg = msg
-                                break
-                        if contact_request_msg:
-                            break
-                if contact_request_msg:
-                    break
-            if contact_request_msg:
-                break
-            await asyncio.sleep(CHECK_INTERVAL)
-
-        # إذا وجدنا طلب رقم → نعالجه بطريقة جديدة
-        if contact_request_msg:
-            logger.info(f"📱 تم اكتشاف طلب رقم هاتف من {phone_number}")
-
-            # إرسال جهة الاتصال
-            try:
-                me = await client.get_me()
-                if not me or not me.phone:
-                    logger.warning(f"⚠️ الحساب {phone_number} ليس له رقم هاتف")
-                    return False
-                phone = me.phone if me.phone.startswith('+') else f'+{me.phone}'
-                await client.send_file(
-                    bot_entity,
-                    file=InputMediaContact(
-                        phone_number=phone,
-                        first_name=me.first_name or "User",
-                        last_name=me.last_name or "",
-                        vcard="",
-                    )
-                )
-                logger.info(f"📱 تم إرسال جهة الاتصال من {phone_number}")
-            except Exception as e:
-                logger.error(f"❌ فشل إرسال جهة الاتصال: {e}")
-                return False
-
-            # انتظار زر متابعة
-            proceed_button = None
-            for _ in range(MAX_WAIT):
+        for attempt in range(MAX_ATTEMPTS):
+            # ─── المرحلة 1: البحث عن طلب مشاركة رقم الهاتف ───
+            contact_request_msg = None
+            for _ in range(12):
                 try:
                     messages = await client.get_messages(bot_entity, limit=5)
                 except Exception:
-                    await asyncio.sleep(CHECK_INTERVAL)
+                    await asyncio.sleep(1.0)
                     continue
 
                 for msg in messages:
                     if msg.out:
                         continue
-                    buttons = []
                     if msg.reply_markup:
                         for row in msg.reply_markup.rows:
                             for btn in row.buttons:
-                                if not getattr(btn, 'url', None):
-                                    buttons.append(btn)
-                    # نفضل الأزرار التي تحوي كلمات مفتاحية
-                    for btn in buttons:
-                        btn_text = (getattr(btn, 'text', '') or '').strip().casefold()
-                        if any(kw in btn_text for kw in ['متابعة', 'التالي', 'ابدأ', 'تحقق', 'continue', 'next', 'start', 'verify']):
-                            proceed_button = btn
-                            break
-                        if not proceed_button:
-                            proceed_button = btn
-                    if proceed_button:
+                                if isinstance(btn, KeyboardButtonRequestPhone):
+                                    contact_request_msg = msg
+                                    break
+                            if contact_request_msg:
+                                break
+                    if contact_request_msg:
                         break
-                if proceed_button:
+                if contact_request_msg:
                     break
-                await asyncio.sleep(CHECK_INTERVAL)
+                await asyncio.sleep(1.0)
 
-            if proceed_button:
+            # إذا وجدنا طلب رقم → نعالجه
+            if contact_request_msg:
+                logger.info(f"📱 تم اكتشاف طلب رقم هاتف من {phone_number}")
+
                 try:
-                    await proceed_button.click()
-                    logger.info(f"🖱️ تم الضغط على زر '{getattr(proceed_button, 'text', '')}'")
+                    me = await client.get_me()
+                    if not me or not me.phone:
+                        logger.warning(f"⚠️ الحساب {phone_number} ليس له رقم هاتف")
+                        return False
+                    phone = me.phone if me.phone.startswith('+') else f'+{me.phone}'
+                    await client.send_file(
+                        bot_entity,
+                        file=InputMediaContact(
+                            phone_number=phone,
+                            first_name=me.first_name or "User",
+                            last_name=me.last_name or "",
+                            vcard="",
+                        )
+                    )
+                    logger.info(f"📱 تم إرسال جهة الاتصال من {phone_number}")
                 except Exception as e:
-                    logger.warning(f"⚠️ فشل الضغط على زر المتابعة: {e}")
+                    logger.error(f"❌ فشل إرسال جهة الاتصال: {e}")
+                    return False
 
-            # انتظار تأكيد النجاح (اختفاء الأزرار أو رسالة تأكيد)
-            for _ in range(MAX_WAIT):
-                try:
-                    latest = await client.get_messages(bot_entity, limit=3)
-                    success = False
-                    for msg in latest:
+                # انتظار زر متابعة
+                proceed_button = None
+                for _ in range(12):
+                    try:
+                        messages = await client.get_messages(bot_entity, limit=5)
+                    except Exception:
+                        await asyncio.sleep(1.0)
+                        continue
+
+                    for msg in messages:
                         if msg.out:
                             continue
-                        if not msg.reply_markup and (getattr(msg, 'message', '') or '').strip():
-                            success = True
+                        buttons = []
+                        if msg.reply_markup:
+                            for row in msg.reply_markup.rows:
+                                for btn in row.buttons:
+                                    if not getattr(btn, 'url', None):
+                                        buttons.append(btn)
+                        for btn in buttons:
+                            btn_text = (getattr(btn, 'text', '') or '').strip().casefold()
+                            if any(kw in btn_text for kw in ['متابعة', 'التالي', 'ابدأ', 'تحقق', 'continue', 'next', 'start', 'verify']):
+                                proceed_button = btn
+                                break
+                            if not proceed_button:
+                                proceed_button = btn
+                        if proceed_button:
                             break
-                        text = (getattr(msg, 'message', '') or '').strip().casefold()
-                        if any(kw in text for kw in ['تم', 'نجاح', 'مرحباً', 'شكراً', 'success', 'done', 'welcome']):
-                            success = True
-                            break
-                    if success:
-                        logger.info(f"✅ تم التحقق بنجاح (مشاركة الرقم) من {phone_number}")
-                        return True
-                except Exception:
-                    pass
-                await asyncio.sleep(CHECK_INTERVAL)
+                    if proceed_button:
+                        break
+                    await asyncio.sleep(1.0)
 
-            # فحص أخير: هل اختفت أزرار طلب الرقم؟
+                if proceed_button:
+                    try:
+                        await proceed_button.click()
+                        logger.info(f"🖱️ تم الضغط على زر '{getattr(proceed_button, 'text', '')}'")
+                    except Exception as e:
+                        logger.warning(f"⚠️ فشل الضغط على زر المتابعة: {e}")
+
+                await asyncio.sleep(2.0)
+                
+                # استمر في حل أي تحقق جديد بعد مشاركة الرقم
+                # نستمر في الحلقة الرئيسية لحل أي تحقق إضافي
+                logger.info(f"📱 بعد مشاركة الرقم، نستمر في حل التحقق من {phone_number}")
+                continue  # نعود لأعلى الحلقة لحل أي تحقق جديد
+
+            # ─── المرحلة 2: حل التحقق العادي (نص، معادلة، أزرار) ───
+            logger.info(f"🔍 حل التحقق العادي من {phone_number} (المحاولة {attempt + 1}/{MAX_ATTEMPTS})")
+
+            # جلب الرسائل الأخيرة
             try:
-                original = await client.get_messages(bot_entity, ids=contact_request_msg.id)
-                if original and not original.reply_markup:
-                    logger.info(f"✅ اختفت أزرار طلب الرقم، نعتبر النجاح من {phone_number}")
+                messages = await client.get_messages(bot_entity, limit=20)
+            except Exception as exc:
+                if "two different IP" in str(exc) or "AuthKeyDuplicated" in str(exc):
+                    logger.error(f"⚠️ الجلسة {phone_number} تستخدم من IP مختلف - سيتم تعطيلها")
+                    _mark_raksh_session_unauthorized(phone_number)
+                    return False
+                await asyncio.sleep(1.0)
+                continue
+
+            incoming_messages = [msg for msg in messages if not msg.out]
+            incoming_messages.sort(key=lambda m: m.id)
+
+            # نبحث عن أحدث رسالة من البوت تحتوي على تحقق
+            verification_msg = None
+            for msg in reversed(incoming_messages):
+                msg_text = getattr(msg, 'message', '') or ''
+                # نتخطى الرسائل الفارغة أو التي تبدأ بـ /
+                if not msg_text.strip() or msg_text.strip().startswith("/"):
+                    continue
+                # نبحث عن رسائل فيها تحقق
+                if any(kw in msg_text for kw in ['أرسل', 'اكتب', 'type', 'اضغط', 'انقر', 'choose', '؟', 'math', 'حل', 'code', 'رمز']):
+                    verification_msg = msg
+                    break
+                # إذا كانت تحتوي على أزرار
+                if msg.reply_markup:
+                    verification_msg = msg
+                    break
+
+            if verification_msg is None:
+                # إذا لم نجد رسالة تحقق، نتحقق مما إذا كنا قد نجحنا بالفعل
+                for msg in incoming_messages:
+                    msg_text = (getattr(msg, 'message', '') or '').strip().casefold()
+                    if any(kw in msg_text for kw in ['تم', 'نجاح', 'مرحباً', 'welcome', 'success', 'done', 'مبروك']):
+                        logger.info(f"✅ تم التحقق بنجاح من {phone_number}")
+                        return True
+                await asyncio.sleep(1.0)
+                continue
+
+            text = getattr(verification_msg, 'message', '') or ''
+            logger.info(f"📝 رسالة التحقق: {text[:100]}...")
+
+            solved = False
+
+            # 1. استخراج الكود
+            code = _extract_code_from_text(text)
+            if code:
+                try:
+                    await client.send_message(bot_entity, code)
+                    logger.info(f"✅ تم إرسال الكود: {code}")
+                    solved = True
+                except Exception as e:
+                    logger.warning(f"⚠️ فشل إرسال الكود: {e}")
+
+            # 2. حل المسائل الرياضية
+            if not solved:
+                math_result = self._solve_math_problem(text)
+                if math_result is not None:
+                    try:
+                        await client.send_message(bot_entity, math_result)
+                        logger.info(f"✅ تم حل المسألة: {math_result}")
+                        solved = True
+                    except Exception as e:
+                        logger.warning(f"⚠️ فشل إرسال حل المسألة: {e}")
+
+            # 3. الضغط على الأزرار
+            if not solved and verification_msg.reply_markup:
+                buttons = []
+                for row in verification_msg.reply_markup.rows:
+                    for btn in row.buttons:
+                        if not getattr(btn, 'url', None):
+                            buttons.append(btn)
+
+                if buttons:
+                    # استخراج الإيموجي المطلوب
+                    emoji_pattern = re.compile(
+                        "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E0-\U0001F1FF]"
+                    )
+                    target_emoji = None
+                    found_emojis = emoji_pattern.findall(text)
+                    if found_emojis:
+                        target_emoji = found_emojis[-1]
+
+                    # ترتيب الأزرار حسب الأولوية
+                    prioritized = []
+                    if target_emoji:
+                        exact = [b for b in buttons if getattr(b, 'text', '') == target_emoji]
+                        prioritized.extend(exact)
+                        partial = [b for b in buttons if target_emoji in (getattr(b, 'text', '') or '') and b not in exact]
+                        prioritized.extend(partial)
+
+                    verify_keywords = ['تحقق', 'verify', 'اضغط هنا', 'continue', 'التالي', 'متابعة', 'ابدأ', 'start']
+                    verify_buttons = [
+                        b for b in buttons
+                        if any(kw in (getattr(b, 'text', '') or '').casefold() for kw in verify_keywords)
+                        and b not in prioritized
+                    ]
+                    prioritized.extend(verify_buttons)
+
+                    # إذا لم نجد زراً محدداً، نضغط على أول زر
+                    if not prioritized:
+                        prioritized = buttons
+
+                    for btn in prioritized:
+                        try:
+                            btn_text = getattr(btn, 'text', '') or ''
+                            await btn.click()
+                            logger.info(f"🖱️ تم الضغط على الزر: {btn_text}")
+                            solved = True
+                            break
+                        except Exception as e:
+                            logger.warning(f"⚠️ فشل الضغط على الزر: {e}")
+                            continue
+
+            if solved:
+                logger.info(f"✅ تم حل التحقق من {phone_number}، ننتظر التحقق التالي...")
+                await asyncio.sleep(2.0)
+                # نستمر في الحلقة للتحقق من وجود تحقق إضافي
+                continue
+            else:
+                logger.warning(f"⚠️ لم نتمكن من حل التحقق في المحاولة {attempt + 1}")
+                await asyncio.sleep(2.0)
+
+        # بعد كل المحاولات، نتحقق من النجاح
+        try:
+            final_messages = await client.get_messages(bot_entity, limit=10)
+            for msg in final_messages:
+                if msg.out:
+                    continue
+                msg_text = (getattr(msg, 'message', '') or '').strip().casefold()
+                if any(kw in msg_text for kw in ['تم', 'نجاح', 'مرحباً', 'welcome', 'success', 'done', 'مبروك']):
+                    logger.info(f"✅ تم التحقق بنجاح من {phone_number}")
                     return True
-            except Exception:
-                pass
+        except Exception:
+            pass
 
-            # إذا لم نجد تأكيداً، نعتبر العملية ناجحة (لعدم وجود خطأ واضح)
-            logger.warning(f"⚠️ لم نؤكد التحقق لكننا سنعتبره ناجحاً (مشاركة الرقم) من {phone_number}")
-            return True
+        # إذا لم نجد تأكيداً، ولكن لم يحدث خطأ واضح
+        logger.warning(f"⚠️ لم نؤكد التحقق لكننا سنعتبره ناجحاً من {phone_number}")
+        return True
 
-        # ─── المرحلة 2: لم يطلب الرقم → استخدم المنطق القديم ───
-        logger.info(f"🔍 لم يطلب البوت رقم هاتف، ننتقل إلى المنطق القديم لـ {phone_number}")
-
-        # المنطق القديم (مستند على _solve_forced_ref_verification من common.py)
-        # ولكن سنعيد تنفيذه هنا لتكامل الملف
-        return await self._solve_legacy_verification(client, bot_entity, phone_number)
+    def _solve_math_problem(self, text: str) -> Optional[str]:
+        """حل المسائل الرياضية من النص"""
+        math_patterns = [
+            (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=\s*\?', 1, 2, 3),
+            (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=', 1, 2, 3),
+            (r'(\d+)\s*\+\s*(\d+)\s*=', 1, 2),
+            (r'(\d+)\s*\-\s*(\d+)\s*=', 1, 2),
+            (r'(\d+)\s*\*\s*(\d+)\s*=', 1, 2),
+            (r'(\d+)\s*\/\s*(\d+)\s*=', 1, 2),
+        ]
+        for pattern, *groups in math_patterns:
+            match = re.search(pattern, text)
+            if match:
+                try:
+                    if len(groups) == 3:
+                        a, op, b = int(match.group(groups[0])), match.group(groups[1]), int(match.group(groups[2]))
+                    else:
+                        a, b = int(match.group(groups[0])), int(match.group(groups[1]))
+                        op = '+'
+                    if op == '+': 
+                        return str(a + b)
+                    elif op == '-': 
+                        return str(a - b)
+                    elif op == '*': 
+                        return str(a * b)
+                    elif op == '/': 
+                        return str(a / b) if b != 0 else None
+                except Exception:
+                    continue
+        return None
 
     async def _solve_legacy_verification(self, client, bot_entity, phone_number: str) -> bool:
         """
