@@ -179,6 +179,18 @@ def init_db():
               active          INTEGER DEFAULT 1,
               service_type    TEXT DEFAULT 'smm'
           )""")
+           c.execute("""
+           CREATE TABLE IF NOT EXISTS raksh_execution_usage (
+               id           SERIAL PRIMARY KEY,
+               user_id      BIGINT NOT NULL,
+               service_type TEXT NOT NULL,
+               phone_number TEXT NOT NULL,
+               executed_at  TIMESTAMPTZ DEFAULT NOW()
+           )""")
+           c.execute("""
+           CREATE INDEX IF NOT EXISTS raksh_execution_usage_user_time_idx
+           ON raksh_execution_usage (user_id, executed_at)
+           """)
           c.execute("""
           CREATE TABLE IF NOT EXISTS mandatory_sub_orders (
               id            SERIAL PRIMARY KEY,
