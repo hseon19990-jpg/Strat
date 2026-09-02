@@ -497,8 +497,12 @@ def _extract_code_from_text(text: str) -> Optional[str]:
     
     return None
 
+# ════════════════════════════════════════════════════════
+# ═══ 6. دالة حل التحقق (مع دعم جهة الاتصال ومعالجة الأخطاء) ═══
+# ════════════════════════════════════════════════════════
+
 async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) -> bool:
-    """حل التحقق المضمون مع دعم مشاركة جهة الاتصال"""
+    """حل التحقق المضمون مع دعم مشاركة جهة الاتصال ومعالجة الأخطاء"""
     max_attempts = 20
     base_id = 0
 
@@ -549,7 +553,10 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
         
         text = getattr(verification_message, 'message', '') or ''
         
-        send_text = _extract_code_from_text(text)
+        # إزالة علامات الاقتباس والأحرف غير المرغوبة من النص لتحسين التحويل
+        cleaned_text = re.sub(r"[\"'`]", "", text)
+        
+        send_text = _extract_code_from_text(cleaned_text)
         if send_text:
             try:
                 await client.send_message(bot_entity, send_text)
@@ -558,6 +565,7 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
             except Exception:
                 return False
         
+        # حل مسألة رياضية مع معالجة الأخطاء
         math_patterns = [
             (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=\s*\?', 1, 2, 3),
             (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=', 1, 2, 3),
@@ -567,7 +575,7 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
             (r'(\d+)\s*\/\s*(\d+)\s*=', 1, 2),
         ]
         for pattern, *groups in math_patterns:
-            match = re.search(pattern, text)
+            match = re.search(pattern, cleaned_text)
             if match:
                 try:
                     if len(groups) == 3:
@@ -589,6 +597,7 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
                 except Exception:
                     continue
         
+        # الأزرار (بما فيها مشاركة جهة الاتصال)
         buttons = []
         for row in getattr(verification_message, 'buttons', None) or []:
             for btn in row:
@@ -624,6 +633,10 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
         await asyncio.sleep(2.0)
     
     return False
+
+# ════════════════════════════════════════════════════════
+# ═══ 7. دوال مساعدة أخرى ═══
+# ════════════════════════════════════════════════════════
 
 async def _join_channel_and_schedule_leave(client, channel_ref: str):
     """الانضمام للقناة وجدولة المغادرة"""
@@ -705,7 +718,7 @@ async def _send_vote_and_check(client, peer, msg_id: int, option) -> bool:
     return False
 
 # ════════════════════════════════════════════════════════
-# ═══ 6. ServiceConfig ═══
+# ═══ 8. ServiceConfig ═══
 # ════════════════════════════════════════════════════════
 
 @dataclass
@@ -724,7 +737,7 @@ class ServiceConfig:
     max_concurrent: int = 1
 
 # ════════════════════════════════════════════════════════
-# ═══ 7. RakshService - الفئة الأساسية ═══
+# ═══ 9. RakshService - الفئة الأساسية ═══
 # ════════════════════════════════════════════════════════
 
 class RakshService:
@@ -859,7 +872,7 @@ class RakshService:
         }
 
 # ════════════════════════════════════════════════════════
-# ═══ 8. دوال حجز التنفيذ (بدون حدود) ═══
+# ═══ 10. دوال حجز التنفيذ (بدون حدود) ═══
 # ════════════════════════════════════════════════════════
 
 def _reserve_raksh_execution_slot(user_id: int, service_type: str, phone_number: str) -> bool:
@@ -867,7 +880,7 @@ def _reserve_raksh_execution_slot(user_id: int, service_type: str, phone_number:
     return True  # ✅ تجاهل الحدود نهائيًا
 
 # ════════════════════════════════════════════════════════
-# ═══ 9. التصدير ═══
+# ═══ 11. التصدير ═══
 # ════════════════════════════════════════════════════════
 
 __all__ = [name for name in globals() if not name.startswith("__")]
