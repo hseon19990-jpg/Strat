@@ -1,5 +1,6 @@
 # story.py
 from .common import *
+from .raksh_system import _start_raksh_execution  # ✅ إضافة الاستيراد
 
 class StoryService(RakshService):
     """خدمة مشاهدة ستوري وتفاعل - كل شيء في مكان واحد"""
@@ -260,6 +261,7 @@ class StoryService(RakshService):
                     parse_mode=ParseMode.MARKDOWN
                 )
                 
+                # ✅ استدعاء الدالة المستوردة
                 await _start_raksh_execution(
                     update, context, query, self.service_type, quantity, "points", total_cost
                 )
@@ -301,17 +303,18 @@ class StoryService(RakshService):
             except Exception as e:
                 return False, f"تعذر الوصول للكيان: {str(e)[:80]}"
             
-            # مشاهدة الستوري
+            # ✅ محاولة مشاهدة الستوري بعدة طرق
             view_success = False
             
-            # الطريقة 1
+            # الطريقة 1: IncrementStoryViewsRequest (الأفضل)
             try:
                 await client(IncrementStoryViewsRequest(peer=entity, id=story_id))
                 view_success = True
+                logger.info(f"👁️ تمت مشاهدة الستوري {story_id} من {session['phone_number']}")
             except Exception:
                 pass
             
-            # الطريقة 2
+            # الطريقة 2: SendReactionRequest (تعتبر مشاهدة)
             if not view_success:
                 try:
                     await client(SendReactionRequest(
@@ -320,21 +323,23 @@ class StoryService(RakshService):
                         reaction=ReactionEmoji(emoticon="❤️")
                     ))
                     view_success = True
+                    logger.info(f"👁️ تمت مشاهدة الستوري {story_id} من {session['phone_number']}")
                 except Exception:
                     pass
             
-            # الطريقة 3
+            # الطريقة 3: get_messages (الوصول للستوري)
             if not view_success:
                 try:
                     await client.get_messages(entity, ids=story_id)
                     view_success = True
+                    logger.info(f"👁️ تم الوصول للستوري {story_id} من {session['phone_number']}")
                 except Exception:
                     pass
             
             if not view_success:
                 return False, "تعذر مشاهدة الستوري"
             
-            # تفاعل عشوائي
+            # ✅ إضافة تفاعل عشوائي
             try:
                 reaction = params.get("reaction") or "❤️"
                 if reaction == "random":
