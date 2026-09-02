@@ -43,8 +43,8 @@ RAKSH_CUSTOM_REACTION_PREFIX = "__raksh_custom_reaction__:"
 RAKSH_REACTION_LOOKUP_MAX_SESSIONS = 3
 RAKSH_REACTION_LOOKUP_TIMEOUT_SECONDS = 5
 RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS = 4
-RAKSH_MIN_DELAY_SECONDS = 60
-RAKSH_MAX_DELAY_SECONDS = 180
+RAKSH_MIN_DELAY_SECONDS = 3
+RAKSH_MAX_DELAY_SECONDS = 3
 RAKSH_VOTE_DELAY_SECONDS = 3
 RAKSH_MAX_EXECUTIONS_PER_DAY = 1000
 RAKSH_MAX_EXECUTIONS_PER_HOUR = 100
@@ -691,8 +691,8 @@ class ServiceConfig:
     has_reaction: bool
     has_ai: bool
     needs_link: bool
-    min_delay: int = 60
-    max_delay: int = 180
+    min_delay: int = 3
+    max_delay: int = 3
     max_concurrent: int = 1
 
 # ════════════════════════════════════════════════════════
