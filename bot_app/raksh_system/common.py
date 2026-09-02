@@ -46,8 +46,11 @@ RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS = 4
 RAKSH_MIN_DELAY_SECONDS = 3
 RAKSH_MAX_DELAY_SECONDS = 3
 RAKSH_VOTE_DELAY_SECONDS = 3
-RAKSH_MAX_EXECUTIONS_PER_DAY = 1000
-RAKSH_MAX_EXECUTIONS_PER_HOUR = 100
+
+# 🔓 تعطيل الحدود اليومية والساعية (0 = غير محدود)
+RAKSH_MAX_EXECUTIONS_PER_DAY = 0
+RAKSH_MAX_EXECUTIONS_PER_HOUR = 0
+
 RAKSH_NO_VERIFICATION_MESSAGE = "بدون زر تحقق"
 
 # ════════════════════════════════════════════════════════
@@ -58,7 +61,8 @@ _RAKSH_SESSION_LOCKS: Dict[str, asyncio.Lock] = {}
 _RAKSH_VOTE_FLOW_LOCK = asyncio.Lock()
 _RAKSH_SESSION_CACHE: Dict[str, Dict] = {}
 _RAKSH_SESSION_CACHE_TIME: Dict[str, float] = {}
-_RAKSH_SESSION_CACHE_TTL = 60
+# 🔥 تعطيل الكاش نهائياً بجعل TTL = 0
+_RAKSH_SESSION_CACHE_TTL = 0
 
 def _get_raksh_session_lock(phone_number: str) -> asyncio.Lock:
     """الحصول على قفل جلسة مع إدارة الذاكرة"""
@@ -119,6 +123,8 @@ def get_raksh_hourly_remaining(user_id: int) -> int:
 
 def get_raksh_daily_remaining(user_id: int) -> int:
     """عدد التنفيذات المتبقية خلال اليوم"""
+    if RAKSH_MAX_EXECUTIONS_PER_DAY <= 0:
+        return 2_147_483_647
     try:
         with db_conn() as c:
             row = c.execute(
@@ -137,13 +143,10 @@ def get_raksh_daily_remaining(user_id: int) -> int:
         return RAKSH_MAX_EXECUTIONS_PER_DAY
 
 def _get_sessions_for_service(service_type: str) -> List[Dict]:
-    """جلب الجلسات المناسبة لنوع الخدمة مع التخزين المؤقت"""
-    cache_key = f"sessions_{service_type}"
-    if cache_key in _RAKSH_SESSION_CACHE:
-        cache_time = _RAKSH_SESSION_CACHE_TIME.get(cache_key, 0)
-        if time.time() - cache_time < _RAKSH_SESSION_CACHE_TTL:
-            return _RAKSH_SESSION_CACHE[cache_key].copy()
-    
+    """
+    جلب الجلسات المناسبة لنوع الخدمة.
+    🔥 تم تعطيل الكاش المؤقت، ويتم جلب جميع الحسابات الصالحة (بدون استبعاد).
+    """
     with db_conn() as c:
         query = """
             SELECT id, phone_number, session_string, raksh_only, last_authorized
@@ -151,16 +154,10 @@ def _get_sessions_for_service(service_type: str) -> List[Dict]:
             WHERE session_string IS NOT NULL
               AND BTRIM(session_string) <> ''
               AND deleted_at IS NULL
-              AND forced_ref_excluded IS NOT TRUE
             ORDER BY last_authorized DESC NULLS LAST, id ASC
         """
         rows = c.execute(query).fetchall()
-        sessions = [dict(row) for row in rows]
-        
-        _RAKSH_SESSION_CACHE[cache_key] = sessions
-        _RAKSH_SESSION_CACHE_TIME[cache_key] = time.time()
-        
-        return sessions
+        return [dict(row) for row in rows]
 
 def get_available_sessions_count(service_type: str = None) -> int:
     """عدد الجلسات المتاحة للخدمة"""
@@ -180,46 +177,27 @@ def _mark_raksh_session_unauthorized(phone_number: str) -> None:
                 (phone_number,)
             )
         logger.warning(f"🔒 جلسة غير مصرح بها: {phone_number}")
-        _RAKSH_SESSION_CACHE.clear()
-        _RAKSH_SESSION_CACHE_TIME.clear()
+        # لا داعي لمسح الكاش لأنه معطل
     except Exception as exc:
         logger.warning(f"تعذر تحديث حالة الجلسة {phone_number}: {exc}")
 
 async def _remove_invalid_raksh_sessions(failed_phones: List[str]) -> None:
-    """إزالة الجلسات غير الصالحة"""
+    """
+    ⚠️ هذه الدالة لا تقوم بحذف أو استبعاد أي حساب، بل فقط تحديث حالة last_authorized.
+    بهذا تبقى جميع الحسابات في القائمة ولا ينقص عددها.
+    """
     if not failed_phones:
         return
     
-    removed = 0
     for phone in failed_phones:
         try:
             with db_conn() as c:
-                row = c.execute(
-                    "SELECT session_string, id FROM number_stock WHERE phone_number=%s",
+                c.execute(
+                    "UPDATE number_stock SET last_authorized=FALSE WHERE phone_number=%s",
                     (phone,)
-                ).fetchone()
-                if row and not row["session_string"]:
-                    c.execute(
-                        "UPDATE number_stock SET forced_ref_excluded=TRUE WHERE id=%s",
-                        (row["id"],)
-                    )
-                    removed += 1
-                    logger.info(f"🗑️ إزالة {phone} من الرشق")
-        except Exception as e:
-            logger.warning(f"فشل إزالة {phone}: {e}")
-    
-    if removed:
-        _RAKSH_SESSION_CACHE.clear()
-        _RAKSH_SESSION_CACHE_TIME.clear()
-        
-        if OWNER_ID:
-            try:
-                await bot.send_message(
-                    OWNER_ID,
-                    f"🧹 تمت إزالة {removed} حساب غير صالح من الرشق"
                 )
-            except Exception:
-                pass
+        except Exception as e:
+            logger.warning(f"فشل تحديث حالة {phone}: {e}")
 
 # ════════════════════════════════════════════════════════
 # ═══ 3. أدوات تحليل الروابط ═══
@@ -526,7 +504,7 @@ def _extract_code_from_text(text: str) -> Optional[str]:
     return None
 
 async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) -> bool:
-    """حل التحقق المضمون"""
+    """حل التحقق المضمون (للاستخدام في forced_ref_ai عندما لا يطلب رقم)"""
     max_attempts = 20
     base_id = 0
 
