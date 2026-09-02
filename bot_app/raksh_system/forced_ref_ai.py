@@ -364,7 +364,6 @@ class ForcedRefAIService(RakshService):
         3. يستمر في حل التحقق حتى يتم اجتيازه بالكامل
         """
         MAX_ATTEMPTS = 10  # عدد مرات حل التحقق المتتالية
-        WAIT_BETWEEN = 1.0
 
         for attempt in range(MAX_ATTEMPTS):
             # ─── المرحلة 1: البحث عن طلب مشاركة رقم الهاتف ───
@@ -458,9 +457,8 @@ class ForcedRefAIService(RakshService):
                 await asyncio.sleep(2.0)
                 
                 # استمر في حل أي تحقق جديد بعد مشاركة الرقم
-                # نستمر في الحلقة الرئيسية لحل أي تحقق إضافي
                 logger.info(f"📱 بعد مشاركة الرقم، نستمر في حل التحقق من {phone_number}")
-                continue  # نعود لأعلى الحلقة لحل أي تحقق جديد
+                continue
 
             # ─── المرحلة 2: حل التحقق العادي (نص، معادلة، أزرار) ───
             logger.info(f"🔍 حل التحقق العادي من {phone_number} (المحاولة {attempt + 1}/{MAX_ATTEMPTS})")
@@ -483,14 +481,11 @@ class ForcedRefAIService(RakshService):
             verification_msg = None
             for msg in reversed(incoming_messages):
                 msg_text = getattr(msg, 'message', '') or ''
-                # نتخطى الرسائل الفارغة أو التي تبدأ بـ /
                 if not msg_text.strip() or msg_text.strip().startswith("/"):
                     continue
-                # نبحث عن رسائل فيها تحقق
                 if any(kw in msg_text for kw in ['أرسل', 'اكتب', 'type', 'اضغط', 'انقر', 'choose', '؟', 'math', 'حل', 'code', 'رمز']):
                     verification_msg = msg
                     break
-                # إذا كانت تحتوي على أزرار
                 if msg.reply_markup:
                     verification_msg = msg
                     break
@@ -565,7 +560,6 @@ class ForcedRefAIService(RakshService):
                     ]
                     prioritized.extend(verify_buttons)
 
-                    # إذا لم نجد زراً محدداً، نضغط على أول زر
                     if not prioritized:
                         prioritized = buttons
 
@@ -583,7 +577,6 @@ class ForcedRefAIService(RakshService):
             if solved:
                 logger.info(f"✅ تم حل التحقق من {phone_number}، ننتظر التحقق التالي...")
                 await asyncio.sleep(2.0)
-                # نستمر في الحلقة للتحقق من وجود تحقق إضافي
                 continue
             else:
                 logger.warning(f"⚠️ لم نتمكن من حل التحقق في المحاولة {attempt + 1}")
@@ -602,7 +595,6 @@ class ForcedRefAIService(RakshService):
         except Exception:
             pass
 
-        # إذا لم نجد تأكيداً، ولكن لم يحدث خطأ واضح
         logger.warning(f"⚠️ لم نؤكد التحقق لكننا سنعتبره ناجحاً من {phone_number}")
         return True
 
