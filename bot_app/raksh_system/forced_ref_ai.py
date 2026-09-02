@@ -1,5 +1,5 @@
 from .common import *
-from ..database import db_conn  # ✅ استيراد للوصول لقاعدة البيانات
+from ..database import db_conn  # ✅ استيراد قاعدة البيانات
 
 class ForcedRefAIService(RakshService):
     """خدمة إحالة بوت إجباري مع تحقق - كل شيء في مكان واحد"""
@@ -20,7 +20,7 @@ class ForcedRefAIService(RakshService):
         max_delay=3
     )
 
-    # ─── ⚠️ تجاوز دالة جلب الحسابات لجلب جميع الحسابات المتاحة ───
+    # ─── ⚠️ تجاوز دالة جلب الحسابات لجلب جميع الحسابات المتاحة (بدون استبعاد) ───
     def get_sessions(self) -> List[Dict]:
         """جلب جميع الحسابات المتاحة (بدون استبعاد)"""
         with db_conn() as c:
@@ -33,6 +33,11 @@ class ForcedRefAIService(RakshService):
                 ORDER BY last_authorized DESC NULLS LAST, id ASC
             """).fetchall()
             return [dict(row) for row in rows]
+
+    # ─── ⚠️ تجاوز حد الطلب لتجاهل الحدود اليومية/الساعية ───
+    def get_request_limit(self, user_id: int) -> int:
+        """الحد الأقصى هو عدد الحسابات المتاحة فقط"""
+        return len(self.get_sessions())
 
     # ─── بداية الطلب: القنوات الإجبارية ───
     def get_initial_state(self) -> str:
@@ -452,4 +457,4 @@ class ForcedRefAIService(RakshService):
         except Exception as e:
             return False, f"❌ فشل: {str(e)}"
         finally:
-            await client.disconnect()
+            await client.disconnect() 
