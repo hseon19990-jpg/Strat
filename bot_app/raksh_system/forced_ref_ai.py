@@ -17,8 +17,8 @@ class ForcedRefAIService(ForcedRefService):
         has_reaction=False,
         has_ai=True,
         needs_link=True,
-        min_delay=180,
-        max_delay=180
+        min_delay=3,
+        max_delay=3
     )
     
     async def execute(self, session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
