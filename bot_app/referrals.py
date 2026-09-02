@@ -824,13 +824,8 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                 t = getattr(m, "message", "") or getattr(m, "text", "") or ""
                 if _is_fail(t):
                     return "fail", last_msgs
-            if processed_ids and any(
-                getattr(m, "id", None) not in processed_ids
-                and (getattr(m, "message", "") or getattr(m, "text", ""))
-                and not getattr(m, "buttons", None)
-                for m in recent_msgs
-            ):
-                return "success", last_msgs
+            # وجود رسالة نصية جديدة وحده لا يعني نجاح التحقق؛ فقد تكون
+            # المرحلة التالية من الكابتشا بعد الضغط على زر سابق.
         return "unknown", last_msgs
 
     all_details: list[str] = []
@@ -1005,7 +1000,9 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
                         if result == "fail":
                             break
-                        return True, f"ضغط الزر | {' | '.join(all_details)}"
+                        # لم يصل تأكيد نجاح بعد. ستُعاد قراءة الرسائل في
+                        # الجولة التالية لمعالجة أي مرحلة تحقق جديدة.
+                        continue
                     except Exception as _e:
                         logger.warning(
                             f"⚠️ AI visual image/button captcha ({phone}): {_e}"
@@ -1042,7 +1039,8 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                         elif result == "fail":
                             break
                         else:
-                            return True, f"أُرسلت إجابة الصورة | {' | '.join(all_details)}"
+                            # قد يرسل البوت تحدياً آخر بعد إجابة الصورة.
+                            continue
                 except Exception as _e:
                     logger.warning(f"⚠️ AI image captcha ({phone}): {_e}")
                 continue
@@ -1081,7 +1079,9 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                         logger.info(f"✅ تم حل الكابتشا للرقم {phone} في المحاولة {_round+1}")
                         return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
                     elif result != "fail":
-                        return True, f"أُرسل الملف الشخصي | {' | '.join(all_details)}"
+                        # مشاركة الملف قد تكون خطوة أولى فقط من تحقق متعدد
+                        # المراحل؛ لا نعلن النجاح قبل تأكيد صريح.
+                        continue
                     continue
                 except Exception as _e:
                     logger.warning(f"⚠️ AI forward profile ({phone}): {_e}")
@@ -1132,7 +1132,8 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             logger.info(f"✅ تم حل الكابتشا للرقم {phone} في المحاولة {_round+1}")
                             return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
                         elif result != "fail":
-                            return True, f"أجاب على اختبار | {' | '.join(all_details)}"
+                            # قد يظهر تحدٍ آخر بعد الاختيار.
+                            continue
                         else:
                             processed_ids.discard(msg_id)
                         continue
@@ -1269,7 +1270,9 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             elif result == "fail":
                                 break
                             else:
-                                return True, f"ضغط الزر | {' | '.join(all_details)}"
+                                # الضغط ليس دليلاً كافياً على النجاح؛ نتابع
+                                # لمعالجة التحقق الذي قد يظهر بعده.
+                                continue
                 except Exception as _e:
                     logger.warning(f"⚠️ AI button captcha ({phone}): {_e}")
                 continue
@@ -1308,7 +1311,9 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                         elif result == "fail":
                             break
                         else:
-                            return True, f"أُرسلت الإجابة | {' | '.join(all_details)}"
+                            # ننتظر ونفحص المرحلة التالية بدلاً من إنهاء
+                            # العملية بمجرد إرسال الإجابة.
+                            continue
                 except Exception as _e:
                     logger.warning(f"⚠️ AI text captcha ({phone}): {_e}")
 
@@ -1345,14 +1350,18 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             logger.info(f"✅ تم حل الكابتشا للرقم {phone} في المحاولة {_round+1}")
                             return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
                         elif result != "fail":
-                            return True, f"أُرسل التفاعل | {' | '.join(all_details)}"
+                            # قد يتبع التفاعل تحقق نصي أو زر آخر.
+                            continue
                 except Exception as _e:
                     logger.warning(f"⚠️ AI reaction ({phone}): {_e}")
 
     # ── النتيجة النهائية ───────────────────────────────────────
     if all_details:
-        logger.info(f"ℹ️ تم حل الكابتشا جزئياً للرقم {phone}: {all_details}")
-        return True, f"حُلّ جزئياً | {' | '.join(all_details)}"
+        logger.warning(
+            f"⚠️ تم تنفيذ خطوات تحقق جزئية دون تأكيد النجاح للرقم {phone}: "
+            f"{all_details}"
+        )
+        return False, f"لم يكتمل التحقق | {' | '.join(all_details)}"
     
     if provider_failures:
         reason = provider_failures[0]
