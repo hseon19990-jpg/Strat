@@ -131,7 +131,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ─── نظام الرشق يستخدم نفس مسار استقبال الرسائل لكل خطوات الطلب ───
     if context.user_data.get("raksh_step"):
         from .raksh_system import handle_raksh_text
-        if await handle_raksh_text(update, context):
+        try:
+            if await handle_raksh_text(update, context):
+                return
+        except Exception:
+            logger.exception(
+                "فشل معالجة رسالة خدمة الرشق للمستخدم %s",
+                user.id,
+            )
+            await update.message.reply_text(
+                "⚠️ حدث خطأ أثناء معالجة الرابط. حاول مرة أخرى أو اضغط إلغاء.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("❌ إلغاء", callback_data="raksh_cancel")
+                ]]),
+            )
             return
 
     # ─── الخدمات الأسطورية تستخدم نفس مسار استقبال الرسائل لكل أنواعها ───
