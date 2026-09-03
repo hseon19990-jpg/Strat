@@ -432,6 +432,41 @@ class ForcedRefAIService(RakshService):
         if initial_button_message_id is not None:
             await asyncio.sleep(1.0)
 
+        # بعد الضغط أو بعد /start مباشرة، قد تكون رسالة «أرسل النص التالي»
+        # موجودة بالفعل، وقد يكون رقمها أقدم من آخر رسالة صادرة للحساب
+        # بسبب تعديل الرسالة. نضع أحدث رسالة نصية صريحة في قائمة الأولوية
+        # حتى تصل إلى محلل الكود مهما كان ترتيب أرقام Telegram.
+        priority_message_ids = (
+            {initial_button_message_id}
+            if initial_button_message_id is not None
+            else set()
+        )
+        text_challenge_markers = (
+            "أرسل النص التالي",
+            "ارسل النص التالي",
+            "النص التالي",
+            "send the following text",
+            "send the text",
+            "type the following",
+            "retype",
+        )
+        try:
+            post_click_messages = await client.get_messages(bot_entity, limit=20)
+            for msg in post_click_messages:
+                msg_text = (getattr(msg, "message", "") or "").casefold()
+                if (
+                    not msg.out
+                    and any(marker in msg_text for marker in text_challenge_markers)
+                ):
+                    priority_message_ids.add(msg.id)
+                    logger.info(
+                        f"🔎 تم تحديد رسالة نص التحقق رقم {msg.id} "
+                        f"للمعالجة بعد الضغط"
+                    )
+                    break
+        except Exception as exc:
+            logger.warning(f"تعذر إعادة قراءة رسالة التحقق بعد الضغط: {exc}")
+
         # ─── المرحلة 1: البحث عن طلب مشاركة رقم الهاتف ───
         contact_request_msg = None
         for _ in range(MAX_WAIT):
@@ -565,11 +600,7 @@ class ForcedRefAIService(RakshService):
             client,
             bot_entity,
             phone_number,
-            priority_message_ids=(
-                {initial_button_message_id}
-                if initial_button_message_id is not None
-                else set()
-            ),
+            priority_message_ids=priority_message_ids,
         )
 
     async def _solve_legacy_verification(
