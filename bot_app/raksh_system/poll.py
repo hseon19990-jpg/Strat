@@ -175,13 +175,18 @@ class PollService(RakshService):
                 return False, "الاستفتاء ليس له خيارات"
 
             option_request = params.get("poll_option", "1")
-            option = _select_poll_option(options, option_request)
-            if not option:
+            selected_answer = _select_poll_option(options, option_request)
+            if not selected_answer:
                 return False, f"الخيار {option_request} غير موجود"
+
+            # SendVoteRequest يحتاج قيمة option (bytes)، وليس كائن PollAnswer
+            vote_option = getattr(selected_answer, "option", None)
+            if not vote_option:
+                return False, f"الخيار {option_request} غير صالح"
 
             # محاولة التصويت المباشر عبر SendVoteRequest
             try:
-                await client(SendVoteRequest(peer=entity, msg_id=msg_id, options=[option]))
+                await client(SendVoteRequest(peer=entity, msg_id=msg_id, options=[vote_option]))
                 await asyncio.sleep(1.0)
                 # التحقق من نجاح التصويت (بشكل اختياري)
                 try:
@@ -192,7 +197,7 @@ class PollService(RakshService):
                         results = getattr(refreshed.poll, "results", None)
                         if results and results.results:
                             for result in results.results:
-                                if getattr(result, "option", None) == option and getattr(result, "chosen", False):
+                                if getattr(result, "option", None) == vote_option and getattr(result, "chosen", False):
                                     return True, f"✅ تم التصويت من {session['phone_number']}"
                 except Exception:
                     pass
@@ -204,7 +209,7 @@ class PollService(RakshService):
             # إذا فشل التصويت المباشر، محاولة الضغط على الأزرار
             if message.buttons:
                 # البحث عن زر مطابق للخيار أو زر "تصويت"
-                target_text = getattr(option, "text", "") if hasattr(option, "text") else str(option)
+                target_text = getattr(selected_answer, "text", "") or str(option_request)
                 for row in message.buttons:
                     for btn in row:
                         if getattr(btn, "url", None):
