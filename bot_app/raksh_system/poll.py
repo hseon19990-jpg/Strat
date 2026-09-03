@@ -15,16 +15,14 @@ class PollService(RakshService):
         has_reaction=False,
         has_ai=False,
         needs_link=True,
-        min_delay=0,          # بدون تأخير (سرعة عالية)
+        min_delay=0,
         max_delay=0,
-        max_concurrent=6      # 6 حسابات في نفس الوقت
+        max_concurrent=6
     )
 
-    # ─── تعليمات الرابط ───
     def get_link_instruction(self) -> str:
         return "أرسل رابط الاستفتاء: https://t.me/channel/123"
 
-    # ─── التحقق من الرابط ───
     def validate_link(self, value: str) -> Optional[str]:
         if not value.strip():
             return "⚠️ الرابط لا يمكن أن يكون فارغاً"
@@ -32,7 +30,6 @@ class PollService(RakshService):
             return "⚠️ الرابط غير صحيح لهذه الخدمة.\n\nأرسل: https://t.me/channel/123"
         return None
 
-    # ─── بداية التدفق (القنوات الإجبارية) ───
     def get_initial_state(self) -> str:
         return "channel"
 
@@ -55,50 +52,66 @@ class PollService(RakshService):
             [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
         ])
 
-    # ─── دالة جلب خيارات الاستفتاء من الرابط ───
     async def _fetch_poll_options(self, link: str) -> Optional[List[str]]:
-        """جلب خيارات الاستفتاء المتاحة من الرابط"""
+        """جلب خيارات الاستفتاء المتاحة من الرابط - محاولة عدة جلسات"""
         channel_ref, msg_id = _parse_post_link(link)
         if not channel_ref or not msg_id:
             return None
 
-        # استخدام أول جلسة متاحة للاستعلام
+        # الحصول على جميع الجلسات المتاحة
         sessions = _get_sessions_for_service(self.service_type)
         if not sessions:
             return None
 
-        client = TelegramClient(StringSession(sessions[0]["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
-        try:
-            await asyncio.wait_for(client.connect(), timeout=15)
-            entity = await asyncio.wait_for(client.get_entity(channel_ref), timeout=8)
-            message = await asyncio.wait_for(client.get_messages(entity, ids=msg_id), timeout=8)
+        # محاولة استخدام جلسات متعددة حتى تنجح إحداها
+        for session in sessions[:3]:  # نجرّب أول 3 جلسات فقط
+            client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+            try:
+                await asyncio.wait_for(client.connect(), timeout=15)
+                if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
+                    continue
 
-            if not message:
-                return None
-            poll = getattr(message, "poll", None)
-            if not poll:
-                return None
-            answers = getattr(poll, "answers", [])
-            if not answers:
-                return None
+                # محاولة الانضمام للقناة إذا لم تكن عضوًا (قد يكون ضروريًا لجلب الرسالة)
+                try:
+                    entity = await client.get_entity(channel_ref)
+                    # التحقق من نوع الكيان (قناة أو مجموعة)
+                    if hasattr(entity, 'megagroup') and not entity.megagroup:
+                        # إذا كانت قناة، انضم إليها أولاً
+                        await client(JoinChannelRequest(entity))
+                        await asyncio.sleep(1)
+                except Exception:
+                    pass
 
-            # تحويل الخيارات إلى قائمة نصوص (رقم + نص الخيار)
-            result = []
-            for idx, ans in enumerate(answers, start=1):
-                text = getattr(ans, "text", str(ans))
-                result.append(f"{idx}. {text}")
-            return result
-        except Exception as e:
-            logger.warning(f"فشل جلب خيارات الاستفتاء: {e}")
-            return None
-        finally:
-            await client.disconnect()
+                message = await asyncio.wait_for(client.get_messages(entity, ids=msg_id), timeout=10)
+                if not message:
+                    continue
 
-    # ─── معالجة النصوص (تدفق جديد) ───
+                poll = getattr(message, "poll", None)
+                if not poll:
+                    continue
+
+                answers = getattr(poll, "answers", [])
+                if not answers:
+                    continue
+
+                # تحويل الخيارات إلى قائمة نصوص (رقم + نص الخيار)
+                result = []
+                for idx, ans in enumerate(answers, start=1):
+                    text = getattr(ans, "text", str(ans))
+                    result.append(f"{idx}. {text}")
+                return result
+
+            except Exception as e:
+                logger.warning(f"فشل جلب الخيارات من الجلسة {session['phone_number']}: {e}")
+                continue
+            finally:
+                await client.disconnect()
+
+        return None
+
     async def handle_text(self, update, context, text, user, state, is_own) -> bool:
         """معالجة النص لخدمة الاستفتاء"""
 
-        # 1️⃣ استقبال القنوات الإجبارية (اختياري)
         if state == "channel":
             if text.strip().lower() in {"تخطي", "skip", "لا", "none", "بدون"}:
                 context.user_data["raksh_channels"] = []
@@ -129,7 +142,6 @@ class PollService(RakshService):
             )
             return True
 
-        # 2️⃣ استقبال رابط الاستفتاء وجلب الخيارات
         if state == "link":
             link_error = self.validate_link(text)
             if link_error:
@@ -146,7 +158,7 @@ class PollService(RakshService):
             if not options:
                 await update.message.reply_text(
                     "⚠️ تعذر جلب الخيارات من هذا الرابط.\n"
-                    "تأكد من أن الرابط يحتوي على استفتاء صالح.",
+                    "تأكد من أن الرابط يحتوي على استفتاء صالح، أو حاول لاحقاً.",
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
                     ]),
@@ -171,7 +183,6 @@ class PollService(RakshService):
             )
             return True
 
-        # 3️⃣ استقبال رقم الخيار
         if state == "poll_option":
             try:
                 option_number = int(text)
@@ -218,7 +229,6 @@ class PollService(RakshService):
             )
             return True
 
-        # 4️⃣ استقبال العدد
         if state == "quantity":
             try:
                 quantity = int(text)
@@ -283,7 +293,6 @@ class PollService(RakshService):
 
         return False
 
-    # ─── معالجة الأزرار (تخطي القنوات) ───
     async def handle_callback(self, update, context, query, data_parts, user, is_own) -> bool:
         """معالجة الأزرار لخدمة الاستفتاء"""
         if data_parts[0] == "skip_channels":
@@ -303,7 +312,6 @@ class PollService(RakshService):
 
         return False
 
-    # ─── التنفيذ الفعلي ───
     async def execute(self, session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
         """تنفيذ رشق استفتاء مع الانضمام للقنوات لمدة 24 ساعة"""
         client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
