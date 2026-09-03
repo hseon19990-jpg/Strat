@@ -449,15 +449,6 @@ class ForcedRefAIService(RakshService):
         if initial_button_message_id is not None:
             await asyncio.sleep(1.0)
 
-        # بعد الضغط أو بعد /start مباشرة، قد تكون رسالة «أرسل النص التالي»
-        # موجودة بالفعل، وقد يكون رقمها أقدم من آخر رسالة صادرة للحساب
-        # بسبب تعديل الرسالة. نضع أحدث رسالة نصية صريحة في قائمة الأولوية
-        # حتى تصل إلى محلل الكود مهما كان ترتيب أرقام Telegram.
-        priority_message_ids = (
-            {initial_button_message_id}
-            if initial_button_message_id is not None
-            else set()
-        )
         text_challenge_markers = (
             "أرسل النص التالي",
             "ارسل النص التالي",
@@ -466,6 +457,63 @@ class ForcedRefAIService(RakshService):
             "send the text",
             "type the following",
             "retype",
+        )
+        processed_message_ids = set()
+
+        # بعض البوتات تعدّل نفس رسالة زر التحقق. نراقبها مباشرة ونرسل
+        # النص فور ظهوره بدل انتظار دورة الفحص العامة.
+        if initial_button_message_id is not None:
+            for _ in range(MAX_WAIT):
+                try:
+                    updated_message = await client.get_messages(
+                        bot_entity,
+                        ids=initial_button_message_id,
+                    )
+                    if isinstance(updated_message, (list, tuple)):
+                        updated_message = (
+                            updated_message[0] if updated_message else None
+                        )
+                    updated_text = (
+                        getattr(updated_message, "message", "") or ""
+                    ).strip()
+                    if (
+                        updated_message
+                        and not updated_message.out
+                        and any(
+                            marker in updated_text.casefold()
+                            for marker in text_challenge_markers
+                        )
+                    ):
+                        send_text = _extract_code_from_text(updated_text)
+                        if not send_text:
+                            for line in updated_text.splitlines():
+                                candidate = line.strip().strip("`*_ ")
+                                if re.fullmatch(r"[A-Za-z0-9]{3,50}", candidate):
+                                    send_text = candidate
+                                    break
+                        if send_text:
+                            await client.send_message(bot_entity, send_text)
+                            processed_message_ids.add(updated_message.id)
+                            logger.info(
+                                f"✅ تم إرسال نص التحقق من الرسالة المعدّلة: "
+                                f"{send_text}"
+                            )
+                            break
+                except Exception as exc:
+                    logger.warning(
+                        f"تعذر قراءة رسالة التحقق المعدّلة "
+                        f"{initial_button_message_id}: {exc}"
+                    )
+                await asyncio.sleep(CHECK_INTERVAL)
+
+        # بعد الضغط أو بعد /start مباشرة، قد تكون رسالة «أرسل النص التالي»
+        # موجودة بالفعل، وقد يكون رقمها أقدم من آخر رسالة صادرة للحساب
+        # بسبب تعديل الرسالة. نضع أحدث رسالة نصية صريحة في قائمة الأولوية
+        # حتى تصل إلى محلل الكود مهما كان ترتيب أرقام Telegram.
+        priority_message_ids = (
+            {initial_button_message_id}
+            if initial_button_message_id is not None
+            else set()
         )
         try:
             post_click_messages = await client.get_messages(bot_entity, limit=20)
@@ -620,6 +668,7 @@ class ForcedRefAIService(RakshService):
             phone_number,
             start_after_message_id=start_after_message_id,
             priority_message_ids=priority_message_ids,
+            processed_message_ids=processed_message_ids,
         )
 
     async def _solve_legacy_verification(
@@ -630,6 +679,7 @@ class ForcedRefAIService(RakshService):
         ignored_message_ids=None,
         priority_message_ids=None,
         start_after_message_id: int = 0,
+        processed_message_ids=None,
     ) -> bool:
         """
         المنطق القديم: استخراج الكود، حل المسائل، الضغط على الأزرار
@@ -637,7 +687,7 @@ class ForcedRefAIService(RakshService):
         """
         max_attempts = 30
         base_id = 0
-        processed_ids = set()
+        processed_ids = set(processed_message_ids or ())
         # أبقينا الوسيط للتوافق مع أي استدعاء قديم، لكن لا نتجاهل رسالة
         # الزر هنا؛ Telegram قد يعدّلها ويضع فيها التحدي الثاني.
         ignored_message_ids = set(ignored_message_ids or ())
