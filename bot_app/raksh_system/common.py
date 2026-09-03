@@ -97,7 +97,7 @@ def _clear_raksh_state(context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data["state"] = "main_menu"
 
 def get_raksh_hourly_remaining(user_id: int) -> int:
-    """عدد التنفيذات المتبقية خلال الساعة"""
+    """عدد التنفيذات المتبقية خلال الساعة - بدون حدود"""
     if RAKSH_MAX_EXECUTIONS_PER_HOUR <= 0:
         return 2_147_483_647
     try:
@@ -115,10 +115,10 @@ def get_raksh_hourly_remaining(user_id: int) -> int:
         return max(0, RAKSH_MAX_EXECUTIONS_PER_HOUR - used)
     except Exception:
         logger.exception(f"فشل قراءة حد التنفيذ للمستخدم {user_id}")
-        return 2_147_483_647
+        return 2_147_483_647  # عند الخطأ، لا نضع حداً
 
 def get_raksh_daily_remaining(user_id: int) -> int:
-    """عدد التنفيذات المتبقية خلال اليوم"""
+    """عدد التنفيذات المتبقية خلال اليوم - بدون حدود"""
     try:
         with db_conn() as c:
             row = c.execute(
@@ -134,13 +134,11 @@ def get_raksh_daily_remaining(user_id: int) -> int:
         return max(0, RAKSH_MAX_EXECUTIONS_PER_DAY - used)
     except Exception:
         logger.exception(f"فشل قراءة الحد اليومي للمستخدم {user_id}")
-        return 2_147_483_647
+        return 2_147_483_647  # عند الخطأ، لا نضع حداً
 
 def _get_sessions_for_service(service_type: str) -> List[Dict]:
     """
-    جلب الجلسات المناسبة لنوع الخدمة مع التخزين المؤقت
-    ملاحظة: تم إزالة كل الشروط المقيدة (forced_ref_excluded, deleted_at, raksh_only)
-    لضمان استخدام جميع الحسابات المتاحة التي لديها جلسة صالحة.
+    جلب كل الجلسات المتاحة بغض النظر عن أي حالة (حتى لو كانت موقوفة أو محذوفة منطقياً)
     """
     cache_key = f"sessions_{service_type}"
     if cache_key in _RAKSH_SESSION_CACHE:
