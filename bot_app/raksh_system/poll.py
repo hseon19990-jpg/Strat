@@ -247,7 +247,7 @@ class PollService(RakshService):
                 _mark_raksh_session_unauthorized(session.get("phone_number"))
                 return False, "الجلسة غير مصرح بها"
 
-            # الانضمام للقنوات الإجبارية
+            # الانضمام للقنوات الإجبارية (إن وجدت)
             if params.get("channel_ref"):
                 for channel_ref in params["channel_ref"]:
                     await _join_channel_and_schedule_leave(client, channel_ref, leave_after_seconds=86400)
@@ -255,33 +255,56 @@ class PollService(RakshService):
 
             # تحليل رابط الاستفتاء
             channel_ref, msg_id = _parse_post_link(params["link"])
-            if not channel_ref:
-                return False, "رابط الاستفتاء غير صحيح"
+            if not channel_ref or not msg_id:
+                # محاولة تحليل يدوي للرابط (في حال فشل _parse_post_link)
+                value = params["link"].strip()
+                if "t.me/" in value or "telegram.me/" in value:
+                    parsed = urlparse(value if "://" in value else f"https://{value}")
+                    parts = [p for p in parsed.path.strip("/").split("/") if p]
+                    if parts and parts[0] == "c" and len(parts) >= 3 and parts[1].isdigit() and parts[2].isdigit():
+                        channel_ref = f"-100{parts[1]}"
+                        msg_id = int(parts[2])
+                    elif len(parts) >= 2 and parts[-1].isdigit():
+                        channel_ref = f"@{parts[0].lstrip('@')}"
+                        msg_id = int(parts[-1])
+                    else:
+                        return False, "رابط الاستفتاء غير صحيح"
+                else:
+                    return False, "رابط الاستفتاء غير صحيح"
 
             entity = await client.get_entity(channel_ref)
 
-            # الانضمام للقناة المستهدفة إذا كانت قناة
-            if hasattr(entity, 'megagroup') and not entity.megagroup:
-                try:
-                    await client(JoinChannelRequest(entity))
-                    await asyncio.sleep(0.5)
-                except Exception:
-                    pass
+            # **مهم**: الانضمام للقناة إذا كانت قناة عادية، لأن الحساب غير المشترك لا يستطيع قراءة تفاصيل الاستفتاء
+            try:
+                if hasattr(entity, 'megagroup'):
+                    if not entity.megagroup:
+                        await client(JoinChannelRequest(entity))
+                        await asyncio.sleep(1.0)
+            except Exception as e:
+                logger.warning(f"تعذر الانضمام للقناة {channel_ref}: {e}")
 
-            # جلب الرسالة
-            message = await client.get_messages(entity, ids=msg_id)
-            if isinstance(message, (list, tuple)):
-                message = message[0] if message else None
+            # جلب الرسالة مع إعادة محاولات
+            message = None
+            for _ in range(3):
+                try:
+                    message = await client.get_messages(entity, ids=msg_id)
+                    if isinstance(message, (list, tuple)):
+                        message = message[0] if message else None
+                    if message:
+                        break
+                except Exception as e:
+                    await asyncio.sleep(0.8)
+
             if not message:
                 return False, "الاستفتاء غير موجود"
 
             option_request = params.get("poll_option", "1")
             option_number = int(option_request)
 
-            # 1️⃣ محاولة التصويت كاستفتاء أصلي
+            # ✅ **1. محاولة التصويت كاستفتاء أصلي (فقط إذا كانت الخيارات متاحة)**
             poll = getattr(message, "poll", None)
             if poll:
-                answers = getattr(poll, "answers", [])
+                answers = getattr(poll, "answers", None)
                 if answers:
                     option = _select_poll_option(answers, option_request)
                     if option:
@@ -292,28 +315,27 @@ class PollService(RakshService):
                             return False, "تعذر تأكيد التصويت"
                     else:
                         return False, f"الخيار {option_request} غير موجود في الاستفتاء"
-                else:
-                    return False, "الاستفتاء ليس له خيارات"
+                # إذا كانت answers فارغة، ننتقل للأزرار بدلاً من الفشل
 
-            # 2️⃣ إذا لم يكن استفتاء أصلي، نتعامل مع الأزرار
+            # ✅ **2. إذا لم يكن استفتاء أصلياً أو لا توجد خيارات، نتعامل مع الأزرار**
             buttons = getattr(message, "buttons", None) or []
             if not buttons:
                 return False, "لا يوجد استفتاء أو أزرار تصويت في هذا المنشور"
 
             # البحث عن زر الخيار المطلوب
             target_button = None
-            # البحث بالنص المطابق للرقم
             for row in buttons:
                 for btn in row:
+                    if getattr(btn, "url", None):
+                        continue
                     btn_text = (getattr(btn, "text", "") or "").strip()
-                    # إذا كان الزر نصه رقم أو يبدأ برقم الخيار
                     if btn_text == option_request or btn_text.startswith(f"{option_request}.") or btn_text.startswith(f"{option_request} "):
                         target_button = btn
                         break
                 if target_button:
                     break
 
-            # إذا لم نجد، نحاول البحث بالترتيب (الزر الأول = الخيار 1)
+            # البحث بالترتيب (الزر الأول = الخيار 1)
             if not target_button:
                 flat_buttons = [btn for row in buttons for btn in row if not getattr(btn, "url", None)]
                 if 1 <= option_number <= len(flat_buttons):
@@ -337,7 +359,6 @@ class PollService(RakshService):
                     if any(word in btn_text for word in ["تأكيد", "تصويت", "confirm", "vote", "send", "إرسال"]):
                         confirmation_buttons.append(btn)
 
-            # الضغط على زر التأكيد إذا وجد
             if confirmation_buttons:
                 try:
                     await confirmation_buttons[0].click()
