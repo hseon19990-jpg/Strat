@@ -396,13 +396,15 @@ class VotesAIService(RakshService):
         - يحلل النص لاستخراج الإيموجي المطلوب
         - يضغط الزر المطابق، وإذا لم يجد، يضغط جميع الأزرار المتاحة حتى تظهر رسالة تأكيد
         """
-        max_attempts = 15
+        max_attempts = 20
         base_id = start_after_message_id
 
-        # العثور على البوت
+        # العثور على البوت من المحادثات (أو استخدم الكيان المعروف)
+        bot_entity = None
         try:
+            # إن لم نمرر bot_entity، نحاول العثور عليه من الرسائل
+            # لكن الأفضل أن نمرره، لكننا سنحاول العثور عليه من الديالوغ
             dialogs = await client.get_dialogs(limit=20)
-            bot_entity = None
             for dialog in dialogs:
                 if dialog.is_user and getattr(dialog.entity, "bot", False):
                     bot_entity = dialog.entity
@@ -424,7 +426,7 @@ class VotesAIService(RakshService):
                 await asyncio.sleep(2)
                 continue
 
-            # فلترة الرسائل الجديدة (بعد base_id)
+            # فلترة الرسائل الجديدة (بعد base_id) - نأخذ الرسائل غير الصادرة فقط
             incoming = [msg for msg in messages if not msg.out and msg.id > base_id]
             if not incoming:
                 await asyncio.sleep(2)
@@ -440,17 +442,16 @@ class VotesAIService(RakshService):
             # 2) البحث عن رسالة تحتوي على أزرار
             verification_msg = None
             for msg in incoming:
-                if not msg.reply_markup:
-                    continue
-                # نفضل الرسائل التي تحتوي على كلمات طلب
-                text = self._verification_message_text(msg)
-                if any(kw in text for kw in ["اضغط", "اختر", "انقر", "الرمز", "رمز", "verify", "تحقق"]):
-                    verification_msg = msg
-                    break
+                if msg.buttons:  # استخدام msg.buttons بدلاً من reply_markup
+                    # نفضل الرسائل التي تحتوي على كلمات طلب
+                    text = self._verification_message_text(msg)
+                    if any(kw in text for kw in ["اضغط", "اختر", "انقر", "الرمز", "رمز", "verify", "تحقق"]):
+                        verification_msg = msg
+                        break
             if verification_msg is None:
                 # إذا لم نجد، نأخذ أي رسالة بها أزرار (الأحدث)
-                for msg in reversed(incoming):
-                    if msg.reply_markup:
+                for msg in incoming:
+                    if msg.buttons:
                         verification_msg = msg
                         break
 
@@ -469,10 +470,10 @@ class VotesAIService(RakshService):
                 target_emoji = found_emojis[-1]
                 logger.info(f"🎯 الإيموجي المطلوب: {target_emoji}")
 
-            # 4) جمع الأزرار (تجاهل أزرار الروابط)
+            # 4) جمع الأزرار (تجاهل أزرار الروابط) - نستخدم msg.buttons
             buttons = []
-            for row in verification_msg.reply_markup.rows:
-                for btn in row.buttons:
+            for row in verification_msg.buttons:
+                for btn in row:
                     if not getattr(btn, "url", None):
                         buttons.append(btn)
 
