@@ -77,7 +77,18 @@ class VotesAIService(RakshService):
 
     async def _show_quantity_prompt(self, update, context, user) -> bool:
         """الانتقال إلى خطوة العدد بعد حفظ رابط التصويت."""
-        max_qty = self.get_request_limit(user.id)
+        try:
+            max_qty = self.get_request_limit(user.id)
+        except Exception:
+            logger.exception("فشل حساب الحد الأقصى لأصوات المستخدم %s", user.id)
+            await update.message.reply_text(
+                "⚠️ تعذر قراءة الحسابات المتاحة حالياً. حاول بعد قليل أو اضغط إلغاء.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                ]),
+            )
+            return True
+
         if max_qty < 1:
             await update.message.reply_text(
                 "⚠️ لا توجد حسابات متاحة حالياً.",
