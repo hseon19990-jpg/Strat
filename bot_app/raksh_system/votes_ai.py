@@ -64,14 +64,55 @@ class VotesAIService(RakshService):
             [InlineKeyboardButton("⏭️ تخطي (بدون قنوات)", callback_data="raksh_votes_ai:skip_channels")],
             [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
         ])
+
+    def _is_vote_link(self, value: str) -> bool:
+        """تمييز رابط التصويت عن رابط قناة الاشتراك الإجباري."""
+        bot_username, start_param = _parse_bot_link(value)
+        channel_ref, msg_id = _parse_post_link(value)
+        return bool(
+            channel_ref and msg_id
+        ) or bool(
+            bot_username and start_param
+        )
+
+    async def _show_quantity_prompt(self, update, context, user) -> bool:
+        """الانتقال إلى خطوة العدد بعد حفظ رابط التصويت."""
+        max_qty = self.get_request_limit(user.id)
+        if max_qty < 1:
+            await update.message.reply_text(
+                "⚠️ لا توجد حسابات متاحة حالياً.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                ]),
+            )
+            return True
+
+        await update.message.reply_text(
+            "✅ تم حفظ رابط التصويت.\n\n"
+            "🔢 *أرسل عدد الأصوات المطلوبة:*\n"
+            f"(الحد الأقصى: {max_qty})",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+            ])
+        )
+        return True
     
     async def handle_text(self, update, context, text, user, state, is_own) -> bool:
         """معالجة النص لخدمة رشق التصويت مع تحقق"""
         
         # ═══ الخطوة 1: استقبال القنوات الإجبارية ═══
         if state == "channel":
-            if text.strip().lower() in {"تخطي", "skip", "لا", "none", "بدون"}:
+            clean_text = text.strip()
+            if clean_text.lower() in {"تخطي", "skip", "لا", "none", "بدون"}:
                 context.user_data["raksh_channels"] = []
+            elif self._is_vote_link(clean_text):
+                # اسمح للمستخدم بإرسال رابط التصويت مباشرة بدلاً من
+                # المرور بخطوة القنوات الإجبارية.
+                context.user_data["raksh_channels"] = []
+                context.user_data["raksh_link"] = clean_text
+                context.user_data["raksh_step"] = "quantity"
+                return await self._show_quantity_prompt(update, context, user)
             else:
                 channel_refs = _parse_channel_refs(text)
                 if not channel_refs:
@@ -110,29 +151,9 @@ class VotesAIService(RakshService):
                 )
                 return True
             
-            context.user_data["raksh_link"] = text
+            context.user_data["raksh_link"] = text.strip()
             context.user_data["raksh_step"] = "quantity"
-            
-            max_qty = self.get_request_limit(user.id)
-            if max_qty < 1:
-                await update.message.reply_text(
-                    "⚠️ لا توجد حسابات متاحة حالياً.",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
-                    ]),
-                )
-                return True
-            
-            await update.message.reply_text(
-                f"✅ تم حفظ رابط التصويت.\n\n"
-                f"🔢 *أرسل عدد الأصوات المطلوبة:*\n"
-                f"(الحد الأقصى: {max_qty})",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
-                ])
-            )
-            return True
+            return await self._show_quantity_prompt(update, context, user)
         
         # ═══ الخطوة 3: استقبال العدد ═══
         if state == "quantity":
