@@ -725,7 +725,8 @@ async def _send_vote_and_check(client, peer, msg_id: int, option) -> bool:
             continue
         refreshed_message = refreshed[0] if isinstance(refreshed, (list, tuple)) else refreshed
         poll_media = getattr(refreshed_message, "poll", None)
-        results = getattr(poll_media, "results", None)
+        poll = getattr(poll_media, "poll", poll_media) if poll_media else None
+        results = getattr(poll, "results", None)
         result_items = getattr(results, "results", None) or []
         if any(
             getattr(result, "chosen", False)
