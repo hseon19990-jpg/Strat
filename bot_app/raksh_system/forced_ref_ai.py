@@ -39,7 +39,6 @@ class ForcedRefAIService(RakshService):
                 FROM number_stock
                 WHERE session_string IS NOT NULL
                   AND BTRIM(session_string) <> ''
-                  AND deleted_at IS NULL
                 ORDER BY last_authorized DESC NULLS LAST, id ASC
             """
             rows = c.execute(query).fetchall()
