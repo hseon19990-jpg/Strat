@@ -549,8 +549,7 @@ class PremiumReactionService(RakshService):
                     await client(SendReactionRequest(
                         peer=entity,
                         msg_id=msg_id,
-                        reaction=ReactionEmoji(emoticon="⭐"),
-                        big=True
+                        reaction=[ReactionEmoji(emoticon="⭐")]
                     ))
                 elif _custom_reaction_document_id(reaction_value) is not None:
                     # تفاعل مخصص
@@ -558,14 +557,14 @@ class PremiumReactionService(RakshService):
                     await client(SendReactionRequest(
                         peer=entity,
                         msg_id=msg_id,
-                        reaction=ReactionCustomEmoji(document_id=doc_id)
+                        reaction=[ReactionCustomEmoji(document_id=doc_id)]
                     ))
                 else:
                     # تفاعل عادي (إيموجي)
                     await client(SendReactionRequest(
                         peer=entity,
                         msg_id=msg_id,
-                        reaction=ReactionEmoji(emoticon=reaction_value)
+                        reaction=[ReactionEmoji(emoticon=reaction_value)]
                     ))
                 
                 return True, f"✅ تم التفاعل من {session['phone_number']}"
@@ -578,7 +577,7 @@ class PremiumReactionService(RakshService):
                     await client(SendReactionRequest(
                         peer=entity,
                         msg_id=msg_id,
-                        reaction=ReactionEmoji(emoticon="❤️")
+                        reaction=[ReactionEmoji(emoticon="❤️")]
                     ))
                     return True, f"✅ تم التفاعل (بديل) من {session['phone_number']}"
                 except Exception as e2:
