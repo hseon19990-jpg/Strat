@@ -1,8 +1,9 @@
 # forced_ref_ai.py
 """
 خدمة إحالة بوت إجباري مع تحقق شامل - تدعم مشاركة الرقم والكود والمسائل والأزرار وإرسال ID
-مع تحسينات السرعة ودعم جميع أنواع الأزرار
+مع تحسينات السرعة ودعم جميع أنواع الأزرار (Inline و Reply Keyboard)
 السلوك: يدخل الرابط ← يقرأ كل الرسائل الواردة ← يضغط زر التحقق المناسب ← يعيد القراءة ← يحل التحقق الجديد ← يتكرر
+كل المنطق موجود في هذا الملف (بدون اعتماد على ForcedRefService)
 """
 
 from .common import *
@@ -386,53 +387,57 @@ class ForcedRefAIService(RakshService):
         return None
 
     def _get_buttons_from_message(self, msg):
-        """استخراج جميع الأزرار من الرسالة (أيا كان نوعها) مع نصها ونوعها"""
+        """استخراج جميع الأزرار من الرسالة (أيا كان نوعها) مع نصها ونوعها - يدعم جميع هياكل reply_markup"""
         buttons = []
-        if not msg.reply_markup:
+        if not msg or not msg.reply_markup:
             return buttons
 
-        # أزرار مضمّنة (InlineKeyboardMarkup)
+        # Telethon قد يكون reply_markup على شكل `rows` أو `inline_keyboard` حسب الإصدار
+        # نتعامل مع كل الاحتمالات
+        rows = None
         if hasattr(msg.reply_markup, 'rows'):
-            for row in msg.reply_markup.rows:
-                for btn in row.buttons:
+            rows = msg.reply_markup.rows
+        elif hasattr(msg.reply_markup, 'inline_keyboard'):
+            rows = msg.reply_markup.inline_keyboard
+
+        if rows:
+            for row in rows:
+                for btn in row:
+                    # نتجاهل أزرار الروابط
                     if hasattr(btn, 'url') and btn.url:
-                        continue  # نتجاهل أزرار الروابط
+                        continue
+                    # نستخرج النص
+                    text = getattr(btn, 'text', '') or ''
+                    # نحدد النوع: inline إذا كان يحتوي على callback_data أو بيانات أخرى
+                    if hasattr(btn, 'callback_data') or hasattr(btn, 'data'):
+                        btn_type = 'inline'
+                    elif isinstance(btn, KeyboardButtonRequestPhone):
+                        btn_type = 'request_phone'
+                    else:
+                        btn_type = 'reply'
                     buttons.append({
                         'button': btn,
-                        'text': getattr(btn, 'text', ''),
-                        'type': 'inline'
+                        'text': text.strip(),
+                        'type': btn_type
                     })
-        # أزرار لوحة مفاتيح (ReplyKeyboardMarkup)
-        elif hasattr(msg.reply_markup, 'rows') and hasattr(msg.reply_markup.rows[0].buttons, '__iter__'):
-            # في حال كان هيكل مختلف، لكننا نتعامل مع الـ ReplyKeyboardMarkup
-            # لكن Telethon يستخدم نفس البنية rows.buttons
-            # يمكن أن يكون هناك اختلاف، سنتعامل معها بنفس الطريقة
-            for row in msg.reply_markup.rows:
-                for btn in row.buttons:
-                    text = getattr(btn, 'text', '')
-                    if isinstance(btn, KeyboardButtonRequestPhone):
-                        buttons.append({
-                            'button': btn,
-                            'text': text,
-                            'type': 'request_phone'
-                        })
-                    else:
-                        buttons.append({
-                            'button': btn,
-                            'text': text,
-                            'type': 'reply'
-                        })
         else:
-            # محاولة الوصول المباشر في حال كانت البنية مختلفة
+            # محاولة بديلة: الوصول المباشر إلى الأزرار (في حال كانت البنية مختلفة)
             try:
                 for row in msg.reply_markup.rows:
                     for btn in row.buttons:
                         if hasattr(btn, 'url') and btn.url:
                             continue
+                        text = getattr(btn, 'text', '') or ''
+                        if hasattr(btn, 'callback_data') or hasattr(btn, 'data'):
+                            btn_type = 'inline'
+                        elif isinstance(btn, KeyboardButtonRequestPhone):
+                            btn_type = 'request_phone'
+                        else:
+                            btn_type = 'reply'
                         buttons.append({
                             'button': btn,
-                            'text': getattr(btn, 'text', ''),
-                            'type': 'inline' if hasattr(btn, 'callback_data') else 'reply'
+                            'text': text.strip(),
+                            'type': btn_type
                         })
             except:
                 pass
@@ -448,7 +453,8 @@ class ForcedRefAIService(RakshService):
             'continue', 'ابدأ', 'start', 'إرسال', 'send', 'موافق', 'ok',
             'نعم', 'yes', 'تمام', 'done', 'استمر', 'proceed', 'تفعيل', 'activate',
             'ارسال', 'إدخال', 'ادخل', 'enter', 'submit', 'تقديم',
-            'اضغط للتحقق', 'اضغط هنا', 'click here', 'اضغط على الزر'
+            'اضغط للتحقق', 'اضغط هنا', 'click here', 'اضغط على الزر',
+            'اضغط للتحقق', 'انقر هنا', 'tap here', 'click to verify'
         ]
         # كلمات تدل على أشياء أخرى (نتجنبها)
         ignore_keywords = [
@@ -463,18 +469,19 @@ class ForcedRefAIService(RakshService):
         for kw in ignore_keywords:
             if kw in text_lower:
                 return False
+        # إذا كان النص قصيراً جداً (مثل إيموجي أو حرف واحد) نعتبره زر تحقق افتراضياً
         if len(text) <= 2:
             return True
         return True
 
     async def _press_verification_button(self, client, bot_entity, msg, phone_number: str) -> bool:
-        """محاولة الضغط على زر تحقق مناسب من الرسالة"""
+        """محاولة الضغط على زر تحقق مناسب من الرسالة - محسّن للتعامل مع مختلف الأنواع"""
         buttons = self._get_buttons_from_message(msg)
         if not buttons:
-            logger.info(f"⚠️ لا توجد أزرار في الرسالة: {msg.id}")
+            logger.info(f"⚠️ لا توجد أزرار في الرسالة {msg.id}")
             return False
 
-        logger.info(f"🔍 تم العثور على {len(buttons)} زر/أزرار في الرسالة {msg.id}")
+        logger.info(f"🔍 تم العثور على {len(buttons)} زر/أزرار في الرسالة {msg.id}: {[b['text'] for b in buttons]}")
 
         # البحث عن زر طلب رقم (نعطيها أولوية خاصة)
         for b in buttons:
@@ -498,30 +505,34 @@ class ForcedRefAIService(RakshService):
                     logger.warning(f"فشل إرسال جهة الاتصال: {e}")
                 continue
 
-        # ترتيب الأزرار حسب الأولوية
-        # 1. زر يحوي "اضغط للتحقق" بالضبط
+        # ترتيب الأزرار حسب الأولوية:
+        # 1. زر يحوي "اضغط للتحقق" بالضبط (مع تجاهل المسافات)
         selected = None
         for b in buttons:
-            if b['text'].strip() == "اضغط للتحقق":
+            if b['text'].replace(' ', '') == "اضغطللتحقق":
                 selected = b
+                logger.info(f"✅ تم العثور على زر 'اضغط للتحقق' بالضبط")
                 break
         if not selected:
-            # 2. زر يحوي "تحقق" أو "verify"
+            # 2. زر يحوي "تحقق" أو "verify" أو "اضغط" مع "تحقق"
             for b in buttons:
                 if 'تحقق' in b['text'] or 'verify' in b['text'].lower():
                     selected = b
+                    logger.info(f"✅ تم العثور على زر يحوي 'تحقق': '{b['text']}'")
                     break
         if not selected:
             # 3. أي زر تحقق حسب القائمة
             for b in buttons:
                 if self._is_verification_button(b['text']):
                     selected = b
+                    logger.info(f"✅ تم العثور على زر تحقق: '{b['text']}'")
                     break
         if not selected:
-            # 4. أي زر عادي (ما عدا الروابط)
+            # 4. أي زر عادي (ما عدا الروابط) كحل أخير
             for b in buttons:
                 if b['type'] != 'inline' or not hasattr(b['button'], 'url') or not b['button'].url:
                     selected = b
+                    logger.info(f"✅ تم اختيار زر عادي كحل أخير: '{b['text']}'")
                     break
 
         if not selected:
@@ -538,10 +549,18 @@ class ForcedRefAIService(RakshService):
                 await client.send_message(bot_entity, selected['text'])
                 logger.info(f"🖱️ تم إرسال نص الزر: '{selected['text']}'")
             else:
+                logger.warning(f"⚠️ نوع زر غير معروف: {selected['type']}")
                 return False
             return True
         except Exception as e:
             logger.warning(f"فشل الضغط على الزر: {e}")
+            # محاولة بديلة: إرسال النص كرسالة (لأزرار الرد)
+            try:
+                await client.send_message(bot_entity, selected['text'])
+                logger.info(f"🖱️ تم إرسال نص الزر كرسالة: '{selected['text']}'")
+                return True
+            except Exception as e2:
+                logger.warning(f"فشل الإرسال البديل: {e2}")
             return False
 
     async def _solve_legacy_verification(self, client, bot_entity, phone_number: str, channel_id: Optional[str] = None) -> bool:
@@ -571,7 +590,7 @@ class ForcedRefAIService(RakshService):
         for attempt in range(MAX_ATTEMPTS):
             try:
                 # جلب الرسائل الواردة التي id > base_id
-                messages = await client.get_messages(bot_entity, limit=5, min_id=base_id, incoming=True)
+                messages = await client.get_messages(bot_entity, limit=10, min_id=base_id, incoming=True)
             except Exception as e:
                 logger.warning(f"فشل جلب الرسائل: {e}")
                 await asyncio.sleep(0.1)
@@ -593,7 +612,8 @@ class ForcedRefAIService(RakshService):
                     continue
                 base_id = msg.id  # تحديث إلى آخر رسالة تمت معالجتها
                 text = getattr(msg, 'message', '') or ''
-                logger.info(f"📨 معالجة رسالة {msg.id}: {text[:50]}...")
+                logger.info(f"📨 معالجة رسالة {msg.id}: {text[:100]}...")
+                logger.info(f"🔘 هل تحتوي على أزرار؟ {bool(msg.reply_markup)}")
 
                 # 1. محاولة استخراج كود وإرساله
                 code = _extract_code_from_text(text)
@@ -636,7 +656,7 @@ class ForcedRefAIService(RakshService):
                     if pressed:
                         pressed_verify = True
                         logger.info("✅ تم الضغط على زر التحقق، ننتظر قليلاً ثم نستمر")
-                        await asyncio.sleep(0.5)
+                        await asyncio.sleep(1.0)  # انتظار أطول قليلاً لظهور الرد
                         continue
                     else:
                         logger.info("⚠️ لم يتم الضغط على أي زر")
@@ -653,6 +673,11 @@ class ForcedRefAIService(RakshService):
     # ─── 5. دالة حل التحقق الرئيسية ───
 
     async def _solve_verification(self, client, bot_entity, phone_number: str, channel_ref: Optional[str] = None) -> bool:
+        """
+        حل التحقق بذكاء وسرعة:
+        1. إذا طلب البوت مشاركة الرقم → نرسله ونضغط متابعة (سريع).
+        2. وإلا نستخدم المنطق المحسّن (الذي يقرأ الرسائل ويضغط الأزرار بشكل متكرر).
+        """
         MAX_WAIT = 6
         CHECK_INTERVAL = 0.2
 
@@ -806,7 +831,7 @@ class ForcedRefAIService(RakshService):
                 peer=bot_entity,
                 start_param=start_param or ""
             ))
-            await asyncio.sleep(1.0)  # زيادة الانتظار قليلاً
+            await asyncio.sleep(1.5)  # زيادة الانتظار لضمان ظهور الرسائل
 
             success = await self._solve_verification(client, bot_entity, session.get("phone_number"), channel_id)
 
