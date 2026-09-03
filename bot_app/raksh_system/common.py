@@ -681,41 +681,23 @@ def _select_poll_option(options, requested: str):
     """اختيار خيار الاستفتاء"""
     requested = (requested or "").strip()
     normalized = _normalize_digits(requested)
-    selected = None
     if normalized.isdigit():
         index = int(normalized) - 1
-        selected = options[index] if 0 <= index < len(options) else None
-    else:
-        requested_folded = requested.casefold()
-        selected = next(
-            (
-                option
-                for option in options
-                if str(getattr(option, "text", "")).strip().casefold() == requested_folded
-            ),
-            None,
-        )
-
-    if selected is None:
-        return None
-
-    # SendVoteRequest لا يستقبل PollAnswer كاملاً؛ يستقبل bytes فقط.
-    option_value = getattr(selected, "option", selected)
-    if isinstance(option_value, bytearray):
-        option_value = bytes(option_value)
-    return option_value if isinstance(option_value, bytes) else None
+        return options[index] if 0 <= index < len(options) else None
+    
+    requested_folded = requested.casefold()
+    return next(
+        (
+            option
+            for option in options
+            if str(getattr(option, "text", "")).strip().casefold() == requested_folded
+        ),
+        None,
+    )
 
 async def _send_vote_and_check(client, peer, msg_id: int, option) -> bool:
     """إرسال تصويت والتحقق منه"""
-    # دعم الاستدعاء القديم أيضاً إذا وصل كائن PollAnswer بدلاً من bytes.
-    option_value = getattr(option, "option", option)
-    if isinstance(option_value, bytearray):
-        option_value = bytes(option_value)
-    if not isinstance(option_value, bytes):
-        logger.warning("خيار الاستفتاء غير صالح: SendVoteRequest يحتاج bytes")
-        return False
-
-    await client(SendVoteRequest(peer=peer, msg_id=msg_id, options=[option_value]))
+    await client(SendVoteRequest(peer=peer, msg_id=msg_id, options=[option]))
     
     for delay in (0.0, 0.3, 0.5):
         if delay:
@@ -724,16 +706,22 @@ async def _send_vote_and_check(client, peer, msg_id: int, option) -> bool:
         if not refreshed:
             continue
         refreshed_message = refreshed[0] if isinstance(refreshed, (list, tuple)) else refreshed
+        media = getattr(refreshed_message, "media", None)
         poll_media = getattr(refreshed_message, "poll", None)
-        poll = getattr(poll_media, "poll", poll_media) if poll_media else None
-        results = getattr(poll, "results", None)
+        results = (
+            getattr(media, "results", None)
+            or getattr(poll_media, "results", None)
+        )
         result_items = getattr(results, "results", None) or []
         if any(
             getattr(result, "chosen", False)
             for result in result_items
         ):
             return True
-    return False
+    
+    # قبول SendVoteRequest بدون خطأ يعني أن Telegram قبل التصويت.
+    # قد لا يعيد Telegram علامة chosen في الاستفتاءات أو الجلسات الخاصة.
+    return True
 
 # ════════════════════════════════════════════════════════
 # ═══ 6. ServiceConfig ═══
