@@ -46,8 +46,8 @@ RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS = 4
 RAKSH_MIN_DELAY_SECONDS = 3
 RAKSH_MAX_DELAY_SECONDS = 3
 RAKSH_VOTE_DELAY_SECONDS = 3
-RAKSH_MAX_EXECUTIONS_PER_DAY = 1000
-RAKSH_MAX_EXECUTIONS_PER_HOUR = 100
+RAKSH_MAX_EXECUTIONS_PER_DAY = 0      # 0 = لا حد يومي
+RAKSH_MAX_EXECUTIONS_PER_HOUR = 0     # 0 = لا حد ساعي
 RAKSH_NO_VERIFICATION_MESSAGE = "بدون زر تحقق"
 
 # ════════════════════════════════════════════════════════
@@ -637,10 +637,6 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
     
     return False
 
-# ════════════════════════════════════════════════════════
-# ═══ 6. دالة الانضمام للقناة مع مدة اختيارية ═══
-# ════════════════════════════════════════════════════════
-
 async def _join_channel_and_schedule_leave(client, channel_ref: str, leave_after_seconds: Optional[int] = None):
     """الانضمام للقناة وجدولة المغادرة (مع إمكانية تحديد المدة)"""
     try:
@@ -725,7 +721,7 @@ async def _send_vote_and_check(client, peer, msg_id: int, option) -> bool:
     return False
 
 # ════════════════════════════════════════════════════════
-# ═══ 7. ServiceConfig ═══
+# ═══ 6. ServiceConfig ═══
 # ════════════════════════════════════════════════════════
 
 @dataclass
@@ -744,7 +740,7 @@ class ServiceConfig:
     max_concurrent: int = 1
 
 # ════════════════════════════════════════════════════════
-# ═══ 8. RakshService - الفئة الأساسية ═══
+# ═══ 7. RakshService - الفئة الأساسية ═══
 # ════════════════════════════════════════════════════════
 
 class RakshService:
@@ -879,7 +875,7 @@ class RakshService:
         }
 
 # ════════════════════════════════════════════════════════
-# ═══ 9. الخدمات - كل خدمة في كلاس واحد ═══
+# ═══ 8. الخدمات - كل خدمة في كلاس واحد ═══
 # ════════════════════════════════════════════════════════
 
 __all__ = [name for name in globals() if not name.startswith("__")]
