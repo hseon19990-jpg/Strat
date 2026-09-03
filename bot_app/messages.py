@@ -134,10 +134,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             if await handle_raksh_text(update, context):
                 return
-        except Exception:
+        except Exception as exc:
             logger.exception(
-                "فشل معالجة رسالة خدمة الرشق للمستخدم %s",
+                "فشل معالجة رسالة خدمة الرشق للمستخدم %s: %s",
                 user.id,
+                exc,
             )
             await update.message.reply_text(
                 "⚠️ حدث خطأ أثناء معالجة الرابط. حاول مرة أخرى أو اضغط إلغاء.",
