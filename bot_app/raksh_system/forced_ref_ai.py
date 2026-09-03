@@ -565,6 +565,11 @@ class ForcedRefAIService(RakshService):
             client,
             bot_entity,
             phone_number,
+            priority_message_ids=(
+                {initial_button_message_id}
+                if initial_button_message_id is not None
+                else set()
+            ),
         )
 
     async def _solve_legacy_verification(
@@ -573,6 +578,7 @@ class ForcedRefAIService(RakshService):
         bot_entity,
         phone_number: str,
         ignored_message_ids=None,
+        priority_message_ids=None,
     ) -> bool:
         """
         المنطق القديم: استخراج الكود، حل المسائل، الضغط على الأزرار
@@ -584,6 +590,7 @@ class ForcedRefAIService(RakshService):
         # أبقينا الوسيط للتوافق مع أي استدعاء قديم، لكن لا نتجاهل رسالة
         # الزر هنا؛ Telegram قد يعدّلها ويضع فيها التحدي الثاني.
         ignored_message_ids = set(ignored_message_ids or ())
+        priority_message_ids = set(priority_message_ids or ())
 
         try:
             out_messages = await client.get_messages(bot_entity, limit=10)
@@ -612,7 +619,7 @@ class ForcedRefAIService(RakshService):
             new_messages = [
                 msg for msg in incoming_messages
                 if (
-                    msg.id > base_id
+                    (msg.id > base_id or msg.id in priority_message_ids)
                     and msg.id not in processed_ids
                     and msg.id not in ignored_message_ids
                 )
