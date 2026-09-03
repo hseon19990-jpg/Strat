@@ -90,9 +90,8 @@ class VotesAIService(RakshService):
             
             await update.message.reply_text(
                 f"✅ تم حفظ القنوات الإجبارية ({len(context.user_data['raksh_channels'])} قناة).\n\n"
-                f"🔗 *أرسل رابط التصويت:*\n"
+                f"🔗 أرسل رابط التصويت:\n"
                 f"{self.get_link_instruction()}",
-                parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
                 ])
@@ -220,9 +219,8 @@ class VotesAIService(RakshService):
             
             await query.edit_message_text(
                 f"✅ تم تخطي القنوات.\n\n"
-                f"🔗 *أرسل رابط التصويت:*\n"
+                f"🔗 أرسل رابط التصويت:\n"
                 f"{self.get_link_instruction()}",
-                parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
                 ])
