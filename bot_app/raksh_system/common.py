@@ -46,11 +46,8 @@ RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS = 4
 RAKSH_MIN_DELAY_SECONDS = 3
 RAKSH_MAX_DELAY_SECONDS = 3
 RAKSH_VOTE_DELAY_SECONDS = 3
-
-# 🔓 تعطيل الحدود اليومية والساعية (0 = غير محدود)
-RAKSH_MAX_EXECUTIONS_PER_DAY = 0
-RAKSH_MAX_EXECUTIONS_PER_HOUR = 0
-
+RAKSH_MAX_EXECUTIONS_PER_DAY = 1000
+RAKSH_MAX_EXECUTIONS_PER_HOUR = 100
 RAKSH_NO_VERIFICATION_MESSAGE = "بدون زر تحقق"
 
 # ════════════════════════════════════════════════════════
@@ -61,8 +58,7 @@ _RAKSH_SESSION_LOCKS: Dict[str, asyncio.Lock] = {}
 _RAKSH_VOTE_FLOW_LOCK = asyncio.Lock()
 _RAKSH_SESSION_CACHE: Dict[str, Dict] = {}
 _RAKSH_SESSION_CACHE_TIME: Dict[str, float] = {}
-# 🔥 تعطيل الكاش نهائياً بجعل TTL = 0
-_RAKSH_SESSION_CACHE_TTL = 0
+_RAKSH_SESSION_CACHE_TTL = 60
 
 def _get_raksh_session_lock(phone_number: str) -> asyncio.Lock:
     """الحصول على قفل جلسة مع إدارة الذاكرة"""
@@ -123,8 +119,6 @@ def get_raksh_hourly_remaining(user_id: int) -> int:
 
 def get_raksh_daily_remaining(user_id: int) -> int:
     """عدد التنفيذات المتبقية خلال اليوم"""
-    if RAKSH_MAX_EXECUTIONS_PER_DAY <= 0:
-        return 2_147_483_647
     try:
         with db_conn() as c:
             row = c.execute(
@@ -143,10 +137,13 @@ def get_raksh_daily_remaining(user_id: int) -> int:
         return RAKSH_MAX_EXECUTIONS_PER_DAY
 
 def _get_sessions_for_service(service_type: str) -> List[Dict]:
-    """
-    جلب الجلسات المناسبة لنوع الخدمة.
-    🔥 تم تعطيل الكاش المؤقت، ويتم جلب جميع الحسابات الصالحة (بدون استبعاد).
-    """
+    """جلب الجلسات المناسبة لنوع الخدمة مع التخزين المؤقت"""
+    cache_key = f"sessions_{service_type}"
+    if cache_key in _RAKSH_SESSION_CACHE:
+        cache_time = _RAKSH_SESSION_CACHE_TIME.get(cache_key, 0)
+        if time.time() - cache_time < _RAKSH_SESSION_CACHE_TTL:
+            return _RAKSH_SESSION_CACHE[cache_key].copy()
+    
     with db_conn() as c:
         query = """
             SELECT id, phone_number, session_string, raksh_only, last_authorized
@@ -154,10 +151,16 @@ def _get_sessions_for_service(service_type: str) -> List[Dict]:
             WHERE session_string IS NOT NULL
               AND BTRIM(session_string) <> ''
               AND deleted_at IS NULL
+              AND forced_ref_excluded IS NOT TRUE
             ORDER BY last_authorized DESC NULLS LAST, id ASC
         """
         rows = c.execute(query).fetchall()
-        return [dict(row) for row in rows]
+        sessions = [dict(row) for row in rows]
+        
+        _RAKSH_SESSION_CACHE[cache_key] = sessions
+        _RAKSH_SESSION_CACHE_TIME[cache_key] = time.time()
+        
+        return sessions
 
 def get_available_sessions_count(service_type: str = None) -> int:
     """عدد الجلسات المتاحة للخدمة"""
@@ -177,27 +180,46 @@ def _mark_raksh_session_unauthorized(phone_number: str) -> None:
                 (phone_number,)
             )
         logger.warning(f"🔒 جلسة غير مصرح بها: {phone_number}")
-        # لا داعي لمسح الكاش لأنه معطل
+        _RAKSH_SESSION_CACHE.clear()
+        _RAKSH_SESSION_CACHE_TIME.clear()
     except Exception as exc:
         logger.warning(f"تعذر تحديث حالة الجلسة {phone_number}: {exc}")
 
 async def _remove_invalid_raksh_sessions(failed_phones: List[str]) -> None:
-    """
-    ⚠️ هذه الدالة لا تقوم بحذف أو استبعاد أي حساب، بل فقط تحديث حالة last_authorized.
-    بهذا تبقى جميع الحسابات في القائمة ولا ينقص عددها.
-    """
+    """إزالة الجلسات غير الصالحة"""
     if not failed_phones:
         return
     
+    removed = 0
     for phone in failed_phones:
         try:
             with db_conn() as c:
-                c.execute(
-                    "UPDATE number_stock SET last_authorized=FALSE WHERE phone_number=%s",
+                row = c.execute(
+                    "SELECT session_string, id FROM number_stock WHERE phone_number=%s",
                     (phone,)
-                )
+                ).fetchone()
+                if row and not row["session_string"]:
+                    c.execute(
+                        "UPDATE number_stock SET forced_ref_excluded=TRUE WHERE id=%s",
+                        (row["id"],)
+                    )
+                    removed += 1
+                    logger.info(f"🗑️ إزالة {phone} من الرشق")
         except Exception as e:
-            logger.warning(f"فشل تحديث حالة {phone}: {e}")
+            logger.warning(f"فشل إزالة {phone}: {e}")
+    
+    if removed:
+        _RAKSH_SESSION_CACHE.clear()
+        _RAKSH_SESSION_CACHE_TIME.clear()
+        
+        if OWNER_ID:
+            try:
+                await bot.send_message(
+                    OWNER_ID,
+                    f"🧹 تمت إزالة {removed} حساب غير صالح من الرشق"
+                )
+            except Exception:
+                pass
 
 # ════════════════════════════════════════════════════════
 # ═══ 3. أدوات تحليل الروابط ═══
@@ -504,7 +526,7 @@ def _extract_code_from_text(text: str) -> Optional[str]:
     return None
 
 async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) -> bool:
-    """حل التحقق المضمون (للاستخدام في forced_ref_ai عندما لا يطلب رقم)"""
+    """حل التحقق المضمون"""
     max_attempts = 20
     base_id = 0
 
@@ -615,8 +637,12 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
     
     return False
 
-async def _join_channel_and_schedule_leave(client, channel_ref: str):
-    """الانضمام للقناة وجدولة المغادرة"""
+# ════════════════════════════════════════════════════════
+# ═══ 6. دالة الانضمام للقناة مع مدة اختيارية ═══
+# ════════════════════════════════════════════════════════
+
+async def _join_channel_and_schedule_leave(client, channel_ref: str, leave_after_seconds: Optional[int] = None):
+    """الانضمام للقناة وجدولة المغادرة (مع إمكانية تحديد المدة)"""
     try:
         if channel_ref.startswith("invite:"):
             invite_hash = channel_ref[7:]
@@ -626,7 +652,11 @@ async def _join_channel_and_schedule_leave(client, channel_ref: str):
             await client(JoinChannelRequest(entity))
         
         async def _leave_later():
-            await asyncio.sleep(random.randint(600, 1800))
+            # استخدم المدة المحددة أو العشوائية الافتراضية (10-30 دقيقة)
+            if leave_after_seconds is not None:
+                await asyncio.sleep(leave_after_seconds)
+            else:
+                await asyncio.sleep(random.randint(600, 1800))
             try:
                 if channel_ref.startswith("invite:"):
                     pass
@@ -695,7 +725,7 @@ async def _send_vote_and_check(client, peer, msg_id: int, option) -> bool:
     return False
 
 # ════════════════════════════════════════════════════════
-# ═══ 6. ServiceConfig ═══
+# ═══ 7. ServiceConfig ═══
 # ════════════════════════════════════════════════════════
 
 @dataclass
@@ -714,7 +744,7 @@ class ServiceConfig:
     max_concurrent: int = 1
 
 # ════════════════════════════════════════════════════════
-# ═══ 7. RakshService - الفئة الأساسية ═══
+# ═══ 8. RakshService - الفئة الأساسية ═══
 # ════════════════════════════════════════════════════════
 
 class RakshService:
@@ -849,7 +879,7 @@ class RakshService:
         }
 
 # ════════════════════════════════════════════════════════
-# ═══ 8. الخدمات - كل خدمة في كلاس واحد ═══
+# ═══ 9. الخدمات - كل خدمة في كلاس واحد ═══
 # ════════════════════════════════════════════════════════
 
 __all__ = [name for name in globals() if not name.startswith("__")]
