@@ -356,14 +356,84 @@ class ForcedRefAIService(RakshService):
 
     # ─── 4. حل التحقق المدمج (يدعم مشاركة الرقم + المنطق القديم) ───
 
+    async def _click_initial_verification_button(self, client, bot_entity) -> Optional[int]:
+        """اضغط زر بدء التحقق قبل قراءة التحدي الفعلي."""
+        start_keywords = (
+            "اضغط للتحقق",
+            "ابدأ التحقق",
+            "بدء التحقق",
+            "تحقق الآن",
+            "click to verify",
+            "start verification",
+            "verify now",
+            "проверить",
+        )
+
+        for _ in range(12):
+            try:
+                messages = await client.get_messages(bot_entity, limit=10)
+            except Exception:
+                await asyncio.sleep(1.0)
+                continue
+
+            # Telethon يعيد الأحدث أولاً؛ نبدأ به حتى لا نضغط زرًا قديمًا
+            # من محاولة تحقق سابقة.
+            for msg in messages:
+                if msg.out or not msg.reply_markup:
+                    continue
+                for row in msg.reply_markup.rows:
+                    for btn in row.buttons:
+                        btn_text = (getattr(btn, "text", "") or "").strip().casefold()
+                        if getattr(btn, "url", None):
+                            continue
+                        is_arabic_verify_button = (
+                            "اضغط" in btn_text and "تحقق" in btn_text
+                        )
+                        is_english_verify_button = (
+                            "press" in btn_text and "verify" in btn_text
+                        )
+                        if not (
+                            is_arabic_verify_button
+                            or is_english_verify_button
+                            or any(keyword in btn_text for keyword in start_keywords)
+                        ):
+                            continue
+                        try:
+                            await btn.click()
+                            logger.info(
+                                f"🖱️ تم الضغط على زر بدء التحقق: "
+                                f"'{getattr(btn, 'text', '')}'"
+                            )
+                            return getattr(msg, "id", None)
+                        except Exception as exc:
+                            logger.warning(f"⚠️ فشل الضغط على زر بدء التحقق: {exc}")
+            await asyncio.sleep(1.0)
+
+        logger.info("ℹ️ لم يظهر زر بدء تحقق منفصل؛ متابعة فحص التحدي مباشرة")
+        return None
+
     async def _solve_verification(self, client, bot_entity, phone_number: str) -> bool:
         """
         حل التحقق بذكاء:
-        1. إذا طلب البوت مشاركة رقم الهاتف (زر KeyboardButtonRequestPhone) – نرسل الرقم ونضغط متابعة.
-        2. وإلا نستخدم المنطق القديم: استخراج الكود، حل المسائل، الضغط على الأزرار العادية.
+        1. الضغط على زر بدء التحقق مثل «اضغط للتحقق».
+        2. إذا طلب البوت مشاركة رقم الهاتف – نرسل الرقم ونضغط متابعة.
+        3. وإلا نستخدم المنطق القديم: استخراج الكود، حل المسائل، الضغط على الأزرار العادية.
         """
         MAX_WAIT = 12
         CHECK_INTERVAL = 1.0
+
+        # بعض البوتات ترسل زرًا أوليًا، وبعد الضغط عليه فقط ترسل التحقق
+        # الحقيقي. نحتفظ برسالة الزر حتى لا نعيد تحليلها كأنها تحدٍ نصي.
+        initial_button_message_id = await self._click_initial_verification_button(
+            client, bot_entity
+        )
+        ignored_message_ids = (
+            {initial_button_message_id}
+            if initial_button_message_id is not None
+            else set()
+        )
+        if initial_button_message_id is not None:
+            await asyncio.sleep(1.0)
 
         # ─── المرحلة 1: البحث عن طلب مشاركة رقم الهاتف ───
         contact_request_msg = None
@@ -495,9 +565,20 @@ class ForcedRefAIService(RakshService):
 
         # المنطق القديم (مستند على _solve_forced_ref_verification من common.py)
         # ولكن سنعيد تنفيذه هنا لتكامل الملف
-        return await self._solve_legacy_verification(client, bot_entity, phone_number)
+        return await self._solve_legacy_verification(
+            client,
+            bot_entity,
+            phone_number,
+            ignored_message_ids=ignored_message_ids,
+        )
 
-    async def _solve_legacy_verification(self, client, bot_entity, phone_number: str) -> bool:
+    async def _solve_legacy_verification(
+        self,
+        client,
+        bot_entity,
+        phone_number: str,
+        ignored_message_ids=None,
+    ) -> bool:
         """
         المنطق القديم: استخراج الكود، حل المسائل، الضغط على الأزرار
         (نسخة محسنة من _solve_forced_ref_verification في common.py)
@@ -505,6 +586,7 @@ class ForcedRefAIService(RakshService):
         max_attempts = 30
         base_id = 0
         processed_ids = set()
+        ignored_message_ids = set(ignored_message_ids or ())
 
         try:
             out_messages = await client.get_messages(bot_entity, limit=10)
@@ -532,7 +614,11 @@ class ForcedRefAIService(RakshService):
 
             new_messages = [
                 msg for msg in incoming_messages
-                if msg.id > base_id and msg.id not in processed_ids
+                if (
+                    msg.id > base_id
+                    and msg.id not in processed_ids
+                    and msg.id not in ignored_message_ids
+                )
             ]
             if not new_messages:
                 await asyncio.sleep(1.0)
