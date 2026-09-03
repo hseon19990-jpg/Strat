@@ -1,11 +1,7 @@
 # votes_ai_fixed.py
 from .common import *
 from telethon.tl.functions.messages import GetBotCallbackAnswerRequest
-from telethon.tl.types import (
-    KeyboardButtonRequestPhone,
-    InputMediaContact,
-    MessageEntityCustomEmoji,
-)
+from telethon.tl.types import KeyboardButtonRequestPhone, InputMediaContact
 
 class VotesAIService(RakshService):
     """خدمة رشق تصويت مع تحقق - كل شيء في مكان واحد (نسخة مستقلة)"""
@@ -373,40 +369,6 @@ class VotesAIService(RakshService):
             if value:
                 return str(value)
         return ""
-
-    def _verification_target_tokens(self, message, text: str) -> list[str]:
-        """استخراج الرمز المطلوب، بما في ذلك Custom Emoji."""
-        tokens = []
-
-        # Telethon يعيد نصوص الـ Custom Emoji مع entity الخاصة بها.
-        try:
-            for _entity, entity_text in message.get_entities_text(MessageEntityCustomEmoji):
-                if entity_text:
-                    tokens.append(str(entity_text))
-        except Exception:
-            pass
-
-        # لا نأخذ إيموجي عنوان الرسالة (مثل 🤖)؛ نبحث بعد عبارة الرمز.
-        target_text = text
-        marker = re.search(
-            r"(?:الرمز|رمز|symbol|emoji|icon)\s*[:：]?\s*",
-            text,
-            flags=re.IGNORECASE,
-        )
-        if marker:
-            target_text = text[marker.end():]
-
-        emoji_pattern = re.compile(
-            "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E0-\U0001F1FF]"
-        )
-        tokens.extend(emoji_pattern.findall(target_text))
-
-        # إزالة التكرار مع الحفاظ على ترتيب الرموز.
-        return list(dict.fromkeys(token for token in tokens if token))
-
-    @staticmethod
-    def _normalize_verification_token(value: str) -> str:
-        return (value or "").strip().replace("\ufe0f", "")
     
     async def _click_initial_verification_button(self, client, bot_entity, start_after_message_id: int = 0) -> Optional[int]:
         start_keywords = ("اضغط للتحقق", "ابدأ التحقق", "بدء التحقق", "تحقق الآن", "click to verify", "start verification", "verify now")
@@ -590,47 +552,20 @@ class VotesAIService(RakshService):
                             buttons.append(btn)
             
             if buttons:
-                target_tokens = self._verification_target_tokens(
-                    verification_message, text
+                emoji_pattern = re.compile(
+                    "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E0-\U0001F1FF]"
                 )
-                normalized_targets = {
-                    self._normalize_verification_token(token)
-                    for token in target_tokens
-                }
-
+                target_emoji = None
+                found_emojis = emoji_pattern.findall(text)
+                if found_emojis:
+                    target_emoji = found_emojis[-1]
+                
                 prioritized = []
-                if normalized_targets:
-                    exact = [
-                        b for b in buttons
-                        if self._normalize_verification_token(getattr(b, "text", ""))
-                        in normalized_targets
-                    ]
+                if target_emoji:
+                    exact = [b for b in buttons if getattr(b, "text", "") == target_emoji]
                     prioritized.extend(exact)
-                    partial = [
-                        b for b in buttons
-                        if any(
-                            token
-                            and token in self._normalize_verification_token(
-                                getattr(b, "text", "")
-                            )
-                            for token in normalized_targets
-                        )
-                        and b not in prioritized
-                    ]
+                    partial = [b for b in buttons if target_emoji in (getattr(b, "text", "") or "")]
                     prioritized.extend(partial)
-
-                logger.info(
-                    "🔎 أزرار التحقق: targets=%s buttons=%s",
-                    target_tokens,
-                    [getattr(button, "text", "") for button in buttons],
-                )
-
-                if normalized_targets and not prioritized:
-                    logger.warning(
-                        "⚠️ تم العثور على رمز تحقق لكن لم تتم مطابقته مع أي زر"
-                    )
-                    await asyncio.sleep(2.0)
-                    continue
                 
                 verify_keywords = ['تحقق', 'verify', 'اضغط هنا', 'continue', 'التالي', 'متابعة']
                 verify_buttons = [
@@ -640,11 +575,8 @@ class VotesAIService(RakshService):
                 ]
                 prioritized.extend(verify_buttons)
                 
-                # لا نضغط زراً عشوائياً عندما يكون التحدي رمزاً محدداً.
-                if not normalized_targets and not prioritized:
-                    logger.warning("⚠️ توجد أزرار تحقق بلا رمز قابل للتحديد")
-                    await asyncio.sleep(2.0)
-                    continue
+                remaining = [b for b in buttons if b not in prioritized]
+                prioritized.extend(remaining)
                 
                 for btn in prioritized:
                     try:
