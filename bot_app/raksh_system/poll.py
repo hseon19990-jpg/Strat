@@ -113,6 +113,8 @@ class PollService(RakshService):
             context.user_data["raksh_step"] = "confirm"
             points_cost = self.get_total(quantity, "points")
             stars_cost = self.get_total(quantity, "stars")
+
+            # ✅ استخدم الصيغة العامة لدفع النقاط/النجوم
             await update.message.reply_text(
                 "📋 *مراجعة طلب رشق الاستفتاء*\n\n"
                 f"🔗 الرابط: `{context.user_data['raksh_link']}`\n"
@@ -125,11 +127,11 @@ class PollService(RakshService):
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton(
                         f"💰 دفع بالنقاط ({points_cost} نقطة)",
-                        callback_data=f"raksh_poll:confirm:points:{quantity}:{points_cost}",
+                        callback_data=f"raksh:pay:points:{self.service_type}:{quantity}",
                     )],
                     [InlineKeyboardButton(
                         f"⭐ دفع بالنجوم ({stars_cost} نجمة)",
-                        callback_data=f"raksh_poll:confirm:stars:{quantity}:{stars_cost}",
+                        callback_data=f"raksh:pay:stars:{self.service_type}:{quantity}",
                     )],
                     [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")],
                 ]),
@@ -145,6 +147,10 @@ class PollService(RakshService):
             )
             return True
 
+        return False
+    
+    async def handle_callback(self, update, context, query, data_parts, user, is_own) -> bool:
+        """لا نحتاج معالجة خاصة؛ الأزرار العامة ستدير الدفع والتأكيد."""
         return False
     
     async def execute(self, session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
