@@ -8,6 +8,15 @@ from .common import *
 from telethon.tl.types import InputMediaContact, KeyboardButtonRequestPhone
 
 
+def _verification_message_text(message) -> str:
+    """قراءة نص الرسالة أو caption مهما كان نوع كائن Telethon."""
+    for field_name in ("message", "raw_text", "text"):
+        value = getattr(message, field_name, None)
+        if value:
+            return str(value)
+    return ""
+
+
 class ForcedRefAIService(RakshService):
     """خدمة إحالة بوت إجباري مع تحقق شامل - كل شيء في مكان واحد"""
 
@@ -473,9 +482,7 @@ class ForcedRefAIService(RakshService):
                         updated_message = (
                             updated_message[0] if updated_message else None
                         )
-                    updated_text = (
-                        getattr(updated_message, "message", "") or ""
-                    ).strip()
+                    updated_text = _verification_message_text(updated_message).strip()
                     if (
                         updated_message
                         and not updated_message.out
@@ -516,20 +523,20 @@ class ForcedRefAIService(RakshService):
             else set()
         )
         try:
-            post_click_messages = await client.get_messages(bot_entity, limit=20)
+            post_click_messages = await client.get_messages(bot_entity, limit=50)
             for msg in post_click_messages:
-                msg_text = (getattr(msg, "message", "") or "").casefold()
-                if (
-                    not msg.out
-                    and msg.id > start_after_message_id
-                    and any(marker in msg_text for marker in text_challenge_markers)
-                ):
-                    priority_message_ids.add(msg.id)
+                if msg.out or msg.id <= start_after_message_id:
+                    continue
+                # نضع كل الرسائل اللاحقة في الأولوية، وليس رسائل النص فقط:
+                # قد يكون التحقق في caption أو keyboard أو رسالة معدّلة
+                # دون تغيير النص.
+                priority_message_ids.add(msg.id)
+                msg_text = _verification_message_text(msg).casefold()
+                if any(marker in msg_text for marker in text_challenge_markers):
                     logger.info(
                         f"🔎 تم تحديد رسالة نص التحقق رقم {msg.id} "
                         f"للمعالجة بعد الضغط"
                     )
-                    break
         except Exception as exc:
             logger.warning(f"تعذر إعادة قراءة رسالة التحقق بعد الضغط: {exc}")
 
@@ -630,10 +637,10 @@ class ForcedRefAIService(RakshService):
                     for msg in latest:
                         if msg.out or msg.id <= start_after_message_id:
                             continue
-                        if not msg.reply_markup and (getattr(msg, 'message', '') or '').strip():
+                        if not msg.reply_markup and _verification_message_text(msg).strip():
                             success = True
                             break
-                        text = (getattr(msg, 'message', '') or '').strip().casefold()
+                        text = _verification_message_text(msg).strip().casefold()
                         if any(kw in text for kw in ['تم', 'نجاح', 'مرحباً', 'شكراً', 'success', 'done', 'welcome']):
                             success = True
                             break
@@ -733,7 +740,7 @@ class ForcedRefAIService(RakshService):
             # لا نعتبر اختفاء الأزرار أو إرسال الإجابة نجاحاً. النجاح يجب أن
             # يأتي من رسالة صريحة من البوت، مثل «تم التحقق بنجاح».
             for msg in reversed(new_messages):
-                text = (getattr(msg, "message", "") or "").strip()
+                text = _verification_message_text(msg).strip()
                 text_folded = text.casefold()
                 if (
                     "تم التحقق" in text_folded
@@ -768,7 +775,7 @@ class ForcedRefAIService(RakshService):
                 (
                     msg for msg in reversed(new_messages)
                     if any(
-                        marker in (getattr(msg, "message", "") or "").casefold()
+                        marker in _verification_message_text(msg).casefold()
                         for marker in text_challenge_markers
                     )
                 ),
@@ -777,7 +784,7 @@ class ForcedRefAIService(RakshService):
             for msg in new_messages:
                 if verification_message is not None:
                     break
-                msg_text = getattr(msg, 'message', '') or ''
+                msg_text = _verification_message_text(msg)
                 if msg_text.strip().startswith("/"):
                     continue
                 if any(kw in msg_text for kw in ["أرسل", "التالي", "بالضبط", "اكتب", "retype", "type", "اضغط", "اختر", "انقر"]):
@@ -786,7 +793,10 @@ class ForcedRefAIService(RakshService):
 
             if verification_message is None:
                 verification_message = next(
-                    (msg for msg in reversed(new_messages) if not getattr(msg, 'message', '').strip().startswith("/")),
+                    (
+                        msg for msg in reversed(new_messages)
+                        if not _verification_message_text(msg).strip().startswith("/")
+                    ),
                     None
                 )
 
@@ -794,7 +804,7 @@ class ForcedRefAIService(RakshService):
                 await asyncio.sleep(1.0)
                 continue
 
-            text = getattr(verification_message, 'message', '') or ''
+            text = _verification_message_text(verification_message)
 
             # 1. استخراج الكود
             send_text = _extract_code_from_text(text)
