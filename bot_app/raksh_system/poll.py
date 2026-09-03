@@ -64,7 +64,7 @@ class PollService(RakshService):
             return None
 
         # محاولة استخدام جلسات متعددة حتى تنجح إحداها
-        for session in sessions[:3]:  # نجرّب أول 3 جلسات فقط
+        for session in sessions[:5]:  # نجرّب أول 5 جلسات
             client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
             try:
                 await asyncio.wait_for(client.connect(), timeout=15)
@@ -153,34 +153,36 @@ class PollService(RakshService):
                 )
                 return True
 
+            context.user_data["raksh_link"] = text
+
             # جلب الخيارات المتاحة من الرابط
             options = await self._fetch_poll_options(text)
-            if not options:
+            if options:
+                context.user_data["raksh_options"] = options
                 await update.message.reply_text(
-                    "⚠️ تعذر جلب الخيارات من هذا الرابط.\n"
-                    "تأكد من أن الرابط يحتوي على استفتاء صالح، أو حاول لاحقاً.",
+                    f"✅ تم حفظ الرابط.\n\n"
+                    f"📊 *الخيارات المتاحة:*\n"
+                    f"{chr(10).join(options)}\n\n"
+                    f"🔢 *أرسل رقم الخيار الذي تريد التصويت عليه:*\n"
+                    f"مثال: 1",
+                    parse_mode=ParseMode.MARKDOWN,
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
-                    ]),
+                    ])
                 )
-                return True
+            else:
+                # لم نتمكن من جلب الخيارات تلقائيًا - نطلب من المستخدم إدخال الرقم يدويًا
+                context.user_data["raksh_options"] = []
+                await update.message.reply_text(
+                    "⚠️ تعذر جلب الخيارات تلقائيًا من الرابط.\n"
+                    "يرجى إرسال رقم الخيار المطلوب (مثال: 1).\n"
+                    "يمكنك معرفة عدد الخيارات من المنشور نفسه.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                    ])
+                )
 
-            context.user_data["raksh_link"] = text
-            context.user_data["raksh_options"] = options
             context.user_data["raksh_step"] = "poll_option"
-
-            options_text = "\n".join(options)
-            await update.message.reply_text(
-                f"✅ تم حفظ الرابط.\n\n"
-                f"📊 *الخيارات المتاحة:*\n"
-                f"{options_text}\n\n"
-                f"🔢 *أرسل رقم الخيار الذي تريد التصويت عليه:*\n"
-                f"مثال: 1",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
-                ])
-            )
             return True
 
         if state == "poll_option":
@@ -195,10 +197,21 @@ class PollService(RakshService):
                 )
                 return True
 
-            options_count = len(context.user_data.get("raksh_options", []))
-            if option_number < 1 or option_number > options_count:
+            # إذا كانت الخيارات معروفة، نتحقق من الرقم
+            if context.user_data.get("raksh_options"):
+                options_count = len(context.user_data["raksh_options"])
+                if option_number < 1 or option_number > options_count:
+                    await update.message.reply_text(
+                        f"⚠️ الرقم يجب أن يكون بين 1 و {options_count}.",
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                        ]),
+                    )
+                    return True
+            # إذا لم نتمكن من جلب الخيارات، نقبل أي رقم موجب
+            elif option_number < 1:
                 await update.message.reply_text(
-                    f"⚠️ الرقم يجب أن يكون بين 1 و {options_count}.",
+                    "⚠️ الرقم يجب أن يكون 1 أو أكثر.",
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
                     ]),
