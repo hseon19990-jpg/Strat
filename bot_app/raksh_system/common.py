@@ -49,6 +49,15 @@ RAKSH_VOTE_DELAY_SECONDS = 3
 RAKSH_MAX_EXECUTIONS_PER_DAY = 999999999999999999
 RAKSH_MAX_EXECUTIONS_PER_HOUR = 99999999999
 RAKSH_NO_VERIFICATION_MESSAGE = "بدون زر تحقق"
+# الحساب الذي يبدأ به كل طلب رشق عند توفر جلسته وصلاحيتها.
+RAKSH_PRIORITY_PHONE = "8801709839107"
+
+
+def raksh_phone_matches(phone_number: str, target: str = RAKSH_PRIORITY_PHONE) -> bool:
+    """مطابقة رقم الحساب حتى مع وجود + أو مسافات في التخزين."""
+    phone = re.sub(r"\D", "", str(phone_number or ""))
+    wanted = re.sub(r"\D", "", str(target or ""))
+    return bool(phone and wanted and phone == wanted)
 
 # ════════════════════════════════════════════════════════
 # ═══ 2. إدارة الجلسات والذاكرة ═══
