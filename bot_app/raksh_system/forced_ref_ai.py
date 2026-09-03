@@ -356,7 +356,12 @@ class ForcedRefAIService(RakshService):
 
     # ─── 4. حل التحقق المدمج (يدعم مشاركة الرقم + المنطق القديم) ───
 
-    async def _click_initial_verification_button(self, client, bot_entity) -> Optional[int]:
+    async def _click_initial_verification_button(
+        self,
+        client,
+        bot_entity,
+        start_after_message_id: int = 0,
+    ) -> Optional[int]:
         """اضغط زر بدء التحقق قبل قراءة التحدي الفعلي."""
         start_keywords = (
             "اضغط للتحقق",
@@ -379,7 +384,11 @@ class ForcedRefAIService(RakshService):
             # Telethon يعيد الأحدث أولاً؛ نبدأ به حتى لا نضغط زرًا قديمًا
             # من محاولة تحقق سابقة.
             for msg in messages:
-                if msg.out or not msg.reply_markup:
+                if (
+                    msg.out
+                    or msg.id <= start_after_message_id
+                    or not msg.reply_markup
+                ):
                     continue
                 for row in msg.reply_markup.rows:
                     for btn in row.buttons:
@@ -412,7 +421,13 @@ class ForcedRefAIService(RakshService):
         logger.info("ℹ️ لم يظهر زر بدء تحقق منفصل؛ متابعة فحص التحدي مباشرة")
         return None
 
-    async def _solve_verification(self, client, bot_entity, phone_number: str) -> bool:
+    async def _solve_verification(
+        self,
+        client,
+        bot_entity,
+        phone_number: str,
+        start_after_message_id: int = 0,
+    ) -> bool:
         """
         حل التحقق بذكاء:
         1. الضغط على زر بدء التحقق مثل «اضغط للتحقق».
@@ -427,7 +442,9 @@ class ForcedRefAIService(RakshService):
         # لذلك نعيد قراءة المحادثة بعد الضغط ولا نتجاهل رقم الرسالة القديم:
         # الرقم نفسه قد يحمل محتوى جديدًا بعد التعديل.
         initial_button_message_id = await self._click_initial_verification_button(
-            client, bot_entity
+            client,
+            bot_entity,
+            start_after_message_id=start_after_message_id,
         )
         if initial_button_message_id is not None:
             await asyncio.sleep(1.0)
@@ -456,6 +473,7 @@ class ForcedRefAIService(RakshService):
                 msg_text = (getattr(msg, "message", "") or "").casefold()
                 if (
                     not msg.out
+                    and msg.id > start_after_message_id
                     and any(marker in msg_text for marker in text_challenge_markers)
                 ):
                     priority_message_ids.add(msg.id)
@@ -477,7 +495,7 @@ class ForcedRefAIService(RakshService):
                 continue
 
             for msg in messages:
-                if msg.out:
+                if msg.out or msg.id <= start_after_message_id:
                     continue
                 if msg.reply_markup:
                     for row in msg.reply_markup.rows:
@@ -528,7 +546,7 @@ class ForcedRefAIService(RakshService):
                     continue
 
                 for msg in messages:
-                    if msg.out:
+                    if msg.out or msg.id <= start_after_message_id:
                         continue
                     buttons = []
                     if msg.reply_markup:
@@ -562,7 +580,7 @@ class ForcedRefAIService(RakshService):
                     latest = await client.get_messages(bot_entity, limit=3)
                     success = False
                     for msg in latest:
-                        if msg.out:
+                        if msg.out or msg.id <= start_after_message_id:
                             continue
                         if not msg.reply_markup and (getattr(msg, 'message', '') or '').strip():
                             success = True
@@ -600,6 +618,7 @@ class ForcedRefAIService(RakshService):
             client,
             bot_entity,
             phone_number,
+            start_after_message_id=start_after_message_id,
             priority_message_ids=priority_message_ids,
         )
 
@@ -610,6 +629,7 @@ class ForcedRefAIService(RakshService):
         phone_number: str,
         ignored_message_ids=None,
         priority_message_ids=None,
+        start_after_message_id: int = 0,
     ) -> bool:
         """
         المنطق القديم: استخراج الكود، حل المسائل، الضغط على الأزرار
@@ -650,7 +670,8 @@ class ForcedRefAIService(RakshService):
             new_messages = [
                 msg for msg in incoming_messages
                 if (
-                    (msg.id > base_id or msg.id in priority_message_ids)
+                    msg.id > start_after_message_id
+                    and (msg.id > base_id or msg.id in priority_message_ids)
                     and msg.id not in processed_ids
                     and msg.id not in ignored_message_ids
                 )
@@ -863,6 +884,21 @@ class ForcedRefAIService(RakshService):
             resolved = await client(ResolveUsernameRequest(clean_username))
             bot_entity = resolved.users[0] if resolved.users else resolved.chats[0]
 
+            # نحدد آخر رسالة قبل /start حتى لا نستخدم أي تحدٍّ قديم
+            # موجودًا في نفس محادثة الحساب.
+            start_after_message_id = 0
+            try:
+                before_start_messages = await client.get_messages(
+                    bot_entity,
+                    limit=50,
+                )
+                start_after_message_id = max(
+                    (getattr(msg, "id", 0) or 0)
+                    for msg in before_start_messages
+                ) if before_start_messages else 0
+            except Exception as exc:
+                logger.warning(f"تعذر تحديد نقطة بداية /start: {exc}")
+
             # بدء البوت
             await client(StartBotRequest(
                 bot=bot_entity,
@@ -872,7 +908,12 @@ class ForcedRefAIService(RakshService):
             await asyncio.sleep(2.0)
 
             # حل التحقق باستخدام الدالة المدمجة
-            success = await self._solve_verification(client, bot_entity, session.get("phone_number"))
+            success = await self._solve_verification(
+                client,
+                bot_entity,
+                session.get("phone_number"),
+                start_after_message_id=start_after_message_id,
+            )
 
             if success:
                 return True, f"✅ تمت الإحالة مع التحقق من {session['phone_number']}"
