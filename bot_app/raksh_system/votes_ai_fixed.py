@@ -425,10 +425,8 @@ class VotesAIService(RakshService):
         if initial_button_msg_id is not None:
             await asyncio.sleep(2.0)
         
-        text_challenge_markers = (
-            "أرسل النص التالي", "ارسل النص التالي", "النص التالي",
-            "send the following text", "send the text", "type the following", "retype"
-        )
+        # مجموعة لتتبع الأزرار التي جربناها لتجنب تكرار نفس الزر
+        tried_buttons = set()
         
         for attempt in range(max_attempts):
             try:
@@ -552,7 +550,7 @@ class VotesAIService(RakshService):
                     except Exception:
                         continue
             
-            # الضغط على الأزرار (إيموجي أو أزرار عادية)
+            # ─── معالجة الأزرار (بما فيها أزرار الإيموجي) ───
             buttons = []
             if verification_message.reply_markup:
                 for row in verification_message.reply_markup.rows:
@@ -561,21 +559,28 @@ class VotesAIService(RakshService):
                             buttons.append(btn)
             
             if buttons:
+                # استخراج الإيموجي المطلوب من النص
                 emoji_pattern = re.compile(
                     "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E0-\U0001F1FF]"
                 )
-                target_emoji = None
                 found_emojis = emoji_pattern.findall(text)
+                target_emoji = None
                 if found_emojis:
+                    # نأخذ آخر إيموجي في النص (غالباً هو المطلوب)
                     target_emoji = found_emojis[-1]
+                    logger.info(f"🎯 الإيموجي المطلوب: {target_emoji}")
                 
+                # ترتيب الأزرار حسب الأولوية
                 prioritized = []
                 if target_emoji:
+                    # أزرار تطابق الإيموجي تماماً
                     exact = [b for b in buttons if getattr(b, "text", "") == target_emoji]
                     prioritized.extend(exact)
+                    # أزرار تحتوي على الإيموجي ضمن نصها
                     partial = [b for b in buttons if target_emoji in (getattr(b, "text", "") or "")]
                     prioritized.extend(partial)
                 
+                # أزرار تحقق عامة
                 verify_keywords = ['تحقق', 'verify', 'اضغط هنا', 'continue', 'التالي', 'متابعة']
                 verify_buttons = [
                     b for b in buttons
@@ -584,17 +589,35 @@ class VotesAIService(RakshService):
                 ]
                 prioritized.extend(verify_buttons)
                 
+                # باقي الأزرار كخيار أخير
                 remaining = [b for b in buttons if b not in prioritized]
                 prioritized.extend(remaining)
                 
+                # حاول الضغط على الأزرار بالترتيب، مع تخطي الأزرار التي جربناها سابقاً
+                clicked = False
                 for btn in prioritized:
+                    # لتحديد هوية الزر (استخدام نصه)
+                    btn_text = getattr(btn, "text", "")
+                    if btn_text in tried_buttons:
+                        continue
+                    tried_buttons.add(btn_text)
                     try:
                         await btn.click()
-                        logger.info(f"🖱️ تم الضغط على الزر: {getattr(btn, 'text', '')}")
-                        await asyncio.sleep(1.0)
-                        return True
+                        logger.info(f"🖱️ تم الضغط على الزر: {btn_text}")
+                        clicked = True
+                        # ننتظر 2 ثانية كما طلبت
+                        await asyncio.sleep(2.0)
+                        # بعد الضغط، نتحقق من الرسائل الجديدة
+                        # سنقوم بإعادة الدورة للتحقق من النجاح
+                        break
                     except Exception:
                         continue
+                
+                if clicked:
+                    # ننتظر دورة كاملة ثم نتحقق من نجاح العملية
+                    await asyncio.sleep(1.0)
+                    # سنعود إلى بداية الحلقة لفحص الرسائل الجديدة
+                    continue
             
             await asyncio.sleep(2.0)
         
