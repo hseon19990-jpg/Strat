@@ -52,65 +52,8 @@ class PollService(RakshService):
             [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
         ])
 
-    async def _fetch_poll_options(self, link: str) -> Optional[List[str]]:
-        """جلب خيارات الاستفتاء المتاحة من الرابط - محاولة عدة جلسات"""
-        channel_ref, msg_id = _parse_post_link(link)
-        if not channel_ref or not msg_id:
-            return None
-
-        # الحصول على جميع الجلسات المتاحة
-        sessions = _get_sessions_for_service(self.service_type)
-        if not sessions:
-            return None
-
-        # محاولة استخدام جلسات متعددة حتى تنجح إحداها
-        for session in sessions[:5]:  # نجرّب أول 5 جلسات
-            client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
-            try:
-                await asyncio.wait_for(client.connect(), timeout=15)
-                if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
-                    continue
-
-                # محاولة الانضمام للقناة إذا لم تكن عضوًا (قد يكون ضروريًا لجلب الرسالة)
-                try:
-                    entity = await client.get_entity(channel_ref)
-                    # التحقق من نوع الكيان (قناة أو مجموعة)
-                    if hasattr(entity, 'megagroup') and not entity.megagroup:
-                        # إذا كانت قناة، انضم إليها أولاً
-                        await client(JoinChannelRequest(entity))
-                        await asyncio.sleep(1)
-                except Exception:
-                    pass
-
-                message = await asyncio.wait_for(client.get_messages(entity, ids=msg_id), timeout=10)
-                if not message:
-                    continue
-
-                poll = getattr(message, "poll", None)
-                if not poll:
-                    continue
-
-                answers = getattr(poll, "answers", [])
-                if not answers:
-                    continue
-
-                # تحويل الخيارات إلى قائمة نصوص (رقم + نص الخيار)
-                result = []
-                for idx, ans in enumerate(answers, start=1):
-                    text = getattr(ans, "text", str(ans))
-                    result.append(f"{idx}. {text}")
-                return result
-
-            except Exception as e:
-                logger.warning(f"فشل جلب الخيارات من الجلسة {session['phone_number']}: {e}")
-                continue
-            finally:
-                await client.disconnect()
-
-        return None
-
     async def handle_text(self, update, context, text, user, state, is_own) -> bool:
-        """معالجة النص لخدمة الاستفتاء"""
+        """معالجة النص لخدمة الاستفتاء - بدون جلب الخيارات"""
 
         if state == "channel":
             if text.strip().lower() in {"تخطي", "skip", "لا", "none", "بدون"}:
@@ -154,35 +97,17 @@ class PollService(RakshService):
                 return True
 
             context.user_data["raksh_link"] = text
-
-            # جلب الخيارات المتاحة من الرابط
-            options = await self._fetch_poll_options(text)
-            if options:
-                context.user_data["raksh_options"] = options
-                await update.message.reply_text(
-                    f"✅ تم حفظ الرابط.\n\n"
-                    f"📊 *الخيارات المتاحة:*\n"
-                    f"{chr(10).join(options)}\n\n"
-                    f"🔢 *أرسل رقم الخيار الذي تريد التصويت عليه:*\n"
-                    f"مثال: 1",
-                    parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
-                    ])
-                )
-            else:
-                # لم نتمكن من جلب الخيارات تلقائيًا - نطلب من المستخدم إدخال الرقم يدويًا
-                context.user_data["raksh_options"] = []
-                await update.message.reply_text(
-                    "⚠️ تعذر جلب الخيارات تلقائيًا من الرابط.\n"
-                    "يرجى إرسال رقم الخيار المطلوب (مثال: 1).\n"
-                    "يمكنك معرفة عدد الخيارات من المنشور نفسه.",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
-                    ])
-                )
-
             context.user_data["raksh_step"] = "poll_option"
+
+            await update.message.reply_text(
+                f"✅ تم حفظ الرابط.\n\n"
+                f"🔢 *أرسل رقم الخيار الذي تريد التصويت عليه:*\n"
+                f"مثال: 1 (إذا كان الاستفتاء لديه 4 خيارات، أرسل رقمًا من 1 إلى 4)",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                ])
+            )
             return True
 
         if state == "poll_option":
@@ -197,19 +122,7 @@ class PollService(RakshService):
                 )
                 return True
 
-            # إذا كانت الخيارات معروفة، نتحقق من الرقم
-            if context.user_data.get("raksh_options"):
-                options_count = len(context.user_data["raksh_options"])
-                if option_number < 1 or option_number > options_count:
-                    await update.message.reply_text(
-                        f"⚠️ الرقم يجب أن يكون بين 1 و {options_count}.",
-                        reply_markup=InlineKeyboardMarkup([
-                            [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
-                        ]),
-                    )
-                    return True
-            # إذا لم نتمكن من جلب الخيارات، نقبل أي رقم موجب
-            elif option_number < 1:
+            if option_number < 1:
                 await update.message.reply_text(
                     "⚠️ الرقم يجب أن يكون 1 أو أكثر.",
                     reply_markup=InlineKeyboardMarkup([
