@@ -1,5 +1,6 @@
 # votes.py
 from .common import *
+from telethon.tl.functions.messages import GetBotCallbackAnswerRequest
 
 class VotesService(RakshService):
     """خدمة رشق أصوات - كل شيء في مكان واحد"""
@@ -295,4 +296,119 @@ class VotesService(RakshService):
                     f"📢 القنوات الإجبارية: {len(context.user_data.get('raksh_channels', []))} قناة\n"
                     f"🔗 الرابط: `{context.user_data.get('raksh_link', '')}`\n"
                     f"🔢 العدد: {quantity}\n"
-                    f"💰 تم خ
+                    f"💰 تم خصم: {total_cost} نقطة\n\n"
+                    f"⏳ جاري الانضمام للقنوات وبدء التصويت...",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                
+                # استيراد محلي لتجنب مشاكل الاستيراد الدائري
+                from .raksh_system import _start_raksh_execution
+                await _start_raksh_execution(
+                    update, context, query, self.service_type, quantity, "points", total_cost
+                )
+                return True
+            
+            else:
+                await query.edit_message_text(
+                    "⭐ *جاري تجهيز فاتورة الدفع بالنجوم...*",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+                await context.bot.send_invoice(
+                    chat_id=user.id,
+                    title=self.config.name,
+                    description=f"{quantity} صوت | {total_cost} نجمة",
+                    payload=f"raksh_stars:{user.id}:{self.service_type}:{quantity}:{total_cost}",
+                    provider_token="",
+                    currency="XTR",
+                    prices=[LabeledPrice("رشق أصوات", total_cost)],
+                )
+                return True
+        
+        return False
+    
+    async def execute(self, session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
+        """تنفيذ رشق أصوات - الضغط على الزر في المنشور مباشرة"""
+        client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+        await asyncio.wait_for(client.connect(), timeout=15)
+        try:
+            if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
+                _mark_raksh_session_unauthorized(session.get("phone_number"))
+                return False, "الجلسة غير مصرح بها"
+            
+            # 1️⃣ الانضمام للقنوات الإجبارية
+            if is_first and params.get("channel_ref"):
+                for channel_ref in params["channel_ref"]:
+                    try:
+                        await _join_channel_and_schedule_leave(client, channel_ref)
+                        await asyncio.sleep(0.5)
+                    except Exception as e:
+                        logger.warning(f"فشل الانضمام للقناة {channel_ref}: {e}")
+            
+            # 2️⃣ تحليل رابط المنشور
+            channel_ref, msg_id = _parse_post_link(params["link"])
+            if not channel_ref:
+                return False, "رابط المنشور غير صحيح"
+            
+            # 3️⃣ الوصول إلى القناة والمنشور
+            entity = await client.get_entity(channel_ref)
+            message = await client.get_messages(entity, ids=msg_id)
+            if not message:
+                return False, "المنشور غير موجود"
+            
+            # 4️⃣ البحث عن الزر في المنشور (زر بدون رابط = زر قابل للضغط)
+            if getattr(message, "buttons", None):
+                for row in message.buttons:
+                    for btn in row:
+                        # تجاهل الأزرار التي تحتوي على روابط
+                        if getattr(btn, "url", None):
+                            continue
+                        
+                        # الضغط على الزر باستخدام GetBotCallbackAnswerRequest
+                        try:
+                            # استخراج البيانات من الزر
+                            callback_data = getattr(btn, "data", None)
+                            if callback_data is None:
+                                continue
+                            
+                            # إرسال طلب الضغط على الزر
+                            await client(GetBotCallbackAnswerRequest(
+                                peer=entity,
+                                msg_id=msg_id,
+                                data=callback_data
+                            ))
+                            
+                            await asyncio.sleep(1.0)
+                            return True, f"✅ تم الضغط على زر التصويت من {session['phone_number']}"
+                            
+                        except Exception as e:
+                            logger.warning(f"فشل الضغط على الزر: {e}")
+                            continue
+            
+            # 5️⃣ إذا لم نجد زر، نجرب الضغط على أول زر موجود
+            if getattr(message, "buttons", None):
+                for row in message.buttons:
+                    for btn in row:
+                        if getattr(btn, "url", None):
+                            continue
+                        try:
+                            callback_data = getattr(btn, "data", None)
+                            if callback_data is None:
+                                continue
+                            
+                            await client(GetBotCallbackAnswerRequest(
+                                peer=entity,
+                                msg_id=msg_id,
+                                data=callback_data
+                            ))
+                            
+                            await asyncio.sleep(1.0)
+                            return True, f"✅ تم الضغط على الزر من {session['phone_number']}"
+                        except Exception:
+                            continue
+            
+            return False, "لم يتم العثور على زر قابل للضغط في المنشور"
+            
+        except Exception as e:
+            return False, f"❌ فشل التصويت: {str(e)}"
+        finally:
+            await client.disconnect()
