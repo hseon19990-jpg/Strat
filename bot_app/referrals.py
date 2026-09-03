@@ -1180,7 +1180,22 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             logger.warning(f"⚠️ لم يحدد الذكاء إجابة Poll صالحة ({phone})")
                             continue
                         processed_ids.add(msg_id)
-                        await msg.click(chosen_idx)
+                        # Native Telegram polls are not inline keyboards.
+                        # Message.click() tries to resolve a callback button
+                        # and fails for poll answers; submit the selected
+                        # option through Telegram's poll API instead.
+                        poll_option = getattr(
+                            (getattr(poll_obj, "answers", []) or [])[chosen_idx],
+                            "option",
+                            None,
+                        )
+                        if not poll_option:
+                            raise ValueError("خيار الاستفتاء لا يحتوي على option صالح")
+                        await client(functions.messages.SendVoteRequest(
+                            peer=bot_entity,
+                            msg_id=msg_id,
+                            options=[poll_option],
+                        ))
                         result, msgs = await _wait_and_check()
                         if result == "unknown":
                             numeric_result, numeric_msgs = await _reply_to_numeric_code(msgs)
