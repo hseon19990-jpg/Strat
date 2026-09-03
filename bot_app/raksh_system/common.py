@@ -308,7 +308,8 @@ def _parse_post_link(value: str) -> Tuple[Optional[str], Optional[int]]:
 
 def _parse_bot_link(value: str) -> Tuple[Optional[str], Optional[str]]:
     """تحليل رابط بوت"""
-    value = (value or "").strip()
+    value = (value or "").strip().strip("<>")
+    value = value.rstrip(".,،؛:!؟)]}")
     if not value:
         return None, None
 
