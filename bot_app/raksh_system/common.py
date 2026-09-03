@@ -155,6 +155,7 @@ def _get_sessions_for_service(service_type: str) -> List[Dict]:
             WHERE session_string IS NOT NULL
               AND BTRIM(session_string) <> ''
               AND deleted_at IS NULL
+              AND last_authorized IS NOT FALSE
         """
         rows = c.execute(query).fetchall()
         sessions = [dict(row) for row in rows]
