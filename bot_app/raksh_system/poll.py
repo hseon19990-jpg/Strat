@@ -53,7 +53,7 @@ class PollService(RakshService):
         ])
 
     async def handle_text(self, update, context, text, user, state, is_own) -> bool:
-        """معالجة النص لخدمة الاستفتاء - بدون جلب الخيارات"""
+        """معالجة النص لخدمة الاستفتاء"""
 
         if state == "channel":
             if text.strip().lower() in {"تخطي", "skip", "لا", "none", "بدون"}:
@@ -239,7 +239,7 @@ class PollService(RakshService):
         return False
 
     async def execute(self, session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
-        """تنفيذ رشق استفتاء مع الانضمام للقنوات لمدة 24 ساعة"""
+        """تنفيذ رشق استفتاء مع الانضمام للقناة المستهدفة قبل التصويت"""
         client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
         await asyncio.wait_for(client.connect(), timeout=15)
         try:
@@ -247,8 +247,8 @@ class PollService(RakshService):
                 _mark_raksh_session_unauthorized(session.get("phone_number"))
                 return False, "الجلسة غير مصرح بها"
 
-            # الانضمام للقنوات الإجبارية (فقط لأول حساب، لمدة 24 ساعة)
-            if is_first and params.get("channel_ref"):
+            # الانضمام للقنوات الإجبارية (إذا وجدت)
+            if params.get("channel_ref"):
                 for channel_ref in params["channel_ref"]:
                     await _join_channel_and_schedule_leave(client, channel_ref, leave_after_seconds=86400)
                     await asyncio.sleep(0.5)
@@ -259,6 +259,16 @@ class PollService(RakshService):
                 return False, "رابط الاستفتاء غير صحيح"
 
             entity = await client.get_entity(channel_ref)
+
+            # الانضمام للقناة المستهدفة إذا كانت قناة (وليس مجموعة)
+            if hasattr(entity, 'megagroup') and not entity.megagroup:
+                try:
+                    await client(JoinChannelRequest(entity))
+                    await asyncio.sleep(0.5)
+                except Exception:
+                    pass
+
+            # جلب الرسالة والتحقق من الاستفتاء
             message = await client.get_messages(entity, ids=msg_id)
             if not message:
                 return False, "الاستفتاء غير موجود"
@@ -267,12 +277,12 @@ class PollService(RakshService):
             if not poll:
                 return False, "هذا المنشور ليس استفتاءً"
 
-            options = getattr(poll, "answers", [])
-            if not options:
+            answers = getattr(poll, "answers", [])
+            if not answers:
                 return False, "الاستفتاء ليس له خيارات"
 
             option_request = params.get("poll_option", "1")
-            option = _select_poll_option(options, option_request)
+            option = _select_poll_option(answers, option_request)
             if not option:
                 return False, f"الخيار {option_request} غير موجود"
 
