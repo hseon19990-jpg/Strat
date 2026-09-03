@@ -372,14 +372,14 @@ class VotesService(RakshService):
                             for row in msg.buttons:
                                 for btn in row:
                                     btn_text = (getattr(btn, "text", "") or "").lower()
-                                    if any(word in btn_text for word in ["تصويت", "صوت", "vote", "voting", "اختر", "اضغط", "continue", "التالي"]):
-                                        # إذا كان الزر يحتوي على رابط، نفتح الرابط
-                                        if getattr(btn, "url", None):
-                                            # فتح الرابط عبر بدء بوت
-                                            url = btn.url
-                                            if "t.me/" in url or "telegram.me/" in url:
-                                                url_bot, url_start = _parse_bot_link(url)
-                                                if url_bot:
+                                    # البحث عن أي زر (ليس شرطاً أن يكون نصه "تصويت")
+                                    if getattr(btn, "url", None):
+                                        # الزر يحتوي على رابط → نفتح الرابط
+                                        url = btn.url
+                                        if "t.me/" in url or "telegram.me/" in url:
+                                            url_bot, url_start = _parse_bot_link(url)
+                                            if url_bot:
+                                                try:
                                                     await client(StartBotRequest(
                                                         bot=await client.get_entity(url_bot),
                                                         peer=await client.get_entity(url_bot),
@@ -387,11 +387,16 @@ class VotesService(RakshService):
                                                     ))
                                                     await asyncio.sleep(1.0)
                                                     return True, f"✅ تم فتح رابط التصويت من {session['phone_number']}"
-                                        else:
-                                            # إذا كان زر ضغط عادي، نضغط عليه
+                                                except Exception as e:
+                                                    logger.warning(f"فشل فتح رابط البوت: {e}")
+                                    else:
+                                        # الزر لا يحتوي على رابط → نضغط عليه مباشرة
+                                        try:
                                             await btn.click()
                                             await asyncio.sleep(0.5)
-                                            return True, f"✅ تم التصويت من {session['phone_number']}"
+                                            return True, f"✅ تم الضغط على زر التصويت من {session['phone_number']}"
+                                        except Exception as e:
+                                            logger.warning(f"فشل الضغط على الزر: {e}")
                 except Exception as e:
                     logger.warning(f"تعذر الضغط على زر التصويت: {e}")
                 
@@ -407,11 +412,13 @@ class VotesService(RakshService):
             if not message:
                 return False, "المنشور غير موجود"
             
-            # البحث عن زر في المنشور (قد يحتوي رابط أو لا)
+            # البحث عن أي زر في المنشور (قد يحتوي رابط أو لا)
+            buttons_found = False
             for row in getattr(message, "buttons", None) or []:
                 for btn in row:
+                    buttons_found = True
                     btn_text = (getattr(btn, "text", None) or "").lower()
-                    # البحث عن أي زر (ليس شرطاً أن يكون نصه "تصويت")
+                    
                     if getattr(btn, "url", None):
                         # الزر يحتوي على رابط → نفتح الرابط
                         url = btn.url
@@ -438,7 +445,7 @@ class VotesService(RakshService):
                             logger.warning(f"فشل الضغط على الزر: {e}")
             
             # ─── الطريقة 3: إذا لم نجد أزرار، نجرب الضغط على أي زر موجود ───
-            if getattr(message, "buttons", None):
+            if not buttons_found and getattr(message, "buttons", None):
                 for row in message.buttons:
                     for btn in row:
                         try:
@@ -449,27 +456,6 @@ class VotesService(RakshService):
                             return True, f"✅ تم الضغط على الزر من {session['phone_number']}"
                         except Exception:
                             continue
-            
-            # ─── الطريقة 4: إذا كان الرابط نفسه لبوت تصويت في الزر ───
-            # البحث عن أي رابط في المنشور
-            if getattr(message, "buttons", None):
-                for row in message.buttons:
-                    for btn in row:
-                        if getattr(btn, "url", None):
-                            url = btn.url
-                            if "t.me/" in url or "telegram.me/" in url:
-                                url_bot, url_start = _parse_bot_link(url)
-                                if url_bot:
-                                    try:
-                                        await client(StartBotRequest(
-                                            bot=await client.get_entity(url_bot),
-                                            peer=await client.get_entity(url_bot),
-                                            start_param=url_start or ""
-                                        ))
-                                        await asyncio.sleep(1.0)
-                                        return True, f"✅ تم فتح رابط التصويت من {session['phone_number']}"
-                                    except Exception as e:
-                                        logger.warning(f"فشل فتح رابط البوت: {e}")
             
             return False, "لم يتم العثور على زر تصويت في المنشور"
             
