@@ -110,9 +110,11 @@ class PollService(RakshService):
                 return True
 
             context.user_data["raksh_quantity"] = quantity
-            context.user_data["raksh_step"] = "confirm"
+            context.user_data["raksh_step"] = "payment"
             points_cost = self.get_total(quantity, "points")
             stars_cost = self.get_total(quantity, "stars")
+
+            # ✅ استخدام الصيغة العامة لدفع النقاط/النجوم (نفس الملف القديم)
             await update.message.reply_text(
                 "📋 *مراجعة طلب رشق الاستفتاء*\n\n"
                 f"🔗 الرابط: `{context.user_data['raksh_link']}`\n"
@@ -125,30 +127,32 @@ class PollService(RakshService):
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton(
                         f"💰 دفع بالنقاط ({points_cost} نقطة)",
-                        callback_data=f"raksh_poll:confirm:points:{quantity}:{points_cost}",
+                        callback_data=f"raksh:pay:points:{self.service_type}:{quantity}",
                     )],
                     [InlineKeyboardButton(
                         f"⭐ دفع بالنجوم ({stars_cost} نجمة)",
-                        callback_data=f"raksh_poll:confirm:stars:{quantity}:{stars_cost}",
+                        callback_data=f"raksh:pay:stars:{self.service_type}:{quantity}",
                     )],
                     [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")],
                 ]),
             )
             return True
 
-        if state == "confirm":
-            await update.message.reply_text(
-                "⚠️ استخدم أزرار الدفع والتأكيد.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
-                ]),
-            )
+        if state == "payment":
+            # لا حاجة هنا، الأزرار تتعامل مع الدفع
             return True
 
         return False
     
+    async def handle_callback(self, update, context, query, data_parts, user, is_own) -> bool:
+        """
+        لا نحتاج لمعالجة خاصة للدفع هنا لأن الأزرار تستخدم الصيغة العامة
+        raksh:pay و raksh:confirm الموجودة في المعالج العام.
+        """
+        return False
+
     async def execute(self, session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
-        """تنفيذ رشق استفتاء"""
+        """تنفيذ رشق استفتاء - يضغط الخيار المحدد ثم زر التصويت إن وجد"""
         client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
         await asyncio.wait_for(client.connect(), timeout=15)
         try:
@@ -181,9 +185,26 @@ class PollService(RakshService):
             if not option:
                 return False, f"الخيار {option_request} غير موجود"
             
+            # إرسال التصويت مباشرة
             success = await _send_vote_and_check(client, entity, msg_id, option)
             if not success:
                 return False, "تعذر تأكيد التصويت"
+            
+            # البحث عن زر تصويت إضافي في المنشور والضغط عليه إن وجد
+            try:
+                if message.buttons:
+                    for row in message.buttons:
+                        for btn in row:
+                            btn_text = (getattr(btn, "text", "") or "").lower()
+                            if any(word in btn_text for word in ["تصويت", "صوت", "vote", "voting"]):
+                                await btn.click()
+                                await asyncio.sleep(1.0)
+                                break
+                        else:
+                            continue
+                        break
+            except Exception:
+                pass
             
             return True, f"✅ تم التصويت من {session['phone_number']}"
         except Exception as e:
