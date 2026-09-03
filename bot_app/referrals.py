@@ -8,6 +8,29 @@ domain.
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
+def _extract_explicit_text_reply(text: str) -> str | None:
+    """يستخرج النص الذي يضعه بوت التحقق بعد عبارة «أرسل النص التالي:»."""
+    source = str(text or "")
+    patterns = (
+        r"(?:أرسل|ارسل|ابعث|send|enter|type|write)\s+"
+        r"(?:النص|الكود|text|code)"
+        r"(?:\s+(?:التالي|الموجود|أدناه|below|following))?"
+        r"\s*[:：]\s*([^\s\n]+)",
+        r"(?:النص|الكود|text|code)"
+        r"(?:\s+(?:التالي|الموجود|أدناه|below|following))?"
+        r"\s*[:：]\s*([^\s\n]+)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, source, flags=re.IGNORECASE)
+        if not match:
+            continue
+        candidate = match.group(1).strip(
+            "`'\"“”«»()[]{}<>،,.;:؛!?؟"
+        )
+        if candidate:
+            return candidate
+    return None
+
 def get_referral_tasks(only_active: bool = False) -> list:
     with db_conn() as c:
         sql = "SELECT * FROM referral_tasks"
@@ -246,18 +269,21 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
 
     # ── كلمات دلالية ──────────────────────────────────────────
     SUCCESS_KW = [
-        "✅", "تم", "نجح", "مبروك", "أهلاً", "مرحباً", "welcome", "success",
-        "تم التحقق", "مقبول", "accepted", "verified", "شكراً", "برافو",
-        "اشتركت", "سجلت", "تسجيل", "دخلت", "ترحيب", "congratulations",
-        "passed", "اجتزت", "صحيح", "correct", "ممتاز", "👍", "تم قبولك",
-        "تم التسجيل", "انتهت عملية", "تم التفعيل", "بنجاح",
-        "تم التصويت", "صوتك", "سجلنا تصويتك", "تم تسجيل التصويت",
+        # لا تضع كلمات عامة مثل «تم» أو «صحيح/correct» هنا؛
+        # فعبارة «اختر الإجابة الصحيحة» قد تظهر داخل سؤال التحقق.
+        "تم التحقق", "نجح التحقق", "verification successful",
+        "verification complete", "مبروك", "success", "accepted",
+        "verified", "congratulations", "passed", "اجتزت التحقق",
+        "تم قبولك", "تم التسجيل بنجاح", "انتهت عملية التحقق",
+        "تم التفعيل بنجاح", "تم التصويت", "صوتك", "سجلنا تصويتك",
+        "تم تسجيل التصويت",
         "vote recorded", "vote accepted", "voted successfully", "your vote",
     ]
     FAIL_KW = [
-        "خطأ", "غلط", "wrong", "incorrect", "فشل", "error", "❌",
+        "إجابة خاطئة", "wrong answer", "incorrect answer",
+        "فشل التحقق", "verification failed", "captcha failed",
+        "خطأ في الإجابة", "wrong", "incorrect", "error", "❌",
         "حاول مجدداً", "try again", "retry", "invalid", "غير صحيح",
-        "أعد", "مجدداً", "again", "حاول ثانية", "إجابة خاطئة",
     ]
     CAPTCHA_KW = [
         "تحقق", "verify", "captcha", "اضغط", "ادخل", "أجب", "اختر",
@@ -279,6 +305,13 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
         "أرسل إيموجي", "انقر", "إيموجي", "emoji", "رد بـ", "reply with",
         "أرسل رد", "ارسل رد",
     ]
+    FOLLOWUP_KW = [
+        "أرسل النص", "ارسل النص", "أعد إرسال النص", "اعد ارسال النص",
+        "إعادة إرسال", "اعادة ارسال", "أدخل النص", "ادخل النص",
+        "أرسل النص مجدداً", "ارسل النص مجددا", "اكتب النص",
+        "النص الظاهر", "النص الموجود", "resend", "resend the text",
+        "send the text", "send again", "enter the text", "type the text",
+    ]
 
     def _messages_need_ai_verification(messages) -> bool:
         """تمييز الكابتشا قبل طلب مزود الذكاء الاصطناعي."""
@@ -287,6 +320,11 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
             "prove you are human", "أجب", "الإجابة", "الجواب", "احسب",
             "ناتج", "حاصل", "calculate", "solve", "answer", "emoji",
             "إيموجي", "reaction", "تفاعل", "الزر الصحيح", "correct button",
+            "أرسل النص", "ارسل النص", "أعد إرسال", "اعد ارسال",
+            "إعادة إرسال", "اعادة ارسال", "أدخل النص", "ادخل النص",
+            "أرسل النص مجدداً", "ارسل النص مجددا", "اكتب النص",
+            "النص الظاهر", "resend", "resend the text", "send the text",
+            "send again", "enter the text", "type the text",
         )
         for msg in messages or []:
             text = (getattr(msg, "message", "") or getattr(msg, "text", "") or "").casefold()
@@ -612,8 +650,22 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
         return None
 
     def _is_success(text: str) -> bool:
-        t = (text or "").lower()
-        return any(k.lower() in t for k in SUCCESS_KW)
+        t = (text or "").casefold()
+        # تحديات التحقق كثيراً ما تحتوي «الإجابة الصحيحة/correct answer».
+        # يجب أن تُفحص كطلب، لا كإشعار نجاح.
+        challenge_markers = (
+            "اختر الإجابة", "اختار الإجابة", "الإجابة الصحيحة",
+            "correct answer", "choose the correct", "أجب عن",
+            "أجب بـ", "أدخل", "ادخل", "اكتب", "احسب",
+            "أرسل النص", "ارسل النص", "أعد إرسال", "اعد ارسال",
+            "إعادة إرسال", "اعادة ارسال", "أرسل النص مجدداً",
+            "ارسل النص مجددا", "resend", "resend the text", "send again",
+            "captcha",
+            "كابتشا", "not a robot",
+        )
+        if any(marker in t for marker in challenge_markers):
+            return False
+        return any(k.casefold() in t for k in SUCCESS_KW)
 
     def _is_fail(text: str) -> bool:
         t = (text or "").lower()
@@ -897,7 +949,10 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
             has_btns       = bool(msg.buttons)
             has_poll       = bool(getattr(msg, "poll", None))
 
-            if _is_success(msg_text) and all_details:
+            # رسالة النجاح الصريحة تكفي حتى في أول مرحلة بعد ضغط زر
+            # «تحقق». لا نعتمد على وجود تفاصيل سابقة، ولا نعدّ السؤال
+            # «اختر الإجابة الصحيحة» نجاحاً (يعالجه _is_success أعلاه).
+            if _is_success(msg_text):
                 logger.info(f"✅ تم حل الكابتشا للرقم {phone} في المحاولة {_round+1}")
                 return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
 
@@ -1338,7 +1393,8 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                 is_captcha_q = any(k in msg_text_lower for k in CAPTCHA_KW)
                 is_math_q    = any(k in msg_text_lower for k in MATH_KW)
                 is_react_q   = any(k in msg_text_lower for k in REACTION_KW)
-                if not (is_captcha_q or is_math_q or is_react_q):
+                is_followup_q = any(k in msg_text_lower for k in FOLLOWUP_KW)
+                if not (is_captcha_q or is_math_q or is_react_q or is_followup_q):
                     continue
                 try:
                     prompt = (
@@ -1346,9 +1402,19 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                         "أجب بالرقم أو النص أو الإيموجي المطلوب فقط "
                         "بدون أي شرح أو رموز إضافية. إذا كان السؤال رياضياً أجب بالرقم فقط."
                     )
-                    answer = await _solve_text(prompt)
+                    # بعض البوتات تعرض رمزاً ثابتاً بعد النقطتين. لا نترك
+                    # إرساله لمحرك AI؛ نستخرجه ونرسله حرفياً حتى لا يتوقف
+                    # المسار عند رسالة مثل: «أرسل النص التالي: KS9J1329».
+                    direct_answer = (
+                        _extract_explicit_text_reply(msg_text)
+                        if is_followup_q else None
+                    )
+                    answer = direct_answer or await _solve_text(prompt)
                     if answer:
-                        logger.info(f"🤖 AI سؤال نصي → '{answer}' ({phone})")
+                        answer_source = "النص المستخرج" if direct_answer else "AI"
+                        logger.info(
+                            f"🤖 {answer_source} لسؤال نصي → '{answer}' ({phone})"
+                        )
                         processed_ids.add(msg_id)
                         await asyncio.sleep(0.5)
                         await client.send_message(bot_entity, answer)
@@ -1860,56 +1926,19 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
 
             if _ai_solved:
                 steps.append(f"🤖 AI: {_ai_detail}")
-            elif _ai_detail != "لم يُكتشف تحقق":
-                _post_verify_text = " ".join(
-                    (getattr(_m, "message", "") or getattr(_m, "text", "") or "")
-                    for _m in (msgs or [])
-                ).casefold()
-                _explicit_fail = any(_x in _post_verify_text for _x in (
-                    "إجابة خاطئة", "غير صحيح", "حاول مجدداً",
-                    "wrong answer", "try again", "captcha failed"
-                ))
-                _pending_controls = any(
-                    getattr(_m, "buttons", None)
-                    and any(
-                        _k in ((getattr(_m, "message", "") or getattr(_m, "text", "") or "").casefold())
-                        for _k in ("captcha", "verification", "تحقق", "كابتشا", "اختر", "اضغط")
+            elif _ai_detail == "لم يُكتشف تحقق":
+                # ضغط زر «تحقق» ليس دليلاً على اكتمال المهمة. إذا ضغطناه
+                # ثم لم تصل رسالة نجاح ولم يتعرف المحلل على التحدي التالي،
+                # نوقف العملية بدلاً من تسجيل إحالة غير مكتملة كنجاح.
+                if _initial_verify_clicked or _any_verify_clicked:
+                    return (
+                        False,
+                        False,
+                        "تم ضغط زر التحقق لكن لم تصل رسالة نجاح أو مطلب قابل للحل",
                     )
-                    for _m in (msgs or [])
-                )
-                if _initial_verify_clicked and not _explicit_fail and not _pending_controls:
-                    steps.append("تم قبول التحقق بعد تبدّل رسالة البوت")
-                    logger.info(
-                        f"✅ {phone}: تم التصويت وتبدلت رسالة التحقق؛ "
-                        "تجاوز فشل AI اللاحق"
-                    )
-                else:
-                    return False, False, f"فشل حل الكابتشا بعد 2 محاولات: {_ai_detail}"
+                steps.append("لم يطلب البوت تحققاً إضافياً")
             else:
-                try:
-                    _late_msgs = await asyncio.wait_for(
-                        client.get_messages(bot_entity, limit=50), timeout=8
-                    )
-                    if await _click_check_subscription_button(
-                        client, bot_entity, _late_msgs
-                    ):
-                        _any_verify_clicked = True
-                        await asyncio.sleep(2)
-                        steps.append("تم ضغط زر التحقق في الفحص المتأخر")
-                        logger.info(
-                            f"✅ تم العثور على زر التحقق في الفحص المتأخر للرقم {phone}"
-                        )
-                except Exception as _late_exc:
-                    logger.warning(
-                        f"⚠️ فشل فحص زر التحقق المتأخر للرقم {phone}: {_late_exc}"
-                    )
-                if _any_verify_clicked:
-                    steps.append("تم ضغط زر التحقق ولم يظهر تحدٍ إضافي")
-                    logger.info(
-                        f"✅ اعتُبر التحقق ناجحاً بعد تنفيذ الضغط للرقم {phone}"
-                    )
-                else:
-                    logger.info(f"ℹ️ لم يطلب البوت تحققاً للرقم {phone}")
+                return False, False, f"فشل حل الكابتشا بعد 2 محاولات: {_ai_detail}"
 
         if msgs:
             _last_txt = getattr(msgs[0], 'text', '') or ''
