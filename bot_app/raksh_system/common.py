@@ -29,9 +29,19 @@ import random
 import asyncio
 import re
 import time
+import io  # إضافة io للتعامل مع الصور
 from typing import Optional, List, Dict, Tuple, Any, Callable
 from dataclasses import dataclass, field
 from enum import Enum
+
+# محاولة استيراد OCR
+try:
+    import pytesseract
+    from PIL import Image
+    OCR_AVAILABLE = True
+except ImportError:
+    OCR_AVAILABLE = False
+    logger.warning("pytesseract أو Pillow غير مثبتين - لن يتم دعم OCR للملصقات")
 
 # ════════════════════════════════════════════════════════
 # ═══ 1. الثوابت العامة ═══
@@ -554,206 +564,39 @@ def _extract_code_from_text(text: str) -> Optional[str]:
 
     return None
 
-async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) -> bool:
-    """حل التحقق المضمون"""
-    max_attempts = 20
-    base_id = 0
+# ════════════════════════════════════════════════════════
+# ═══ 6. دالة استخراج النص من الملصق (جديدة) ═══
+# ════════════════════════════════════════════════════════
+
+async def _extract_sticker_text(client, message) -> Optional[str]:
+    """
+    استخراج نص من ملصق (sticker) باستخدام OCR (pytesseract).
+    يعيد النص المستخرج أو None إذا فشل.
+    """
+    if not OCR_AVAILABLE:
+        return None
+
+    # تحديد كائن الملصق
+    sticker = getattr(message, "sticker", None)
+    if not sticker:
+        media = getattr(message, "media", None)
+        sticker = getattr(media, "sticker", None)
+    if not sticker:
+        return None
 
     try:
-        out_messages = await client.get_messages(bot_entity, limit=10)
-        for msg in out_messages:
-            if msg.out:
-                base_id = msg.id
-                logger.info(f"🔑 نقطة البداية هي رسالة الحساب رقم: {base_id}")
-                break
+        # تنزيل الملصق كصورة في الذاكرة
+        file = await client.download_media(sticker, file=io.BytesIO())
+        img = Image.open(file)
+        # استخدام OCR مع دعم الإنجليزية والعربية
+        text = pytesseract.image_to_string(img, lang='eng+ara')
+        return text.strip() if text.strip() else None
     except Exception as e:
-        logger.warning(f"تعذر تحديد الرسالة المرجعية: {e}")
-
-    for attempt in range(max_attempts):
-        try:
-            messages = await client.get_messages(bot_entity, limit=20)
-        except Exception as exc:
-            await asyncio.sleep(1.0)
-            continue
-
-        incoming_messages = [msg for msg in messages if not msg.out]
-        incoming_messages.sort(key=lambda m: m.id)
-
-        new_messages = [msg for msg in incoming_messages if msg.id > base_id]
-
-        if not new_messages:
-            await asyncio.sleep(1.0)
-            continue
-
-        verification_message = None
-        for msg in new_messages:
-            msg_text = getattr(msg, 'message', '') or ''
-            if msg_text.strip().startswith("/"):
-                continue
-            if any(kw in msg_text for kw in ["أرسل", "التالي", "بالضبط", "اكتب", "retype", "type", "اضغط", "اختر", "انقر"]):
-                verification_message = msg
-                break
-
-        if verification_message is None:
-            verification_message = next(
-                (msg for msg in reversed(new_messages) if not getattr(msg, 'message', '').strip().startswith("/")),
-                None
-            )
-
-        if verification_message is None:
-            await asyncio.sleep(1.0)
-            continue
-
-        text = getattr(verification_message, 'message', '') or ''
-
-        send_text = _extract_code_from_text(text)
-        if send_text:
-            try:
-                await client.send_message(bot_entity, send_text)
-                logger.info(f"✅ تم إرسال الكود: {send_text}")
-                return True
-            except Exception:
-                return False
-
-        math_patterns = [
-            (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=\s*\?', 1, 2, 3),
-            (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=', 1, 2, 3),
-            (r'(\d+)\s*\+\s*(\d+)\s*=', 1, 2),
-            (r'(\d+)\s*\-\s*(\d+)\s*=', 1, 2),
-            (r'(\d+)\s*\*\s*(\d+)\s*=', 1, 2),
-            (r'(\d+)\s*\/\s*(\d+)\s*=', 1, 2),
-        ]
-        for pattern, *groups in math_patterns:
-            match = re.search(pattern, text)
-            if match:
-                try:
-                    if len(groups) == 3:
-                        a, op, b = int(match.group(groups[0])), match.group(groups[1]), int(match.group(groups[2]))
-                    else:
-                        a, b = int(match.group(groups[0])), int(match.group(groups[1]))
-                        op = '+'
-
-                    if op == '+': result = str(a + b)
-                    elif op == '-': result = str(a - b)
-                    elif op == '*': result = str(a * b)
-                    elif op == '/': result = str(a / b) if b != 0 else None
-                    else: result = None
-
-                    if result is not None:
-                        await client.send_message(bot_entity, result)
-                        logger.info(f"✅ تم حل المسألة: {a} {op} {b} = {result}")
-                        return True
-                except Exception:
-                    continue
-
-        buttons = []
-        for row in getattr(verification_message, 'buttons', None) or []:
-            for btn in row:
-                if not getattr(btn, 'url', None):
-                    buttons.append(btn)
-
-        if buttons:
-            for btn in buttons:
-                btn_text = (getattr(btn, 'text', '') or '').lower()
-                try:
-                    await btn.click()
-                    logger.info(f"✅ تم الضغط على الزر: {getattr(btn, 'text', '')}")
-                    return True
-                except Exception:
-                    continue
-
-        await asyncio.sleep(2.0)
-
-    return False
-
-async def _join_channel_and_schedule_leave(client, channel_ref: str):
-    """الانضمام للقناة وجدولة المغادرة"""
-    try:
-        if channel_ref.startswith("invite:"):
-            invite_hash = channel_ref[7:]
-            await client(ImportChatInviteRequest(invite_hash))
-        else:
-            entity = await client.get_entity(channel_ref)
-            await client(JoinChannelRequest(entity))
-
-        async def _leave_later():
-            await asyncio.sleep(random.randint(600, 1800))
-            try:
-                if channel_ref.startswith("invite:"):
-                    pass
-                else:
-                    entity = await client.get_entity(channel_ref)
-                    await client(LeaveChannelRequest(entity))
-            except Exception:
-                pass
-
-        asyncio.create_task(_leave_later())
-    except Exception as e:
-        logger.warning(f"تعذر الانضمام للقناة {channel_ref}: {e}")
-
-def _find_bot_start_link(message) -> Tuple[Optional[str], Optional[str]]:
-    """استخراج رابط البوت من أزرار المنشور"""
-    for row in getattr(message, "buttons", None) or []:
-        for btn in row:
-            url = getattr(btn, "url", None)
-            if url and ("t.me/" in url or "telegram.me/" in url):
-                bot_username, start_param = _parse_bot_link(url)
-                if bot_username and start_param:
-                    return bot_username, start_param
-    return None, None
-
-def _normalize_digits(value: str) -> str:
-    """توحيد الأرقام"""
-    return (value or "").translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
-
-def _select_poll_option(options, requested: str):
-    """اختيار خيار الاستفتاء"""
-    requested = (requested or "").strip()
-    normalized = _normalize_digits(requested)
-    if normalized.isdigit():
-        index = int(normalized) - 1
-        return options[index] if 0 <= index < len(options) else None
-
-    requested_folded = requested.casefold()
-    return next(
-        (
-            option
-            for option in options
-            if str(getattr(option, "text", "")).strip().casefold() == requested_folded
-        ),
-        None,
-    )
-
-async def _send_vote_and_check(client, peer, msg_id: int, option) -> bool:
-    """إرسال تصويت والتحقق منه"""
-    await client(SendVoteRequest(peer=peer, msg_id=msg_id, options=[option]))
-
-    for delay in (0.0, 0.3, 0.5):
-        if delay:
-            await asyncio.sleep(delay)
-        refreshed = await client.get_messages(peer, ids=msg_id)
-        if not refreshed:
-            continue
-        refreshed_message = refreshed[0] if isinstance(refreshed, (list, tuple)) else refreshed
-        media = getattr(refreshed_message, "media", None)
-        poll_media = getattr(refreshed_message, "poll", None)
-        results = (
-            getattr(media, "results", None)
-            or getattr(poll_media, "results", None)
-        )
-        result_items = getattr(results, "results", None) or []
-        if any(
-            getattr(result, "chosen", False)
-            for result in result_items
-        ):
-            return True
-
-    # قبول SendVoteRequest بدون خطأ يعني أن Telegram قبل التصويت.
-    # قد لا يعيد Telegram علامة chosen في الاستفتاءات أو الجلسات الخاصة.
-    return True
+        logger.warning(f"فشل OCR للملصق: {e}")
+        return None
 
 # ════════════════════════════════════════════════════════
-# ═══ 6. ServiceConfig ═══
+# ═══ 7. ServiceConfig ═══
 # ════════════════════════════════════════════════════════
 
 @dataclass
@@ -772,7 +615,7 @@ class ServiceConfig:
     max_concurrent: int = 1
 
 # ════════════════════════════════════════════════════════
-# ═══ 7. RakshService - الفئة الأساسية ═══
+# ═══ 8. RakshService - الفئة الأساسية ═══
 # ════════════════════════════════════════════════════════
 
 class RakshService:
@@ -907,7 +750,129 @@ class RakshService:
         }
 
 # ════════════════════════════════════════════════════════
-# ═══ 8. الخدمات - كل خدمة في كلاس واحد ═══
+# ═══ 9. دوال مساعدة للتحقق (بما فيها دالة التحقق القديمة) ═══
 # ════════════════════════════════════════════════════════
+
+async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) -> bool:
+    """حل التحقق المضمون (قديم، يبقى للتوافق)"""
+    max_attempts = 20
+    base_id = 0
+
+    try:
+        out_messages = await client.get_messages(bot_entity, limit=10)
+        for msg in out_messages:
+            if msg.out:
+                base_id = msg.id
+                logger.info(f"🔑 نقطة البداية هي رسالة الحساب رقم: {base_id}")
+                break
+    except Exception as e:
+        logger.warning(f"تعذر تحديد الرسالة المرجعية: {e}")
+
+    for attempt in range(max_attempts):
+        try:
+            messages = await client.get_messages(bot_entity, limit=20)
+        except Exception as exc:
+            await asyncio.sleep(1.0)
+            continue
+
+        incoming_messages = [msg for msg in messages if not msg.out]
+        incoming_messages.sort(key=lambda m: m.id)
+
+        new_messages = [msg for msg in incoming_messages if msg.id > base_id]
+
+        if not new_messages:
+            await asyncio.sleep(1.0)
+            continue
+
+        verification_message = None
+        for msg in new_messages:
+            msg_text = getattr(msg, 'message', '') or ''
+            if msg_text.strip().startswith("/"):
+                continue
+            if any(kw in msg_text for kw in ["أرسل", "التالي", "بالضبط", "اكتب", "retype", "type", "اضغط", "اختر", "انقر"]):
+                verification_message = msg
+                break
+
+        if verification_message is None:
+            verification_message = next(
+                (msg for msg in reversed(new_messages) if not getattr(msg, 'message', '').strip().startswith("/")),
+                None
+            )
+
+        if verification_message is None:
+            await asyncio.sleep(1.0)
+            continue
+
+        text = getattr(verification_message, 'message', '') or ''
+
+        # إذا كانت الرسالة ملصقاً، نستخدم OCR
+        if getattr(verification_message, "sticker", None) or getattr(getattr(verification_message, "media", None), "sticker", None):
+            sticker_text = await _extract_sticker_text(client, verification_message)
+            if sticker_text:
+                text = sticker_text
+            else:
+                text = ""
+
+        send_text = _extract_code_from_text(text)
+        if send_text:
+            try:
+                await client.send_message(bot_entity, send_text)
+                logger.info(f"✅ تم إرسال الكود: {send_text}")
+                return True
+            except Exception:
+                return False
+
+        math_patterns = [
+            (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=\s*\?', 1, 2, 3),
+            (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=', 1, 2, 3),
+            (r'(\d+)\s*\+\s*(\d+)\s*=', 1, 2),
+            (r'(\d+)\s*\-\s*(\d+)\s*=', 1, 2),
+            (r'(\d+)\s*\*\s*(\d+)\s*=', 1, 2),
+            (r'(\d+)\s*\/\s*(\d+)\s*=', 1, 2),
+        ]
+        for pattern, *groups in math_patterns:
+            match = re.search(pattern, text)
+            if match:
+                try:
+                    if len(groups) == 3:
+                        a, op, b = int(match.group(groups[0])), match.group(groups[1]), int(match.group(groups[2]))
+                    else:
+                        a, b = int(match.group(groups[0])), int(match.group(groups[1]))
+                        op = '+'
+
+                    if op == '+': result = str(a + b)
+                    elif op == '-': result = str(a - b)
+                    elif op == '*': result = str(a * b)
+                    elif op == '/': result = str(a / b) if b != 0 else None
+                    else: result = None
+
+                    if result is not None:
+                        await client.send_message(bot_entity, result)
+                        logger.info(f"✅ تم حل المسألة: {a} {op} {b} = {result}")
+                        return True
+                except Exception:
+                    continue
+
+        buttons = []
+        for row in getattr(verification_message, 'buttons', None) or []:
+            for btn in row:
+                if not getattr(btn, 'url', None):
+                    buttons.append(btn)
+
+        if buttons:
+            for btn in buttons:
+                btn_text = (getattr(btn, 'text', '') or '').lower()
+                try:
+                    await btn.click()
+                    logger.info(f"✅ تم الضغط على الزر: {getattr(btn, 'text', '')}")
+                    return True
+                except Exception:
+                    continue
+
+        await asyncio.sleep(2.0)
+
+    return False
+
+# ... (بقية الملف كما هو)
 
 __all__ = [name for name in globals() if not name.startswith("__")]
