@@ -21,6 +21,10 @@ class VotesService(RakshService):
         max_delay=3
     )
     
+    def get_initial_state(self) -> str:
+        """البدء بطلب القنوات الإجبارية"""
+        return "channel"
+    
     def get_link_instruction(self) -> str:
         return (
             "أرسل رابط المنشور الذي يحتوي على زر التصويت:\n"
@@ -42,9 +46,19 @@ class VotesService(RakshService):
             f"{self.config.name}\n\n"
             f"💰 السعر: {self.get_rate_text('points')}\n"
             f"⭐ السعر: {self.get_rate_text('stars')}\n\n"
-            f"🔗 *أرسل رابط المنشور:*\n"
-            f"{self.get_link_instruction()}"
+            f"📢 *أرسل القنوات الإجبارية:*\n"
+            f"كل قناة في سطر منفصل:\n"
+            f"@channel1\n"
+            f"@channel2\n"
+            f"أو أرسل روابط t.me\n\n"
+            f"✍️ اكتب 'تخطي' لعدم وجود قنوات"
         )
+    
+    def get_start_keyboard(self) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("⏭️ تخطي (بدون قنوات)", callback_data="raksh_votes:skip_channels")],
+            [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+        ])
     
     async def handle_text(self, update, context, text, user, state, is_own) -> bool:
         """معالجة النص لخدمة رشق الأصوات"""
@@ -336,7 +350,7 @@ class VotesService(RakshService):
                 return False, "الجلسة غير مصرح بها"
             
             # 1️⃣ الانضمام للقنوات الإجبارية
-            if is_first and params.get("channel_ref"):
+            if params.get("channel_ref"):
                 for channel_ref in params["channel_ref"]:
                     try:
                         await _join_channel_and_schedule_leave(client, channel_ref)
