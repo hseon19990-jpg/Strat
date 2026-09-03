@@ -119,6 +119,8 @@ def get_raksh_hourly_remaining(user_id: int) -> int:
 
 def get_raksh_daily_remaining(user_id: int) -> int:
     """عدد التنفيذات المتبقية خلال اليوم - بدون حدود"""
+    if RAKSH_MAX_EXECUTIONS_PER_DAY <= 0:
+        return 2_147_483_647
     try:
         with db_conn() as c:
             row = c.execute(
