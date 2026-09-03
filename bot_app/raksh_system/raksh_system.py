@@ -141,8 +141,23 @@ async def execute_raksh_service(
     
     max_concurrent = svc.config.max_concurrent
     
-    shuffled = sessions.copy()
-    random.shuffle(shuffled)
+    # ابدأ دائمًا بالحساب المفضل إن كانت جلسته موجودة وصالحة، ثم
+    # وزّع بقية الحسابات عشوائيًا كما كان سابقًا.
+    preferred_sessions = [
+        session for session in sessions
+        if raksh_phone_matches(session.get("phone_number"))
+    ]
+    other_sessions = [
+        session for session in sessions
+        if not raksh_phone_matches(session.get("phone_number"))
+    ]
+    random.shuffle(other_sessions)
+    shuffled = preferred_sessions + other_sessions
+    if preferred_sessions:
+        logger.info(
+            f"⭐ بدء عملية {service_type} بالحساب المفضل "
+            f"{RAKSH_PRIORITY_PHONE}"
+        )
     
     success_count = 0
     success_phones = []
