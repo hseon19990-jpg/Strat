@@ -1,7 +1,7 @@
 # premium_reaction.py
 from .common import *
 from telethon.tl.functions.messages import SendReactionRequest
-from telethon.tl.types import ReactionEmoji, ReactionCustomEmoji, ReactionPaid
+from telethon.tl.types import ReactionEmoji, ReactionCustomEmoji
 
 class PremiumReactionService(RakshService):
     """خدمة رشق تفاعل مميز - كل شيء في مكان واحد"""
@@ -14,7 +14,7 @@ class PremiumReactionService(RakshService):
         points_quantity=1,
         price_stars=2,
         stars_quantity=1,
-        has_channel=False,
+        has_channel=True,
         has_reaction=True,
         has_ai=False,
         needs_link=True,
@@ -23,8 +23,8 @@ class PremiumReactionService(RakshService):
     )
     
     def get_initial_state(self) -> str:
-        """البدء بطلب الرابط مباشرة"""
-        return "link"
+        """البدء بطلب القنوات الإجبارية"""
+        return "channel"
     
     def get_link_instruction(self) -> str:
         return "https://t.me/channel/123"
@@ -44,14 +44,55 @@ class PremiumReactionService(RakshService):
             f"{self.config.name}\n\n"
             f"💰 السعر: {self.get_rate_text('points')}\n"
             f"⭐ السعر: {self.get_rate_text('stars')}\n\n"
-            f"🔗 *أرسل رابط المنشور:*\n"
-            f"{self.get_link_instruction()}"
+            f"📢 *أرسل القنوات الإجبارية:*\n"
+            f"كل قناة في سطر منفصل:\n"
+            f"@channel1\n"
+            f"@channel2\n"
+            f"أو أرسل روابط t.me\n\n"
+            f"✍️ اكتب 'تخطي' لعدم وجود قنوات"
         )
+    
+    def get_start_keyboard(self) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("⏭️ تخطي (بدون قنوات)", callback_data="raksh_premium_reaction:skip_channels")],
+            [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+        ])
     
     async def handle_text(self, update, context, text, user, state, is_own) -> bool:
         """معالجة النص لخدمة رشق التفاعل المميز"""
         
-        # ═══ الخطوة 1: استقبال رابط المنشور ═══
+        # ═══ الخطوة 1: استقبال القنوات الإجبارية ═══
+        if state == "channel":
+            if text.strip().lower() in {"تخطي", "skip", "لا", "none", "بدون"}:
+                context.user_data["raksh_channels"] = []
+            else:
+                channel_refs = _parse_channel_refs(text)
+                if not channel_refs:
+                    await update.message.reply_text(
+                        "⚠️ لم أتعرف على أي قناة.\n"
+                        "أرسل @username أو رابط t.me للقناة، ويمكنك إرسال أكثر من قناة مفصولة بمسافة أو سطر.\n"
+                        "أو اكتب 'تخطي' لعدم وجود قنوات.",
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                        ]),
+                    )
+                    return True
+                context.user_data["raksh_channels"] = channel_refs
+            
+            context.user_data["raksh_step"] = "link"
+            
+            await update.message.reply_text(
+                f"✅ تم حفظ القنوات الإجبارية ({len(context.user_data['raksh_channels'])} قناة).\n\n"
+                f"🔗 *أرسل رابط المنشور:*\n"
+                f"{self.get_link_instruction()}",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                ])
+            )
+            return True
+        
+        # ═══ الخطوة 2: استقبال رابط المنشور ═══
         if state == "link":
             link_error = self.validate_link(text)
             if link_error:
@@ -87,7 +128,7 @@ class PremiumReactionService(RakshService):
             )
             return True
         
-        # ═══ الخطوة 2: استقبال العدد ═══
+        # ═══ الخطوة 3: استقبال العدد ═══
         if state == "quantity":
             try:
                 quantity = int(text)
@@ -138,9 +179,6 @@ class PremiumReactionService(RakshService):
             context.user_data["raksh_available_reactions"] = reactions
             
             # عرض التفاعلات
-            points_cost = self.get_total(quantity, "points")
-            stars_cost = self.get_total(quantity, "stars")
-            
             reaction_buttons = []
             row = []
             
@@ -181,6 +219,7 @@ class PremiumReactionService(RakshService):
             await update.message.reply_text(
                 f"✅ تم جلب التفاعلات المتاحة!\n\n"
                 f"📋 *تفاصيل الطلب*\n\n"
+                f"📢 القنوات الإجبارية: {len(context.user_data.get('raksh_channels', []))} قناة\n"
                 f"🔗 الرابط: `{context.user_data['raksh_link']}`\n"
                 f"🔢 العدد: {quantity}\n\n"
                 f"✨ *اختر نوع التفاعل:*\n"
@@ -194,6 +233,22 @@ class PremiumReactionService(RakshService):
     
     async def handle_callback(self, update, context, query, data_parts, user, is_own) -> bool:
         """معالجة الأزرار لخدمة رشق التفاعل المميز"""
+        
+        # ═══ تخطي القنوات ═══
+        if data_parts[0] == "skip_channels":
+            context.user_data["raksh_channels"] = []
+            context.user_data["raksh_step"] = "link"
+            
+            await query.edit_message_text(
+                f"✅ تم تخطي القنوات.\n\n"
+                f"🔗 *أرسل رابط المنشور:*\n"
+                f"{self.get_link_instruction()}",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                ])
+            )
+            return True
         
         # ═══ اختيار التفاعل ═══
         if data_parts[0] == "select" and len(data_parts) >= 2:
@@ -223,6 +278,7 @@ class PremiumReactionService(RakshService):
             
             await query.edit_message_text(
                 f"📋 *تأكيد الطلب*\n\n"
+                f"📢 القنوات الإجبارية: {len(context.user_data.get('raksh_channels', []))} قناة\n"
                 f"🔗 الرابط: `{context.user_data.get('raksh_link', '')}`\n"
                 f"🔢 العدد: {quantity}\n"
                 f"✨ التفاعل: {reaction_label}\n\n"
@@ -271,6 +327,7 @@ class PremiumReactionService(RakshService):
             
             await query.edit_message_text(
                 f"📋 *تأكيد الطلب*\n\n"
+                f"📢 القنوات الإجبارية: {len(context.user_data.get('raksh_channels', []))} قناة\n"
                 f"🔗 الرابط: `{context.user_data.get('raksh_link', '')}`\n"
                 f"🔢 العدد: {quantity}\n"
                 f"✨ التفاعل: {context.user_data.get('raksh_reaction', '')}\n"
@@ -329,11 +386,12 @@ class PremiumReactionService(RakshService):
                 await query.edit_message_text(
                     "✅ *تم تأكيد الطلب وخصم النقاط!*\n\n"
                     f"📋 تفاصيل الطلب:\n"
+                    f"📢 القنوات الإجبارية: {len(context.user_data.get('raksh_channels', []))} قناة\n"
                     f"🔗 الرابط: `{context.user_data.get('raksh_link', '')}`\n"
                     f"🔢 العدد: {quantity}\n"
                     f"✨ التفاعل: {context.user_data.get('raksh_reaction', '')}\n"
                     f"💰 تم خصم: {total_cost} نقطة\n\n"
-                    f"⏳ جاري بدء التنفيذ...",
+                    f"⏳ جاري الانضمام للقنوات وبدء التنفيذ...",
                     parse_mode=ParseMode.MARKDOWN
                 )
                 
@@ -459,14 +517,23 @@ class PremiumReactionService(RakshService):
                 _mark_raksh_session_unauthorized(session.get("phone_number"))
                 return False, "الجلسة غير مصرح بها"
             
-            # تحليل رابط المنشور
+            # 1️⃣ الانضمام للقنوات الإجبارية
+            if params.get("channel_ref"):
+                for channel_ref in params["channel_ref"]:
+                    try:
+                        await _join_channel_and_schedule_leave(client, channel_ref)
+                        await asyncio.sleep(0.5)
+                    except Exception as e:
+                        logger.warning(f"فشل الانضمام للقناة {channel_ref}: {e}")
+            
+            # 2️⃣ تحليل رابط المنشور
             channel_ref, msg_id = _parse_post_link(params["link"])
             if not channel_ref:
                 return False, "رابط المنشور غير صحيح"
             
             entity = await client.get_entity(channel_ref)
             
-            # تحديد التفاعل
+            # 3️⃣ تحديد التفاعل
             reaction_value = params.get("reaction", "random")
             
             if reaction_value == "random":
@@ -474,10 +541,10 @@ class PremiumReactionService(RakshService):
                 available = params.get("available_reactions") or list(RAKSH_REACTIONS.values())
                 reaction_value = random.choice(available)
             
-            # تنفيذ التفاعل
+            # 4️⃣ تنفيذ التفاعل - استخدام الطريقة الصحيحة
             try:
                 if reaction_value == RAKSH_PAID_REACTION:
-                    # تفاعل مدفوع
+                    # تفاعل مدفوع - استخدام ReactionEmoji مع نجمة
                     await client(SendReactionRequest(
                         peer=entity,
                         msg_id=msg_id,
@@ -485,7 +552,7 @@ class PremiumReactionService(RakshService):
                         big=True
                     ))
                 elif _custom_reaction_document_id(reaction_value) is not None:
-                    # تفاعل مخصص
+                    # تفاعل مخصص - استخدام ReactionCustomEmoji
                     doc_id = _custom_reaction_document_id(reaction_value)
                     await client(SendReactionRequest(
                         peer=entity,
@@ -493,7 +560,7 @@ class PremiumReactionService(RakshService):
                         reaction=ReactionCustomEmoji(document_id=doc_id)
                     ))
                 else:
-                    # تفاعل عادي
+                    # تفاعل عادي - استخدام ReactionEmoji
                     await client(SendReactionRequest(
                         peer=entity,
                         msg_id=msg_id,
