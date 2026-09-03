@@ -1,3 +1,4 @@
+# raksh_system.py
 """Public compatibility facade for the modular raksh services."""
 
 from .common import *
@@ -664,7 +665,7 @@ async def _handle_raksh_callback_impl(
         )
         return
     
-    # ─── تخطي القنوات ───
+    # ─── تخطي القنوات (الافتراضي) ───
     if data == "raksh:skip_channels":
         context.user_data["raksh_channels"] = []
         context.user_data["raksh_step"] = "link"
