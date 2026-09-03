@@ -17,6 +17,9 @@ def _verification_message_text(message) -> str:
     return ""
 
 
+VERIFICATION_READ_INTERVAL_SECONDS = 2.0
+
+
 class ForcedRefAIService(RakshService):
     """خدمة إحالة بوت إجباري مع تحقق شامل - كل شيء في مكان واحد"""
 
@@ -387,7 +390,7 @@ class ForcedRefAIService(RakshService):
             try:
                 messages = await client.get_messages(bot_entity, limit=10)
             except Exception:
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(VERIFICATION_READ_INTERVAL_SECONDS)
                 continue
 
             # Telethon يعيد الأحدث أولاً؛ نبدأ به حتى لا نضغط زرًا قديمًا
@@ -425,7 +428,7 @@ class ForcedRefAIService(RakshService):
                             return getattr(msg, "id", None)
                         except Exception as exc:
                             logger.warning(f"⚠️ فشل الضغط على زر بدء التحقق: {exc}")
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(VERIFICATION_READ_INTERVAL_SECONDS)
 
         logger.info("ℹ️ لم يظهر زر بدء تحقق منفصل؛ متابعة فحص التحدي مباشرة")
         return None
@@ -444,7 +447,7 @@ class ForcedRefAIService(RakshService):
         3. وإلا نستخدم المنطق القديم: استخراج الكود، حل المسائل، الضغط على الأزرار العادية.
         """
         MAX_WAIT = 12
-        CHECK_INTERVAL = 1.0
+        CHECK_INTERVAL = VERIFICATION_READ_INTERVAL_SECONDS
 
         # بعض البوتات ترسل زرًا أوليًا، وبعد الضغط عليه تعدّل نفس الرسالة
         # وتضع فيها التحقق الحقيقي، بينما ترسل بوتات أخرى رسالة جديدة.
@@ -456,7 +459,7 @@ class ForcedRefAIService(RakshService):
             start_after_message_id=start_after_message_id,
         )
         if initial_button_message_id is not None:
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(VERIFICATION_READ_INTERVAL_SECONDS)
 
         text_challenge_markers = (
             "أرسل النص التالي",
@@ -718,7 +721,7 @@ class ForcedRefAIService(RakshService):
                     logger.error(f"⚠️ الجلسة {phone_number} تستخدم من IP مختلف - سيتم تعطيلها")
                     _mark_raksh_session_unauthorized(phone_number)
                     return False
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(VERIFICATION_READ_INTERVAL_SECONDS)
                 continue
 
             incoming_messages = [msg for msg in messages if not msg.out]
@@ -734,7 +737,7 @@ class ForcedRefAIService(RakshService):
                 )
             ]
             if not new_messages:
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(VERIFICATION_READ_INTERVAL_SECONDS)
                 continue
 
             # لا نعتبر اختفاء الأزرار أو إرسال الإجابة نجاحاً. النجاح يجب أن
@@ -801,7 +804,7 @@ class ForcedRefAIService(RakshService):
                 )
 
             if verification_message is None:
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(VERIFICATION_READ_INTERVAL_SECONDS)
                 continue
 
             text = _verification_message_text(verification_message)
@@ -825,7 +828,7 @@ class ForcedRefAIService(RakshService):
                     processed_ids.add(verification_message.id)
                     # ننتظر رسالة البوت التالية؛ قد تكون نجاحاً أو مرحلة
                     # تحقق جديدة، ولا نعلن النجاح بمجرد إرسال الرمز.
-                    await asyncio.sleep(1.5)
+                    await asyncio.sleep(VERIFICATION_READ_INTERVAL_SECONDS)
                     continue
                 except Exception:
                     return False
@@ -857,7 +860,7 @@ class ForcedRefAIService(RakshService):
                             await client.send_message(bot_entity, result)
                             logger.info(f"✅ تم حل المسألة: {a} {op} {b} = {result}")
                             processed_ids.add(verification_message.id)
-                            await asyncio.sleep(1.5)
+                            await asyncio.sleep(VERIFICATION_READ_INTERVAL_SECONDS)
                             break
                     except Exception:
                         continue
@@ -902,14 +905,14 @@ class ForcedRefAIService(RakshService):
                         await btn.click()
                         logger.info(f"🖱️ تم الضغط على الزر: {getattr(btn, 'text', '')}")
                         processed_ids.add(verification_message.id)
-                        await asyncio.sleep(2.0)
+                        await asyncio.sleep(VERIFICATION_READ_INTERVAL_SECONDS)
                         # لا نعتبر اختفاء الأزرار نجاحاً؛ ستتم قراءة رسالة
                         # البوت الجديدة في الدورة التالية.
                         break
                     except Exception:
                         continue
 
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(VERIFICATION_READ_INTERVAL_SECONDS)
 
         logger.warning(f"⚠️ لم تصل رسالة نجاح صريحة بعد التحقق من {phone_number}")
         return False
