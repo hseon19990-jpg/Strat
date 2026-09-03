@@ -521,7 +521,7 @@ def _chunk_lines(lines: List[str], max_chars: int = 3500) -> List[str]:
 # ═══ 13. المعالج الرئيسي للأزرار ═══
 # ════════════════════════════════════════════════════════
 
-async def handle_raksh_callback(
+async def _handle_raksh_callback_impl(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     query=None,
@@ -535,7 +535,7 @@ async def handle_raksh_callback(
     user = user or query.from_user
     is_own = (user.id == OWNER_ID) if is_own is None else is_own
     
-    await query.answer()
+    await query.answer("⏳ جارٍ تجهيز الطلب...")
     
     # ─── تفعيل/إخفاء خدمة ───
     if data.startswith("raksh:toggle:"):
@@ -857,6 +857,44 @@ async def handle_raksh_callback(
             update, context, query, service_type, quantity, payment_method, total_cost
         )
         return
+
+async def handle_raksh_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    query=None,
+    data=None,
+    user=None,
+    is_own=None,
+):
+    """معالج آمن لأزرار الرشق مع رد واضح عند حدوث خطأ."""
+    active_query = query or update.callback_query
+    try:
+        return await _handle_raksh_callback_impl(
+            update, context, active_query, data, user, is_own
+        )
+    except Exception:
+        error_user = user or getattr(active_query, "from_user", None)
+        error_user_id = getattr(error_user, "id", "unknown")
+        logger.exception(
+            "فشل معالج دفع/زر الرشق للمستخدم %s",
+            error_user_id,
+        )
+        try:
+            await active_query.answer(
+                "⚠️ حدث خطأ أثناء معالجة الدفع. حاول مرة أخرى.",
+                show_alert=True,
+            )
+        except Exception:
+            pass
+        try:
+            await active_query.edit_message_text(
+                "⚠️ حدث خطأ أثناء معالجة الدفع. حاول مرة أخرى.",
+                reply_markup=raksh_menu_kb(
+                    getattr(error_user, "id", None) == OWNER_ID
+                ),
+            )
+        except Exception:
+            pass
 
 # ════════════════════════════════════════════════════════
 # ═══ 14. المعالج الرئيسي للنصوص ═══
