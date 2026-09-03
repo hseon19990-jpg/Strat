@@ -40,6 +40,7 @@ class ForcedRefAIService(RakshService):
                 WHERE session_string IS NOT NULL
                   AND BTRIM(session_string) <> ''
                   AND deleted_at IS NULL
+                  AND last_authorized IS NOT FALSE
                 ORDER BY last_authorized DESC NULLS LAST, id ASC
             """
             rows = c.execute(query).fetchall()
