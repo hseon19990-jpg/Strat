@@ -1007,9 +1007,9 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(
             f"✅ تم حفظ القنوات.\n\n"
-            f"🔗 *أرسل الرابط المطلوب:*\n"
+            f"🔗 <b>أرسل الرابط المطلوب:</b>\n"
             f"{_get_link_instruction(service_type)}",
-            parse_mode=ParseMode.MARKDOWN,
+            parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
             ])
