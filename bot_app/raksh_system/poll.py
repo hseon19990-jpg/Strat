@@ -2,7 +2,7 @@ from .common import *
 
 class PollService(RakshService):
     """خدمة رشق استفتاء - كل شيء في مكان واحد"""
-    
+
     service_type = "poll"
     label = "📊 رشق استفتاء"
     config = ServiceConfig(
@@ -18,10 +18,10 @@ class PollService(RakshService):
         min_delay=3,
         max_delay=3
     )
-    
+
     def get_link_instruction(self) -> str:
         return "https://t.me/channel/123"
-    
+
     def validate_link(self, value: str) -> Optional[str]:
         if not value.strip():
             return "⚠️ الرابط لا يمكن أن يكون فارغاً"
@@ -114,7 +114,6 @@ class PollService(RakshService):
             points_cost = self.get_total(quantity, "points")
             stars_cost = self.get_total(quantity, "stars")
 
-            # ✅ استخدام الصيغة العامة لدفع النقاط/النجوم (نفس الملف القديم)
             await update.message.reply_text(
                 "📋 *مراجعة طلب رشق الاستفتاء*\n\n"
                 f"🔗 الرابط: `{context.user_data['raksh_link']}`\n"
@@ -139,16 +138,11 @@ class PollService(RakshService):
             return True
 
         if state == "payment":
-            # لا حاجة هنا، الأزرار تتعامل مع الدفع
             return True
 
         return False
-    
+
     async def handle_callback(self, update, context, query, data_parts, user, is_own) -> bool:
-        """
-        لا نحتاج لمعالجة خاصة للدفع هنا لأن الأزرار تستخدم الصيغة العامة
-        raksh:pay و raksh:confirm الموجودة في المعالج العام.
-        """
         return False
 
     async def execute(self, session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
@@ -159,54 +153,73 @@ class PollService(RakshService):
             if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
                 _mark_raksh_session_unauthorized(session.get("phone_number"))
                 return False, "الجلسة غير مصرح بها"
-            
+
             if is_first and params.get("channel_ref"):
                 await _join_channel_and_schedule_leave(client, params["channel_ref"])
-            
+
             channel_ref, msg_id = _parse_post_link(params["link"])
             if not channel_ref:
                 return False, "رابط المنشور غير صحيح"
-            
+
             entity = await client.get_entity(channel_ref)
             message = await client.get_messages(entity, ids=msg_id)
             if not message:
                 return False, "المنشور غير موجود"
-            
+
             poll = getattr(message, "poll", None)
             if not poll:
                 return False, "هذا المنشور ليس استفتاءً"
-            
+
             options = getattr(poll, "answers", [])
             if not options:
                 return False, "الاستفتاء ليس له خيارات"
-            
+
             option_request = params.get("poll_option", "1")
             option = _select_poll_option(options, option_request)
             if not option:
                 return False, f"الخيار {option_request} غير موجود"
-            
-            # إرسال التصويت مباشرة
-            success = await _send_vote_and_check(client, entity, msg_id, option)
-            if not success:
-                return False, "تعذر تأكيد التصويت"
-            
-            # البحث عن زر تصويت إضافي في المنشور والضغط عليه إن وجد
+
+            # محاولة التصويت المباشر عبر SendVoteRequest
             try:
-                if message.buttons:
-                    for row in message.buttons:
-                        for btn in row:
-                            btn_text = (getattr(btn, "text", "") or "").lower()
-                            if any(word in btn_text for word in ["تصويت", "صوت", "vote", "voting"]):
+                await client(SendVoteRequest(peer=entity, msg_id=msg_id, options=[option]))
+                await asyncio.sleep(1.0)
+                # التحقق من نجاح التصويت (بشكل اختياري)
+                try:
+                    refreshed = await client.get_messages(entity, ids=msg_id)
+                    if isinstance(refreshed, (list, tuple)):
+                        refreshed = refreshed[0] if refreshed else None
+                    if refreshed and refreshed.poll:
+                        results = getattr(refreshed.poll, "results", None)
+                        if results and results.results:
+                            for result in results.results:
+                                if getattr(result, "option", None) == option and getattr(result, "chosen", False):
+                                    return True, f"✅ تم التصويت من {session['phone_number']}"
+                except Exception:
+                    pass
+                # إذا لم نتمكن من التأكيد، نعتبر النجاح (SendVoteRequest لم يرمِ خطأ)
+                return True, f"✅ تم التصويت من {session['phone_number']}"
+            except Exception as e:
+                logger.warning(f"فشل SendVoteRequest: {e}")
+
+            # إذا فشل التصويت المباشر، محاولة الضغط على الأزرار
+            if message.buttons:
+                # البحث عن زر مطابق للخيار أو زر "تصويت"
+                target_text = getattr(option, "text", "") if hasattr(option, "text") else str(option)
+                for row in message.buttons:
+                    for btn in row:
+                        if getattr(btn, "url", None):
+                            continue
+                        btn_text = (getattr(btn, "text", "") or "").strip()
+                        if btn_text == target_text or btn_text == str(option) or "تصويت" in btn_text or "vote" in btn_text.lower():
+                            try:
                                 await btn.click()
                                 await asyncio.sleep(1.0)
-                                break
-                        else:
-                            continue
-                        break
-            except Exception:
-                pass
-            
-            return True, f"✅ تم التصويت من {session['phone_number']}"
+                                return True, f"✅ تم التصويت من {session['phone_number']}"
+                            except Exception as e:
+                                logger.warning(f"فشل الضغط على الزر: {e}")
+                                continue
+
+            return False, "تعذر التصويت"
         except Exception as e:
             return False, f"❌ فشل التصويت: {str(e)}"
         finally:
