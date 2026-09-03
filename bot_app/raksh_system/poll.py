@@ -270,6 +270,8 @@ class PollService(RakshService):
 
             # جلب الرسالة
             message = await client.get_messages(entity, ids=msg_id)
+            if isinstance(message, (list, tuple)):
+                message = message[0] if message else None
             if not message:
                 return False, "الاستفتاء غير موجود"
 
