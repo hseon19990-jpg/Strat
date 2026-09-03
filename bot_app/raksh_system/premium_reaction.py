@@ -1,6 +1,7 @@
 # premium_reaction.py
 from .common import *
-from telethon.tl.functions.messages import GetBotCallbackAnswerRequest
+from telethon.tl.functions.messages import SendReactionRequest
+from telethon.tl.types import ReactionEmoji, ReactionCustomEmoji
 
 class PremiumReactionService(RakshService):
     """خدمة رشق تفاعل مميز - كل شيء في مكان واحد"""
@@ -160,43 +161,71 @@ class PremiumReactionService(RakshService):
                 return True
             
             context.user_data["raksh_quantity"] = quantity
-            context.user_data["raksh_step"] = "payment"
+            context.user_data["raksh_step"] = "fetch_reactions"
             
-            points_cost = self.get_total(quantity, "points")
-            stars_cost = self.get_total(quantity, "stars")
+            # ═══ جلب التفاعلات المتاحة من البوست ═══
+            await update.message.reply_text(
+                "⏳ *جاري جلب التفاعلات المتاحة من المنشور...*",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            
+            # جلب التفاعلات
+            reactions = await self._fetch_reactions_from_post(context.user_data["raksh_link"])
+            
+            if not reactions:
+                # إذا لم نجد تفاعلات، نستخدم الافتراضية
+                reactions = list(RAKSH_REACTIONS.values())
+            
+            context.user_data["raksh_available_reactions"] = reactions
+            
+            # عرض التفاعلات
+            reaction_buttons = []
+            row = []
+            
+            for index, reaction in enumerate(reactions, start=1):
+                if reaction == RAKSH_PAID_REACTION:
+                    label = RAKSH_PAID_REACTION_LABEL
+                    callback_key = "paid"
+                elif _custom_reaction_document_id(reaction) is not None:
+                    label = f"🎨 تفاعل مميز {index}"
+                    callback_key = f"custom_{_custom_reaction_document_id(reaction)}"
+                else:
+                    label = reaction
+                    callback_key = reaction if reaction in RAKSH_REACTIONS else str(index)
+                
+                row.append(
+                    InlineKeyboardButton(
+                        label,
+                        callback_data=f"raksh_premium_reaction:select:{callback_key}"
+                    )
+                )
+                if len(row) == 4:
+                    reaction_buttons.append(row)
+                    row = []
+            
+            if row:
+                reaction_buttons.append(row)
+            
+            reaction_buttons.append([
+                InlineKeyboardButton(
+                    "🎲 عشوائي",
+                    callback_data="raksh_premium_reaction:select:random"
+                )
+            ])
+            reaction_buttons.append([
+                InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")
+            ])
             
             await update.message.reply_text(
+                f"✅ تم جلب التفاعلات المتاحة!\n\n"
                 f"📋 *تفاصيل الطلب*\n\n"
                 f"📢 القنوات الإجبارية: {len(context.user_data.get('raksh_channels', []))} قناة\n"
-                f"🔗 رابط المنشور: `{context.user_data['raksh_link']}`\n"
+                f"🔗 الرابط: `{context.user_data['raksh_link']}`\n"
                 f"🔢 العدد: {quantity}\n\n"
-                f"💳 *اختر طريقة الدفع:*",
+                f"✨ *اختر نوع التفاعل:*\n"
+                f"(إذا اخترت عشوائي سيتم اختيار تفاعل عشوائياً)",
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup([
-                    [
-                        InlineKeyboardButton(
-                            f"💰 دفع بالنقاط ({points_cost} نقطة)",
-                            callback_data=f"raksh_premium_reaction:payment:points:{quantity}:{points_cost}"
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            f"⭐ دفع بالنجوم ({stars_cost} نجمة)",
-                            callback_data=f"raksh_premium_reaction:payment:stars:{quantity}:{stars_cost}"
-                        )
-                    ],
-                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
-                ])
-            )
-            return True
-        
-        # ═══ الخطوة 4: انتظار التأكيد ═══
-        if state == "confirm":
-            await update.message.reply_text(
-                "⚠️ استخدم الأزرار للتأكيد.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
-                ])
+                reply_markup=InlineKeyboardMarkup(reaction_buttons)
             )
             return True
         
@@ -216,6 +245,58 @@ class PremiumReactionService(RakshService):
                 f"{self.get_link_instruction()}",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                ])
+            )
+            return True
+        
+        # ═══ اختيار التفاعل ═══
+        if data_parts[0] == "select" and len(data_parts) >= 2:
+            reaction_key = data_parts[1]
+            
+            available_reactions = context.user_data.get("raksh_available_reactions", [])
+            
+            if reaction_key == "random":
+                reaction = "random"
+                reaction_label = "🎲 عشوائي"
+            elif reaction_key == "paid":
+                reaction = RAKSH_PAID_REACTION
+                reaction_label = RAKSH_PAID_REACTION_LABEL
+            elif reaction_key.startswith("custom_"):
+                doc_id = reaction_key[7:]
+                reaction = f"{RAKSH_CUSTOM_REACTION_PREFIX}{doc_id}"
+                reaction_label = f"🎨 تفاعل مميز {doc_id}"
+            else:
+                reaction = RAKSH_REACTIONS.get(reaction_key, reaction_key)
+                reaction_label = reaction
+            
+            context.user_data["raksh_reaction"] = reaction
+            
+            quantity = context.user_data.get("raksh_quantity", 1)
+            points_cost = self.get_total(quantity, "points")
+            stars_cost = self.get_total(quantity, "stars")
+            
+            await query.edit_message_text(
+                f"📋 *تأكيد الطلب*\n\n"
+                f"📢 القنوات الإجبارية: {len(context.user_data.get('raksh_channels', []))} قناة\n"
+                f"🔗 الرابط: `{context.user_data.get('raksh_link', '')}`\n"
+                f"🔢 العدد: {quantity}\n"
+                f"✨ التفاعل: {reaction_label}\n\n"
+                f"💳 *اختر طريقة الدفع:*",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton(
+                            f"💰 دفع بالنقاط ({points_cost} نقطة)",
+                            callback_data=f"raksh_premium_reaction:payment:points:{quantity}:{points_cost}"
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            f"⭐ دفع بالنجوم ({stars_cost} نجمة)",
+                            callback_data=f"raksh_premium_reaction:payment:stars:{quantity}:{stars_cost}"
+                        )
+                    ],
                     [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
                 ])
             )
@@ -247,8 +328,9 @@ class PremiumReactionService(RakshService):
             await query.edit_message_text(
                 f"📋 *تأكيد الطلب*\n\n"
                 f"📢 القنوات الإجبارية: {len(context.user_data.get('raksh_channels', []))} قناة\n"
-                f"🔗 رابط المنشور: `{context.user_data.get('raksh_link', '')}`\n"
+                f"🔗 الرابط: `{context.user_data.get('raksh_link', '')}`\n"
                 f"🔢 العدد: {quantity}\n"
+                f"✨ التفاعل: {context.user_data.get('raksh_reaction', '')}\n"
                 f"💳 طريقة الدفع: {'💰 نقاط' if payment_method == 'points' else '⭐ نجوم'}\n"
                 f"💰 التكلفة: {total_cost} {'نقطة' if payment_method == 'points' else 'نجمة'}\n\n"
                 f"*هل تريد تأكيد الطلب؟*",
@@ -307,6 +389,7 @@ class PremiumReactionService(RakshService):
                     f"📢 القنوات الإجبارية: {len(context.user_data.get('raksh_channels', []))} قناة\n"
                     f"🔗 الرابط: `{context.user_data.get('raksh_link', '')}`\n"
                     f"🔢 العدد: {quantity}\n"
+                    f"✨ التفاعل: {context.user_data.get('raksh_reaction', '')}\n"
                     f"💰 تم خصم: {total_cost} نقطة\n\n"
                     f"⏳ جاري الانضمام للقنوات وبدء التنفيذ...",
                     parse_mode=ParseMode.MARKDOWN
@@ -337,8 +420,96 @@ class PremiumReactionService(RakshService):
         
         return False
     
+    async def _fetch_reactions_from_post(self, link: str) -> List[str]:
+        """جلب التفاعلات المتاحة من المنشور"""
+        try:
+            # تحليل الرابط
+            channel_ref, msg_id = _parse_post_link(link)
+            if not channel_ref:
+                return []
+            
+            # جلب جلسة مؤقتة للفحص
+            sessions = self.get_sessions()
+            if not sessions:
+                return []
+            
+            # استخدام أول جلسة متاحة للفحص
+            session = sessions[0]
+            client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+            
+            try:
+                await asyncio.wait_for(client.connect(), timeout=10)
+                if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
+                    return []
+                
+                entity = await client.get_entity(channel_ref)
+                message = await client.get_messages(entity, ids=msg_id)
+                
+                if not message:
+                    return []
+                
+                # جلب التفاعلات المتاحة من الرسالة
+                reactions = []
+                
+                # 1. التفاعلات الموجودة في الرسالة
+                message_reactions = getattr(getattr(message, "reactions", None), "results", None)
+                if message_reactions:
+                    for reaction in message_reactions:
+                        reaction_type = getattr(reaction, "reaction", None)
+                        if reaction_type:
+                            reaction_class = reaction_type.__class__.__name__
+                            if reaction_class == "ReactionPaid":
+                                reactions.append(RAKSH_PAID_REACTION)
+                            elif reaction_class == "ReactionCustomEmoji":
+                                doc_id = getattr(reaction_type, "document_id", None)
+                                if doc_id:
+                                    reactions.append(f"{RAKSH_CUSTOM_REACTION_PREFIX}{doc_id}")
+                            else:
+                                emoticon = getattr(reaction_type, "emoticon", None)
+                                if emoticon:
+                                    reactions.append(emoticon)
+                
+                # 2. التفاعلات المتاحة من القناة
+                if not reactions:
+                    full_channel = await client(functions.channels.GetFullChannelRequest(channel=entity))
+                    full_chat = getattr(full_channel, "full_chat", None)
+                    
+                    # التفاعلات المدفوعة
+                    if getattr(full_chat, "paid_reactions_available", False):
+                        reactions.append(RAKSH_PAID_REACTION)
+                    
+                    # التفاعلات المتاحة
+                    available = getattr(full_chat, "available_reactions", None)
+                    configured = getattr(available, "reactions", None)
+                    if configured:
+                        for reaction in configured:
+                            reaction_type = getattr(reaction, "reaction", None)
+                            if reaction_type:
+                                reaction_class = reaction_type.__class__.__name__
+                                if reaction_class == "ReactionCustomEmoji":
+                                    doc_id = getattr(reaction_type, "document_id", None)
+                                    if doc_id:
+                                        reactions.append(f"{RAKSH_CUSTOM_REACTION_PREFIX}{doc_id}")
+                                else:
+                                    emoticon = getattr(reaction_type, "emoticon", None)
+                                    if emoticon:
+                                        reactions.append(emoticon)
+                    
+                    # إذا كانت كل التفاعلات متاحة
+                    if available is not None and available.__class__.__name__ == "ChatReactionsAll":
+                        reactions.extend(list(RAKSH_REACTIONS.values()))
+                
+                return list(dict.fromkeys(reactions))  # إزالة التكرارات
+                
+            finally:
+                await client.disconnect()
+                
+        except Exception as e:
+            logger.warning(f"فشل جلب التفاعلات: {e}")
+            return []
+    
     async def execute(self, session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
-        """تنفيذ رشق تفاعل مميز - فتح الرابط والضغط على زر التفاعل"""
+        """تنفيذ رشق تفاعل مميز - فتح الرابط والتفاعل بالإيموجي المختار"""
         client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
         await asyncio.wait_for(client.connect(), timeout=15)
         try:
@@ -362,74 +533,57 @@ class PremiumReactionService(RakshService):
             
             # 3️⃣ الوصول إلى القناة والمنشور
             entity = await client.get_entity(channel_ref)
-            message = await client.get_messages(entity, ids=msg_id)
-            if not message:
-                return False, "المنشور غير موجود"
             
-            # 4️⃣ البحث عن زر التفاعل في المنشور (زر بدون رابط = زر قابل للضغط)
-            if getattr(message, "buttons", None):
-                for row in message.buttons:
-                    for btn in row:
-                        # تجاهل الأزرار التي تحتوي على روابط
-                        if getattr(btn, "url", None):
-                            continue
-                        
-                        # الضغط على الزر باستخدام GetBotCallbackAnswerRequest
-                        try:
-                            callback_data = getattr(btn, "data", None)
-                            if callback_data is None:
-                                continue
-                            
-                            # إرسال طلب الضغط على الزر
-                            await client(GetBotCallbackAnswerRequest(
-                                peer=entity,
-                                msg_id=msg_id,
-                                data=callback_data
-                            ))
-                            
-                            await asyncio.sleep(1.0)
-                            return True, f"✅ تم التفاعل من {session['phone_number']}"
-                            
-                        except Exception as e:
-                            logger.warning(f"فشل الضغط على الزر: {e}")
-                            continue
+            # 4️⃣ تحديد التفاعل المختار
+            reaction_value = params.get("reaction", "random")
             
-            # 5️⃣ إذا لم نجد زر، نجرب الضغط على أول زر موجود
-            if getattr(message, "buttons", None):
-                for row in message.buttons:
-                    for btn in row:
-                        if getattr(btn, "url", None):
-                            continue
-                        try:
-                            callback_data = getattr(btn, "data", None)
-                            if callback_data is None:
-                                continue
-                            
-                            await client(GetBotCallbackAnswerRequest(
-                                peer=entity,
-                                msg_id=msg_id,
-                                data=callback_data
-                            ))
-                            
-                            await asyncio.sleep(1.0)
-                            return True, f"✅ تم التفاعل من {session['phone_number']}"
-                        except Exception:
-                            continue
+            if reaction_value == "random":
+                # اختيار تفاعل عشوائي من المتاح
+                available = params.get("available_reactions") or list(RAKSH_REACTIONS.values())
+                reaction_value = random.choice(available)
             
-            # 6️⃣ إذا لم نجد أزرار، نجرب التفاعل المباشر
+            # 5️⃣ تنفيذ التفاعل - الطريقة الصحيحة
             try:
-                # محاولة تفاعل عادي
-                await client(functions.messages.SendReactionRequest(
-                    peer=entity,
-                    msg_id=msg_id,
-                    reaction=[ReactionEmoji(emoticon="❤️")]
-                ))
+                if reaction_value == RAKSH_PAID_REACTION:
+                    # تفاعل مدفوع
+                    await client(SendReactionRequest(
+                        peer=entity,
+                        msg_id=msg_id,
+                        reaction=ReactionEmoji(emoticon="⭐"),
+                        big=True
+                    ))
+                elif _custom_reaction_document_id(reaction_value) is not None:
+                    # تفاعل مخصص
+                    doc_id = _custom_reaction_document_id(reaction_value)
+                    await client(SendReactionRequest(
+                        peer=entity,
+                        msg_id=msg_id,
+                        reaction=ReactionCustomEmoji(document_id=doc_id)
+                    ))
+                else:
+                    # تفاعل عادي (إيموجي)
+                    await client(SendReactionRequest(
+                        peer=entity,
+                        msg_id=msg_id,
+                        reaction=ReactionEmoji(emoticon=reaction_value)
+                    ))
+                
                 return True, f"✅ تم التفاعل من {session['phone_number']}"
+                
             except Exception as e:
-                logger.warning(f"فشل التفاعل المباشر: {e}")
-            
-            return False, "لم يتم العثور على زر تفاعل في المنشور"
-            
+                logger.warning(f"فشل التفاعل {reaction_value}: {e}")
+                
+                # محاولة بديلة: تفاعل عادي
+                try:
+                    await client(SendReactionRequest(
+                        peer=entity,
+                        msg_id=msg_id,
+                        reaction=ReactionEmoji(emoticon="❤️")
+                    ))
+                    return True, f"✅ تم التفاعل (بديل) من {session['phone_number']}"
+                except Exception as e2:
+                    return False, f"❌ فشل التفاعل: {str(e2)}"
+                
         except Exception as e:
             return False, f"❌ فشل: {str(e)}"
         finally:
