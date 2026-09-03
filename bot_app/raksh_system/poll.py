@@ -307,7 +307,8 @@ class PollService(RakshService):
             option_number = int(option_request)
 
             # ✅ **1. محاولة التصويت كاستفتاء أصلي**
-            poll = getattr(message, "poll", None)
+            poll_media = getattr(message, "poll", None)
+            poll = getattr(poll_media, "poll", poll_media) if poll_media else None
             if poll:
                 answers = getattr(poll, "answers", None)
                 if answers:
@@ -327,7 +328,8 @@ class PollService(RakshService):
                     if isinstance(message, (list, tuple)):
                         message = message[0] if message else None
                     if message:
-                        poll = getattr(message, "poll", None)
+                        poll_media = getattr(message, "poll", None)
+                        poll = getattr(poll_media, "poll", poll_media) if poll_media else None
                         answers = getattr(poll, "answers", None) if poll else None
                         if answers:
                             option = _select_poll_option(answers, option_request)
