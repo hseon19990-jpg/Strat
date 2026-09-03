@@ -1,25 +1,25 @@
-# votes_ai.py
+# premium_reaction.py
 from .common import *
-from .forced_ref_ai import ForcedRefAIService
+from telethon.tl.functions.messages import SendReactionRequest
+from telethon.tl.types import ReactionEmoji, ReactionCustomEmoji
 
-class VotesAIService(RakshService):
-    """خدمة رشق تصويت مع تحقق - كل شيء في مكان واحد"""
+class PremiumReactionService(RakshService):
+    """خدمة رشق تفاعل مميز - كل شيء في مكان واحد"""
     
-    service_type = "votes_ai"
-    label = "🛡 رشق تصويت مع تحقق"
+    service_type = "premium_reaction"
+    label = "✨ رشق تفاعل مميز"
     config = ServiceConfig(
         name=label,
-        price_points=50,
+        price_points=10,
         points_quantity=1,
-        price_stars=10,
+        price_stars=2,
         stars_quantity=1,
         has_channel=True,
-        has_reaction=False,
-        has_ai=True,
+        has_reaction=True,
+        has_ai=False,
         needs_link=True,
         min_delay=3,
-        max_delay=3,
-        max_concurrent=1
+        max_delay=3
     )
     
     def get_initial_state(self) -> str:
@@ -27,22 +27,15 @@ class VotesAIService(RakshService):
         return "channel"
     
     def get_link_instruction(self) -> str:
-        return (
-            "أرسل رابط التصويت بأحد هذه الصيغ:\n"
-            "• رابط بوت: https://t.me/i8YYBot?start=compvote_xxx\n"
-            "• رابط قناة: https://t.me/z_10_f/1836"
-        )
+        return "https://t.me/channel/123"
     
     def validate_link(self, value: str) -> Optional[str]:
         if not value.strip():
             return "⚠️ الرابط لا يمكن أن يكون فارغاً"
         
-        # التحقق من صحة الرابط
-        bot_username, _ = _parse_bot_link(value)
         channel_ref, msg_id = _parse_post_link(value)
-        
-        if not bot_username and not channel_ref:
-            return "⚠️ الرابط غير صحيح.\n\nأرسل رابط بوت أو رابط قناة"
+        if not channel_ref:
+            return "⚠️ الرابط غير صحيح.\n\nأرسل: https://t.me/channel/123"
         
         return None
     
@@ -61,12 +54,12 @@ class VotesAIService(RakshService):
     
     def get_start_keyboard(self) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([
-            [InlineKeyboardButton("⏭️ تخطي (بدون قنوات)", callback_data="raksh_votes_ai:skip_channels")],
+            [InlineKeyboardButton("⏭️ تخطي (بدون قنوات)", callback_data="raksh_premium_reaction:skip_channels")],
             [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
         ])
     
     async def handle_text(self, update, context, text, user, state, is_own) -> bool:
-        """معالجة النص لخدمة رشق التصويت مع تحقق"""
+        """معالجة النص لخدمة رشق التفاعل المميز"""
         
         # ═══ الخطوة 1: استقبال القنوات الإجبارية ═══
         if state == "channel":
@@ -90,7 +83,7 @@ class VotesAIService(RakshService):
             
             await update.message.reply_text(
                 f"✅ تم حفظ القنوات الإجبارية ({len(context.user_data['raksh_channels'])} قناة).\n\n"
-                f"🔗 *أرسل رابط التصويت:*\n"
+                f"🔗 *أرسل رابط المنشور:*\n"
                 f"{self.get_link_instruction()}",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
@@ -99,7 +92,7 @@ class VotesAIService(RakshService):
             )
             return True
         
-        # ═══ الخطوة 2: استقبال رابط التصويت ═══
+        # ═══ الخطوة 2: استقبال رابط المنشور ═══
         if state == "link":
             link_error = self.validate_link(text)
             if link_error:
@@ -125,8 +118,8 @@ class VotesAIService(RakshService):
                 return True
             
             await update.message.reply_text(
-                f"✅ تم حفظ رابط التصويت.\n\n"
-                f"🔢 *أرسل عدد الأصوات المطلوبة:*\n"
+                f"✅ تم حفظ رابط المنشور.\n\n"
+                f"🔢 *أرسل عدد التفاعلات المطلوبة:*\n"
                 f"(الحد الأقصى: {max_qty})",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
@@ -168,50 +161,78 @@ class VotesAIService(RakshService):
                 return True
             
             context.user_data["raksh_quantity"] = quantity
-            context.user_data["raksh_step"] = "payment"
+            context.user_data["raksh_step"] = "fetch_reactions"
             
-            points_cost = self.get_total(quantity, "points")
-            stars_cost = self.get_total(quantity, "stars")
+            # ═══ جلب التفاعلات المتاحة من البوست ═══
+            await update.message.reply_text(
+                "⏳ *جاري جلب التفاعلات المتاحة من المنشور...*",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            
+            # جلب التفاعلات
+            reactions = await self._fetch_reactions_from_post(context.user_data["raksh_link"])
+            
+            if not reactions:
+                # إذا لم نجد تفاعلات، نستخدم الافتراضية
+                reactions = list(RAKSH_REACTIONS.values())
+            
+            context.user_data["raksh_available_reactions"] = reactions
+            
+            # عرض التفاعلات
+            reaction_buttons = []
+            row = []
+            
+            for index, reaction in enumerate(reactions, start=1):
+                if reaction == RAKSH_PAID_REACTION:
+                    label = RAKSH_PAID_REACTION_LABEL
+                    callback_key = "paid"
+                elif _custom_reaction_document_id(reaction) is not None:
+                    label = f"🎨 تفاعل مميز {index}"
+                    callback_key = f"custom_{_custom_reaction_document_id(reaction)}"
+                else:
+                    label = reaction
+                    callback_key = reaction if reaction in RAKSH_REACTIONS else str(index)
+                
+                row.append(
+                    InlineKeyboardButton(
+                        label,
+                        callback_data=f"raksh_premium_reaction:select:{callback_key}"
+                    )
+                )
+                if len(row) == 4:
+                    reaction_buttons.append(row)
+                    row = []
+            
+            if row:
+                reaction_buttons.append(row)
+            
+            reaction_buttons.append([
+                InlineKeyboardButton(
+                    "🎲 عشوائي",
+                    callback_data="raksh_premium_reaction:select:random"
+                )
+            ])
+            reaction_buttons.append([
+                InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")
+            ])
             
             await update.message.reply_text(
+                f"✅ تم جلب التفاعلات المتاحة!\n\n"
                 f"📋 *تفاصيل الطلب*\n\n"
                 f"📢 القنوات الإجبارية: {len(context.user_data.get('raksh_channels', []))} قناة\n"
-                f"🔗 رابط التصويت: `{context.user_data['raksh_link']}`\n"
+                f"🔗 الرابط: `{context.user_data['raksh_link']}`\n"
                 f"🔢 العدد: {quantity}\n\n"
-                f"💳 *اختر طريقة الدفع:*",
+                f"✨ *اختر نوع التفاعل:*\n"
+                f"(إذا اخترت عشوائي سيتم اختيار تفاعل عشوائياً)",
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup([
-                    [
-                        InlineKeyboardButton(
-                            f"💰 دفع بالنقاط ({points_cost} نقطة)",
-                            callback_data=f"raksh_votes_ai:payment:points:{quantity}:{points_cost}"
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            f"⭐ دفع بالنجوم ({stars_cost} نجمة)",
-                            callback_data=f"raksh_votes_ai:payment:stars:{quantity}:{stars_cost}"
-                        )
-                    ],
-                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
-                ])
-            )
-            return True
-        
-        # ═══ الخطوة 4: انتظار التأكيد ═══
-        if state == "confirm":
-            await update.message.reply_text(
-                "⚠️ استخدم الأزرار للتأكيد.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
-                ])
+                reply_markup=InlineKeyboardMarkup(reaction_buttons)
             )
             return True
         
         return False
     
     async def handle_callback(self, update, context, query, data_parts, user, is_own) -> bool:
-        """معالجة الأزرار لخدمة رشق التصويت مع تحقق"""
+        """معالجة الأزرار لخدمة رشق التفاعل المميز"""
         
         # ═══ تخطي القنوات ═══
         if data_parts[0] == "skip_channels":
@@ -220,10 +241,62 @@ class VotesAIService(RakshService):
             
             await query.edit_message_text(
                 f"✅ تم تخطي القنوات.\n\n"
-                f"🔗 *أرسل رابط التصويت:*\n"
+                f"🔗 *أرسل رابط المنشور:*\n"
                 f"{self.get_link_instruction()}",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                ])
+            )
+            return True
+        
+        # ═══ اختيار التفاعل ═══
+        if data_parts[0] == "select" and len(data_parts) >= 2:
+            reaction_key = data_parts[1]
+            
+            available_reactions = context.user_data.get("raksh_available_reactions", [])
+            
+            if reaction_key == "random":
+                reaction = "random"
+                reaction_label = "🎲 عشوائي"
+            elif reaction_key == "paid":
+                reaction = RAKSH_PAID_REACTION
+                reaction_label = RAKSH_PAID_REACTION_LABEL
+            elif reaction_key.startswith("custom_"):
+                doc_id = reaction_key[7:]
+                reaction = f"{RAKSH_CUSTOM_REACTION_PREFIX}{doc_id}"
+                reaction_label = f"🎨 تفاعل مميز {doc_id}"
+            else:
+                reaction = RAKSH_REACTIONS.get(reaction_key, reaction_key)
+                reaction_label = reaction
+            
+            context.user_data["raksh_reaction"] = reaction
+            
+            quantity = context.user_data.get("raksh_quantity", 1)
+            points_cost = self.get_total(quantity, "points")
+            stars_cost = self.get_total(quantity, "stars")
+            
+            await query.edit_message_text(
+                f"📋 *تأكيد الطلب*\n\n"
+                f"📢 القنوات الإجبارية: {len(context.user_data.get('raksh_channels', []))} قناة\n"
+                f"🔗 الرابط: `{context.user_data.get('raksh_link', '')}`\n"
+                f"🔢 العدد: {quantity}\n"
+                f"✨ التفاعل: {reaction_label}\n\n"
+                f"💳 *اختر طريقة الدفع:*",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton(
+                            f"💰 دفع بالنقاط ({points_cost} نقطة)",
+                            callback_data=f"raksh_premium_reaction:payment:points:{quantity}:{points_cost}"
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            f"⭐ دفع بالنجوم ({stars_cost} نجمة)",
+                            callback_data=f"raksh_premium_reaction:payment:stars:{quantity}:{stars_cost}"
+                        )
+                    ],
                     [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
                 ])
             )
@@ -255,8 +328,9 @@ class VotesAIService(RakshService):
             await query.edit_message_text(
                 f"📋 *تأكيد الطلب*\n\n"
                 f"📢 القنوات الإجبارية: {len(context.user_data.get('raksh_channels', []))} قناة\n"
-                f"🔗 رابط التصويت: `{context.user_data.get('raksh_link', '')}`\n"
+                f"🔗 الرابط: `{context.user_data.get('raksh_link', '')}`\n"
                 f"🔢 العدد: {quantity}\n"
+                f"✨ التفاعل: {context.user_data.get('raksh_reaction', '')}\n"
                 f"💳 طريقة الدفع: {'💰 نقاط' if payment_method == 'points' else '⭐ نجوم'}\n"
                 f"💰 التكلفة: {total_cost} {'نقطة' if payment_method == 'points' else 'نجمة'}\n\n"
                 f"*هل تريد تأكيد الطلب؟*",
@@ -265,7 +339,7 @@ class VotesAIService(RakshService):
                     [
                         InlineKeyboardButton(
                             "✅ تأكيد الطلب",
-                            callback_data=f"raksh_votes_ai:confirm:{payment_method}:{quantity}:{total_cost}"
+                            callback_data=f"raksh_premium_reaction:confirm:{payment_method}:{quantity}:{total_cost}"
                         ),
                         InlineKeyboardButton(
                             "❌ إلغاء",
@@ -315,8 +389,9 @@ class VotesAIService(RakshService):
                     f"📢 القنوات الإجبارية: {len(context.user_data.get('raksh_channels', []))} قناة\n"
                     f"🔗 الرابط: `{context.user_data.get('raksh_link', '')}`\n"
                     f"🔢 العدد: {quantity}\n"
+                    f"✨ التفاعل: {context.user_data.get('raksh_reaction', '')}\n"
                     f"💰 تم خصم: {total_cost} نقطة\n\n"
-                    f"⏳ جاري الانضمام للقنوات وبدء التصويت مع التحقق...",
+                    f"⏳ جاري الانضمام للقنوات وبدء التنفيذ...",
                     parse_mode=ParseMode.MARKDOWN
                 )
                 
@@ -335,18 +410,106 @@ class VotesAIService(RakshService):
                 await context.bot.send_invoice(
                     chat_id=user.id,
                     title=self.config.name,
-                    description=f"{quantity} صوت مع تحقق | {total_cost} نجمة",
+                    description=f"{quantity} تفاعل مميز | {total_cost} نجمة",
                     payload=f"raksh_stars:{user.id}:{self.service_type}:{quantity}:{total_cost}",
                     provider_token="",
                     currency="XTR",
-                    prices=[LabeledPrice("تصويت مع تحقق", total_cost)],
+                    prices=[LabeledPrice("تفاعل مميز", total_cost)],
                 )
                 return True
         
         return False
     
+    async def _fetch_reactions_from_post(self, link: str) -> List[str]:
+        """جلب التفاعلات المتاحة من المنشور"""
+        try:
+            # تحليل الرابط
+            channel_ref, msg_id = _parse_post_link(link)
+            if not channel_ref:
+                return []
+            
+            # جلب جلسة مؤقتة للفحص
+            sessions = self.get_sessions()
+            if not sessions:
+                return []
+            
+            # استخدام أول جلسة متاحة للفحص
+            session = sessions[0]
+            client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+            
+            try:
+                await asyncio.wait_for(client.connect(), timeout=10)
+                if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
+                    return []
+                
+                entity = await client.get_entity(channel_ref)
+                message = await client.get_messages(entity, ids=msg_id)
+                
+                if not message:
+                    return []
+                
+                # جلب التفاعلات المتاحة من الرسالة
+                reactions = []
+                
+                # 1. التفاعلات الموجودة في الرسالة
+                message_reactions = getattr(getattr(message, "reactions", None), "results", None)
+                if message_reactions:
+                    for reaction in message_reactions:
+                        reaction_type = getattr(reaction, "reaction", None)
+                        if reaction_type:
+                            reaction_class = reaction_type.__class__.__name__
+                            if reaction_class == "ReactionPaid":
+                                reactions.append(RAKSH_PAID_REACTION)
+                            elif reaction_class == "ReactionCustomEmoji":
+                                doc_id = getattr(reaction_type, "document_id", None)
+                                if doc_id:
+                                    reactions.append(f"{RAKSH_CUSTOM_REACTION_PREFIX}{doc_id}")
+                            else:
+                                emoticon = getattr(reaction_type, "emoticon", None)
+                                if emoticon:
+                                    reactions.append(emoticon)
+                
+                # 2. التفاعلات المتاحة من القناة
+                if not reactions:
+                    full_channel = await client(functions.channels.GetFullChannelRequest(channel=entity))
+                    full_chat = getattr(full_channel, "full_chat", None)
+                    
+                    # التفاعلات المدفوعة
+                    if getattr(full_chat, "paid_reactions_available", False):
+                        reactions.append(RAKSH_PAID_REACTION)
+                    
+                    # التفاعلات المتاحة
+                    available = getattr(full_chat, "available_reactions", None)
+                    configured = getattr(available, "reactions", None)
+                    if configured:
+                        for reaction in configured:
+                            reaction_type = getattr(reaction, "reaction", None)
+                            if reaction_type:
+                                reaction_class = reaction_type.__class__.__name__
+                                if reaction_class == "ReactionCustomEmoji":
+                                    doc_id = getattr(reaction_type, "document_id", None)
+                                    if doc_id:
+                                        reactions.append(f"{RAKSH_CUSTOM_REACTION_PREFIX}{doc_id}")
+                                else:
+                                    emoticon = getattr(reaction_type, "emoticon", None)
+                                    if emoticon:
+                                        reactions.append(emoticon)
+                    
+                    # إذا كانت كل التفاعلات متاحة
+                    if available is not None and available.__class__.__name__ == "ChatReactionsAll":
+                        reactions.extend(list(RAKSH_REACTIONS.values()))
+                
+                return list(dict.fromkeys(reactions))  # إزالة التكرارات
+                
+            finally:
+                await client.disconnect()
+                
+        except Exception as e:
+            logger.warning(f"فشل جلب التفاعلات: {e}")
+            return []
+    
     async def execute(self, session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
-        """تنفيذ رشق تصويت مع تحقق - يدعم كل أنواع الروابط وحل التحقق"""
+        """تنفيذ رشق تفاعل مميز - فتح الرابط والتفاعل بالإيموجي المختار"""
         client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
         await asyncio.wait_for(client.connect(), timeout=15)
         try:
@@ -363,268 +526,64 @@ class VotesAIService(RakshService):
                     except Exception as e:
                         logger.warning(f"فشل الانضمام للقناة {channel_ref}: {e}")
             
-            link = params["link"]
-            bot_entity = None
-            bot_start_param = None
-            
-            # ─── الطريقة 1: رابط بوت تصويت مباشر ───
-            bot_username, bot_start_param = _parse_bot_link(link)
-            if bot_username:
-                clean_username = bot_username.lstrip("@").strip()
-                try:
-                    resolved = await client(ResolveUsernameRequest(clean_username))
-                    if resolved.users:
-                        bot_entity = resolved.users[0]
-                    elif resolved.chats:
-                        bot_entity = resolved.chats[0]
-                except Exception:
-                    try:
-                        bot_entity = await client.get_entity(bot_username)
-                    except Exception:
-                        try:
-                            bot_entity = await client.get_entity(f"@{bot_username}")
-                        except Exception as e3:
-                            return False, f"فشل العثور على البوت {bot_username}: {str(e3)[:80]}"
-                
-                # بدء البوت
-                await client(StartBotRequest(
-                    bot=bot_entity,
-                    peer=bot_entity,
-                    start_param=bot_start_param or ""
-                ))
-                await asyncio.sleep(1.5)
-                
-                # محاولة حل التحقق
-                verification_success = await self._solve_verification(client, bot_entity, session.get("phone_number"))
-                
-                if verification_success:
-                    return True, f"✅ تم التصويت مع التحقق من {session['phone_number']}"
-                else:
-                    return False, "فشل التحقق بعد محاولات متعددة"
-            
-            # ─── الطريقة 2: رابط قناة يحتوي زر بوت ───
-            channel_ref, msg_id = _parse_post_link(link)
+            # 2️⃣ تحليل رابط المنشور
+            channel_ref, msg_id = _parse_post_link(params["link"])
             if not channel_ref:
-                return False, "الرابط غير صحيح لهذه الخدمة"
+                return False, "رابط المنشور غير صحيح"
             
+            # 3️⃣ الوصول إلى القناة والمنشور
             entity = await client.get_entity(channel_ref)
-            message = await client.get_messages(entity, ids=msg_id)
-            if not message:
-                return False, "المنشور غير موجود"
             
-            # البحث عن زر يحتوي رابط بوت
-            bot_found = False
-            for row in getattr(message, "buttons", None) or []:
-                for btn in row:
-                    if getattr(btn, "url", None):
-                        url = btn.url
-                        if "t.me/" in url or "telegram.me/" in url:
-                            url_bot, url_start = _parse_bot_link(url)
-                            if url_bot:
-                                try:
-                                    bot_entity = await client.get_entity(url_bot)
-                                    await client(StartBotRequest(
-                                        bot=bot_entity,
-                                        peer=bot_entity,
-                                        start_param=url_start or ""
-                                    ))
-                                    await asyncio.sleep(1.5)
-                                    bot_found = True
-                                    break
-                                except Exception as e:
-                                    logger.warning(f"فشل فتح رابط البوت: {e}")
-                    else:
-                        # زر عادي - ضغط عليه
-                        try:
-                            callback_data = getattr(btn, "data", None)
-                            if callback_data:
-                                await client(functions.messages.GetBotCallbackAnswerRequest(
-                                    peer=entity,
-                                    msg_id=msg_id,
-                                    data=callback_data
-                                ))
-                                await asyncio.sleep(1.0)
-                                return True, f"✅ تم التصويت من {session['phone_number']}"
-                        except Exception:
-                            continue
-                if bot_found:
-                    break
+            # 4️⃣ تحديد التفاعل المختار
+            reaction_value = params.get("reaction", "random")
             
-            if bot_found and bot_entity:
-                # محاولة حل التحقق بعد فتح البوت
-                verification_success = await self._solve_verification(client, bot_entity, session.get("phone_number"))
-                
-                if verification_success:
-                    return True, f"✅ تم التصويت مع التحقق من {session['phone_number']}"
+            if reaction_value == "random":
+                # اختيار تفاعل عشوائي من المتاح
+                available = params.get("available_reactions") or list(RAKSH_REACTIONS.values())
+                reaction_value = random.choice(available)
+            
+            # 5️⃣ تنفيذ التفاعل - الطريقة الصحيحة
+            try:
+                if reaction_value == RAKSH_PAID_REACTION:
+                    # تفاعل مدفوع
+                    await client(SendReactionRequest(
+                        peer=entity,
+                        msg_id=msg_id,
+                        reaction=[ReactionEmoji(emoticon="⭐")]
+                    ))
+                elif _custom_reaction_document_id(reaction_value) is not None:
+                    # تفاعل مخصص
+                    doc_id = _custom_reaction_document_id(reaction_value)
+                    await client(SendReactionRequest(
+                        peer=entity,
+                        msg_id=msg_id,
+                        reaction=[ReactionCustomEmoji(document_id=doc_id)]
+                    ))
                 else:
-                    return False, "فشل التحقق بعد محاولات متعددة"
-            
-            return False, "لم يتم العثور على زر بوت في المنشور"
-            
+                    # تفاعل عادي (إيموجي)
+                    await client(SendReactionRequest(
+                        peer=entity,
+                        msg_id=msg_id,
+                        reaction=[ReactionEmoji(emoticon=reaction_value)]
+                    ))
+                
+                return True, f"✅ تم التفاعل من {session['phone_number']}"
+                
+            except Exception as e:
+                logger.warning(f"فشل التفاعل {reaction_value}: {e}")
+                
+                # محاولة بديلة: تفاعل عادي
+                try:
+                    await client(SendReactionRequest(
+                        peer=entity,
+                        msg_id=msg_id,
+                        reaction=[ReactionEmoji(emoticon="❤️")]
+                    ))
+                    return True, f"✅ تم التفاعل (بديل) من {session['phone_number']}"
+                except Exception as e2:
+                    return False, f"❌ فشل التفاعل: {str(e2)}"
+                
         except Exception as e:
             return False, f"❌ فشل: {str(e)}"
         finally:
             await client.disconnect()
-    
-    async def _solve_verification(self, client, bot_entity, phone_number: str) -> bool:
-        """حل التحقق بذكاء - يستخدم الذكاء الاصطناعي لإيجاد الإيموجي أو حل مسائل"""
-        max_attempts = 30
-        base_id = 0
-        
-        # تحديد نقطة البداية
-        try:
-            out_messages = await client.get_messages(bot_entity, limit=10)
-            for msg in out_messages:
-                if msg.out:
-                    base_id = msg.id
-                    break
-        except Exception:
-            pass
-        
-        # استخدام دوال ForcedRefAIService لحل التحقق
-        forced_ref_ai = ForcedRefAIService()
-        
-        # محاولة استخدام دوال الحل من ForcedRefAIService
-        try:
-            success = await forced_ref_ai._solve_verification(
-                client,
-                bot_entity,
-                phone_number,
-                start_after_message_id=base_id
-            )
-            return success
-        except Exception as e:
-            logger.warning(f"فشل استخدام دوال ForcedRefAIService: {e}")
-        
-        # خطة بديلة: حل التحقق يدوياً
-        for attempt in range(max_attempts):
-            try:
-                messages = await client.get_messages(bot_entity, limit=20)
-            except Exception:
-                await asyncio.sleep(1.0)
-                continue
-            
-            incoming_messages = [msg for msg in messages if not msg.out]
-            incoming_messages.sort(key=lambda m: m.id)
-            
-            new_messages = [msg for msg in incoming_messages if msg.id > base_id]
-            
-            if not new_messages:
-                await asyncio.sleep(1.0)
-                continue
-            
-            verification_message = None
-            for msg in new_messages:
-                msg_text = getattr(msg, "message", "") or ""
-                if msg_text.strip().startswith("/"):
-                    continue
-                if any(kw in msg_text for kw in ["أرسل", "التالي", "بالضبط", "اكتب", "retype", "type", "اضغط", "اختر", "انقر", "تحقق"]):
-                    verification_message = msg
-                    break
-            
-            if verification_message is None:
-                verification_message = next(
-                    (msg for msg in reversed(new_messages) if not getattr(msg, "message", "").strip().startswith("/")),
-                    None
-                )
-            
-            if verification_message is None:
-                await asyncio.sleep(1.0)
-                continue
-            
-            text = getattr(verification_message, "message", "") or ""
-            
-            # 1️⃣ استخراج الكود
-            send_text = _extract_code_from_text(text)
-            if send_text:
-                try:
-                    await client.send_message(bot_entity, send_text)
-                    logger.info(f"✅ تم إرسال الكود: {send_text}")
-                    return True
-                except Exception:
-                    pass
-            
-            # 2️⃣ حل المسائل الرياضية
-            math_patterns = [
-                (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=\s*\?', 1, 2, 3),
-                (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=', 1, 2, 3),
-                (r'(\d+)\s*\+\s*(\d+)\s*=', 1, 2),
-                (r'(\d+)\s*\-\s*(\d+)\s*=', 1, 2),
-                (r'(\d+)\s*\*\s*(\d+)\s*=', 1, 2),
-                (r'(\d+)\s*\/\s*(\d+)\s*=', 1, 2),
-            ]
-            for pattern, *groups in math_patterns:
-                match = re.search(pattern, text)
-                if match:
-                    try:
-                        if len(groups) == 3:
-                            a, op, b = int(match.group(groups[0])), match.group(groups[1]), int(match.group(groups[2]))
-                        else:
-                            a, b = int(match.group(groups[0])), int(match.group(groups[1]))
-                            op = '+'
-                        
-                        if op == '+': result = str(a + b)
-                        elif op == '-': result = str(a - b)
-                        elif op == '*': result = str(a * b)
-                        elif op == '/': result = str(a / b) if b != 0 else None
-                        else: result = None
-                        
-                        if result is not None:
-                            await client.send_message(bot_entity, result)
-                            logger.info(f"✅ تم حل المسألة: {a} {op} {b} = {result}")
-                            return True
-                    except Exception:
-                        continue
-            
-            # 3️⃣ الضغط على الأزرار (إيموجي أو أزرار عادية)
-            buttons = []
-            for row in getattr(verification_message, "buttons", None) or []:
-                for btn in row:
-                    if not getattr(btn, "url", None):
-                        buttons.append(btn)
-            
-            if buttons:
-                # استخراج الإيموجي المطلوب
-                emoji_pattern = re.compile(
-                    "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E0-\U0001F1FF]"
-                )
-                target_emoji = None
-                found_emojis = emoji_pattern.findall(text)
-                if found_emojis:
-                    target_emoji = found_emojis[-1]
-                    logger.info(f"✅ تم استخراج الإيموجي المطلوب: {target_emoji}")
-                
-                # ترتيب الأزرار حسب الأولوية
-                prioritized = []
-                if target_emoji:
-                    exact = [b for b in buttons if getattr(b, "text", "") == target_emoji]
-                    prioritized.extend(exact)
-                    partial = [b for b in buttons if target_emoji in (getattr(b, "text", "") or "")]
-                    prioritized.extend(partial)
-                
-                # أزرار التحقق
-                verify_keywords = ['تحقق', 'verify', 'اضغط هنا', 'continue', 'التالي', 'متابعة']
-                verify_buttons = [
-                    b for b in buttons
-                    if any(kw in (getattr(b, "text", "") or "").casefold() for kw in verify_keywords)
-                    and b not in prioritized
-                ]
-                prioritized.extend(verify_buttons)
-                
-                # باقي الأزرار
-                remaining = [b for b in buttons if b not in prioritized]
-                prioritized.extend(remaining)
-                
-                for btn in prioritized:
-                    try:
-                        await btn.click()
-                        logger.info(f"🖱️ تم الضغط على الزر: {getattr(btn, 'text', '')}")
-                        await asyncio.sleep(1.0)
-                        # لا نعتبر النجاح بمجرد الضغط - ننتظر رسالة التأكيد
-                        return True
-                    except Exception:
-                        continue
-            
-            await asyncio.sleep(1.0)
-        
-        return False
