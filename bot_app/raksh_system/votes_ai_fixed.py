@@ -501,7 +501,16 @@ class VotesAIService(RakshService):
                 await asyncio.sleep(2.0)
                 continue
             
-            text = self._verification_message_text(verification_message)
+            # ─── إضافة معالجة الملصق ───
+            # إذا كانت الرسالة ملصقاً، نستخدم OCR لاستخراج النص
+            if getattr(verification_message, "sticker", None) or getattr(getattr(verification_message, "media", None), "sticker", None):
+                sticker_text = await _extract_sticker_text(client, verification_message)
+                if sticker_text:
+                    text = sticker_text
+                else:
+                    text = ""
+            else:
+                text = self._verification_message_text(verification_message)
             
             # استخراج الكود
             send_text = _extract_code_from_text(text)
