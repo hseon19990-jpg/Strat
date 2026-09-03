@@ -628,18 +628,30 @@ async def _execute_vote(
                 [msg],
                 session["phone_number"]
             )
-            if not solved:
+            # A verification-enabled service may also receive a normal
+            # Telegram poll.  The captcha helper deliberately reports
+            # "لم يُكتشف تحقق" when there is no challenge in the message;
+            # that is not an execution failure.  Only a real captcha/provider
+            # failure should stop the vote.
+            no_verification = (detail or "").strip().casefold() in {
+                "لم يُكتشف تحقق",
+                "لم يتم اكتشاف تحقق",
+                "no verification detected",
+                "no captcha detected",
+            }
+            if not solved and not no_verification:
                 return False, f"فشل حل التحقق: {detail}"
-            messages = await client.get_messages(post_entity, ids=post_id)
-            if not messages:
-                return False, "المنشور غير موجود بعد التحقق."
-            msg = messages[0]
-            if not hasattr(msg, "poll") or not msg.poll:
-                return False, "المنشور ليس استفتاءً بعد التحقق."
-            poll = msg.poll.poll
-            options = getattr(poll, "answers", [])
-            if not options:
-                return False, "لا توجد خيارات بعد التحقق."
+            if solved:
+                messages = await client.get_messages(post_entity, ids=post_id)
+                if not messages:
+                    return False, "المنشور غير موجود بعد التحقق."
+                msg = messages[0]
+                if not hasattr(msg, "poll") or not msg.poll:
+                    return False, "المنشور ليس استفتاءً بعد التحقق."
+                poll = msg.poll.poll
+                options = getattr(poll, "answers", [])
+                if not options:
+                    return False, "لا توجد خيارات بعد التحقق."
         
         chosen = random.randint(0, len(options) - 1)
         await client(functions.messages.SendVoteRequest(
