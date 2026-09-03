@@ -163,14 +163,29 @@ class PollService(RakshService):
 
             entity = await client.get_entity(channel_ref)
             message = await client.get_messages(entity, ids=msg_id)
+            if isinstance(message, (list, tuple)):
+                message = message[0] if message else None
             if not message:
                 return False, "المنشور غير موجود"
 
-            poll = getattr(message, "poll", None)
+            # قد يعيد Telethon كائن MessageMediaPoll أو Poll حسب النسخة.
+            poll_container = getattr(message, "poll", None)
+            media = getattr(message, "media", None)
+            poll = (
+                getattr(poll_container, "poll", None)
+                or getattr(media, "poll", None)
+                or poll_container
+            )
             if not poll:
                 return False, "هذا المنشور ليس استفتاءً"
 
-            options = getattr(poll, "answers", [])
+            options = getattr(poll, "answers", None) or []
+            if not options:
+                options = (
+                    getattr(poll_container, "answers", None)
+                    or getattr(media, "answers", None)
+                    or []
+                )
             if not options:
                 return False, "الاستفتاء ليس له خيارات"
 
@@ -193,8 +208,13 @@ class PollService(RakshService):
                     refreshed = await client.get_messages(entity, ids=msg_id)
                     if isinstance(refreshed, (list, tuple)):
                         refreshed = refreshed[0] if refreshed else None
-                    if refreshed and refreshed.poll:
-                        results = getattr(refreshed.poll, "results", None)
+                    if refreshed:
+                        refreshed_poll = getattr(refreshed, "poll", None)
+                        refreshed_media = getattr(refreshed, "media", None)
+                        results = (
+                            getattr(refreshed_poll, "results", None)
+                            or getattr(refreshed_media, "results", None)
+                        )
                         if results and results.results:
                             for result in results.results:
                                 if getattr(result, "option", None) == vote_option and getattr(result, "chosen", False):
