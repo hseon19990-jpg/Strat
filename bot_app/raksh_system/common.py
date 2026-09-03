@@ -153,23 +153,42 @@ def _get_sessions_for_service(service_type: str) -> List[Dict]:
         if time.time() - cache_time < _RAKSH_SESSION_CACHE_TTL:
             return _RAKSH_SESSION_CACHE[cache_key].copy()
 
-    with db_conn() as c:
-        query = """
-            SELECT id, phone_number, session_string, raksh_only, last_authorized
-            FROM number_stock
-            WHERE session_string IS NOT NULL
-              AND BTRIM(session_string) <> ''
-              AND deleted_at IS NULL
-              AND forced_ref_excluded IS NOT TRUE
-            ORDER BY last_authorized DESC NULLS LAST, id ASC
-        """
-        rows = c.execute(query).fetchall()
-        sessions = [dict(row) for row in rows]
+    query = """
+        SELECT id, phone_number, session_string, raksh_only, last_authorized
+        FROM number_stock
+        WHERE session_string IS NOT NULL
+          AND BTRIM(session_string) <> ''
+          AND deleted_at IS NULL
+          AND forced_ref_excluded IS NOT TRUE
+        ORDER BY last_authorized DESC NULLS LAST, id ASC
+    """
+    try:
+        with db_conn() as c:
+            rows = c.execute(query).fetchall()
+    except Exception as exc:
+        # Older databases may not have the optional stock columns yet.
+        # Keep the link/order flow usable while the basic session fields exist.
+        logger.warning("تعذر استخدام استعلام مخزون الرشق الكامل، استخدام الاحتياطي: %s", exc)
+        with db_conn() as c:
+            rows = c.execute(
+                """
+                SELECT id, phone_number, session_string
+                FROM number_stock
+                WHERE session_string IS NOT NULL
+                  AND BTRIM(session_string) <> ''
+                ORDER BY id ASC
+                """
+            ).fetchall()
 
-        _RAKSH_SESSION_CACHE[cache_key] = sessions
-        _RAKSH_SESSION_CACHE_TIME[cache_key] = time.time()
+    sessions = [dict(row) for row in rows]
+    for session in sessions:
+        session.setdefault("raksh_only", False)
+        session.setdefault("last_authorized", True)
 
-        return sessions
+    _RAKSH_SESSION_CACHE[cache_key] = sessions
+    _RAKSH_SESSION_CACHE_TIME[cache_key] = time.time()
+
+    return sessions
 
 def get_available_sessions_count(service_type: str = None) -> int:
     """عدد الجلسات المتاحة للخدمة"""
