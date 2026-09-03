@@ -8,7 +8,7 @@ from .forced_ref_ai import ForcedRefAIService
 from .comment import CommentService
 from .poll import PollService
 from .votes import VotesService
-from .votes_ai import VotesAIService
+from .votes_ai_fixed import VotesAIService
 from .premium_reaction import PremiumReactionService
 
 # ═══ 9. تسجيل الخدمات ═══
