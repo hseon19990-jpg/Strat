@@ -310,9 +310,18 @@ class VotesAIService(RakshService):
         
         if bot_entity:
             try:
+                # تحديد آخر رسالة قبل بدء المحادثة
+                last_id = 0
+                try:
+                    msgs = await client.get_messages(bot_entity, limit=5)
+                    if msgs:
+                        last_id = max(msg.id for msg in msgs)
+                except Exception:
+                    pass
+                
                 await client(StartBotRequest(bot=bot_entity, peer=bot_entity, start_param=bot_start_param or ""))
                 await asyncio.sleep(1.5)
-                return await self._check_and_solve_verification(client, phone)
+                return await self._check_and_solve_verification(client, phone, start_after_message_id=last_id)
             except Exception as e:
                 return False, f"فشل فتح البوت: {str(e)[:80]}"
         
@@ -324,12 +333,22 @@ class VotesAIService(RakshService):
             bot_entity = await self._get_bot_entity(client, bot_username)
         except Exception as e:
             return False, f"تعذر العثور على البوت: {str(e)[:80]}"
+        
         try:
+            # تحديد آخر رسالة قبل إرسال /start
+            last_id = 0
+            try:
+                msgs = await client.get_messages(bot_entity, limit=5)
+                if msgs:
+                    last_id = max(msg.id for msg in msgs)
+            except Exception:
+                pass
+            
             await client(StartBotRequest(bot=bot_entity, peer=bot_entity, start_param=start_param or ""))
             await asyncio.sleep(1.5)
+            return await self._check_and_solve_verification(client, phone, start_after_message_id=last_id)
         except Exception as e:
             return False, f"فشل بدء البوت: {str(e)[:80]}"
-        return await self._check_and_solve_verification(client, phone)
     
     async def _get_bot_entity(self, client, bot_username: str):
         clean_username = bot_username.lstrip("@").strip()
@@ -350,9 +369,9 @@ class VotesAIService(RakshService):
         except Exception as e:
             raise Exception(f"فشل العثور على البوت {bot_username}: {str(e)[:80]}")
     
-    async def _check_and_solve_verification(self, client, phone: str) -> Tuple[bool, str]:
+    async def _check_and_solve_verification(self, client, phone: str, start_after_message_id: int = 0) -> Tuple[bool, str]:
         try:
-            success = await self._solve_verification(client, phone)
+            success = await self._solve_verification(client, phone, start_after_message_id)
             if success:
                 return True, f"✅ تم التصويت مع التحقق من {phone}"
             else:
@@ -370,17 +389,15 @@ class VotesAIService(RakshService):
                 return str(value)
         return ""
     
-    async def _solve_verification(self, client, phone: str) -> bool:
+    async def _solve_verification(self, client, phone: str, start_after_message_id: int = 0) -> bool:
         """
-        حل التحقق بالضغط على الأزرار الإيموجية:
-        - يقرأ الرسائل الجديدة
-        - يجد رسالة التحقق التي تحتوي على أزرار
-        - يستخرج الإيموجي المطلوب من النص
-        - يضغط على الزر المطابق، أو يجرّب الأزرار بالتتابع كل 2 ثانية
-        - يتحقق من رسالة النجاح بعد كل ضغطة
+        حل التحقق بالضغط على الأزرار تلقائياً:
+        - يقرأ الرسائل الجديدة بعد /start
+        - يحلل النص لاستخراج الإيموجي المطلوب
+        - يضغط الزر المطابق، وإذا لم يجد، يضغط جميع الأزرار المتاحة حتى تظهر رسالة تأكيد
         """
-        max_attempts = 15  # عدد المحاولات القصوى
-        base_id = 0
+        max_attempts = 15
+        base_id = start_after_message_id
 
         # العثور على البوت
         try:
@@ -394,16 +411,6 @@ class VotesAIService(RakshService):
                 return False
         except Exception:
             return False
-
-        # تحديد آخر رسالة صادرة (لتحديد نقطة البداية)
-        try:
-            out_messages = await client.get_messages(bot_entity, limit=10)
-            for msg in out_messages:
-                if msg.out:
-                    base_id = msg.id
-                    break
-        except Exception:
-            pass
 
         # ننتظر ظهور رسالة التحقق
         for attempt in range(max_attempts):
@@ -430,18 +437,24 @@ class VotesAIService(RakshService):
                     logger.info(f"✅ تم التحقق من {phone}")
                     return True
 
-            # 2) البحث عن رسالة تحتوي على أزرار (خاصة مع كلمة "اضغط" أو "اختر")
+            # 2) البحث عن رسالة تحتوي على أزرار
             verification_msg = None
-            for msg in reversed(incoming):
+            for msg in incoming:
                 if not msg.reply_markup:
                     continue
+                # نفضل الرسائل التي تحتوي على كلمات طلب
                 text = self._verification_message_text(msg)
                 if any(kw in text for kw in ["اضغط", "اختر", "انقر", "الرمز", "رمز", "verify", "تحقق"]):
                     verification_msg = msg
                     break
+            if verification_msg is None:
+                # إذا لم نجد، نأخذ أي رسالة بها أزرار (الأحدث)
+                for msg in reversed(incoming):
+                    if msg.reply_markup:
+                        verification_msg = msg
+                        break
 
             if not verification_msg:
-                # إذا لم نجد رسالة تحقق، ننتظر
                 await asyncio.sleep(2)
                 continue
 
@@ -453,10 +466,10 @@ class VotesAIService(RakshService):
             found_emojis = emoji_pattern.findall(text)
             target_emoji = None
             if found_emojis:
-                target_emoji = found_emojis[-1]  # نأخذ آخر إيموجي
+                target_emoji = found_emojis[-1]
                 logger.info(f"🎯 الإيموجي المطلوب: {target_emoji}")
 
-            # 4) جمع الأزرار من الرسالة (تجاهل أزرار الروابط)
+            # 4) جمع الأزرار (تجاهل أزرار الروابط)
             buttons = []
             for row in verification_msg.reply_markup.rows:
                 for btn in row.buttons:
@@ -467,16 +480,17 @@ class VotesAIService(RakshService):
                 await asyncio.sleep(2)
                 continue
 
-            # 5) ترتيب الأزرار: أولاً الزر الذي يطابق الإيموجي، ثم أزرار "تحقق"، ثم الباقي
+            # 5) ترتيب الأزرار: الأكثر احتمالاً أولاً
             prioritized = []
             if target_emoji:
-                # الزر الذي يكون نصه هو نفس الإيموجي بالضبط
+                # زر بنص مساوٍ للإيموجي
                 exact = [b for b in buttons if getattr(b, "text", "") == target_emoji]
                 prioritized.extend(exact)
-                # الزر الذي يحتوي على الإيموجي في نصه (مثل "🧢 تحقق")
+                # زر يحتوي على الإيموجي في نصه
                 partial = [b for b in buttons if target_emoji in (getattr(b, "text", "") or "")]
                 prioritized.extend(partial)
 
+            # أزرار تحقق شائعة
             verify_keywords = ['تحقق', 'verify', 'متابعة', 'التالي', 'continue', 'start', 'ابدأ']
             verify_buttons = [
                 b for b in buttons
@@ -489,15 +503,15 @@ class VotesAIService(RakshService):
             remaining = [b for b in buttons if b not in prioritized]
             prioritized.extend(remaining)
 
-            # 6) الضغط على كل زر بالترتيب، مع انتظار 2 ثانية بين كل محاولة
+            # 6) الضغط على كل زر حتى نصل إلى النجاح أو ننفد الأزرار
             for btn in prioritized:
                 try:
                     btn_text = getattr(btn, "text", "")
                     await btn.click()
                     logger.info(f"🖱️ تم الضغط على الزر: {btn_text}")
-                    # ننتظر 2 ثانية ثم نتحقق من النتيجة في الدورة التالية
+                    # انتظر 2 ثانية ثم تحقق من النتيجة في الدورة التالية
                     await asyncio.sleep(2)
-                    # بعد الضغط، نعيد الحلقة للتحقق من رسالة النجاح أو رسالة خطأ
+                    # بعد الضغط، نعيد الحلقة (سيتحقق من النجاح في الدورة القادمة)
                     break
                 except Exception:
                     continue
