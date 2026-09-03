@@ -213,7 +213,7 @@ class CommentService(RakshService):
 
     # ─── التنفيذ الفعلي ───
     async def execute(self, session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
-        """تنفيذ رشق تعليق مع الانضمام للقنوات لمدة 24 ساعة"""
+        """تنفيذ رشق تعليق مع الانضمام للقنوات والكتابة في مجموعة النقاش"""
         client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
         await asyncio.wait_for(client.connect(), timeout=15)
         try:
@@ -224,9 +224,7 @@ class CommentService(RakshService):
             # الانضمام للقنوات الإجبارية (فقط لأول حساب، لمدة 24 ساعة)
             if is_first and params.get("channel_ref"):
                 for channel_ref in params["channel_ref"]:
-                    await _join_channel_and_schedule_leave(
-                        client, channel_ref, leave_after_seconds=86400  # 24 ساعة
-                    )
+                    await _join_channel_and_schedule_leave(client, channel_ref, leave_after_seconds=86400)
                     await asyncio.sleep(0.5)
 
             # تحليل رابط المنشور
@@ -236,13 +234,56 @@ class CommentService(RakshService):
 
             entity = await client.get_entity(channel_ref)
 
-            # إرسال التعليق
+            # محاولة الحصول على مجموعة النقاش المرتبطة
+            discussion_group = None
+            try:
+                full_channel = await client(functions.channels.GetFullChannelRequest(channel=entity))
+                linked_chat_id = full_channel.full_chat.linked_chat_id
+                if linked_chat_id:
+                    discussion_group = await client.get_entity(linked_chat_id)
+            except Exception as e:
+                logger.warning(f"تعذر الحصول على مجموعة النقاش: {e}")
+
             comment_text = params.get("comment_text", "").strip()
             if not comment_text:
                 return False, "نص التعليق فارغ"
 
-            await client.send_message(entity, comment_text, reply_to=msg_id)
-            return True, f"✅ تم التعليق من {session['phone_number']}"
+            # محاولة إرسال التعليق إلى مجموعة النقاش (إذا وجدت) أو إلى الكيان الأصلي
+            try:
+                if discussion_group:
+                    # الانضمام إلى مجموعة النقاش (إن لم يكن عضوًا)
+                    try:
+                        await client(JoinChannelRequest(discussion_group))
+                    except Exception:
+                        pass
+                    # إرسال الرسالة مع reply_to إلى msg_id الأصلي
+                    await client.send_message(discussion_group, comment_text, reply_to=msg_id)
+                    return True, f"✅ تم التعليق من {session['phone_number']}"
+                else:
+                    # لا توجد مجموعة نقاش، نحاول الإرسال مباشرة (قد تفشل للقنوات)
+                    await client.send_message(entity, comment_text, reply_to=msg_id)
+                    return True, f"✅ تم التعليق من {session['phone_number']}"
+            except Exception as e:
+                # إذا فشل بسبب الصلاحيات، نحاول الانضمام للقناة ثم إعادة المحاولة
+                if "admin privileges" in str(e).lower() or "can't write in this chat" in str(e).lower():
+                    try:
+                        # الانضمام إلى القناة
+                        if channel_ref.startswith("invite:"):
+                            invite_hash = channel_ref[7:]
+                            await client(ImportChatInviteRequest(invite_hash))
+                        else:
+                            await client(JoinChannelRequest(entity))
+                        await asyncio.sleep(1.0)
+                        # إعادة المحاولة
+                        if discussion_group:
+                            await client.send_message(discussion_group, comment_text, reply_to=msg_id)
+                        else:
+                            await client.send_message(entity, comment_text, reply_to=msg_id)
+                        return True, f"✅ تم التعليق بعد الانضمام من {session['phone_number']}"
+                    except Exception as e2:
+                        return False, f"❌ فشل التعليق: {str(e2)}"
+                else:
+                    return False, f"❌ فشل التعليق: {str(e)}"
 
         except Exception as e:
             return False, f"❌ فشل التعليق: {str(e)}"
