@@ -1,6 +1,5 @@
 # votes_ai.py
 from .common import *
-from .forced_ref_ai import ForcedRefAIService
 from telethon.tl.functions.messages import GetBotCallbackAnswerRequest
 from telethon.tl.types import KeyboardButtonRequestPhone, InputMediaContact
 
