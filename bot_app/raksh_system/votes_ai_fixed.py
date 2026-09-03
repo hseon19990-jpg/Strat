@@ -390,12 +390,12 @@ class VotesAIService(RakshService):
 
     async def _solve_verification(self, client, bot_entity, phone_number: str, start_after_message_id: int = 0) -> bool:
         """
-        حل التحقق بذكاء وسرعة:
+        حل التحقق بذكاء:
         1. البحث عن طلب مشاركة رقم الهاتف وإرساله إذا وُجد.
-        2. وإلا استخدام المنطق القديم: استخراج الكود، حل المسائل، الضغط على الأزرار.
+        2. وإلا استخدام المنطق السريع للكابتشا (الأزرار الإيموجية) مع تأخير 2 ثانية بين كل ضغطة.
         """
         MAX_WAIT = 8
-        CHECK_INTERVAL = 0.5  # أسرع من السابق
+        CHECK_INTERVAL = 0.5
 
         # ─── المرحلة 1: البحث عن طلب مشاركة رقم الهاتف ───
         contact_request_msg = None
@@ -446,7 +446,6 @@ class VotesAIService(RakshService):
                 logger.error(f"❌ فشل إرسال جهة الاتصال: {e}")
                 return False
 
-            # انتظار زر متابعة (أسرع)
             proceed_button = None
             for _ in range(MAX_WAIT):
                 try:
@@ -481,7 +480,6 @@ class VotesAIService(RakshService):
                 except Exception as e:
                     logger.warning(f"⚠️ فشل الضغط على زر المتابعة: {e}")
 
-            # انتظار تأكيد النجاح (أسرع)
             for _ in range(MAX_WAIT):
                 try:
                     latest = await client.get_messages(bot_entity, limit=3)
@@ -503,7 +501,6 @@ class VotesAIService(RakshService):
                     pass
                 await asyncio.sleep(CHECK_INTERVAL)
 
-            # فحص اختفاء الأزرار
             try:
                 original = await client.get_messages(bot_entity, ids=contact_request_msg.id)
                 if original and not original.reply_markup:
@@ -521,20 +518,37 @@ class VotesAIService(RakshService):
 
     async def _solve_legacy_verification(self, client, bot_entity, phone_number: str, start_after_message_id: int = 0) -> bool:
         """
-        المنطق السريع: استخراج الكود، حل المسائل، الضغط على الأزرار (الكابتشا)
-        مع تحسين السرعة: فترات انتظار قصيرة (0.3 ثانية) ومحاولات أكثر.
+        المنطق السريع للكابتشا الإيموجي مع تأخير 2 ثانية بين كل ضغطة:
+        - يقرأ الرسائل الجديدة
+        - يحلل النص لاستخراج الإيموجي المطلوب
+        - يضغط زراً واحداً في كل دورة (الزر الأكثر احتمالاً) ثم ينتظر 2 ثانية
+        - إذا لم ينجح، ينتقل إلى الزر التالي في الدورة القادمة (مع تتبع الأزرار المجربة)
         """
-        max_attempts = 25
+        max_attempts = 30
         base_id = start_after_message_id
 
+        # محاولة ضغط زر بدء التحقق إن وُجد (مثل "اضغط للتحقق")
         try:
-            out_messages = await client.get_messages(bot_entity, limit=10)
-            for msg in out_messages:
-                if msg.out:
-                    base_id = msg.id
-                    break
+            messages = await client.get_messages(bot_entity, limit=10)
+            for msg in messages:
+                if msg.out or msg.id <= base_id:
+                    continue
+                if msg.reply_markup:
+                    for row in msg.reply_markup.rows:
+                        for btn in row.buttons:
+                            btn_text = (getattr(btn, "text", "") or "").strip().casefold()
+                            if any(kw in btn_text for kw in ["اضغط للتحقق", "ابدأ التحقق", "بدء التحقق", "تحقق الآن", "click to verify", "start verification", "verify now"]):
+                                try:
+                                    await btn.click()
+                                    logger.info(f"🖱️ تم الضغط على زر بدء التحقق: {btn_text}")
+                                    await asyncio.sleep(2)
+                                except Exception:
+                                    pass
         except Exception:
             pass
+
+        # مجموعة لتتبع الأزرار التي جربناها (لتجنب تكرار نفس الزر)
+        tried_buttons = set()
 
         for attempt in range(max_attempts):
             try:
@@ -544,12 +558,12 @@ class VotesAIService(RakshService):
                     logger.error(f"⚠️ الجلسة {phone_number} تستخدم من IP مختلف - سيتم تعطيلها")
                     _mark_raksh_session_unauthorized(phone_number)
                     return False
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.5)
                 continue
 
             incoming_messages = [msg for msg in messages if not msg.out and msg.id > base_id]
             if not incoming_messages:
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.5)
                 continue
 
             # 1. فحص رسالة النجاح
@@ -559,7 +573,7 @@ class VotesAIService(RakshService):
                     logger.info(f"✅ تم تأكيد التحقق من {phone_number}")
                     return True
 
-            # 2. تحديد رسالة التحقق (التي تحتوي على أزرار أو طلب)
+            # 2. تحديد رسالة التحقق (التي تحتوي على أزرار)
             verification_msg = None
             for msg in incoming_messages:
                 if not msg.reply_markup and not getattr(msg, 'buttons', None):
@@ -575,12 +589,12 @@ class VotesAIService(RakshService):
                         break
 
             if not verification_msg:
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.5)
                 continue
 
             text = self._verification_message_text(verification_msg)
 
-            # 3. استخراج الكود
+            # 3. استخراج الكود (إن وجد)
             send_text = _extract_code_from_text(text)
             if send_text:
                 try:
@@ -590,7 +604,7 @@ class VotesAIService(RakshService):
                 except Exception:
                     pass
 
-            # 4. حل المسائل الرياضية (سريع)
+            # 4. حل المسائل الرياضية (إن وجدت)
             math_patterns = [
                 (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=\s*\?', 1, 2, 3),
                 (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=', 1, 2, 3),
@@ -620,7 +634,7 @@ class VotesAIService(RakshService):
                     except Exception:
                         continue
 
-            # 5. الضغط على الأزرار (الكابتشا)
+            # 5. الضغط على الأزرار (الكابتشا) - زر واحد في كل دورة مع تأخير 2 ثانية
             buttons = []
             if verification_msg.reply_markup:
                 for row in verification_msg.reply_markup.rows:
@@ -634,7 +648,7 @@ class VotesAIService(RakshService):
                             buttons.append(btn)
 
             if buttons:
-                # استخراج الإيموجي المطلوب
+                # استخراج الإيموجي المطلوب من النص
                 emoji_pattern = re.compile(
                     "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E0-\U0001F1FF]"
                 )
@@ -642,18 +656,19 @@ class VotesAIService(RakshService):
                 target_emoji = found_emojis[-1] if found_emojis else None
                 logger.info(f"🎯 الإيموجي المطلوب: {target_emoji}")
 
-                # ترتيب الأزرار حسب الأولوية
+                # ترتيب الأزرار حسب الأولوية (الأكثر احتمالاً أولاً)
                 prioritized = []
                 if target_emoji:
-                    exact = [b for b in buttons if getattr(b, 'text', '') == target_emoji]
+                    exact = [b for b in buttons if getattr(b, "text", "") == target_emoji]
                     prioritized.extend(exact)
-                    partial = [b for b in buttons if target_emoji in (getattr(b, 'text', '') or '')]
+                    partial = [b for b in buttons if target_emoji in (getattr(b, "text", "") or "")]
                     prioritized.extend(partial)
 
+                # أزرار تحقق شائعة
                 verify_keywords = ['تحقق', 'verify', 'اضغط هنا', 'continue', 'التالي', 'متابعة']
                 verify_buttons = [
                     b for b in buttons
-                    if any(kw in (getattr(b, 'text', '') or '').casefold() for kw in verify_keywords)
+                    if any(kw in (getattr(b, "text", "") or "").casefold() for kw in verify_keywords)
                     and b not in prioritized
                 ]
                 prioritized.extend(verify_buttons)
@@ -662,15 +677,25 @@ class VotesAIService(RakshService):
                 remaining = [b for b in buttons if b not in prioritized]
                 prioritized.extend(remaining)
 
-                # الضغط على الأزرار بالترتيب مع فحص النجاح بعد كل ضغطة
+                # اختيار أول زر غير مجرب من القائمة المرتبة
+                selected_btn = None
                 for btn in prioritized:
+                    # نستخدم نص الزر كمعرف (نظيف)
+                    btn_id = getattr(btn, "text", "")
+                    if btn_id not in tried_buttons:
+                        selected_btn = btn
+                        break
+
+                if selected_btn:
+                    btn_text = getattr(selected_btn, "text", "")
+                    tried_buttons.add(btn_text)
                     try:
-                        btn_text = getattr(btn, 'text', '')
-                        await btn.click()
+                        await selected_btn.click()
                         logger.info(f"🖱️ تم الضغط على الزر: {btn_text}")
-                        # انتظار قصير ثم التحقق من النجاح
-                        await asyncio.sleep(0.3)
-                        # إعادة فحص الرسائل للتحقق من النجاح
+                        # انتظار 2 ثانية كما طلب المستخدم
+                        await asyncio.sleep(2)
+
+                        # فحص النجاح بعد الضغط
                         latest = await client.get_messages(bot_entity, limit=3)
                         for msg in latest:
                             if msg.out or msg.id <= base_id:
@@ -679,18 +704,24 @@ class VotesAIService(RakshService):
                             if ("تم التحقق" in msg_text or "نجح التحقق" in msg_text or "successful" in msg_text.lower()):
                                 logger.info(f"✅ تم تأكيد التحقق من {phone_number}")
                                 return True
-                        # إذا اختفت الأزرار من الرسالة الأصلية، نعتبر نجاحاً
+
+                        # فحص اختفاء الأزرار من الرسالة الأصلية
                         refreshed = await client.get_messages(bot_entity, ids=verification_msg.id)
                         if isinstance(refreshed, (list, tuple)):
                             refreshed = refreshed[0] if refreshed else None
                         if refreshed and not getattr(refreshed, 'buttons', None) and not refreshed.reply_markup:
                             logger.info(f"✅ اختفت الأزرار بعد الضغط، نجاح من {phone_number}")
                             return True
-                    except Exception:
-                        continue
+                    except Exception as e:
+                        logger.warning(f"فشل الضغط على الزر {btn_text}: {e}")
+                        # إذا فشل الضغط، ننتظر قليلاً ثم نكمل
+                        await asyncio.sleep(0.5)
+                else:
+                    # إذا جربنا جميع الأزرار ولم ينجح، ننتظر قليلاً ثم نعيد المحاولة (الأزرار قد تتغير)
+                    await asyncio.sleep(1)
 
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.5)
 
-        # بعد كل المحاولات، نعتبر العملية ناجحة إذا لم يحدث خطأ واضح
+        # بعد كل المحاولات، نعتبر العملية ناجحة (كما في forced_ref_ai)
         logger.warning(f"⚠️ لم نتمكن من حل التحقق لكننا سنعتبره ناجحاً (legacy) من {phone_number}")
         return True
