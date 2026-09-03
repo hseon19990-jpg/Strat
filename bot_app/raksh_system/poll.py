@@ -239,7 +239,7 @@ class PollService(RakshService):
         return False
 
     async def execute(self, session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
-        """تنفيذ رشق استفتاء مع الانضمام للقناة المستهدفة قبل التصويت"""
+        """تنفيذ رشق استفتاء - يدعم الاستفتاءات الأصلية والأزرار"""
         client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
         await asyncio.wait_for(client.connect(), timeout=15)
         try:
@@ -247,7 +247,7 @@ class PollService(RakshService):
                 _mark_raksh_session_unauthorized(session.get("phone_number"))
                 return False, "الجلسة غير مصرح بها"
 
-            # الانضمام للقنوات الإجبارية (إذا وجدت)
+            # الانضمام للقنوات الإجبارية
             if params.get("channel_ref"):
                 for channel_ref in params["channel_ref"]:
                     await _join_channel_and_schedule_leave(client, channel_ref, leave_after_seconds=86400)
@@ -260,7 +260,7 @@ class PollService(RakshService):
 
             entity = await client.get_entity(channel_ref)
 
-            # الانضمام للقناة المستهدفة إذا كانت قناة (وليس مجموعة)
+            # الانضمام للقناة المستهدفة إذا كانت قناة
             if hasattr(entity, 'megagroup') and not entity.megagroup:
                 try:
                     await client(JoinChannelRequest(entity))
@@ -268,29 +268,83 @@ class PollService(RakshService):
                 except Exception:
                     pass
 
-            # جلب الرسالة والتحقق من الاستفتاء
+            # جلب الرسالة
             message = await client.get_messages(entity, ids=msg_id)
             if not message:
                 return False, "الاستفتاء غير موجود"
 
-            poll = getattr(message, "poll", None)
-            if not poll:
-                return False, "هذا المنشور ليس استفتاءً"
-
-            answers = getattr(poll, "answers", [])
-            if not answers:
-                return False, "الاستفتاء ليس له خيارات"
-
             option_request = params.get("poll_option", "1")
-            option = _select_poll_option(answers, option_request)
-            if not option:
+            option_number = int(option_request)
+
+            # 1️⃣ محاولة التصويت كاستفتاء أصلي
+            poll = getattr(message, "poll", None)
+            if poll:
+                answers = getattr(poll, "answers", [])
+                if answers:
+                    option = _select_poll_option(answers, option_request)
+                    if option:
+                        success = await _send_vote_and_check(client, entity, msg_id, option)
+                        if success:
+                            return True, f"✅ تم التصويت من {session['phone_number']}"
+                        else:
+                            return False, "تعذر تأكيد التصويت"
+                    else:
+                        return False, f"الخيار {option_request} غير موجود في الاستفتاء"
+                else:
+                    return False, "الاستفتاء ليس له خيارات"
+
+            # 2️⃣ إذا لم يكن استفتاء أصلي، نتعامل مع الأزرار
+            buttons = getattr(message, "buttons", None) or []
+            if not buttons:
+                return False, "لا يوجد استفتاء أو أزرار تصويت في هذا المنشور"
+
+            # البحث عن زر الخيار المطلوب
+            target_button = None
+            # البحث بالنص المطابق للرقم
+            for row in buttons:
+                for btn in row:
+                    btn_text = (getattr(btn, "text", "") or "").strip()
+                    # إذا كان الزر نصه رقم أو يبدأ برقم الخيار
+                    if btn_text == option_request or btn_text.startswith(f"{option_request}.") or btn_text.startswith(f"{option_request} "):
+                        target_button = btn
+                        break
+                if target_button:
+                    break
+
+            # إذا لم نجد، نحاول البحث بالترتيب (الزر الأول = الخيار 1)
+            if not target_button:
+                flat_buttons = [btn for row in buttons for btn in row if not getattr(btn, "url", None)]
+                if 1 <= option_number <= len(flat_buttons):
+                    target_button = flat_buttons[option_number - 1]
+
+            if not target_button:
                 return False, f"الخيار {option_request} غير موجود"
 
-            success = await _send_vote_and_check(client, entity, msg_id, option)
-            if not success:
-                return False, "تعذر تأكيد التصويت"
+            # الضغط على زر الخيار
+            try:
+                await target_button.click()
+                await asyncio.sleep(1.0)
+            except Exception as e:
+                return False, f"فشل الضغط على زر الخيار: {str(e)}"
+
+            # البحث عن زر تأكيد/تصويت
+            confirmation_buttons = []
+            for row in buttons:
+                for btn in row:
+                    btn_text = (getattr(btn, "text", "") or "").lower()
+                    if any(word in btn_text for word in ["تأكيد", "تصويت", "confirm", "vote", "send", "إرسال"]):
+                        confirmation_buttons.append(btn)
+
+            # الضغط على زر التأكيد إذا وجد
+            if confirmation_buttons:
+                try:
+                    await confirmation_buttons[0].click()
+                    await asyncio.sleep(1.0)
+                except Exception:
+                    pass
 
             return True, f"✅ تم التصويت من {session['phone_number']}"
+
         except Exception as e:
             return False, f"❌ فشل التصويت: {str(e)}"
         finally:
