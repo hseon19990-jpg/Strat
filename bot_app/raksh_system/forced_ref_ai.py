@@ -504,6 +504,7 @@ class ForcedRefAIService(RakshService):
         """
         max_attempts = 30
         base_id = 0
+        processed_ids = set()
 
         try:
             out_messages = await client.get_messages(bot_entity, limit=10)
@@ -529,10 +530,36 @@ class ForcedRefAIService(RakshService):
             incoming_messages = [msg for msg in messages if not msg.out]
             incoming_messages.sort(key=lambda m: m.id)
 
-            new_messages = [msg for msg in incoming_messages if msg.id > base_id]
+            new_messages = [
+                msg for msg in incoming_messages
+                if msg.id > base_id and msg.id not in processed_ids
+            ]
             if not new_messages:
                 await asyncio.sleep(1.0)
                 continue
+
+            # لا نعتبر اختفاء الأزرار أو إرسال الإجابة نجاحاً. النجاح يجب أن
+            # يأتي من رسالة صريحة من البوت، مثل «تم التحقق بنجاح».
+            for msg in reversed(new_messages):
+                text = (getattr(msg, "message", "") or "").strip()
+                text_folded = text.casefold()
+                if (
+                    "تم التحقق" in text_folded
+                    or "نجح التحقق" in text_folded
+                    or "verification successful" in text_folded
+                    or "verification complete" in text_folded
+                    or "تم التحقق بنجاح" in text_folded
+                    or "مرحباً بك في المجموعة" in text_folded
+                    or "welcome to the group" in text_folded
+                ) and not any(
+                    marker in text_folded
+                    for marker in (
+                        "أرسل النص", "ارسل النص", "النص التالي",
+                        "send the text", "resend", "أعد إرسال",
+                    )
+                ):
+                    logger.info(f"✅ تم تأكيد التحقق من {phone_number}: {text[:120]}")
+                    return True
 
             verification_message = None
             for msg in new_messages:
@@ -561,7 +588,11 @@ class ForcedRefAIService(RakshService):
                 try:
                     await client.send_message(bot_entity, send_text)
                     logger.info(f"✅ تم إرسال الكود: {send_text}")
-                    return True
+                    processed_ids.add(verification_message.id)
+                    # ننتظر رسالة البوت التالية؛ قد تكون نجاحاً أو مرحلة
+                    # تحقق جديدة، ولا نعلن النجاح بمجرد إرسال الرمز.
+                    await asyncio.sleep(1.5)
+                    continue
                 except Exception:
                     return False
 
@@ -591,9 +622,13 @@ class ForcedRefAIService(RakshService):
                         if result is not None:
                             await client.send_message(bot_entity, result)
                             logger.info(f"✅ تم حل المسألة: {a} {op} {b} = {result}")
-                            return True
+                            processed_ids.add(verification_message.id)
+                            await asyncio.sleep(1.5)
+                            break
                     except Exception:
                         continue
+                else:
+                    continue
 
             # 3. الضغط على الأزرار
             buttons = []
@@ -636,22 +671,18 @@ class ForcedRefAIService(RakshService):
                     try:
                         await btn.click()
                         logger.info(f"🖱️ تم الضغط على الزر: {getattr(btn, 'text', '')}")
+                        processed_ids.add(verification_message.id)
                         await asyncio.sleep(2.0)
-                        # التحقق من اختفاء الأزرار
-                        refreshed = await client.get_messages(bot_entity, ids=verification_message.id)
-                        if isinstance(refreshed, (list, tuple)):
-                            refreshed = refreshed[0] if refreshed else None
-                        if refreshed is None or not getattr(refreshed, 'buttons', None):
-                            logger.info(f"✅ اختفت الأزرار بعد الضغط، نجاح من {phone_number}")
-                            return True
+                        # لا نعتبر اختفاء الأزرار نجاحاً؛ ستتم قراءة رسالة
+                        # البوت الجديدة في الدورة التالية.
+                        break
                     except Exception:
                         continue
 
             await asyncio.sleep(2.0)
 
-        # بعد كل المحاولات، نعتبر العملية ناجحة إذا لم يحدث خطأ واضح
-        logger.warning(f"⚠️ لم نتمكن من حل التحقق لكننا سنعتبره ناجحاً (legacy) من {phone_number}")
-        return True
+        logger.warning(f"⚠️ لم تصل رسالة نجاح صريحة بعد التحقق من {phone_number}")
+        return False
 
     # ─── 5. التنفيذ الرئيسي ───
 
