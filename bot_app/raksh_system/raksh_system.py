@@ -666,7 +666,7 @@ async def _handle_raksh_callback_impl(
         return
     
     # ─── تخطي القنوات (الافتراضي) ───
-    if data == "raksh:skip_channels":
+    if data in {"raksh:skip_channels", "raksh_votes_ai:skip_channels"}:
         context.user_data["raksh_channels"] = []
         context.user_data["raksh_step"] = "link"
         svc = RAKSH_SERVICES.get(context.user_data.get("raksh_service"))
