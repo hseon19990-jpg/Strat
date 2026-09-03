@@ -504,14 +504,13 @@ class ForcedRefAIService(RakshService):
                             for btn in row.buttons:
                                 if not getattr(btn, 'url', None):
                                     buttons.append(btn)
-                    # نفضل الأزرار التي تحوي كلمات مفتاحية
+                    # لا نضغط زرًا عشوائيًا؛ قد يكون زر رابط دعوة أو زرًا
+                    # تابعًا لواجهة البوت وليس خطوة تحقق.
                     for btn in buttons:
                         btn_text = (getattr(btn, 'text', '') or '').strip().casefold()
                         if any(kw in btn_text for kw in ['متابعة', 'التالي', 'ابدأ', 'تحقق', 'continue', 'next', 'start', 'verify']):
                             proceed_button = btn
                             break
-                        if not proceed_button:
-                            proceed_button = btn
                     if proceed_button:
                         break
                 if proceed_button:
@@ -647,8 +646,30 @@ class ForcedRefAIService(RakshService):
                     logger.info(f"✅ تم تأكيد التحقق من {phone_number}: {text[:120]}")
                     return True
 
-            verification_message = None
+            # نفضّل رسالة «أرسل النص التالي» صراحةً، حتى لو كانت معها
+            # أزرار أخرى مثل «رابط الدعوة». تلك الأزرار ليست جواب التحقق.
+            text_challenge_markers = (
+                "أرسل النص التالي",
+                "ارسل النص التالي",
+                "النص التالي",
+                "send the following text",
+                "send the text",
+                "type the following",
+                "retype",
+            )
+            verification_message = next(
+                (
+                    msg for msg in reversed(new_messages)
+                    if any(
+                        marker in (getattr(msg, "message", "") or "").casefold()
+                        for marker in text_challenge_markers
+                    )
+                ),
+                None,
+            )
             for msg in new_messages:
+                if verification_message is not None:
+                    break
                 msg_text = getattr(msg, 'message', '') or ''
                 if msg_text.strip().startswith("/"):
                     continue
@@ -670,6 +691,16 @@ class ForcedRefAIService(RakshService):
 
             # 1. استخراج الكود
             send_text = _extract_code_from_text(text)
+            # احتياط إضافي للكود الموجود في سطر مستقل، مثل XILX9DRL،
+            # عندما يرفق البوت رسالة التحقق بزر غير متعلق بالإجابة.
+            if not send_text and any(
+                marker in text.casefold() for marker in text_challenge_markers
+            ):
+                for line in text.splitlines():
+                    candidate = line.strip().strip("`*_ ")
+                    if re.fullmatch(r"[A-Za-z0-9]{3,50}", candidate):
+                        send_text = candidate
+                        break
             if send_text:
                 try:
                     await client.send_message(bot_entity, send_text)
@@ -748,10 +779,6 @@ class ForcedRefAIService(RakshService):
                     and b not in prioritized
                 ]
                 prioritized.extend(verify_buttons)
-
-                # إذا لم نجد زراً محدداً، نضغط على أول زر
-                if not prioritized:
-                    prioritized = buttons
 
                 for btn in prioritized:
                     try:
