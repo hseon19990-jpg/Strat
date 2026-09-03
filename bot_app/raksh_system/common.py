@@ -46,8 +46,8 @@ RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS = 4
 RAKSH_MIN_DELAY_SECONDS = 3
 RAKSH_MAX_DELAY_SECONDS = 3
 RAKSH_VOTE_DELAY_SECONDS = 3
-RAKSH_MAX_EXECUTIONS_PER_DAY = 0      # 0 = لا حد يومي
-RAKSH_MAX_EXECUTIONS_PER_HOUR = 0     # 0 = لا حد ساعي
+RAKSH_MAX_EXECUTIONS_PER_DAY = 1000
+RAKSH_MAX_EXECUTIONS_PER_HOUR = 100
 RAKSH_NO_VERIFICATION_MESSAGE = "بدون زر تحقق"
 
 # ════════════════════════════════════════════════════════
@@ -97,7 +97,7 @@ def _clear_raksh_state(context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data["state"] = "main_menu"
 
 def get_raksh_hourly_remaining(user_id: int) -> int:
-    """عدد التنفيذات المتبقية خلال الساعة - بدون حدود"""
+    """عدد التنفيذات المتبقية خلال الساعة"""
     if RAKSH_MAX_EXECUTIONS_PER_HOUR <= 0:
         return 2_147_483_647
     try:
@@ -115,12 +115,10 @@ def get_raksh_hourly_remaining(user_id: int) -> int:
         return max(0, RAKSH_MAX_EXECUTIONS_PER_HOUR - used)
     except Exception:
         logger.exception(f"فشل قراءة حد التنفيذ للمستخدم {user_id}")
-        return 2_147_483_647  # عند الخطأ، لا نضع حداً
+        return 0
 
 def get_raksh_daily_remaining(user_id: int) -> int:
-    """عدد التنفيذات المتبقية خلال اليوم - بدون حدود"""
-    if RAKSH_MAX_EXECUTIONS_PER_DAY <= 0:
-        return 2_147_483_647
+    """عدد التنفيذات المتبقية خلال اليوم"""
     try:
         with db_conn() as c:
             row = c.execute(
@@ -136,12 +134,10 @@ def get_raksh_daily_remaining(user_id: int) -> int:
         return max(0, RAKSH_MAX_EXECUTIONS_PER_DAY - used)
     except Exception:
         logger.exception(f"فشل قراءة الحد اليومي للمستخدم {user_id}")
-        return 2_147_483_647  # عند الخطأ، لا نضع حداً
+        return RAKSH_MAX_EXECUTIONS_PER_DAY
 
 def _get_sessions_for_service(service_type: str) -> List[Dict]:
-    """
-    جلب كل الجلسات المتاحة بغض النظر عن أي حالة (حتى لو كانت موقوفة أو محذوفة منطقياً)
-    """
+    """جلب الجلسات المناسبة لنوع الخدمة مع التخزين المؤقت"""
     cache_key = f"sessions_{service_type}"
     if cache_key in _RAKSH_SESSION_CACHE:
         cache_time = _RAKSH_SESSION_CACHE_TIME.get(cache_key, 0)
@@ -155,6 +151,8 @@ def _get_sessions_for_service(service_type: str) -> List[Dict]:
             WHERE session_string IS NOT NULL
               AND BTRIM(session_string) <> ''
               AND deleted_at IS NULL
+              AND forced_ref_excluded IS NOT TRUE
+            ORDER BY last_authorized DESC NULLS LAST, id ASC
         """
         rows = c.execute(query).fetchall()
         sessions = [dict(row) for row in rows]
@@ -178,7 +176,7 @@ def _mark_raksh_session_unauthorized(phone_number: str) -> None:
         with db_conn() as c:
             c.execute(
                 "UPDATE number_stock SET last_authorized=FALSE "
-                "WHERE phone_number=%s",
+                "WHERE phone_number=%s AND deleted_at IS NULL",
                 (phone_number,)
             )
         logger.warning(f"🔒 جلسة غير مصرح بها: {phone_number}")
@@ -639,8 +637,8 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
     
     return False
 
-async def _join_channel_and_schedule_leave(client, channel_ref: str, leave_after_seconds: Optional[int] = None):
-    """الانضمام للقناة وجدولة المغادرة (مع إمكانية تحديد المدة)"""
+async def _join_channel_and_schedule_leave(client, channel_ref: str):
+    """الانضمام للقناة وجدولة المغادرة"""
     try:
         if channel_ref.startswith("invite:"):
             invite_hash = channel_ref[7:]
@@ -650,11 +648,7 @@ async def _join_channel_and_schedule_leave(client, channel_ref: str, leave_after
             await client(JoinChannelRequest(entity))
         
         async def _leave_later():
-            # استخدم المدة المحددة أو العشوائية الافتراضية (10-30 دقيقة)
-            if leave_after_seconds is not None:
-                await asyncio.sleep(leave_after_seconds)
-            else:
-                await asyncio.sleep(random.randint(600, 1800))
+            await asyncio.sleep(random.randint(600, 1800))
             try:
                 if channel_ref.startswith("invite:"):
                     pass
@@ -687,23 +681,41 @@ def _select_poll_option(options, requested: str):
     """اختيار خيار الاستفتاء"""
     requested = (requested or "").strip()
     normalized = _normalize_digits(requested)
+    selected = None
     if normalized.isdigit():
         index = int(normalized) - 1
-        return options[index] if 0 <= index < len(options) else None
-    
-    requested_folded = requested.casefold()
-    return next(
-        (
-            option
-            for option in options
-            if str(getattr(option, "text", "")).strip().casefold() == requested_folded
-        ),
-        None,
-    )
+        selected = options[index] if 0 <= index < len(options) else None
+    else:
+        requested_folded = requested.casefold()
+        selected = next(
+            (
+                option
+                for option in options
+                if str(getattr(option, "text", "")).strip().casefold() == requested_folded
+            ),
+            None,
+        )
+
+    if selected is None:
+        return None
+
+    # SendVoteRequest لا يستقبل PollAnswer كاملاً؛ يستقبل bytes فقط.
+    option_value = getattr(selected, "option", selected)
+    if isinstance(option_value, bytearray):
+        option_value = bytes(option_value)
+    return option_value if isinstance(option_value, bytes) else None
 
 async def _send_vote_and_check(client, peer, msg_id: int, option) -> bool:
     """إرسال تصويت والتحقق منه"""
-    await client(SendVoteRequest(peer=peer, msg_id=msg_id, options=[option]))
+    # دعم الاستدعاء القديم أيضاً إذا وصل كائن PollAnswer بدلاً من bytes.
+    option_value = getattr(option, "option", option)
+    if isinstance(option_value, bytearray):
+        option_value = bytes(option_value)
+    if not isinstance(option_value, bytes):
+        logger.warning("خيار الاستفتاء غير صالح: SendVoteRequest يحتاج bytes")
+        return False
+
+    await client(SendVoteRequest(peer=peer, msg_id=msg_id, options=[option_value]))
     
     for delay in (0.0, 0.3, 0.5):
         if delay:
