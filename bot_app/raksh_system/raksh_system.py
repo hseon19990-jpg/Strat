@@ -672,9 +672,9 @@ async def _handle_raksh_callback_impl(
         svc = RAKSH_SERVICES.get(context.user_data.get("raksh_service"))
         await query.edit_message_text(
             f"✅ تم تخطي القنوات.\n\n"
-            f"🔗 *أرسل الرابط المطلوب:*\n"
+            f"🔗 <b>أرسل الرابط المطلوب:</b>\n"
             f"{_get_link_instruction(context.user_data.get('raksh_service'))}",
-            parse_mode=ParseMode.MARKDOWN,
+            parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
             ])
