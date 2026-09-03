@@ -110,11 +110,11 @@ class PollService(RakshService):
                 return True
 
             context.user_data["raksh_quantity"] = quantity
-            context.user_data["raksh_step"] = "confirm"
+            context.user_data["raksh_step"] = "payment"
             points_cost = self.get_total(quantity, "points")
             stars_cost = self.get_total(quantity, "stars")
 
-            # ✅ استخدم الصيغة العامة لدفع النقاط/النجوم
+            # ✅ استخدام الصيغة العامة لدفع النقاط/النجوم (نفس الملف القديم)
             await update.message.reply_text(
                 "📋 *مراجعة طلب رشق الاستفتاء*\n\n"
                 f"🔗 الرابط: `{context.user_data['raksh_link']}`\n"
@@ -138,21 +138,19 @@ class PollService(RakshService):
             )
             return True
 
-        if state == "confirm":
-            await update.message.reply_text(
-                "⚠️ استخدم أزرار الدفع والتأكيد.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
-                ]),
-            )
+        if state == "payment":
+            # لا حاجة هنا، الأزرار تتعامل مع الدفع
             return True
 
         return False
     
     async def handle_callback(self, update, context, query, data_parts, user, is_own) -> bool:
-        """لا نحتاج معالجة خاصة؛ الأزرار العامة ستدير الدفع والتأكيد."""
+        """
+        لا نحتاج لمعالجة خاصة للدفع هنا لأن الأزرار تستخدم الصيغة العامة
+        raksh:pay و raksh:confirm الموجودة في المعالج العام.
+        """
         return False
-    
+
     async def execute(self, session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
         """تنفيذ رشق استفتاء"""
         client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
