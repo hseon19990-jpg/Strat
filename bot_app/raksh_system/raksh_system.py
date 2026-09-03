@@ -919,12 +919,29 @@ async def handle_raksh_callback(
 async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """معالج النصوص للرشق الرئيسي"""
     user = update.effective_user
-    text = update.message.text
+    message = getattr(update, "message", None)
+    text = (
+        getattr(message, "text", None)
+        or getattr(message, "caption", None)
+        or ""
+    ).strip()
     state = context.user_data.get("raksh_step")
     service_type = context.user_data.get("raksh_service")
     
     if not state:
         return False
+
+    if state in {"channel", "link", "quantity", "payment", "confirm"} and service_type not in RAKSH_SERVICES:
+        logger.warning(
+            "انتهت جلسة الرشق قبل استقبال الرسالة: user=%s state=%s service=%s",
+            getattr(user, "id", None), state, service_type,
+        )
+        _clear_raksh_state(context)
+        await update.message.reply_text(
+            "⚠️ انتهت جلسة طلب التصويت. ابدأ الطلب من جديد عبر /raksh.",
+            reply_markup=raksh_menu_kb(getattr(user, "id", None) == OWNER_ID),
+        )
+        return True
     
     # ─── تعديل الأسعار (للمالك) ───
     if state == "admin_price":
