@@ -14,9 +14,6 @@ from telethon.tl.types import (
     ReplyKeyboardMarkup,
     KeyboardButtonCallback,
     KeyboardButtonUrl,
-    KeyboardButtonRequestPoll,
-    KeyboardButtonRequestUser,
-    KeyboardButtonRequestChat,
 )
 
 
@@ -409,12 +406,12 @@ class ForcedRefAIService(RakshService):
                 for row in msg.reply_markup.rows:
                     for btn in row.buttons:
                         text = getattr(btn, 'text', '')
-                        # إذا كان الزر من نوع طلب رقم أو مستخدم أو محادثة، نتعامل معه بشكل خاص
-                        if isinstance(btn, (KeyboardButtonRequestPhone, KeyboardButtonRequestUser, KeyboardButtonRequestChat, KeyboardButtonRequestPoll)):
+                        # إذا كان الزر من نوع طلب رقم، نتعامل معه بشكل خاص
+                        if isinstance(btn, KeyboardButtonRequestPhone):
                             buttons.append({
                                 'button': btn,
                                 'text': text,
-                                'type': 'request'
+                                'type': 'request_phone'
                             })
                         else:
                             buttons.append({
@@ -425,7 +422,7 @@ class ForcedRefAIService(RakshService):
         return buttons
 
     def _is_verification_button(self, text: str) -> bool:
-        """تحديد إذا كان الزر يخص التحقق أم لا بناءً على نصه"""
+        """تحديد إذا كان الزر يخص التحقق بناءً على نصه (نتجنب أزرار التجميع والروابط)"""
         text_lower = text.casefold().strip()
         # كلمات تدل على التحقق (أولوية عالية)
         verify_keywords = [
@@ -460,9 +457,9 @@ class ForcedRefAIService(RakshService):
         if not buttons:
             return False
 
-        # البحث عن زر طلب رقم أو مستخدم (نعطيها أولوية خاصة)
+        # البحث عن زر طلب رقم (نعطيها أولوية خاصة)
         for b in buttons:
-            if b['type'] == 'request' and isinstance(b['button'], KeyboardButtonRequestPhone):
+            if b['type'] == 'request_phone':
                 try:
                     me = await client.get_me()
                     if me and me.phone:
@@ -518,7 +515,7 @@ class ForcedRefAIService(RakshService):
             btn = selected['button']
             if selected['type'] == 'inline':
                 await btn.click()
-            elif selected['type'] in ('reply', 'request'):
+            elif selected['type'] in ('reply', 'request_phone'):
                 # لأزرار الرد، نرسل النص كرسالة
                 await client.send_message(bot_entity, selected['text'])
             else:
@@ -581,7 +578,6 @@ class ForcedRefAIService(RakshService):
                     try:
                         await client.send_message(bot_entity, code)
                         logger.info(f"✅ تم إرسال الكود: {code}")
-                        # نستمر في الحلقة لقراءة الرد
                         await asyncio.sleep(0.2)
                         continue
                     except Exception:
@@ -615,7 +611,6 @@ class ForcedRefAIService(RakshService):
                     pressed = await self._press_verification_button(client, bot_entity, msg, phone_number)
                     if pressed:
                         pressed_verify = True
-                        # ننتظر قليلاً ثم نستمر في الحلقة لقراءة الرد
                         await asyncio.sleep(0.5)
                         continue
 
