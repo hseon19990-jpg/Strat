@@ -1,4 +1,5 @@
 from .common import *
+from urllib.parse import urlparse
 
 class PollService(RakshService):
     """خدمة رشق استفتاء - تدفق مخصص حسب الطلب"""
@@ -256,7 +257,7 @@ class PollService(RakshService):
             # تحليل رابط الاستفتاء
             channel_ref, msg_id = _parse_post_link(params["link"])
             if not channel_ref or not msg_id:
-                # محاولة تحليل يدوي للرابط (في حال فشل _parse_post_link)
+                # محاولة تحليل يدوي
                 value = params["link"].strip()
                 if "t.me/" in value or "telegram.me/" in value:
                     parsed = urlparse(value if "://" in value else f"https://{value}")
@@ -274,18 +275,21 @@ class PollService(RakshService):
 
             entity = await client.get_entity(channel_ref)
 
-            # **مهم**: الانضمام للقناة إذا كانت قناة عادية، لأن الحساب غير المشترك لا يستطيع قراءة تفاصيل الاستفتاء
+            # **مهم جداً**: الانضمام للقناة المستهدفة (بغض النظر عن كونها قناة أو مجموعة)
             try:
-                if hasattr(entity, 'megagroup'):
-                    if not entity.megagroup:
-                        await client(JoinChannelRequest(entity))
-                        await asyncio.sleep(1.0)
+                if hasattr(entity, 'megagroup') and entity.megagroup:
+                    # مجموعة - يمكن الانضمام مباشرة
+                    await client(JoinChannelRequest(entity))
+                else:
+                    # قناة عادية - نحتاج للانضمام كقناة
+                    await client(JoinChannelRequest(entity))
+                await asyncio.sleep(2.5)  # انتظر حتى تظهر التفاصيل
             except Exception as e:
                 logger.warning(f"تعذر الانضمام للقناة {channel_ref}: {e}")
 
-            # جلب الرسالة مع إعادة محاولات
+            # إعادة محاولة جلب الرسالة عدة مرات مع انتظار
             message = None
-            for _ in range(3):
+            for attempt in range(5):
                 try:
                     message = await client.get_messages(entity, ids=msg_id)
                     if isinstance(message, (list, tuple)):
@@ -293,7 +297,8 @@ class PollService(RakshService):
                     if message:
                         break
                 except Exception as e:
-                    await asyncio.sleep(0.8)
+                    logger.warning(f"محاولة جلب الرسالة {attempt+1} فشلت: {e}")
+                    await asyncio.sleep(1.0)
 
             if not message:
                 return False, "الاستفتاء غير موجود"
@@ -301,7 +306,7 @@ class PollService(RakshService):
             option_request = params.get("poll_option", "1")
             option_number = int(option_request)
 
-            # ✅ **1. محاولة التصويت كاستفتاء أصلي (فقط إذا كانت الخيارات متاحة)**
+            # ✅ **1. محاولة التصويت كاستفتاء أصلي**
             poll = getattr(message, "poll", None)
             if poll:
                 answers = getattr(poll, "answers", None)
@@ -315,10 +320,47 @@ class PollService(RakshService):
                             return False, "تعذر تأكيد التصويت"
                     else:
                         return False, f"الخيار {option_request} غير موجود في الاستفتاء"
-                # إذا كانت answers فارغة، ننتقل للأزرار بدلاً من الفشل
+                # **إذا كانت answers فارغة، ننتظر ثم نحاول مجدداً**
+                await asyncio.sleep(2.0)
+                try:
+                    message = await client.get_messages(entity, ids=msg_id)
+                    if isinstance(message, (list, tuple)):
+                        message = message[0] if message else None
+                    if message:
+                        poll = getattr(message, "poll", None)
+                        answers = getattr(poll, "answers", None) if poll else None
+                        if answers:
+                            option = _select_poll_option(answers, option_request)
+                            if option:
+                                success = await _send_vote_and_check(client, entity, msg_id, option)
+                                if success:
+                                    return True, f"✅ تم التصويت من {session['phone_number']}"
+                                else:
+                                    return False, "تعذر تأكيد التصويت"
+                            else:
+                                return False, f"الخيار {option_request} غير موجود في الاستفتاء"
+                except Exception:
+                    pass
 
-            # ✅ **2. إذا لم يكن استفتاء أصلياً أو لا توجد خيارات، نتعامل مع الأزرار**
+            # ✅ **2. إذا لم يظهر استفتاء بخيارات، ننتقل للبحث عن أزرار**
             buttons = getattr(message, "buttons", None) or []
+            if not buttons:
+                # **محاولة البحث في الرسائل المجاورة**
+                for delta in (-1, 1, -2, 2):
+                    try:
+                        neighbor = await client.get_messages(entity, ids=msg_id + delta)
+                        if isinstance(neighbor, (list, tuple)):
+                            neighbor = neighbor[0] if neighbor else None
+                        if neighbor:
+                            neighbor_buttons = getattr(neighbor, "buttons", None) or []
+                            if neighbor_buttons:
+                                message = neighbor
+                                buttons = neighbor_buttons
+                                msg_id = neighbor.id
+                                break
+                    except Exception:
+                        continue
+
             if not buttons:
                 return False, "لا يوجد استفتاء أو أزرار تصويت في هذا المنشور"
 
