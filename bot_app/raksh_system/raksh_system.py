@@ -1306,4 +1306,4 @@ async def cmd_raksh(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📊 الحسابات المتاحة: *{available_sessions}*",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=raksh_menu_kb(user.id == OWNER_ID)
-                      )
+    )
