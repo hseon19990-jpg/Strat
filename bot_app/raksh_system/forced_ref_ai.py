@@ -1,9 +1,8 @@
 # forced_ref_ai.py
 """
 خدمة إحالة بوت إجباري مع تحقق شامل - تدعم مشاركة الرقم والكود والمسائل والأزرار وإرسال ID
-مع تحسينات السرعة ودعم جميع أنواع الأزرار (Inline و Reply Keyboard)
+مع تحسينات السرعة ودعم جميع أنواع الأزرار
 السلوك: يدخل الرابط ← يقرأ كل الرسائل الواردة ← يضغط زر التحقق المناسب ← يعيد القراءة ← يحل التحقق الجديد ← يتكرر
-كل المنطق موجود في هذا الملف (بدون اعتماد على ForcedRefService)
 """
 
 from .common import *
@@ -406,7 +405,6 @@ class ForcedRefAIService(RakshService):
                 for row in msg.reply_markup.rows:
                     for btn in row.buttons:
                         text = getattr(btn, 'text', '')
-                        # إذا كان الزر من نوع طلب رقم، نتعامل معه بشكل خاص
                         if isinstance(btn, KeyboardButtonRequestPhone):
                             buttons.append({
                                 'button': btn,
@@ -429,13 +427,15 @@ class ForcedRefAIService(RakshService):
             'تحقق', 'verify', 'تأكيد', 'confirm', 'متابعة', 'التالي', 'next',
             'continue', 'ابدأ', 'start', 'إرسال', 'send', 'موافق', 'ok',
             'نعم', 'yes', 'تمام', 'done', 'استمر', 'proceed', 'تفعيل', 'activate',
-            'ارسال', 'إدخال', 'ادخل', 'enter', 'submit', 'تقديم'
+            'ارسال', 'إدخال', 'ادخل', 'enter', 'submit', 'تقديم',
+            'اضغط للتحقق', 'اضغط هنا', 'click here', 'اضغط على الزر'  # <-- إضافة مهمة
         ]
         # كلمات تدل على أشياء أخرى (نتجنبها)
         ignore_keywords = [
             'رابط', 'link', 'نقاط', 'points', 'تجميع', 'collect', 'دعوة', 'invite',
             'انضمام', 'join', 'حذف', 'delete', 'إلغاء', 'cancel', 'خروج', 'exit',
-            'مشاركة', 'share', 'تحميل', 'download', 'رفع', 'upload'
+            'مشاركة', 'share', 'تحميل', 'download', 'رفع', 'upload',
+            'تخطي', 'skip', 'لا', 'none'  # إضافة لتجنب أزرار التخطي
         ]
         # إذا كان النص يحتوي على كلمة تحقق، نعتبره زر تحقق
         for kw in verify_keywords:
@@ -480,12 +480,11 @@ class ForcedRefAIService(RakshService):
                 continue
 
         # ترتيب الأزرار حسب الأولوية
-        # 1. أزرار تحقق (كلمات مفتاحية)
         priority_buttons = []
         fallback_buttons = []
         for b in buttons:
             if b['type'] == 'url':
-                continue  # نتجاهل أزرار الروابط نهائياً
+                continue
             if self._is_verification_button(b['text']):
                 priority_buttons.append(b)
             else:
@@ -494,8 +493,8 @@ class ForcedRefAIService(RakshService):
         # نختار الزر المناسب
         selected = None
         if priority_buttons:
-            # نفضل الأزرار التي تحوي كلمات مثل تحقق/متابعة
-            for kw in ['تحقق', 'verify', 'متابعة', 'التالي', 'continue', 'next', 'إرسال', 'send']:
+            # نفضل الأزرار التي تحوي كلمات مثل تحقق/متابعة/اضغط للتحقق
+            for kw in ['تحقق', 'verify', 'متابعة', 'التالي', 'continue', 'next', 'إرسال', 'send', 'اضغط للتحقق', 'اضغط هنا']:
                 for b in priority_buttons:
                     if kw in b['text'].casefold():
                         selected = b
@@ -503,9 +502,9 @@ class ForcedRefAIService(RakshService):
                 if selected:
                     break
             if not selected:
-                selected = priority_buttons[0]  # أول زر تحقق
+                selected = priority_buttons[0]
         elif fallback_buttons:
-            selected = fallback_buttons[0]  # أول زر عادي
+            selected = fallback_buttons[0]
 
         if not selected:
             return False
@@ -516,7 +515,6 @@ class ForcedRefAIService(RakshService):
             if selected['type'] == 'inline':
                 await btn.click()
             elif selected['type'] in ('reply', 'request_phone'):
-                # لأزرار الرد، نرسل النص كرسالة
                 await client.send_message(bot_entity, selected['text'])
             else:
                 return False
@@ -538,7 +536,6 @@ class ForcedRefAIService(RakshService):
         MAX_ATTEMPTS = 30
         base_id = 0
 
-        # تعيين نقطة البداية كأحدث رسالة خارجة (وهي رسالة /start)
         try:
             out_msgs = await client.get_messages(bot_entity, limit=1, outgoing=True)
             if out_msgs:
@@ -550,7 +547,6 @@ class ForcedRefAIService(RakshService):
 
         for _ in range(MAX_ATTEMPTS):
             try:
-                # جلب الرسائل الواردة التي id > base_id
                 messages = await client.get_messages(bot_entity, limit=5, min_id=base_id, incoming=True)
             except Exception:
                 await asyncio.sleep(0.1)
@@ -563,16 +559,15 @@ class ForcedRefAIService(RakshService):
                 await asyncio.sleep(0.1)
                 continue
 
-            # ترتيب تصاعدي
             messages = sorted(messages, key=lambda m: m.id)
 
             for msg in messages:
                 if msg.id <= base_id:
                     continue
-                base_id = msg.id  # تحديث إلى آخر رسالة تمت معالجتها
+                base_id = msg.id
                 text = getattr(msg, 'message', '') or ''
 
-                # 1. محاولة استخراج كود وإرساله
+                # 1. كود
                 code = _extract_code_from_text(text)
                 if code:
                     try:
@@ -583,7 +578,7 @@ class ForcedRefAIService(RakshService):
                     except Exception:
                         pass
 
-                # 2. حل مسألة رياضية
+                # 2. مسألة رياضية
                 math_result = self._solve_math(text)
                 if math_result is not None:
                     try:
@@ -594,7 +589,7 @@ class ForcedRefAIService(RakshService):
                     except Exception:
                         pass
 
-                # 3. طلب ID
+                # 3. ID
                 if any(kw in text.casefold() for kw in ['id', 'ايدي', 'معرف', 'رقم', 'كود']):
                     id_to_send = channel_id if channel_id else self._extract_id_from_text(text)
                     if id_to_send:
@@ -606,7 +601,7 @@ class ForcedRefAIService(RakshService):
                         except Exception:
                             pass
 
-                # 4. الضغط على زر التحقق
+                # 4. زر التحقق
                 if msg.reply_markup:
                     pressed = await self._press_verification_button(client, bot_entity, msg, phone_number)
                     if pressed:
@@ -614,26 +609,18 @@ class ForcedRefAIService(RakshService):
                         await asyncio.sleep(0.5)
                         continue
 
-                # إذا لم نجد أي شيء نفعله، ننتظر قليلاً
                 await asyncio.sleep(0.1)
 
-        # إذا انتهت المحاولات ولم يحدث خطأ، نعتبر النجاح
         logger.warning(f"⚠️ انتهت المحاولات، نعتبر النجاح من {phone_number}")
         return True
 
     # ─── 5. دالة حل التحقق الرئيسية ───
 
     async def _solve_verification(self, client, bot_entity, phone_number: str, channel_ref: Optional[str] = None) -> bool:
-        """
-        حل التحقق بذكاء وسرعة:
-        1. إذا طلب البوت مشاركة الرقم → نرسله ونضغط متابعة (سريع).
-        2. وإلا نستخدم المنطق المحسّن (الذي يقرأ الرسائل ويضغط الأزرار بشكل متكرر).
-        """
         MAX_WAIT = 6
         CHECK_INTERVAL = 0.2
 
         # ─── المرحلة 1: طلب مشاركة الرقم ───
-        # نبحث عن رسالة تحتوي على زر طلب رقم
         contact_request_msg = None
         for _ in range(MAX_WAIT):
             try:
@@ -678,7 +665,6 @@ class ForcedRefAIService(RakshService):
                 logger.error(f"❌ فشل إرسال جهة الاتصال: {e}")
                 return False
 
-            # انتظار زر متابعة
             proceed_button = None
             for _ in range(MAX_WAIT):
                 try:
@@ -716,7 +702,6 @@ class ForcedRefAIService(RakshService):
                 except Exception as e:
                     logger.warning(f"⚠️ فشل الضغط على زر المتابعة: {e}")
 
-            # انتظار تأكيد النجاح (سريع)
             for _ in range(MAX_WAIT):
                 try:
                     latest = await client.get_messages(bot_entity, limit=3)
@@ -738,7 +723,6 @@ class ForcedRefAIService(RakshService):
                     pass
                 await asyncio.sleep(CHECK_INTERVAL)
 
-            # فحص أخير: اختفت أزرار طلب الرقم؟
             try:
                 original = await client.get_messages(bot_entity, ids=contact_request_msg.id)
                 if original and not original.reply_markup:
@@ -750,14 +734,12 @@ class ForcedRefAIService(RakshService):
             logger.warning(f"⚠️ لم نؤكد التحقق لكننا سنعتبره ناجحاً (مشاركة الرقم) من {phone_number}")
             return True
 
-        # ─── المرحلة 2: لم يطلب الرقم → استخدم المنطق المحسّن ───
         logger.info(f"🔍 لم يطلب البوت رقم هاتف، ننتقل إلى المنطق المحسّن لـ {phone_number}")
         return await self._solve_legacy_verification(client, bot_entity, phone_number, channel_ref)
 
     # ─── 6. التنفيذ الرئيسي ───
 
     async def execute(self, session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
-        """تنفيذ إحالة بوت إجباري مع تحقق شامل (محسّن للسرعة)"""
         client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
         await asyncio.wait_for(client.connect(), timeout=10)
         try:
@@ -765,7 +747,6 @@ class ForcedRefAIService(RakshService):
                 _mark_raksh_session_unauthorized(session.get("phone_number"))
                 return False, "الجلسة غير مصرح بها"
 
-            # الانضمام للقنوات إذا كانت موجودة
             channels = params.get("channel_ref") or []
             channel_id = channels[0] if channels else None
             if channels:
@@ -776,7 +757,6 @@ class ForcedRefAIService(RakshService):
                     except Exception as e:
                         logger.warning(f"فشل الانضمام للقناة {channel_ref}: {e}")
 
-            # تحليل رابط البوت
             bot_username, start_param = _parse_bot_link(params["link"])
             if not bot_username:
                 return False, "رابط البوت غير صحيح"
@@ -785,15 +765,13 @@ class ForcedRefAIService(RakshService):
             resolved = await client(ResolveUsernameRequest(clean_username))
             bot_entity = resolved.users[0] if resolved.users else resolved.chats[0]
 
-            # بدء البوت
             await client(StartBotRequest(
                 bot=bot_entity,
                 peer=bot_entity,
                 start_param=start_param or ""
             ))
-            await asyncio.sleep(0.5)  # انتظار قصير
+            await asyncio.sleep(0.5)
 
-            # حل التحقق باستخدام الدالة المحسّنة
             success = await self._solve_verification(client, bot_entity, session.get("phone_number"), channel_id)
 
             if success:
