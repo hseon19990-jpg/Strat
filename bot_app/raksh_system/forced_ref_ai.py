@@ -422,15 +422,12 @@ class ForcedRefAIService(RakshService):
         MAX_WAIT = 12
         CHECK_INTERVAL = 1.0
 
-        # بعض البوتات ترسل زرًا أوليًا، وبعد الضغط عليه فقط ترسل التحقق
-        # الحقيقي. نحتفظ برسالة الزر حتى لا نعيد تحليلها كأنها تحدٍ نصي.
+        # بعض البوتات ترسل زرًا أوليًا، وبعد الضغط عليه تعدّل نفس الرسالة
+        # وتضع فيها التحقق الحقيقي، بينما ترسل بوتات أخرى رسالة جديدة.
+        # لذلك نعيد قراءة المحادثة بعد الضغط ولا نتجاهل رقم الرسالة القديم:
+        # الرقم نفسه قد يحمل محتوى جديدًا بعد التعديل.
         initial_button_message_id = await self._click_initial_verification_button(
             client, bot_entity
-        )
-        ignored_message_ids = (
-            {initial_button_message_id}
-            if initial_button_message_id is not None
-            else set()
         )
         if initial_button_message_id is not None:
             await asyncio.sleep(1.0)
@@ -568,7 +565,6 @@ class ForcedRefAIService(RakshService):
             client,
             bot_entity,
             phone_number,
-            ignored_message_ids=ignored_message_ids,
         )
 
     async def _solve_legacy_verification(
@@ -585,6 +581,8 @@ class ForcedRefAIService(RakshService):
         max_attempts = 30
         base_id = 0
         processed_ids = set()
+        # أبقينا الوسيط للتوافق مع أي استدعاء قديم، لكن لا نتجاهل رسالة
+        # الزر هنا؛ Telegram قد يعدّلها ويضع فيها التحدي الثاني.
         ignored_message_ids = set(ignored_message_ids or ())
 
         try:
