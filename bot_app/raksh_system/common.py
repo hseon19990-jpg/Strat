@@ -115,7 +115,7 @@ def get_raksh_hourly_remaining(user_id: int) -> int:
         return max(0, RAKSH_MAX_EXECUTIONS_PER_HOUR - used)
     except Exception:
         logger.exception(f"فشل قراءة حد التنفيذ للمستخدم {user_id}")
-        return 0
+        return 2_147_483_647
 
 def get_raksh_daily_remaining(user_id: int) -> int:
     """عدد التنفيذات المتبقية خلال اليوم"""
@@ -134,12 +134,13 @@ def get_raksh_daily_remaining(user_id: int) -> int:
         return max(0, RAKSH_MAX_EXECUTIONS_PER_DAY - used)
     except Exception:
         logger.exception(f"فشل قراءة الحد اليومي للمستخدم {user_id}")
-        return RAKSH_MAX_EXECUTIONS_PER_DAY
+        return 2_147_483_647
 
 def _get_sessions_for_service(service_type: str) -> List[Dict]:
     """
     جلب الجلسات المناسبة لنوع الخدمة مع التخزين المؤقت
-    ملاحظة: تم إزالة شرط forced_ref_excluded لضمان استخدام جميع الحسابات المتاحة
+    ملاحظة: تم إزالة كل الشروط المقيدة (forced_ref_excluded, deleted_at, raksh_only)
+    لضمان استخدام جميع الحسابات المتاحة التي لديها جلسة صالحة.
     """
     cache_key = f"sessions_{service_type}"
     if cache_key in _RAKSH_SESSION_CACHE:
@@ -153,8 +154,6 @@ def _get_sessions_for_service(service_type: str) -> List[Dict]:
             FROM number_stock
             WHERE session_string IS NOT NULL
               AND BTRIM(session_string) <> ''
-              AND deleted_at IS NULL
-            ORDER BY last_authorized DESC NULLS LAST, id ASC
         """
         rows = c.execute(query).fetchall()
         sessions = [dict(row) for row in rows]
@@ -178,7 +177,7 @@ def _mark_raksh_session_unauthorized(phone_number: str) -> None:
         with db_conn() as c:
             c.execute(
                 "UPDATE number_stock SET last_authorized=FALSE "
-                "WHERE phone_number=%s AND deleted_at IS NULL",
+                "WHERE phone_number=%s",
                 (phone_number,)
             )
         logger.warning(f"🔒 جلسة غير مصرح بها: {phone_number}")
