@@ -137,7 +137,10 @@ def get_raksh_daily_remaining(user_id: int) -> int:
         return RAKSH_MAX_EXECUTIONS_PER_DAY
 
 def _get_sessions_for_service(service_type: str) -> List[Dict]:
-    """جلب الجلسات المناسبة لنوع الخدمة مع التخزين المؤقت"""
+    """
+    جلب الجلسات المناسبة لنوع الخدمة مع التخزين المؤقت
+    ملاحظة: تم إزالة شرط forced_ref_excluded لضمان استخدام جميع الحسابات المتاحة
+    """
     cache_key = f"sessions_{service_type}"
     if cache_key in _RAKSH_SESSION_CACHE:
         cache_time = _RAKSH_SESSION_CACHE_TIME.get(cache_key, 0)
@@ -151,7 +154,6 @@ def _get_sessions_for_service(service_type: str) -> List[Dict]:
             WHERE session_string IS NOT NULL
               AND BTRIM(session_string) <> ''
               AND deleted_at IS NULL
-              AND forced_ref_excluded IS NOT TRUE
             ORDER BY last_authorized DESC NULLS LAST, id ASC
         """
         rows = c.execute(query).fetchall()
