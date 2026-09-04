@@ -720,11 +720,54 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
         if data.startswith("os_panel:") and is_own:
             panel = int(data.split(":")[1])
             context.user_data["new_svc_panel"] = panel
+            site_name = PANEL_MAP.get(panel, PANEL_MAP[1])["name"]
+            platform = context.user_data.get("new_svc_platform", "tg")
+            category = context.user_data.get("new_svc_cat", "other")
+            await q.edit_message_text(
+                f"🌐 *الموقع:* {site_name}\n"
+                f"📱 *المنصة:* {PLATFORM_LABEL_MAP.get(platform, platform)}\n"
+                f"📂 *الفئة:* {CATEGORY_MAP.get(category, category)}\n\n"
+                "اختر طريقة الإضافة:",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton(
+                        "📥 جلب الخدمات من الموقع تلقائياً",
+                        callback_data=f"os_import_panel:{panel}",
+                    )],
+                    [InlineKeyboardButton(
+                        "✍️ إضافة خدمة يدوياً",
+                        callback_data=f"os_manual_panel:{panel}",
+                    )],
+                    [InlineKeyboardButton(
+                        "🔙 رجوع",
+                        callback_data=f"os_cat:{category}",
+                    )],
+                ]),
+            )
+            return
+
+        if data.startswith("os_manual_panel:") and is_own:
+            panel = int(data.split(":")[1])
+            context.user_data["new_svc_panel"] = panel
             context.user_data["state"] = "os_await_api_id"
             site_name = PANEL_MAP.get(panel, PANEL_MAP[1])["name"]
             await q.edit_message_text(
                 f"🌐 الموقع: {site_name}\n\nأرسل *رقم الخدمة* في هذا الموقع:",
                 parse_mode=ParseMode.MARKDOWN
+            )
+            return
+
+        if data.startswith("os_import_panel:") and is_own:
+            panel = int(data.split(":")[1])
+            platform = context.user_data.get("new_svc_platform", "tg")
+            category = context.user_data.get("new_svc_cat", "other")
+            await _begin_import_services(
+                update,
+                context,
+                q,
+                panel,
+                platform,
+                category,
             )
             return
 
