@@ -582,6 +582,237 @@ async def cmd_test_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ═══ استيراد الخدمات من المواقع ═══
 # ════════════════════════════════════════════════════════════
 
+_IMPORT_PLATFORM_KEYWORDS = {
+    "tg": ("telegram", "t.me", "tg", "تيليجرام", "تلغرام"),
+    "ig": ("instagram", "insta", "انستغرام", "انستجرام"),
+    "tt": ("tiktok", "tik tok", "تيك توك"),
+    "wa": ("whatsapp", "whats app", "واتساب"),
+    "fb": ("facebook", "face book", "فيس بوك", "فيسبوك"),
+    "yt": ("youtube", "you tube", "يوتيوب"),
+    "sc": ("snapchat", "snap", "سناب"),
+    "tw": ("twitter", "x.com", "تويتر"),
+}
+
+_IMPORT_CATEGORY_KEYWORDS = {
+    "followers": ("followers", "follower", "subscribers", "subscriber", "members", "member", "متابع", "مشترك", "عضو"),
+    "views": ("views", "view", "visits", "visit", "impressions", "مشاهد", "زيار"),
+    "interactions": ("comments", "comment", "likes", "like", "reactions", "reaction", "engagement", "تعليق", "إعجاب", "تفاعل"),
+    "story_views": ("story", "stories", "ستوري", "قصة"),
+    "start_bot": ("start", "bot", "بدء", "بوت"),
+    "boost": ("boost", "تعزيز"),
+    "post_stars": ("stars", "star", "نجوم", "نجمة"),
+}
+
+_IMPORT_TRANSLATIONS = {
+    "followers": "متابعون",
+    "follower": "متابع",
+    "subscribers": "مشتركون",
+    "subscriber": "مشترك",
+    "members": "أعضاء",
+    "member": "عضو",
+    "premium": "مميزون",
+    "views": "مشاهدات",
+    "view": "مشاهدة",
+    "visits": "زيارات",
+    "visit": "زيارة",
+    "impressions": "ظهور",
+    "likes": "إعجابات",
+    "like": "إعجاب",
+    "comments": "تعليقات",
+    "comment": "تعليق",
+    "reactions": "تفاعلات",
+    "reaction": "تفاعل",
+    "engagement": "تفاعل",
+    "telegram": "تيليجرام",
+    "instagram": "انستغرام",
+    "tiktok": "تيك توك",
+    "whatsapp": "واتساب",
+    "facebook": "فيس بوك",
+    "youtube": "يوتيوب",
+    "snapchat": "سناب شات",
+    "twitter": "تويتر",
+    "automatic": "تلقائي",
+    "instant": "فوري",
+    "fast": "سريع",
+    "quality": "الجودة",
+    "speed": "السرعة",
+    "refill": "إعادة التعبئة",
+    "drop": "السقوط",
+    "low": "منخفض",
+    "high": "مرتفع",
+    "future posts": "المنشورات المستقبلية",
+    "posts": "المنشورات",
+    "post": "منشور",
+    "story": "ستوري",
+    "stories": "ستوريات",
+    "stars": "نجوم",
+    "star": "نجمة",
+    "bot": "بوت",
+    "start": "بدء",
+    "boost": "تعزيز",
+}
+
+def _import_service_text(service: dict) -> str:
+    raw_name = str(service.get("name", "") or service.get("type", "")).strip()
+    try:
+        rate = float(service.get("rate", 0) or 0)
+    except (TypeError, ValueError):
+        rate = 0.0
+    cleaned = _strip_price_from_desc(raw_name, rate * 100000)
+    return cleaned or raw_name or "خدمة جديدة"
+
+def _fallback_service_name_arabic(text: str) -> str:
+    result = str(text or "").strip()
+    for source, target in sorted(_IMPORT_TRANSLATIONS.items(), key=lambda item: -len(item[0])):
+        result = re.sub(rf"(?<![A-Za-z]){re.escape(source)}(?![A-Za-z])", target, result, flags=re.IGNORECASE)
+    result = re.sub(r"\s{2,}", " ", result).strip(" -|/،,;:")
+    return result or "خدمة جديدة"
+
+def _translate_service_names_with_ai(names: list[str]) -> dict[str, str]:
+    """يترجم أسماء الخدمات دفعة واحدة، مع بديل محلي عند غياب الذكاء الاصطناعي."""
+    unique_names = list(dict.fromkeys(name for name in names if name))
+    translated = {name: _fallback_service_name_arabic(name) for name in unique_names}
+    if not unique_names:
+        return translated
+
+    providers = [
+        (
+            "gemini",
+            os.environ.get("GEMINI_API_KEY", ""),
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+            "gemini-2.0-flash",
+        ),
+        (
+            "openai",
+            os.environ.get("GROQ_API_KEY", ""),
+            "https://api.groq.com/openai/v1/chat/completions",
+            os.environ.get("GROQ_TEXT_MODEL", "llama-3.1-8b-instant"),
+        ),
+        (
+            "openai",
+            os.environ.get("DEEPSEEK_API_KEY", ""),
+            "https://api.deepseek.com/chat/completions",
+            "deepseek-chat",
+        ),
+    ]
+    for start in range(0, len(unique_names), 25):
+        batch = unique_names[start:start + 25]
+        payload_names = [{"id": index, "name": name} for index, name in enumerate(batch)]
+        prompt = (
+            "ترجم أسماء خدمات التسويق التالية إلى العربية ترجمة قصيرة وواضحة. "
+            "أعد JSON فقط على شكل مصفوفة فيها id وname_ar، وحافظ على الأرقام "
+            "والرموز بين الأقواس ولا تضف أسعاراً أو شرحاً جديداً.\n"
+            + json.dumps(payload_names, ensure_ascii=False)
+        )
+        for provider_type, key, url, model in providers:
+            if not key:
+                continue
+            try:
+                if provider_type == "gemini":
+                    response = requests.post(
+                        url,
+                        params={"key": key},
+                        headers={"Content-Type": "application/json"},
+                        json={
+                            "contents": [{"parts": [{"text": (
+                                "أنت مترجم خدمات SMM إلى العربية. أعد JSON فقط.\n" + prompt
+                            )}]}],
+                            "generationConfig": {"temperature": 0.1},
+                        },
+                        timeout=30,
+                    )
+                else:
+                    response = requests.post(
+                        url,
+                        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                        json={
+                            "model": model,
+                            "temperature": 0.1,
+                            "messages": [
+                                {"role": "system", "content": "أنت مترجم خدمات SMM إلى العربية. أعد JSON فقط."},
+                                {"role": "user", "content": prompt},
+                            ],
+                        },
+                        timeout=30,
+                    )
+                if response.status_code != 200:
+                    continue
+                response_data = response.json()
+                if provider_type == "gemini":
+                    content = (
+                        response_data.get("candidates", [{}])[0]
+                        .get("content", {})
+                        .get("parts", [{}])[0]
+                        .get("text", "")
+                    )
+                else:
+                    content = response_data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content.strip(), flags=re.IGNORECASE)
+                parsed = json.loads(content)
+                if isinstance(parsed, dict):
+                    parsed = [{"id": index, "name_ar": value} for index, value in parsed.items()]
+                for item in parsed if isinstance(parsed, list) else []:
+                    index = int(item.get("id", -1))
+                    value = str(item.get("name_ar", "")).strip()
+                    if 0 <= index < len(batch) and value:
+                        translated[batch[index]] = value
+                break
+            except Exception as exc:
+                logger.warning("تعذر ترجمة دفعة أسماء الخدمات عبر الذكاء الاصطناعي: %s", type(exc).__name__)
+    return translated
+
+def _prepare_import_services(services: list[dict]) -> list[dict]:
+    names = []
+    for service in services:
+        cleaned = _import_service_text(service)
+        service["source_name"] = str(service.get("name", "") or cleaned)
+        service["clean_name"] = cleaned
+        names.append(cleaned)
+    translations = _translate_service_names_with_ai(names)
+    for service in services:
+        service["name_ar"] = translations.get(service["clean_name"], service["clean_name"])
+    return services
+
+def _service_matches_platform(service: dict, platform: str) -> bool:
+    if platform == "ALL":
+        return True
+    haystack = " ".join(str(service.get(key, "") or "") for key in ("name", "type", "category")).casefold()
+    return any(keyword.casefold() in haystack for keyword in _IMPORT_PLATFORM_KEYWORDS.get(platform, ()))
+
+def _service_matches_category(service: dict, category: str) -> bool:
+    if category == "other":
+        haystack = " ".join(str(service.get(key, "") or "") for key in ("name", "type", "category")).casefold()
+        return not any(keyword.casefold() in haystack for values in _IMPORT_CATEGORY_KEYWORDS.values() for keyword in values)
+    haystack = " ".join(str(service.get(key, "") or "") for key in ("name", "type", "category")).casefold()
+    return any(keyword.casefold() in haystack for keyword in _IMPORT_CATEGORY_KEYWORDS.get(category, ()))
+
+async def _begin_import_services(update, context, q, panel: int, platform: str, category: str | None = None):
+    await q.answer("⏳ جاري جلب الخدمات وترجمة أسمائها...", show_alert=False)
+    services = await asyncio.to_thread(smm_services_list, panel, True)
+    if not services:
+        await q.edit_message_text(
+            "❌ تعذر جلب الخدمات من الموقع.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 رجوع", callback_data=f"import_services:panel:{panel}")
+            ]]),
+        )
+        return
+
+    services = [service for service in services if _service_matches_platform(service, platform)]
+    if category:
+        category_services = [service for service in services if _service_matches_category(service, category)]
+        if category_services:
+            services = category_services
+
+    services = await asyncio.to_thread(_prepare_import_services, services)
+    context.user_data["import_services_list"] = services
+    context.user_data["import_selected_services"] = []
+    context.user_data["import_page"] = 0
+    context.user_data["import_panel"] = panel
+    context.user_data["import_platform"] = platform
+    context.user_data["import_target_category"] = category
+    await show_import_services_list(update, context, q, panel)
+
 async def cmd_import_services(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """أمر المالك: /import_services - استيراد خدمات من مواقع SMM"""
     user = update.effective_user
@@ -638,47 +869,8 @@ async def handle_import_services_callback(update, context, q, data, user, is_own
         platform = data.split(":")[2]
         panel = context.user_data.get("import_panel", 1)
         context.user_data["import_platform"] = platform
-        
-        # جلب جميع الخدمات من الموقع
-        await q.answer("⏳ جاري جلب الخدمات من الموقع...", show_alert=False)
-        
-        services = await asyncio.to_thread(smm_services_list, panel, True)
-        if not services:
-            await q.edit_message_text(
-                "❌ تعذر جلب الخدمات من الموقع.",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🔙 رجوع", callback_data="import_services:panel:" + str(panel))
-                ]])
-            )
-            return
-
-        # تصفية الخدمات حسب المنصة
-        if platform != "ALL":
-            platform_keywords = {
-                "tg": ["telegram", "t.me", "tg"],
-                "ig": ["instagram", "insta"],
-                "tt": ["tiktok", "tik"],
-                "wa": ["whatsapp", "whats"],
-                "fb": ["facebook", "fb"],
-                "yt": ["youtube", "yt"],
-                "sc": ["snapchat", "snap"],
-                "tw": ["twitter", "tw"],
-            }
-            keywords = platform_keywords.get(platform, [])
-            filtered_services = []
-            for service in services:
-                service_name = str(service.get("name", "")).lower()
-                if any(kw in service_name for kw in keywords):
-                    filtered_services.append(service)
-            services = filtered_services
-
-        # تخزين الخدمات في user_data
-        context.user_data["import_services_list"] = services
-        context.user_data["import_selected_services"] = []
-        context.user_data["import_page"] = 0
-        
-        # عرض قائمة الخدمات مع أزرار الاختيار
-        await show_import_services_list(update, context, q, panel)
+        context.user_data.pop("import_target_category", None)
+        await _begin_import_services(update, context, q, panel, platform)
         return
 
     # ─── اختيار خدمة من القائمة ───
@@ -740,6 +932,7 @@ async def handle_import_services_callback(update, context, q, data, user, is_own
         context.user_data.pop("import_selected_services", None)
         context.user_data.pop("import_panel", None)
         context.user_data.pop("import_platform", None)
+        context.user_data.pop("import_target_category", None)
         context.user_data.pop("import_page", None)
         await q.edit_message_text(
             "❌ تم إلغاء استيراد الخدمات.",
@@ -764,12 +957,21 @@ async def handle_import_services_callback(update, context, q, data, user, is_own
             return
         
         service = services[service_index]
-        current_name = str(service.get("name", ""))
+        current_name = str(service.get("name_ar") or service.get("clean_name") or service.get("name", ""))
         await q.edit_message_text(
             f"✏️ *تعديل اسم الخدمة*\n\n"
             f"الاسم الحالي:\n{current_name}\n\n"
             "أرسل الاسم الجديد:",
             parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    if data == "import_services:resume":
+        await show_import_services_list(
+            update,
+            context,
+            q,
+            context.user_data.get("import_panel", 1),
         )
         return
 
@@ -779,6 +981,7 @@ async def show_import_services_list(update, context, q, panel):
     services = context.user_data.get("import_services_list", [])
     selected = context.user_data.get("import_selected_services", [])
     platform = context.user_data.get("import_platform", "ALL")
+    target_category = context.user_data.get("import_target_category")
     
     if not services:
         await q.edit_message_text(
@@ -799,20 +1002,30 @@ async def show_import_services_list(update, context, q, panel):
     start = current_page * page_size
     end = min(start + page_size, total_services)
     
+    category_line = (
+        f"📂 الفئة: {CATEGORY_MAP.get(target_category, target_category)}\n"
+        if target_category
+        else ""
+    )
     lines = [
-        f"📋 *الخدمات المتاحة* ({total_services} خدمة)\n"
-        f"📍 المنصة: {platform}\n"
-        f"📄 الصفحة {current_page + 1}/{total_pages}\n"
-        f"✅ المحددة: {len(selected)}\n\n"
-        "اضغط على الخدمة لتحديدها أو إلغاء تحديدها:"
+        (
+            f"📋 *الخدمات المتاحة* ({total_services} خدمة)\n"
+            f"📍 المنصة: {platform}\n"
+            f"{category_line}"
+            f"📄 الصفحة {current_page + 1}/{total_pages}\n"
+            f"✅ المحددة: {len(selected)}\n\n"
+            "اضغط على الخدمة لتحديدها أو إلغاء تحديدها:"
+        )
     ]
     
     buttons = []
     for i in range(start, end):
         service = services[i]
-        name = str(service.get("name", ""))
-        # تنظيف الاسم
-        cleaned_name = _strip_price_from_desc(name) or name
+        cleaned_name = str(
+            service.get("name_ar")
+            or service.get("clean_name")
+            or service.get("name", "")
+        )
         # اختصار الاسم الطويل
         if len(cleaned_name) > 40:
             cleaned_name = cleaned_name[:37] + "..."
@@ -822,7 +1035,11 @@ async def show_import_services_list(update, context, q, panel):
             InlineKeyboardButton(
                 f"{marked} {cleaned_name}",
                 callback_data=f"import_services:toggle:{i}"
-            )
+            ),
+            InlineKeyboardButton(
+                "✏️",
+                callback_data=f"import_services:edit_name:{i}",
+            ),
         ])
     
     # أزرار التنقل
@@ -865,8 +1082,11 @@ async def show_import_services_confirmation(update, context, q):
         if index >= len(services):
             continue
         service = services[index]
-        name = str(service.get("name", ""))
-        cleaned_name = _strip_price_from_desc(name) or name
+        cleaned_name = str(
+            service.get("name_ar")
+            or service.get("clean_name")
+            or service.get("name", "")
+        )
         rate = float(service.get("rate", 0) or 0)
         min_qty = int(service.get("min", 0) or 0)
         max_qty = int(service.get("max", 0) or 0)
@@ -896,6 +1116,7 @@ async def import_selected_services(update, context, q):
     services = context.user_data.get("import_services_list", [])
     panel = context.user_data.get("import_panel", 1)
     platform = context.user_data.get("import_platform", "ALL")
+    target_category = context.user_data.get("import_target_category")
     
     if not selected:
         return
@@ -910,42 +1131,56 @@ async def import_selected_services(update, context, q):
         
         try:
             api_id = int(service.get("service", 0))
-            name = str(service.get("name", ""))
-            cleaned_name = _strip_price_from_desc(name) or name
+            cleaned_name = str(
+                service.get("name_ar")
+                or service.get("clean_name")
+                or service.get("name", "")
+            ).strip()
             rate = float(service.get("rate", 0) or 0)
             min_qty = int(service.get("min", 0) or 0)
             max_qty = int(service.get("max", 0) or 0)
-            desc = str(service.get("type", ""))
+            desc = str(service.get("type", "") or service.get("source_name", ""))
             
             # حساب السعر بالنقاط: 0.01 دولار = 1000 نقطة
             price_per_1000 = rate * 100000
             
-            # تحديد الفئة حسب المنصة
-            category = "other"
-            platform_keywords = {
-                "followers": ["followers", "subscribers", "members"],
-                "views": ["views", "visits", "impressions"],
-                "interactions": ["comments", "likes", "reactions"],
-                "story_views": ["story", "stories"],
-                "start_bot": ["start", "bot"],
-                "boost": ["boost"],
-                "post_stars": ["stars", "star"],
-            }
-            service_name_lower = cleaned_name.lower()
-            for cat, keywords in platform_keywords.items():
-                if any(kw in service_name_lower for kw in keywords):
-                    category = cat
-                    break
+            # استخدم الفئة التي اختارها المالك، أو خمّنها في مسار الاستيراد العام.
+            category = target_category or "other"
+            if not target_category:
+                service_name_lower = " ".join(
+                    str(service.get(key, "") or "")
+                    for key in ("name", "type", "category")
+                ).casefold()
+                for cat, keywords in _IMPORT_CATEGORY_KEYWORDS.items():
+                    if any(keyword.casefold() in service_name_lower for keyword in keywords):
+                        category = cat
+                        break
             
-            # إضافة الخدمة إلى قاعدة البيانات
             with db_conn() as c:
-                c.execute(
-                    """
-                    INSERT INTO services (category, api_service_id, panel, platform, name_ar, description, min_qty, max_qty, price_per_point)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    (category, api_id, panel, platform, cleaned_name, desc, min_qty, max_qty, price_per_1000)
-                )
+                existing = c.execute(
+                    "SELECT id FROM services WHERE panel=%s AND api_service_id=%s",
+                    (panel, api_id),
+                ).fetchone()
+                if existing:
+                    c.execute(
+                        """
+                        UPDATE services
+                        SET category=%s, platform=%s, name_ar=%s, description=%s,
+                            min_qty=%s, max_qty=%s, price_per_point=%s, active=TRUE
+                        WHERE id=%s
+                        """,
+                        (category, platform, cleaned_name, desc, min_qty, max_qty, price_per_1000, existing["id"]),
+                    )
+                else:
+                    c.execute(
+                        """
+                        INSERT INTO services
+                            (category, api_service_id, panel, platform, name_ar, description,
+                             min_qty, max_qty, price_per_point)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (category, api_id, panel, platform, cleaned_name, desc, min_qty, max_qty, price_per_1000),
+                    )
             added += 1
             
         except Exception as e:
@@ -956,6 +1191,7 @@ async def import_selected_services(update, context, q):
     context.user_data.pop("import_selected_services", None)
     context.user_data.pop("import_panel", None)
     context.user_data.pop("import_platform", None)
+    context.user_data.pop("import_target_category", None)
     context.user_data.pop("import_page", None)
     
     result_text = f"✅ *تمت إضافة {added} خدمة بنجاح!*\n"
@@ -990,15 +1226,20 @@ async def handle_import_services_text(update, context):
             return True
         
         # تحديث اسم الخدمة في القائمة
-        services[service_index]["name"] = text.strip()
+        new_name = text.strip()
+        services[service_index]["name_ar"] = new_name
+        services[service_index]["clean_name"] = new_name
         context.user_data["import_services_list"] = services
         context.user_data.pop("edit_import_service_index", None)
         context.user_data["state"] = "main_menu"
         
         await update.message.reply_text(
-            f"✅ تم تعديل الاسم إلى: {text.strip()}",
+            f"✅ تم تعديل الاسم إلى: {new_name}",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔙 رجوع للقائمة", callback_data="import_services:panel:" + str(context.user_data.get("import_panel", 1)))
+                InlineKeyboardButton(
+                    "🔙 رجوع لقائمة الخدمات",
+                    callback_data="import_services:resume",
+                )
             ]])
         )
         return True
