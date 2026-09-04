@@ -139,8 +139,8 @@ class VotesAIService(RakshService):
                 return True
             context.user_data["raksh_quantity"] = quantity
             context.user_data["raksh_step"] = "payment"
-            points_cost = self.get_total(quantity, "points")
-            stars_cost = self.get_total(quantity, "stars")
+            points_cost = self.get_total(quantity, "points", len(context.user_data.get("raksh_channels") or []))
+            stars_cost = self.get_total(quantity, "stars", len(context.user_data.get("raksh_channels") or []))
             await update.message.reply_text(
                 f"📋 *تفاصيل الطلب*\n\n📢 القنوات الإجبارية: {len(context.user_data.get('raksh_channels', []))} قناة\n🔗 رابط التصويت: `{context.user_data['raksh_link']}`\n🔢 العدد: {quantity}\n\n💳 *اختر طريقة الدفع:*",
                 parse_mode=ParseMode.MARKDOWN,
@@ -182,7 +182,7 @@ class VotesAIService(RakshService):
             if quantity > self.get_request_limit(user.id):
                 await query.edit_message_text("⚠️ لا يمكن قبول هذا الطلب حالياً. حاول لاحقاً.", reply_markup=raksh_menu_kb(is_own))
                 return True
-            total_cost = self.get_total(quantity, payment_method)
+            total_cost = self.get_total(quantity, payment_method, len(context.user_data.get("raksh_channels") or []))
             await query.edit_message_text(
                 f"📋 *تأكيد الطلب*\n\n📢 القنوات الإجبارية: {len(context.user_data.get('raksh_channels', []))} قناة\n🔗 رابط التصويت: `{context.user_data.get('raksh_link', '')}`\n🔢 العدد: {quantity}\n💳 طريقة الدفع: {'💰 نقاط' if payment_method == 'points' else '⭐ نجوم'}\n💰 التكلفة: {total_cost} {'نقطة' if payment_method == 'points' else 'نجمة'}\n\n*هل تريد تأكيد الطلب؟*",
                 parse_mode=ParseMode.MARKDOWN,
@@ -206,7 +206,7 @@ class VotesAIService(RakshService):
             if quantity > self.get_request_limit(user.id):
                 await query.edit_message_text("⚠️ لا يمكن قبول هذا الطلب حالياً. حاول لاحقاً.", reply_markup=raksh_menu_kb(is_own))
                 return True
-            total_cost = self.get_total(quantity, payment_method)
+            total_cost = self.get_total(quantity, payment_method, len(context.user_data.get("raksh_channels") or []))
 
             if payment_method == "points":
                 if not deduct_points(user.id, total_cost):
@@ -243,7 +243,7 @@ class VotesAIService(RakshService):
             if is_first and params.get("channel_ref"):
                 for channel_ref in params["channel_ref"]:
                     try:
-                        await _join_channel_and_schedule_leave(client, channel_ref)
+                        await _join_channel_and_schedule_leave(client, channel_ref, session.get("phone_number"))
                         await asyncio.sleep(0.5)
                     except Exception as e:
                         logger.warning(f"فشل الانضمام للقناة {channel_ref}: {e}")
