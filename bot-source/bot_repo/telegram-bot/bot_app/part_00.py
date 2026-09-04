@@ -2427,108 +2427,163 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                                 result.append(ch)
                         return result
 
-                    direct_chosen = None
-                    # نمط: "correct emoji: X" أو "اختر الإيموجي: X" أو "select emoji X"
-                    is_emoji_select = (
-                        "correct emoji" in msg_text_lower
-                        or "select emoji" in msg_text_lower
-                        or "choose emoji" in msg_text_lower
-                        or "pick emoji" in msg_text_lower
-                        or "اختر الإيموجي" in msg_text
-                        or "الإيموجي الصحيح" in msg_text
+                    # ── الذكاء الاصطناعي أولاً، ثم تجربة الأزرار بالتتابع ──
+                    # لا نأخذ أول إيموجي من نص التعليمات: قد يكون إيموجياً زخرفياً
+                    # مثل 🤖 في عبارة "لست روبوت" بينما الرمز المطلوب يأتي لاحقاً.
+                    all_emoji_btns = all(
+                        bool(_extract_emojis_from_text(lbl)) for lbl in btn_labels
                     )
-                    if is_emoji_select:
-                        msg_emojis = _extract_emojis_from_text(msg_text)
-                        if msg_emojis:
-                            target_emoji = msg_emojis[0]
-                            # ابحث عن الزر المطابق
-                            for lbl, btn in btn_objects.items():
-                                if target_emoji in lbl:
-                                    direct_chosen = btn
-                                    logger.info(f"🎯 كشف مباشر للإيموجي '{target_emoji}' ({phone})")
-                                    break
-                            # إذا لم نجد مطابقة مباشرة، حاول باستخراج إيموجيات الأزرار
-                            if not direct_chosen:
-                                for lbl, btn in btn_objects.items():
-                                    btn_emojis = _extract_emojis_from_text(lbl)
-                                    if btn_emojis and btn_emojis[0] == target_emoji:
-                                        direct_chosen = btn
-                                        logger.info(f"🎯 كشف إيموجي بمطابقة الكود '{target_emoji}' ({phone})")
-                                        break
-
-                    if direct_chosen:
-                        processed_ids.add(msg_id)
-                        await direct_chosen.click()
-                        result, msgs = await _wait_and_check()
-                        detail = f"ضغط إيموجي مباشر: {getattr(direct_chosen, 'text', '')}"
-                        all_details.append(detail)
-                        if result == "success":
-                            return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
-                        elif result == "fail":
-                            break  # حاول مجدداً
-                        else:
-                            return True, f"ضغط الإيموجي | {' | '.join(all_details)}"
-                    else:
-                        # ── الوضع الاحتياطي: استخدم Gemini AI ────────────────
-                        # إذا كانت الأزرار كلها إيموجيات، وضّح ذلك لـ Gemini
-                        all_emoji_btns = all(
-                            bool(_extract_emojis_from_text(lbl)) for lbl in btn_labels
+                    if all_emoji_btns:
+                        prompt = (
+                            "Telegram bot button CAPTCHA.\n"
+                            f"Instruction: {msg_text}\n\n"
+                            "Important: ignore decorative emojis in the instruction "
+                            "(for example the robot emoji in 'not a robot'). "
+                            "Find the target emoji after phrases such as 'click the symbol' "
+                            "or 'اضغط على الرمز', then choose ONLY the matching button "
+                            "from the available buttons.\n\n"
+                            "Available emoji buttons:\n"
+                            + "\n".join(f"- {b}" for b in btn_labels)
+                            + "\n\nReply with ONLY the exact emoji character."
                         )
-                        if all_emoji_btns:
-                            prompt = (
-                                f"Telegram bot verification:\n{msg_text}\n\n"
-                                "Available emoji buttons:\n"
-                                + "\n".join(f"- {b}" for b in btn_labels)
-                                + "\n\nWhich emoji button should be clicked? "
-                                "Reply with ONLY the exact emoji character, nothing else."
-                            )
-                        else:
-                            prompt = (
-                                f"بوت تيليغرام يطلب التحقق:\n{msg_text}\n\n"
-                                "الأزرار المتاحة:\n"
-                                + "\n".join(f"- {b}" for b in btn_labels)
-                                + "\n\nأي زر يجب الضغط عليه؟ أجب بنص الزر فقط كما هو بالضبط."
-                            )
-                        answer = await _gemini_text(prompt)
-                        if answer:
-                            logger.info(f"🤖 AI اختار زر → '{answer}' ({phone})")
-                            chosen = None
-                            a_clean = answer.strip()
-                            a_lower = a_clean.lower()
-                            # مطابقة دقيقة أولاً
-                            for label, btn in btn_objects.items():
-                                if label.strip() == a_clean:
-                                    chosen = btn
-                                    break
-                            # مطابقة بالإيموجي (إذا أرجع Gemini نصاً يحتوي إيموجي)
-                            if not chosen:
-                                ans_emojis = _extract_emojis_from_text(a_clean)
-                                if ans_emojis:
-                                    for label, btn in btn_objects.items():
-                                        if ans_emojis[0] in label:
-                                            chosen = btn
-                                            break
-                            # مطابقة نصية احتياطية
-                            if not chosen:
+                    else:
+                        prompt = (
+                            f"بوت تيليغرام يطلب التحقق:\n{msg_text}\n\n"
+                            "الأزرار المتاحة:\n"
+                            + "\n".join(f"- {b}" for b in btn_labels)
+                            + "\n\nاختر الزر الذي يطابق المطلوب، وأجب بنص الزر فقط. "
+                            "تجاهل أي إيموجي زخرفي في نص التعليمات."
+                        )
+
+                    answer = await _gemini_text(prompt)
+                    chosen = None
+                    chosen_label = None
+                    if answer:
+                        logger.info(f"🤖 AI اختار زر → '{answer}' ({phone})")
+                        a_clean = answer.strip()
+                        a_lower = a_clean.lower()
+                        # مطابقة نص الزر كاملة أولاً.
+                        for label, btn in btn_objects.items():
+                            if label.strip() == a_clean:
+                                chosen = btn
+                                chosen_label = label
+                                break
+                        # ثم مطابقة إيموجي موجود فعلاً ضمن الأزرار.
+                        if not chosen:
+                            ans_emojis = _extract_emojis_from_text(a_clean)
+                            for answer_emoji in ans_emojis:
                                 for label, btn in btn_objects.items():
-                                    if a_lower in label.lower() or label.lower() in a_lower:
+                                    if answer_emoji in _extract_emojis_from_text(label):
                                         chosen = btn
+                                        chosen_label = label
                                         break
-                            if not chosen:
-                                chosen = list(btn_objects.values())[0]
-                            processed_ids.add(msg_id)
-                            await chosen.click()
-                            result, msgs = await _wait_and_check()
-                            detail = f"ضغط زر: {getattr(chosen, 'text', '')}"
-                            all_details.append(detail)
-                            if result == "success":
-                                return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
-                            elif result == "fail":
-                                break  # حاول مجدداً
-                            else:
-                                return True, f"ضغط الزر | {' | '.join(all_details)}"
+                                if chosen:
+                                    break
+                        # مطابقة نصية احتياطية، من دون اختيار أول زر عشوائياً.
+                        if not chosen and a_lower:
+                            for label, btn in btn_objects.items():
+                                if a_lower in label.lower() or label.lower() in a_lower:
+                                    chosen = btn
+                                    chosen_label = label
+                                    break
+
+                    attempted_labels = set()
+                    current_msgs = list(msgs or [])
+                    last_result = "unknown"
+
+                    async def _click_button_and_check(label, button, source):
+                        try:
+                            await button.click()
+                        except Exception as click_error:
+                            logger.warning(
+                                f"⚠️ فشل الضغط على زر Captcha ({source}, {phone}): {click_error}"
+                            )
+                            return "unknown", current_msgs
+                        result, fresh_msgs = await _wait_and_check()
+                        all_details.append(f"{source}: {label}")
+                        logger.info(
+                            f"🔘 Captcha button ({source}) → '{label}' ({phone}) = {result}"
+                        )
+                        return result, fresh_msgs
+
+                    # المحاولة الأولى دائماً من اختيار Gemini.
+                    if chosen and chosen_label:
+                        attempted_labels.add(chosen_label)
+                        processed_ids.add(msg_id)
+                        last_result, current_msgs = await _click_button_and_check(
+                            chosen_label, chosen, "AI"
+                        )
+                        if last_result == "success":
+                            return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
+
+                    def _candidate_buttons(message_list):
+                        candidates = []
+                        seen = set()
+                        ordered_messages = sorted(
+                            [m for m in (message_list or []) if getattr(m, "buttons", None)],
+                            key=lambda m: getattr(m, "id", 0),
+                            reverse=True,
+                        )
+                        for candidate_msg in ordered_messages:
+                            for row in (candidate_msg.buttons or []):
+                                for button in row:
+                                    label = getattr(button, "text", "") or ""
+                                    url = getattr(button, "url", None) or ""
+                                    if not label or label in seen:
+                                        continue
+                                    if url and ("t.me/" in url or "telegram.me/" in url):
+                                        continue
+                                    seen.add(label)
+                                    candidates.append((label, button))
+                        return candidates
+
+                    # إن لم ينجح AI، أعد ترتيب الأزرار بحيث يأتي الرمز الموجود
+                    # بعد عبارة التعليمات أولاً، ثم جرّب بقية الأزرار كلها.
+                    target_emoji = None
+                    try:
+                        import re as _captcha_re
+                        target_match = _captcha_re.search(
+                            r"(?:اضغط\s+على\s+الرمز|اختر\s+الإيموجي|الإيموجي\s+الصحيح|"
+                            r"correct\s+emoji|select\s+emoji|choose\s+emoji|pick\s+emoji)"
+                            r"\s*[:：]?\s*(.*)$",
+                            msg_text,
+                            flags=_captcha_re.IGNORECASE,
+                        )
+                        target_tail = target_match.group(1) if target_match else msg_text
+                        for text_emoji in _extract_emojis_from_text(target_tail):
+                            if any(text_emoji in label for label in btn_labels):
+                                target_emoji = text_emoji
+                                break
+                    except Exception:
+                        target_emoji = None
+
+                    fallback_attempts = 0
+                    while fallback_attempts < 12:
+                        candidates = [
+                            item for item in _candidate_buttons(current_msgs or msgs)
+                            if item[0] not in attempted_labels
+                        ]
+                        if target_emoji:
+                            candidates.sort(key=lambda item: 0 if target_emoji in item[0] else 1)
+                        if not candidates:
+                            break
+                        label, button = candidates[0]
+                        attempted_labels.add(label)
+                        fallback_attempts += 1
+                        processed_ids.add(msg_id)
+                        last_result, current_msgs = await _click_button_and_check(
+                            label, button, "fallback"
+                        )
+                        if last_result == "success":
+                            return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
+
+                    if attempted_labels:
+                        logger.warning(
+                            f"⚠️ لم يكتمل Captcha بعد تجربة {len(attempted_labels)} زر/أزرار ({phone})"
+                        )
                 except Exception as _e:
                     logger.warning(f"⚠️ AI button captcha ({phone}): {_e}")
+                continue
                 continue
 
             # ════════════════════════════════════════════════════
