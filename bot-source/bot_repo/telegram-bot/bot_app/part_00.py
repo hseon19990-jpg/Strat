@@ -2274,7 +2274,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
             # ════════════════════════════════════════════════════
             # 1. كابتشا صورة (CAPTCHA بصورة مشوّهة)
             # ════════════════════════════════════════════════════
-            if has_media:
+            if has_media and not has_btns:
                 try:
                     img_bytes = await client.download_media(msg, bytes)
                     if not img_bytes:
@@ -2399,6 +2399,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                                 btn_objects[label] = btn
                     if not btn_labels:
                         continue
+                    logger.info(f"🔘 Captcha buttons detected: {len(btn_labels)} ({phone})")
                     # هل تبدو رسالة تحقق؟ (تحقق، رياضيات، إيموجي...)
                     is_verif = (
                         any(k in msg_text_lower for k in CAPTCHA_KW)
