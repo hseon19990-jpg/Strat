@@ -415,26 +415,19 @@ class ForcedRefAIService(RakshService):
 
         قم بتحليل النص وأعد JSON بالتالي:
         {{
-            "has_verification": true/false,     // هل يوجد طلب تحقق؟
-            "verification_type": "code|math|button|phone|none",  // نوع التحقق
-            "code": "الكود المطلوب إرساله إن وجد",   // مثال: JXL428UL
-            "math_expression": "المسألة الرياضية",    // مثال: 5 + 3 = ?
-            "math_result": "نتيجة المسألة",           // مثال: 8
-            "button_text": "نص الزر الذي يجب الضغط عليه", // مثال: اضغط للتطبيق
-            "should_press_button": true/false,    // هل يجب الضغط على زر؟
-            "should_send_code": true/false,      // هل يجب إرسال كود؟
-            "should_solve_math": true/false,     // هل يجب حل مسألة؟
-            "explanation": "شرح مختصر للتحليل"
+            "action": "press_button|send_code|solve_math|wait|done",
+            "button_text": "نص الزر الذي يجب الضغط عليه",
+            "code": "الكود المطلوب إرساله",
+            "math_result": "نتيجة المسألة الرياضية",
+            "explanation": "شرح مختصر للقرار"
         }}
 
-        ملاحظات مهمة:
-        - إذا كان النص يحتوي على "اضغط على الزر" أو "انقر" أو "click" -> verification_type = "button"
-        - إذا كان النص يحتوي على أرقام وحروف مثل JXL428UL -> verification_type = "code"
-        - إذا كان النص يحتوي على مسألة رياضية مثل 5+3=? -> verification_type = "math"
-        - إذا كان النص يحتوي على "شارك رقم هاتفك" -> verification_type = "phone"
-        - إذا لم يكن هناك تحقق -> verification_type = "none"
-        - استخرج الكود من النص إن وجد (أحرف وأرقام متتالية، طولها 6-10)
-        - استخرج المسألة الرياضية وحلها
+        قواعد التحليل:
+        1. إذا كان النص يحتوي على "اضغط" أو "انقر" أو "click" -> action = "press_button"
+        2. إذا كان النص يحتوي على كود (أحرف وأرقام متتالية 6-8 خانات) -> action = "send_code"
+        3. إذا كان النص يحتوي على مسألة رياضية مثل "5+3=?" -> action = "solve_math"
+        4. إذا كان النص ترحيبياً أو تأكيدياً -> action = "done"
+        5. إذا لم تكن متأكداً -> action = "wait"
 
         أعد JSON فقط، بدون أي نص إضافي.
         """
@@ -447,15 +440,13 @@ class ForcedRefAIService(RakshService):
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.1,
-                max_tokens=300,
+                max_tokens=200,
                 response_format={"type": "json_object"}
             )
 
             result_text = response.choices[0].message.content
             try:
-                # محاولة استخراج JSON من النص
                 import json
-                # البحث عن JSON بين { و }
                 start = result_text.find('{')
                 end = result_text.rfind('}') + 1
                 if start != -1 and end != 0:
@@ -479,25 +470,18 @@ class ForcedRefAIService(RakshService):
         تحليل تقليدي بدون AI (نسخة احتياطية)
         """
         result = {
-            "has_verification": False,
-            "verification_type": "none",
-            "code": None,
-            "math_expression": None,
-            "math_result": None,
+            "action": "wait",
             "button_text": None,
-            "should_press_button": False,
-            "should_send_code": False,
-            "should_solve_math": False,
+            "code": None,
+            "math_result": None,
             "explanation": ""
         }
 
         # 1. البحث عن كود
         code = _extract_code_from_text(text)
         if code:
-            result["has_verification"] = True
-            result["verification_type"] = "code"
+            result["action"] = "send_code"
             result["code"] = code
-            result["should_send_code"] = True
             result["explanation"] = f"تم استخراج كود: {code}"
             return result
 
@@ -525,58 +509,80 @@ class ForcedRefAIService(RakshService):
                     elif op == '/': result_val = a / b if b != 0 else None
                     else: result_val = None
                     if result_val is not None:
-                        result["has_verification"] = True
-                        result["verification_type"] = "math"
-                        result["math_expression"] = f"{a} {op} {b}"
+                        result["action"] = "solve_math"
                         result["math_result"] = str(result_val)
-                        result["should_solve_math"] = True
                         result["explanation"] = f"تم حل المسألة: {a} {op} {b} = {result_val}"
                         return result
                 except:
                     continue
 
-        # 3. البحث عن زر أو طلب ضغط
+        # 3. البحث عن زر
         button_keywords = ['اضغط', 'انقر', 'click', 'tap', 'press', 'تطبيق', 'تحقق', 'verify', 'start', 'ابدأ']
         if any(kw in text.lower() for kw in button_keywords):
-            result["has_verification"] = True
-            result["verification_type"] = "button"
-            result["should_press_button"] = True
+            result["action"] = "press_button"
             if buttons_text:
-                result["button_text"] = buttons_text[0] if buttons_text else None
+                # نفضل الأزرار التي تطابق الكلمات المفتاحية
+                for btn in buttons_text:
+                    if any(kw in btn.lower() for kw in button_keywords):
+                        result["button_text"] = btn
+                        break
+                if not result["button_text"]:
+                    result["button_text"] = buttons_text[0]
             result["explanation"] = "تم اكتشاف طلب ضغط زر"
-
             return result
 
-        # 4. طلب رقم الهاتف
-        phone_keywords = ['رقم', 'هاتف', 'phone', 'number', 'شارك']
-        if any(kw in text.lower() for kw in phone_keywords) and 'طلب' in text.lower():
-            result["has_verification"] = True
-            result["verification_type"] = "phone"
-            result["explanation"] = "تم اكتشاف طلب مشاركة رقم الهاتف"
+        # 4. رسالة ترحيب أو تأكيد
+        done_keywords = ['مرحباً', 'تم', 'نجاح', 'شكراً', 'welcome', 'success', 'done', 'مرحب']
+        if any(kw in text.lower() for kw in done_keywords):
+            result["action"] = "done"
+            result["explanation"] = "رسالة تأكيد"
             return result
 
-        result["explanation"] = "لم يتم اكتشاف أي تحقق"
+        result["explanation"] = "لم يتم اكتشاف أي إجراء"
         return result
 
     # ─── 5. دوال مساعدة للأزرار ───
 
-    async def _press_button(self, client, bot_entity, message) -> bool:
+    async def _press_first_button(self, client, bot_entity, message) -> bool:
         """
-        ضغط زر في رسالة معينة
+        ضغط أول زر متاح في الرسالة (يتجاهل أزرار الروابط)
         """
         if not message or not message.reply_markup:
             return False
 
         for row in message.reply_markup.rows:
             for btn in row.buttons:
-                if not getattr(btn, 'url', None):
+                # تجاهل أزرار الروابط
+                if getattr(btn, 'url', None):
+                    continue
+                try:
+                    await btn.click()
+                    logger.info(f"🖱️ تم الضغط على زر: '{getattr(btn, 'text', '')}'")
+                    return True
+                except Exception as e:
+                    logger.warning(f"⚠️ فشل الضغط على الزر: {e}")
+                    continue
+        return False
+
+    async def _press_specific_button(self, client, bot_entity, message, button_text: str) -> bool:
+        """
+        ضغط زر بنص محدد في الرسالة
+        """
+        if not message or not message.reply_markup or not button_text:
+            return False
+
+        for row in message.reply_markup.rows:
+            for btn in row.buttons:
+                if getattr(btn, 'url', None):
+                    continue
+                if getattr(btn, 'text', '') == button_text:
                     try:
                         await btn.click()
-                        logger.info(f"🖱️ تم الضغط على زر: {getattr(btn, 'text', '')}")
+                        logger.info(f"🖱️ تم الضغط على زر: '{button_text}'")
                         return True
                     except Exception as e:
                         logger.warning(f"⚠️ فشل الضغط على الزر: {e}")
-                        continue
+                        return False
         return False
 
     # ─── 6. حل التحقق باستخدام الذكاء الاصطناعي ───
@@ -591,6 +597,7 @@ class ForcedRefAIService(RakshService):
         if not incoming:
             return False
 
+        # نبدأ بأحدث رسالة
         for msg in incoming:
             text = getattr(msg, 'message', '') or ''
             if text.strip().startswith('/'):
@@ -606,13 +613,14 @@ class ForcedRefAIService(RakshService):
 
             # تحليل باستخدام AI
             analysis = await self._analyze_with_ai(text, buttons_text)
-
             logger.info(f"🧠 تحليل AI للرسالة: {analysis}")
 
+            action = analysis.get('action', 'wait')
+
             # 1. إذا كان يجب إرسال كود
-            if analysis.get("should_send_code") and analysis.get("code"):
+            if action == 'send_code' and analysis.get('code'):
                 try:
-                    await client.send_message(bot_entity, analysis["code"])
+                    await client.send_message(bot_entity, analysis['code'])
                     logger.info(f"✅ تم إرسال الكود (AI): {analysis['code']}")
                     await asyncio.sleep(2)
                     return True
@@ -620,9 +628,9 @@ class ForcedRefAIService(RakshService):
                     logger.error(f"❌ فشل إرسال الكود: {e}")
 
             # 2. إذا كان يجب حل مسألة
-            if analysis.get("should_solve_math") and analysis.get("math_result"):
+            elif action == 'solve_math' and analysis.get('math_result'):
                 try:
-                    await client.send_message(bot_entity, analysis["math_result"])
+                    await client.send_message(bot_entity, analysis['math_result'])
                     logger.info(f"✅ تم إرسال نتيجة المسألة (AI): {analysis['math_result']}")
                     await asyncio.sleep(2)
                     return True
@@ -630,10 +638,27 @@ class ForcedRefAIService(RakshService):
                     logger.error(f"❌ فشل إرسال نتيجة المسألة: {e}")
 
             # 3. إذا كان يجب الضغط على زر
-            if analysis.get("should_press_button"):
-                if await self._press_button(client, bot_entity, msg):
+            elif action == 'press_button':
+                # أولاً: حاول ضغط الزر المحدد
+                if analysis.get('button_text'):
+                    if await self._press_specific_button(client, bot_entity, msg, analysis['button_text']):
+                        await asyncio.sleep(2)
+                        return True
+                
+                # ثانياً: حاول ضغط أي زر
+                if await self._press_first_button(client, bot_entity, msg):
                     await asyncio.sleep(2)
                     return True
+
+            # 4. إذا كانت رسالة تأكيد
+            elif action == 'done':
+                logger.info(f"✅ تم تأكيد التحقق من {phone_number}")
+                return True
+
+            # 5. إذا كانت wait، ننتظر
+            elif action == 'wait':
+                logger.info(f"⏳ AI: ينتظر رسالة جديدة")
+                continue
 
         return False
 
@@ -641,9 +666,7 @@ class ForcedRefAIService(RakshService):
 
     async def _solve_verification(self, client, bot_entity, phone_number: str) -> bool:
         """
-        حل التحقق بذكاء باستخدام AI:
-        1. إذا طلب البوت مشاركة رقم الهاتف – نرسل الرقم.
-        2. وإلا نستخدم الذكاء الاصطناعي لتحليل الرسائل.
+        حل التحقق بذكاء باستخدام AI
         """
         MAX_WAIT = 15
         CHECK_INTERVAL = 1.0
@@ -677,7 +700,6 @@ class ForcedRefAIService(RakshService):
         if contact_request_msg:
             logger.info(f"📱 تم اكتشاف طلب رقم هاتف من {phone_number}")
 
-            # إرسال جهة الاتصال
             try:
                 me = await client.get_me()
                 if not me or not me.phone:
@@ -700,12 +722,12 @@ class ForcedRefAIService(RakshService):
 
             await asyncio.sleep(2)
 
-            # بعد إرسال الرقم، نبحث عن أي زر آخر
+            # بعد إرسال الرقم، نبحث عن أي زر ونضغطه
             for _ in range(MAX_WAIT):
                 try:
                     messages = await client.get_messages(bot_entity, limit=5)
                     for msg in messages:
-                        if await self._press_button(client, bot_entity, msg):
+                        if await self._press_first_button(client, bot_entity, msg):
                             await asyncio.sleep(2)
                             break
                 except Exception:
@@ -720,11 +742,11 @@ class ForcedRefAIService(RakshService):
                         if msg.out:
                             continue
                         if not msg.reply_markup and (getattr(msg, 'message', '') or '').strip():
-                            logger.info(f"✅ تم التحقق بنجاح (مشاركة الرقم) من {phone_number}")
+                            logger.info(f"✅ تم التحقق بنجاح من {phone_number}")
                             return True
                         text = (getattr(msg, 'message', '') or '').strip().casefold()
-                        if any(kw in text for kw in ['تم', 'نجاح', 'مرحباً', 'شكراً', 'success', 'done', 'welcome']):
-                            logger.info(f"✅ تم التحقق بنجاح (مشاركة الرقم) من {phone_number}")
+                        if any(kw in text for kw in ['تم', 'نجاح', 'مرحباً', 'شكراً', 'success', 'done']):
+                            logger.info(f"✅ تم التحقق بنجاح من {phone_number}")
                             return True
                 except Exception:
                     pass
@@ -738,7 +760,7 @@ class ForcedRefAIService(RakshService):
 
         start_time = datetime.now().timestamp()
 
-        for cycle in range(5):
+        for cycle in range(6):
             try:
                 messages = await client.get_messages(bot_entity, limit=30)
             except Exception as exc:
@@ -767,7 +789,7 @@ class ForcedRefAIService(RakshService):
 
             # إذا لم نجد تحققاً، نبحث عن أي زر ونضغطه
             for msg in incoming:
-                if await self._press_button(client, bot_entity, msg):
+                if await self._press_first_button(client, bot_entity, msg):
                     logger.info(f"🖱️ تم الضغط على زر، نعيد المحاولة")
                     await asyncio.sleep(2)
                     break
