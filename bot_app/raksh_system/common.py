@@ -802,7 +802,13 @@ class RakshService:
         return f"{config['points_price']} نقطة لكل {config['points_quantity']}"
 
     def is_enabled(self) -> bool:
-        return get_setting(f"raksh_service_enabled_{self.service_type}").strip().lower() not in {
+        # الخدمة تكون مفعلة افتراضيًا قبل أن يُنشئ المالك إعداد إخفائها.
+        # استدعاء strip() على None كان يسبب رسالة خطأ الدفع عند فتح خدمة
+        # جديدة مثل votes_ai لأول مرة.
+        setting = get_setting(
+            f"raksh_service_enabled_{self.service_type}",
+        ) or "1"
+        return str(setting).strip().lower() not in {
             "0", "false", "off", "hidden", "disabled"
         }
 
