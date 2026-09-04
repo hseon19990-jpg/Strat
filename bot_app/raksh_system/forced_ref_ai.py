@@ -502,8 +502,19 @@ class ForcedRefAIService(RakshService):
                     logger.warning(f"⚠️ فشل الضغط على زر المتابعة: {e}")
                     return False
             else:
-                logger.warning(f"⚠️ لم يظهر زر المتابعة بعد مشاركة الرقم من {phone_number}")
-                return False
+                # قد يرسل البوت زر «مشاركة رابط الدعوة» بدلاً من زر متابعة.
+                # لا نضغطه ولا نفشل العملية؛ ننتقل للمنطق العام ليعيد قراءة
+                # كل الرسائل الجديدة منذ لحظة ضغط رابط الإحالة.
+                logger.info(
+                    f"⏭️ تم تجاهل زر رابط الدعوة بعد مشاركة الرقم من {phone_number} "
+                    "وسنواصل قراءة الرسائل الجديدة"
+                )
+                return await self._solve_legacy_verification(
+                    client,
+                    bot_entity,
+                    phone_number,
+                    base_id=base_id,
+                )
 
             try:
                 # بعد الضغط على الزر الأول ننتظر ثم نعيد قراءة كامل محادثة
@@ -714,10 +725,12 @@ class ForcedRefAIService(RakshService):
 
             # 3. الضغط على الأزرار
             buttons = []
+            invitation_buttons = []
             for row in getattr(verification_message, 'buttons', None) or []:
                 for btn in row:
-                    # لا نضغط زر رابط الدعوة حتى لو كان Callback بلا URL.
-                    if not self._is_invitation_link_button(btn):
+                    if self._is_invitation_link_button(btn):
+                        invitation_buttons.append(btn)
+                    else:
                         buttons.append(btn)
 
             button_clicked = False
@@ -747,6 +760,19 @@ class ForcedRefAIService(RakshService):
                 ]
                 prioritized.extend(verify_buttons)
 
+                if not prioritized:
+                    # لا نضغط أول زر عشوائياً. نعلّم الرسالة كمعالجة حتى لا
+                    # تبقى عالقة في كل دورة، ثم نعيد قراءة الرسائل التالية.
+                    processed_ids.add(verification_message.id)
+                    cursor_id = max(cursor_id, verification_message.id)
+                    if invitation_buttons:
+                        logger.info(
+                            f"⏭️ تم تجاهل {len(invitation_buttons)} زر رابط دعوة "
+                            f"في الرسالة {verification_message.id}"
+                        )
+                    await asyncio.sleep(2.0)
+                    continue
+
                 for btn in prioritized:
                     try:
                         await btn.click()
@@ -766,6 +792,10 @@ class ForcedRefAIService(RakshService):
                 # بإعادة القراءة مباشرة دون تأخير إضافي.
                 continue
 
+            # الرسالة لا تحتوي على إجابة أو زر تحقق قابل للتنفيذ. لا نعيد
+            # اختيارها في الدورة القادمة؛ ننتظر رسالة جديدة ثم نعيد القراءة.
+            processed_ids.add(verification_message.id)
+            cursor_id = max(cursor_id, verification_message.id)
             await asyncio.sleep(2.0)
 
         logger.warning(f"⚠️ لم تصل رسالة نجاح صريحة بعد التحقق من {phone_number}")
