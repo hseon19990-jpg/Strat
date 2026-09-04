@@ -281,6 +281,7 @@ class ForcedRefAIService(RakshService):
                 f"🔢 العدد: {quantity}\n"
                 f"💳 طريقة الدفع: {'💰 نقاط' if payment_method == 'points' else '⭐ نجوم'}\n"
                 f"💰 التكلفة: {total_cost} {'نقطة' if payment_method == 'points' else 'نجمة'}\n\n"
+                f"{self.get_payment_warning()}\n\n"
                 f"*هل تريد تأكيد الطلب؟*",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
@@ -336,6 +337,7 @@ class ForcedRefAIService(RakshService):
                     f"🔗 الرابط: `{context.user_data.get('raksh_link', '')}`\n"
                     f"🔢 العدد: {quantity}\n"
                     f"💰 تم خصم: {total_cost} نقطة\n\n"
+                    f"{self.get_payment_warning()}\n\n"
                     f"⏳ جاري {self.get_execution_label()}...",
                     parse_mode=ParseMode.MARKDOWN
                 )
@@ -868,12 +870,26 @@ class ForcedRefAIService(RakshService):
                 logger.warning(f"تعذر تحديد نقطة بداية رابط الإحالة: {e}")
 
             # بدء البوت
+            try:
+                latest_messages = await client.get_messages(bot_entity, limit=1)
+                activation_base_id = latest_messages[0].id if latest_messages else 0
+            except Exception:
+                activation_base_id = 0
+
             await client(StartBotRequest(
                 bot=bot_entity,
                 peer=bot_entity,
                 start_param=start_param or ""
             ))
             await asyncio.sleep(2.0)
+
+            if await _raksh_has_duplicate_response(
+                client, bot_entity, after_id=activation_base_id
+            ):
+                return False, (
+                    f"{RAKSH_DUPLICATE_MARKER}: "
+                    f"البوت مفعّل مسبقاً للحساب {session['phone_number']}"
+                )
 
             # حل التحقق باستخدام الدالة المدمجة
             success = await self._solve_verification(
