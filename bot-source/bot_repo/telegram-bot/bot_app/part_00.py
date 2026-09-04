@@ -2414,74 +2414,142 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                     if not is_verif:
                         continue
 
-                    # ── كشف مباشر: نمط "select the correct emoji: X" ──────
-                    # يستخرج الإيموجي المستهدف مباشرةً من النص بدون الحاجة لـ AI
+                    # ── مطابقة مباشرة لإيموجي التحقق قبل استدعاء Gemini ──
+                    # بعض البوتات تستخدم Custom/Premium Emoji في نص الرسالة
+                    # والأزرار. نعتمد على النص الفعلي للزر ونزيل اختلافات
+                    # العرض (variation selectors و ZWJ) قبل المقارنة.
                     def _extract_emojis_from_text(text: str) -> list:
-                        """يستخرج جميع الإيموجيات من النص."""
                         result = []
-                        for ch in text:
+                        import unicodedata
+                        for ch in text or "":
                             cp = ord(ch)
-                            if (0x1F300 <= cp <= 0x1FFFF or  # إيموجي ورموز متنوعة
-                                0x2600 <= cp <= 0x27BF or    # رموز متنوعة
-                                0x1F900 <= cp <= 0x1F9FF or  # رموز تكميلية
-                                0x1FA00 <= cp <= 0x1FAFF):   # رموز موسعة
+                            if (
+                                0x1F300 <= cp <= 0x1FFFF
+                                or 0x2600 <= cp <= 0x27BF
+                                or 0x1F900 <= cp <= 0x1F9FF
+                                or 0x1FA00 <= cp <= 0x1FAFF
+                                or cp == 0xFFFC  # placeholder محتمل لـ Custom Emoji
+                                or unicodedata.category(ch) == "So"
+                            ):
                                 result.append(ch)
                         return result
 
-                    # ── الذكاء الاصطناعي أولاً، ثم تجربة الأزرار بالتتابع ──
-                    # لا نأخذ أول إيموجي من نص التعليمات: قد يكون إيموجياً زخرفياً
-                    # مثل 🤖 في عبارة "لست روبوت" بينما الرمز المطلوب يأتي لاحقاً.
-                    all_emoji_btns = all(
-                        bool(_extract_emojis_from_text(lbl)) for lbl in btn_labels
-                    )
-                    if all_emoji_btns:
-                        prompt = (
-                            "Telegram bot button CAPTCHA.\n"
-                            f"Instruction: {msg_text}\n\n"
-                            "Important: ignore decorative emojis in the instruction "
-                            "(for example the robot emoji in 'not a robot'). "
-                            "Find the target emoji after phrases such as 'click the symbol' "
-                            "or 'اضغط على الرمز', then choose ONLY the matching button "
-                            "from the available buttons.\n\n"
-                            "Available emoji buttons:\n"
-                            + "\n".join(f"- {b}" for b in btn_labels)
-                            + "\n\nReply with ONLY the exact emoji character."
-                        )
-                    else:
-                        prompt = (
-                            f"بوت تيليغرام يطلب التحقق:\n{msg_text}\n\n"
-                            "الأزرار المتاحة:\n"
-                            + "\n".join(f"- {b}" for b in btn_labels)
-                            + "\n\nاختر الزر الذي يطابق المطلوب، وأجب بنص الزر فقط. "
-                            "تجاهل أي إيموجي زخرفي في نص التعليمات."
+                    def _emoji_signature(text: str) -> str:
+                        return "".join(
+                            ch for ch in _extract_emojis_from_text(text)
+                            if ch not in "\ufe0e\ufe0f\u200d"
                         )
 
-                    answer = await _gemini_text(prompt)
+                    def _emoji_match_score(target: str, label: str) -> int:
+                        target_sig = _emoji_signature(target)
+                        label_sig = _emoji_signature(label)
+                        if not target_sig or not label_sig:
+                            return 0
+                        if target_sig == label_sig:
+                            return 100
+                        if target_sig in label_sig or label_sig in target_sig:
+                            return 85
+                        # يسمح باختلافات التركيب مع منع اختيار زر لا علاقة له.
+                        if any(ch in label_sig for ch in target_sig):
+                            return 60
+                        return 0
+
+                    def _extract_target_emoji(text: str) -> str | None:
+                        import re as _captcha_re
+                        target_match = _captcha_re.search(
+                            r"(?:اضغط\s+على\s+(?:الرمز|الإيموجي)|اختر\s+الإيموجي|"
+                            r"الإيموجي\s+الصحيح|انقر\s+على\s+(?:الرمز|الإيموجي)|"
+                            r"correct\s+emoji|select\s+emoji|choose\s+emoji|pick\s+emoji)"
+                            r"\s*[:：]?\s*(.*)$",
+                            text or "",
+                            flags=_captcha_re.IGNORECASE,
+                        )
+                        target_tail = target_match.group(1) if target_match else ""
+                        return next(
+                            (item for item in _extract_emojis_from_text(target_tail) if item),
+                            None,
+                        )
+
                     chosen = None
                     chosen_label = None
-                    if answer:
-                        logger.info(f"🤖 AI اختار زر → '{answer}' ({phone})")
-                        a_clean = answer.strip()
-                        a_lower = a_clean.lower()
-                        # مطابقة نص الزر كاملة أولاً.
-                        for label, btn in btn_objects.items():
-                            if label.strip() == a_clean:
-                                chosen = btn
-                                chosen_label = label
-                                break
-                        # ثم مطابقة إيموجي موجود فعلاً ضمن الأزرار.
-                        if not chosen:
-                            ans_emojis = _extract_emojis_from_text(a_clean)
-                            for answer_emoji in ans_emojis:
+                    chosen_source = "AI"
+                    target_emoji = _extract_target_emoji(msg_text)
+                    if target_emoji:
+                        ranked_buttons = []
+                        for button_label, button in btn_objects.items():
+                            score = _emoji_match_score(target_emoji, button_label)
+                            if score:
+                                ranked_buttons.append((score, button_label, button))
+                        if ranked_buttons:
+                            _, chosen_label, chosen = max(
+                                ranked_buttons, key=lambda item: item[0]
+                            )
+                            chosen_source = "emoji-direct"
+                            logger.info(
+                                f"🎯 تطابق مباشر لإيموجي التحقق: '{target_emoji}' → "
+                                f"'{chosen_label}' ({phone})"
+                            )
+
+                    # إذا لم يوجد تطابق مباشر، استخدم Gemini كاحتياط.
+                    if not chosen:
+                        all_emoji_btns = all(
+                            bool(_extract_emojis_from_text(lbl)) for lbl in btn_labels
+                        )
+                        if all_emoji_btns:
+                            prompt = (
+                                "Telegram bot button CAPTCHA.\n"
+                                f"Instruction: {msg_text}\n\n"
+                                "Important: ignore decorative emojis in the instruction "
+                                "(for example the robot emoji in 'not a robot'). "
+                                "Find the target emoji after phrases such as 'click the symbol' "
+                                "or 'اضغط على الرمز', then choose ONLY the matching button "
+                                "from the available buttons.\n\n"
+                                "Available emoji buttons:\n"
+                                + "\n".join(f"- {b}" for b in btn_labels)
+                                + "\n\nReply with ONLY the exact emoji character."
+                            )
+                        else:
+                            prompt = (
+                                f"بوت تيليغرام يطلب التحقق:\n{msg_text}\n\n"
+                                "الأزرار المتاحة:\n"
+                                + "\n".join(f"- {b}" for b in btn_labels)
+                                + "\n\nاختر الزر الذي يطابق المطلوب، وأجب بنص الزر فقط. "
+                                "تجاهل أي إيموجي زخرفي في نص التعليمات."
+                            )
+
+                        answer = await _gemini_text(prompt)
+                        if answer:
+                            logger.info(f"🤖 AI اختار زر → '{answer}' ({phone})")
+                            a_clean = answer.strip()
+                            a_lower = a_clean.lower()
+                            for label, btn in btn_objects.items():
+                                if label.strip() == a_clean:
+                                    chosen = btn
+                                    chosen_label = label
+                                    break
+                            if not chosen:
+                                for answer_emoji in _extract_emojis_from_text(a_clean):
+                                    ranked = [
+                                        (_emoji_match_score(answer_emoji, label), label, btn)
+                                        for label, btn in btn_objects.items()
+                                        if _emoji_match_score(answer_emoji, label)
+                                    ]
+                                    if ranked:
+                                        _, chosen_label, chosen = max(
+                                            ranked, key=lambda item: item[0]
+                                        )
+                                        break
+                            if not chosen and a_lower:
                                 for label, btn in btn_objects.items():
-                                    if answer_emoji in _extract_emojis_from_text(label):
+                                    if a_lower in label.lower() or label.lower() in a_lower:
                                         chosen = btn
                                         chosen_label = label
                                         break
-                                if chosen:
-                                    break
-                        # مطابقة نصية احتياطية، من دون اختيار أول زر عشوائياً.
-                        if not chosen and a_lower:
+
+                    # مطابقة نصية أخيرة، من دون اختيار أول زر عشوائياً.
+                    if not chosen and answer:
+                        a_lower = answer.strip().lower()
+                        if a_lower:
                             for label, btn in btn_objects.items():
                                 if a_lower in label.lower() or label.lower() in a_lower:
                                     chosen = btn
@@ -2507,12 +2575,12 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                         )
                         return result, fresh_msgs
 
-                    # المحاولة الأولى دائماً من اختيار Gemini.
+                    # المحاولة الأولى من التطابق المباشر، ثم اختيار Gemini.
                     if chosen and chosen_label:
                         attempted_labels.add(chosen_label)
                         processed_ids.add(msg_id)
                         last_result, current_msgs = await _click_button_and_check(
-                            chosen_label, chosen, "AI"
+                            chosen_label, chosen, chosen_source
                         )
                         if last_result == "success":
                             return True, f"نجح التحقق ✅ | {' | '.join(all_details)}"
