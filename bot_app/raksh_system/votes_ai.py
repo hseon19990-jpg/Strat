@@ -29,16 +29,62 @@ class VotesAIService(ForcedRefAIService):
         max_concurrent=1,
     )
 
+    def get_start_message(self) -> str:
+        return (
+            f"{self.config.name}\n\n"
+            f"💰 السعر: {self.get_rate_text('points')}\n"
+            f"⭐ السعر: {self.get_rate_text('stars')}\n\n"
+            f"📢 *أرسل روابط القنوات الإجبارية:*\n"
+            f"كل قناة في سطر منفصل:\n"
+            f"@channel1\n"
+            f"@channel2\n"
+            f"أو أرسل روابط t.me\n\n"
+            f"✍️ اكتب 'تخطي' لعدم وجود قنوات"
+        )
+
+    def get_start_keyboard(self) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton(
+                "⏭️ تخطي (بدون قنوات)",
+                callback_data=f"{self.get_callback_prefix()}:skip_channels",
+            )],
+            [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")],
+        ])
+
+    def get_callback_prefix(self) -> str:
+        return "raksh_votes_ai"
+
+    def get_link_prompt_label(self) -> str:
+        return "رابط البوست أو رابط التصويت"
+
+    def get_saved_link_label(self) -> str:
+        return "رابط البوست/التصويت"
+
+    def get_quantity_label(self) -> str:
+        return "عدد التصويتات المطلوبة"
+
+    def get_activity_label(self) -> str:
+        return "تصويت"
+
+    def get_execution_label(self) -> str:
+        return "تنفيذ التصويت وحل التحقق"
+
+    def get_invoice_label(self) -> str:
+        return "تصويت مع تحقق"
+
     def get_link_instruction(self) -> str:
         # لا نستخدم underscore في المثال لأن رسالة البداية تُرسل بـ Markdown
         # وقد يفسره Telegram كتنسيق غير مكتمل ويرفض تعديل الرسالة.
-        return "https://t.me/i8YYBot?start=compvote-xxx أو رابط منشور"
+        return (
+            "🔹 رابط بوت: `https://t.me/i8YYBot?start=compvote-xxx`\n"
+            "🔹 أو رابط منشور/تصويت: `https://t.me/channel/123`"
+        )
 
     def validate_link(self, value: str) -> Optional[str]:
         if not value.strip():
-            return "⚠️ الرابط لا يمكن أن يكون فارغاً"
+            return "⚠️ أرسل رابط البوت أو رابط المنشور/التصويت."
         if not ("@" in value or "t.me/" in value):
-            return "⚠️ الرابط يجب أن يحتوي على @username أو t.me/"
+            return "⚠️ أرسل رابط بوت أو رابط منشور/تصويت صالحاً من Telegram."
         return None
 
     @staticmethod
