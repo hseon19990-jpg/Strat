@@ -658,8 +658,23 @@ def _import_service_text(service: dict) -> str:
         rate = float(service.get("rate", 0) or 0)
     except (TypeError, ValueError):
         rate = 0.0
-    cleaned = _strip_price_from_desc(raw_name, rate * 100000)
-    return cleaned or raw_name or "خدمة جديدة"
+    cleaned = _strip_price_from_desc(raw_name, rate * 100000) or raw_name
+
+    # رقم الخدمة في بداية الاسم ليس جزءاً من الاسم العربي.
+    cleaned = re.sub(r"^\s*(?:service\s*)?(?:id\s*[:#-]?\s*)?\d{1,8}\s*[-:.)]\s*", "", cleaned, flags=re.IGNORECASE)
+
+    # احتفظ بعبارات الجودة ونوع الحساب، واحذف مواصفات التشغيل التي تُحفظ
+    # أصلاً في الحقول المنفصلة (السرعة، السقوط، إعادة التعبئة، والحدود).
+    noise_pattern = re.compile(
+        r"(?:speed|start\s*time|drop(?:\s*rate)?|refill|"
+        r"السرعة|وقت\s*البدء|السقوط|معدل\s*السقوط|إعادة\s*التعبئة|"
+        r"max(?:imum)?|minimum|min|الحد\s*الأعلى|الحد\s*الأدنى|أقصى|أدنى)",
+        flags=re.IGNORECASE,
+    )
+    parts = re.split(r"\s*(?:\||•|\s+-\s+)\s*", cleaned)
+    useful_parts = [part.strip() for part in parts if part.strip() and not noise_pattern.search(part)]
+    cleaned = " | ".join(useful_parts)
+    return cleaned.strip(" -|/،,;:") or "خدمة جديدة"
 
 def _fallback_service_name_arabic(text: str) -> str:
     result = str(text or "").strip()
