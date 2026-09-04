@@ -163,8 +163,8 @@ class ForcedRefService(RakshService):
             context.user_data["raksh_quantity"] = quantity
             context.user_data["raksh_step"] = "payment"
             
-            points_cost = self.get_total(quantity, "points")
-            stars_cost = self.get_total(quantity, "stars")
+            points_cost = self.get_total(quantity, "points", len(context.user_data.get("raksh_channels") or []))
+            stars_cost = self.get_total(quantity, "stars", len(context.user_data.get("raksh_channels") or []))
             
             await update.message.reply_text(
                 f"📋 *تفاصيل الطلب*\n\n"
@@ -243,7 +243,7 @@ class ForcedRefService(RakshService):
                 )
                 return True
             
-            total_cost = self.get_total(quantity, payment_method)
+            total_cost = self.get_total(quantity, payment_method, len(context.user_data.get("raksh_channels") or []))
             
             await query.edit_message_text(
                 f"📋 *تأكيد الطلب*\n\n"
@@ -290,7 +290,7 @@ class ForcedRefService(RakshService):
                 )
                 return True
             
-            total_cost = self.get_total(quantity, payment_method)
+            total_cost = self.get_total(quantity, payment_method, len(context.user_data.get("raksh_channels") or []))
             
             if payment_method == "points":
                 if not deduct_points(user.id, total_cost):
@@ -352,7 +352,7 @@ class ForcedRefService(RakshService):
             if channels:
                 for channel_ref in channels:
                     try:
-                        await _join_channel_and_schedule_leave(client, channel_ref)
+                        await _join_channel_and_schedule_leave(client, channel_ref, session.get("phone_number"))
                         await asyncio.sleep(1.0)
                     except Exception as e:
                         logger.warning(f"فشل الانضمام للقناة {channel_ref}: {e}")
