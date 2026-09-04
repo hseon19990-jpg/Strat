@@ -360,13 +360,14 @@ class ForcedRefAIService(RakshService):
 
         return False
 
-    # ─── 4. حل التحقق المدمج (يدعم مشاركة الرقم + المنطق القديم) ───
+    # ─── 4. حل التحقق المدمج (يدعم مشاركة الرقم + زر التفعيل + المنطق القديم) ───
 
     async def _solve_verification(self, client, bot_entity, phone_number: str) -> bool:
         """
         حل التحقق بذكاء:
         1. إذا طلب البوت مشاركة رقم الهاتف (زر KeyboardButtonRequestPhone) – نرسل الرقم ونضغط متابعة.
-        2. وإلا نستخدم المنطق القديم: استخراج الكود، حل المسائل، الضغط على الأزرار العادية.
+        2. وإلا نحاول الضغط على زر تفعيل (مثل "ابدأ" أو "التالي") ثم نبحث عن تحقق.
+        3. وإلا نستخدم المنطق القديم: استخراج الكود، حل المسائل، الضغط على الأزرار.
         """
         MAX_WAIT = 12
         CHECK_INTERVAL = 1.0
@@ -496,11 +497,91 @@ class ForcedRefAIService(RakshService):
             logger.warning(f"⚠️ لم نؤكد التحقق لكننا سنعتبره ناجحاً (مشاركة الرقم) من {phone_number}")
             return True
 
-        # ─── المرحلة 2: لم يطلب الرقم → استخدم المنطق القديم ───
-        logger.info(f"🔍 لم يطلب البوت رقم هاتف، ننتقل إلى المنطق القديم لـ {phone_number}")
+        # ─── المرحلة 2: الضغط على زر تفعيل (إذا لم يطلب الرقم) ───
+        logger.info(f"🔍 لم يطلب البوت رقم هاتف، نحاول الضغط على زر تفعيل لـ {phone_number}")
 
-        # المنطق القديم (مستند على _solve_forced_ref_verification من common.py)
-        # ولكن سنعيد تنفيذه هنا لتكامل الملف
+        # نبحث عن أحدث رسالة من البوت (غير خارجة) تحتوي على أزرار عادية
+        activation_pressed = False
+        for attempt in range(3):  # نحاول 3 مرات
+            try:
+                messages = await client.get_messages(bot_entity, limit=10)
+            except Exception:
+                await asyncio.sleep(1)
+                continue
+
+            # نبحث عن رسالة تحتوي على أزرار عادية (غير رابط)
+            for msg in messages:
+                if msg.out:
+                    continue
+                if not msg.reply_markup:
+                    continue
+                buttons = []
+                for row in msg.reply_markup.rows:
+                    for btn in row.buttons:
+                        if not getattr(btn, 'url', None):
+                            buttons.append(btn)
+                if not buttons:
+                    continue
+
+                # نختار زراً يحوي كلمات مفتاحية
+                target_btn = None
+                keywords = ['ابدأ', 'التالي', 'متابعة', 'تحقق', 'استمر', 'start', 'continue', 'verify', 'go']
+                for btn in buttons:
+                    btn_text = (getattr(btn, 'text', '') or '').strip().casefold()
+                    if any(kw in btn_text for kw in keywords):
+                        target_btn = btn
+                        break
+                if not target_btn:
+                    # إذا لم نجد زراً بكلمة مفتاحية، نأخذ أول زر
+                    target_btn = buttons[0]
+
+                # نضغط على الزر
+                try:
+                    await target_btn.click()
+                    logger.info(f"🖱️ تم الضغط على زر التفعيل: {getattr(target_btn, 'text', '')}")
+                    activation_pressed = True
+                    await asyncio.sleep(2.0)  # انتظار رد البوت
+                    break  # خروج من حلقة الرسائل
+                except Exception as e:
+                    logger.warning(f"⚠️ فشل الضغط على زر التفعيل: {e}")
+                    continue
+
+            if activation_pressed:
+                # بعد الضغط، ننتظر قليلاً ثم نبحث عن تحقق
+                for _ in range(3):
+                    await asyncio.sleep(1.5)
+                    # نحاول جلب رسالة تحقق (كود، مسألة، أزرار)
+                    try:
+                        new_messages = await client.get_messages(bot_entity, limit=10)
+                    except Exception:
+                        continue
+
+                    # نبحث عن رسالة غير خارجة تحتوي على نص قد يكون تحقق
+                    for msg in new_messages:
+                        if msg.out:
+                            continue
+                        text = getattr(msg, 'message', '') or ''
+                        # إذا كانت تحتوي على أرقام أو عمليات حسابية أو كلمات مفتاحية
+                        if _extract_code_from_text(text):
+                            logger.info(f"✅ تم العثور على كود بعد الضغط على زر التفعيل")
+                            # نرسل الكود باستخدام المنطق القديم
+                            return await self._solve_legacy_verification(client, bot_entity, phone_number)
+                        if re.search(r'\d+\s*[+\-*/]\s*\d+\s*=', text):
+                            logger.info(f"✅ تم العثور على مسألة رياضية بعد الضغط")
+                            return await self._solve_legacy_verification(client, bot_entity, phone_number)
+                        # إذا كان هناك أزرار تحقق
+                        if msg.reply_markup:
+                            for row in msg.reply_markup.rows:
+                                for btn in row.buttons:
+                                    if any(kw in (getattr(btn, 'text', '') or '').casefold() for kw in ['تحقق', 'verify', 'اضغط']):
+                                        logger.info(f"✅ تم العثور على زر تحقق بعد الضغط")
+                                        return await self._solve_legacy_verification(client, bot_entity, phone_number)
+                    # إذا لم نجد تحققاً، نعيد المحاولة
+                # إذا لم نجد تحققاً بعد عدة محاولات، نستمر للمنطق القديم
+            # إذا لم نضغط أي زر (لا يوجد أزرار)، نذهب مباشرة للمنطق القديم
+
+        # ─── المرحلة 3: المنطق القديم ───
+        logger.info(f"🔍 ننتقل إلى المنطق القديم لـ {phone_number}")
         return await self._solve_legacy_verification(client, bot_entity, phone_number)
 
     async def _solve_legacy_verification(self, client, bot_entity, phone_number: str) -> bool:
