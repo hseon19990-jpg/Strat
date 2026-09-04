@@ -111,8 +111,8 @@ class PollService(RakshService):
 
             context.user_data["raksh_quantity"] = quantity
             context.user_data["raksh_step"] = "payment"
-            points_cost = self.get_total(quantity, "points")
-            stars_cost = self.get_total(quantity, "stars")
+            points_cost = self.get_total(quantity, "points", len(context.user_data.get("raksh_channels") or []))
+            stars_cost = self.get_total(quantity, "stars", len(context.user_data.get("raksh_channels") or []))
 
             await update.message.reply_text(
                 "📋 *مراجعة طلب رشق الاستفتاء*\n\n"
