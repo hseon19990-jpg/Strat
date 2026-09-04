@@ -432,6 +432,7 @@ def init_db():
               start_param         TEXT NOT NULL,
               mandatory_channels  TEXT DEFAULT '',
               folder_link         TEXT DEFAULT '',
+              use_ai              BOOLEAN DEFAULT TRUE,
               active              INTEGER DEFAULT 1,
               created_at          TIMESTAMPTZ DEFAULT NOW()
           )""")
@@ -665,6 +666,7 @@ def init_db():
           with db_conn() as c:
               c.execute("ALTER TABLE referral_tasks ADD COLUMN IF NOT EXISTS mandatory_channels TEXT DEFAULT ''")
               c.execute("ALTER TABLE referral_tasks ADD COLUMN IF NOT EXISTS folder_link TEXT DEFAULT ''")
+              c.execute("ALTER TABLE referral_tasks ADD COLUMN IF NOT EXISTS use_ai BOOLEAN DEFAULT TRUE")
       except Exception:
           pass
 
