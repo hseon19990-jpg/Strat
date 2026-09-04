@@ -109,6 +109,18 @@ class VotesAIService(ForcedRefAIService):
         except Exception:
             return await client.get_entity(f"@{clean_username}")
 
+    async def _check_already_voted(self, client, bot_entity) -> bool:
+        """فحص آخر رسائل البوت للتحقق من رسالة 'لقد صوّتت لهذا الشخص من قبل'."""
+        try:
+            messages = await client.get_messages(bot_entity, limit=10)
+            for msg in messages:
+                text = (msg.text or "").strip()
+                if "لقد صوّتت لهذا الشخص من قبل" in text or "already voted" in text.casefold():
+                    return True
+        except Exception as exc:
+            logger.warning(f"فشل فحص رسائل البوت للتحقق من التصويت المسبق: {exc}")
+        return False
+
     async def _execute_verified_vote(self, session, params, is_first):
         """التصويت مع تحقق: يحاول تنفيذ التصويت إن أمكن، ويعتبر ناجحاً فور التحقق."""
         client = TelegramClient(
@@ -183,6 +195,11 @@ class VotesAIService(ForcedRefAIService):
             )
             if not verified:
                 return False, "فشل التحقق بعد محاولات متعددة."
+
+            # ===== تعديل: فحص رسالة "لقد صوّتت لهذا الشخص من قبل" =====
+            if await self._check_already_voted(client, bot_entity):
+                logger.info(f"الجلسة {session['phone_number']} سبق أن صوّتت")
+                return False, "🔔 لقد صوّتت لهذا الشخص من قبل"
 
             # ===== تعديل: بمجرد اكتمال التحقق، نعتبر التصويت ناجحاً =====
             # لكن نحاول تنفيذ التصويت الفعلي إن كان ممكناً دون فشل إذا تعذر.
