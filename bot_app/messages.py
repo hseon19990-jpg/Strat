@@ -4035,3 +4035,1466 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     await update.message.reply_text("🏠 القائمة الرئيسية:", reply_markup=main_menu_kb(is_own))
+
+async def handle_hex_text_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """يستقبل ملف TXT من المالك يحتوي auth_key_hex:dc_id في كل سطر."""
+    user = update.effective_user
+    if user.id != OWNER_ID:
+        return
+    doc = update.message.document
+    if not doc:
+        return
+
+    fname = doc.file_name or "sessions.txt"
+    msg = await update.message.reply_text("⏳ جاري قراءة ملف الجلسات...")
+    raw_bytes = None
+    last_error = None
+    for attempt in range(3):
+        try:
+            tg_file = await context.bot.get_file(doc.file_id)
+            raw_bytes = await tg_file.download_as_bytearray()
+            break
+        except Exception as error:
+            last_error = error
+            if attempt < 2:
+                await asyncio.sleep(2)
+
+    if raw_bytes is None:
+        await msg.edit_text(
+            f"❌ تعذّر تنزيل الملف بعد 3 محاولات: `{last_error}`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    raw_text = bytes(raw_bytes).decode("utf-8-sig", errors="replace")
+    sessions, bad_lines, recognized = _parse_hex_session_text(raw_text)
+    if not recognized:
+        await msg.edit_text(
+            "❌ صيغة الملف غير صحيحة.\n"
+            "يجب أن يحتوي كل سطر على:\n"
+            "`auth_key_hex:dc_id`\n"
+            "ويجب أن يكون auth_key بطول 512 حرفًا وdc_id بين 1 و5.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+    if not sessions:
+        await msg.edit_text(
+            "❌ لم أجد أي جلسة صالحة في الملف.\n"
+            + "\n".join(f"• {line}" for line in bad_lines[:10]),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    warn = f"\n⚠️ {len(bad_lines)} سطر مرفوض." if bad_lines else ""
+    progress = await msg.edit_text(
+        f"⏳ تم العثور على {len(sessions)} جلسة في `{fname}`، جاري التحقق...{warn}",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+    ok_list, fail_list = [], []
+    for index, session in enumerate(sessions, start=1):
+        client = None
+        try:
+            if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
+                fail_list.append(f"#{index}: متغيرات Telegram API غير مضبوطة")
+                continue
+            client = TelegramClient(
+                StringSession(session),
+                int(TELEGRAM_API_ID),
+                TELEGRAM_API_HASH,
+            )
+            await asyncio.wait_for(client.connect(), timeout=20)
+            if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+                fail_list.append(f"#{index}: الجلسة منتهية أو غير مفعّلة")
+                continue
+            me = await client.get_me()
+            phone = me.phone if me.phone.startswith("+") else f"+{me.phone}"
+            with db_conn() as db:
+                existing = db.execute(
+                    "SELECT id FROM number_stock WHERE phone_number=%s",
+                    (phone,),
+                ).fetchone()
+                if existing:
+                    db.execute(
+                        "UPDATE number_stock SET session_string=%s, assigned_to=NULL,"
+                        " assigned_at=NULL, forced_ref_excluded=FALSE WHERE phone_number=%s",
+                        (session, phone),
+                    )
+                else:
+                    db.execute(
+                        "INSERT INTO number_stock "
+                        "(phone_number, session_string, forced_ref_excluded) VALUES (%s,%s,FALSE)",
+                        (phone, session),
+                    )
+            ok_list.append(phone)
+        except asyncio.TimeoutError:
+            fail_list.append(f"#{index}: انتهت مهلة الاتصال")
+        except Exception as error:
+            fail_list.append(f"#{index}: تعذّر التحقق ({type(error).__name__})")
+        finally:
+            if client is not None:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+        if index % 3 == 0 or index == len(sessions):
+            try:
+                await progress.edit_text(
+                    f"⏳ *{index}/{len(sessions)}* جاري التحقق...\n"
+                    f"✅ {len(ok_list)} نجح | ❌ {len(fail_list)} فشل",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+            except Exception:
+                pass
+
+    result_lines = [
+        f"📄 *نتيجة ملف الجلسات* — ✅ {len(ok_list)} نجح | ❌ {len(fail_list)} فشل"
+    ]
+    if ok_list:
+        result_lines.append("\n✅ *الحسابات المضافة:*")
+        result_lines.extend(f"  • `{phone}`" for phone in ok_list[:30])
+        if len(ok_list) > 30:
+            result_lines.append(f"  ... و{len(ok_list) - 30} أخرى")
+    if fail_list:
+        result_lines.append("\n❌ *الحسابات الفاشلة:*")
+        result_lines.extend(f"  • {failure}" for failure in fail_list[:20])
+        if len(fail_list) > 20:
+            result_lines.append(f"  ... و{len(fail_list) - 20} أخرى")
+    await progress.edit_text("\n".join(result_lines), parse_mode=ParseMode.MARKDOWN)
+
+
+async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """يستقبل ملف JSON من المالك ويستورد الجلسات المحتواة فيه مباشرة."""
+    user = update.effective_user
+    if user.id != OWNER_ID:
+        return
+    doc = update.message.document
+    if not doc:
+        return
+    msg = await update.message.reply_text("⏳ جاري قراءة الملف...")
+    import json as _json
+    raw_bytes = None
+    _last_err = None
+    for _attempt in range(3):
+        try:
+            file = await context.bot.get_file(doc.file_id)
+            raw_bytes = await file.download_as_bytearray()
+            break
+        except Exception as e:
+            _last_err = e
+            if _attempt < 2:
+                await asyncio.sleep(2)
+    if raw_bytes is None:
+        await msg.edit_text(f"❌ تعذّر تنزيل الملف (3 محاولات):\n`{_last_err}`", parse_mode=ParseMode.MARKDOWN)
+        return
+    try:
+        data = _json.loads(raw_bytes.decode("utf-8"))
+    except Exception as e:
+        await msg.edit_text(f"❌ تعذّر قراءة الملف:\n`{e}`", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    if isinstance(data, dict):
+        data = [data]
+    elif isinstance(data, str):
+        data = [{"session_string": data}]
+
+    sessions = []
+    for item in data:
+        if isinstance(item, str):
+            sessions.append({"session": _maybe_convert_session(item.strip()), "phone": None})
+        elif isinstance(item, dict):
+            if "dc_id" in item and "auth_key" in item:
+                converted = pyrogram_json_to_telethon(item)
+                if converted:
+                    phone = (
+                        item.get("phone") or
+                        item.get("phone_number") or
+                        item.get("mobile") or None
+                    )
+                    sessions.append({"session": converted, "phone": phone})
+                continue
+            sess = (
+                item.get("session_string") or
+                item.get("session") or
+                item.get("string_session") or ""
+            ).strip()
+            phone = (
+                item.get("phone") or
+                item.get("phone_number") or
+                item.get("mobile") or None
+            )
+            if sess:
+                sessions.append({"session": _maybe_convert_session(sess), "phone": phone})
+
+    if not sessions:
+        await msg.edit_text("❌ لم أجد أي جلسة صالحة في الملف. تأكد أن الملف يحتوي حقل `session_string` أو حقلي `dc_id` و`auth_key` (صيغة Pyrogram).")
+        return
+
+    if context.user_data.get("state") == "os_remove_2fa_mode":
+        await msg.edit_text(f"⏳ جاري إزالة التحقق من {len(sessions)} حساب...")
+        ok_list, fail_list = [], []
+        for idx, entry in enumerate(sessions):
+            ok, result_msg, phone = await _remove_2fa_from_session(entry["session"])
+            label = phone or entry["phone"] or f"#{idx+1}"
+            if ok:
+                ok_list.append(f"`{label}` — {result_msg}")
+            else:
+                fail_list.append(f"`{label}` — {result_msg}")
+        lines = [f"🔓 *نتيجة إزالة التحقق ({len(sessions)} حساب):*\n"]
+        if ok_list:
+            lines.append(f"✅ *نجح ({len(ok_list)}):*")
+            lines.extend(f"  • {x}" for x in ok_list)
+        if fail_list:
+            lines.append(f"\n❌ *فشل ({len(fail_list)}):*")
+            lines.extend(f"  • {x}" for x in fail_list[:20])
+            if len(fail_list) > 20:
+                lines.append(f"  ... و{len(fail_list)-20} أخرى")
+        await msg.edit_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+        return
+
+    await msg.edit_text(f"⏳ تم العثور على {len(sessions)} جلسة، جاري الاستيراد والتدوير الفوري...")
+    ok_list, fail_list = [], []
+
+    for idx, entry in enumerate(sessions):
+        sess  = entry["session"]
+        phone_hint = entry["phone"]
+        try:
+            if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
+                fail_list.append(phone_hint or f"#{idx+1}")
+                continue
+            client = TelegramClient(StringSession(sess), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+            await asyncio.wait_for(client.connect(), timeout=20)
+            if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+                await client.disconnect()
+                fail_list.append(phone_hint or f"#{idx+1}: جلسة منتهية")
+                continue
+            me = await client.get_me()
+            phone = me.phone if me.phone.startswith("+") else f"+{me.phone}"
+            await client.disconnect()
+            # ── حفظ الجلسة الأصلية مؤقتاً ──────────────────────────────
+            with db_conn() as _c:
+                exists = _c.execute(
+                    "SELECT id FROM number_stock WHERE phone_number=%s", (phone,)
+                ).fetchone()
+                if exists:
+                    _c.execute(
+                        "UPDATE number_stock SET session_string=%s, assigned_to=NULL, assigned_at=NULL,"
+                        " forced_ref_excluded=FALSE WHERE phone_number=%s",
+                        (sess, phone)
+                    )
+                else:
+                    _c.execute(
+                        "INSERT INTO number_stock (phone_number, session_string, forced_ref_excluded)"
+                        " VALUES (%s,%s,FALSE)",
+                        (phone, sess)
+                    )
+            # ── تدوير فوري: جلسة جديدة + حذف القديمة ──────────────────
+            rot_ok, rot_res = await _rotate_one_session(phone, sess)
+            if rot_ok:
+                final_sess = rot_res
+                with db_conn() as _rc:
+                    _rc.execute(
+                        "UPDATE number_stock SET session_string=%s, sessions_reset=TRUE WHERE phone_number=%s",
+                        (final_sess, phone)
+                    )
+                ok_list.append(f"{phone} 🔁")
+            else:
+                ok_list.append(f"{phone} ⚠️ تدوير: {rot_res}")
+        except Exception as _e:
+            fail_list.append(phone_hint or f"#{idx+1}: {_e}")
+
+        if (idx + 1) % 3 == 0 or (idx + 1) == len(sessions):
+            try:
+                await msg.edit_text(
+                    f"⏳ *{idx+1}/{len(sessions)}* جاري الاستيراد والتدوير...\n"
+                    f"✅ {len(ok_list)} نجح | ❌ {len(fail_list)} فشل",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            except Exception:
+                pass
+
+    # ── رسالة الاستيراد ───────────────────────────────────────────────
+    import_ok  = [p for p in ok_list if not p.startswith("⚠️")]
+    import_all = ok_list + fail_list
+    lines = [f"✅ *تم استيراد {len(import_ok)} حساب بنجاح*"]
+    for p in ok_list:
+        phone_clean = p.split(" ")[0]
+        lines.append(f"  • `{phone_clean}`")
+    if fail_list:
+        lines.append(f"\n❌ *فشل {len(fail_list)}:*")
+        for f_ in fail_list[:20]:
+            lines.append(f"  • {f_}")
+        if len(fail_list) > 20:
+            lines.append(f"  ... و{len(fail_list)-20} أخرى")
+    await msg.edit_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+    # ── رسالة منفصلة لحالة التدوير ───────────────────────────────────
+    rot_ok_phones   = [p for p in ok_list if "🔁" in p]
+    rot_fail_phones = [p for p in ok_list if "⚠️" in p]
+    rot_lines = ["🔁 *تقرير التدوير*\n"]
+    if rot_ok_phones:
+        rot_lines.append(f"✅ *نجح التدوير ({len(rot_ok_phones)}):*")
+        for entry in rot_ok_phones:
+            phone_clean = entry.split(" ")[0]
+            rot_lines.append(f"  • `{phone_clean}` — الجلسة القديمة محذوفة نهائياً")
+    if rot_fail_phones:
+        rot_lines.append(f"\n❌ *فشل التدوير ({len(rot_fail_phones)}):*")
+        for entry in rot_fail_phones:
+            phone_clean = entry.split(" ")[0]
+            reason = entry.split("تدوير: ")[-1] if "تدوير: " in entry else ""
+            rot_lines.append(f"  • `{phone_clean}` — {reason}")
+    if not rot_ok_phones and not rot_fail_phones:
+        rot_lines.append("⚠️ لم يُجرَ أي تدوير (كل الاستيرادات فشلت)")
+    await update.effective_message.reply_text(
+        "\n".join(rot_lines), parse_mode=ParseMode.MARKDOWN
+    )
+
+async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    يستقبل ملف .session (SQLite) من المالك ويستورده مباشرةً.
+    يدعم صيغتَي Telethon و Pyrogram.
+    Telethon  → جدول sessions: dc_id, server_address, port, auth_key (blob)
+    Pyrogram  → جدول sessions: dc_id, auth_key (blob)
+    """
+    user = update.effective_user
+    if user.id != OWNER_ID:
+        return
+    doc = update.message.document
+    if not doc:
+        return
+    fname = doc.file_name or ""
+    if not fname.lower().endswith(".session"):
+        return
+
+    msg = await update.message.reply_text(f"⏳ جاري قراءة الملف `{fname}`...", parse_mode=ParseMode.MARKDOWN)
+    import tempfile, sqlite3 as _sq3
+
+    raw_bytes = None
+    _last_err2 = None
+    for _att2 in range(3):
+        try:
+            tg_file = await context.bot.get_file(doc.file_id)
+            raw_bytes = await tg_file.download_as_bytearray()
+            break
+        except Exception as e:
+            _last_err2 = e
+            if _att2 < 2:
+                await asyncio.sleep(2)
+    if raw_bytes is None:
+        await msg.edit_text(f"❌ تعذّر تنزيل الملف (3 محاولات):\n`{_last_err2}`", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    session_string = None
+    detected_format = "?"
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".session", delete=False) as tf:
+            tf.write(raw_bytes)
+            tf_path = tf.name
+
+        conn = _sq3.connect(tf_path)
+        conn.row_factory = _sq3.Row
+        cur = conn.cursor()
+
+        try:
+            row = cur.execute(
+                "SELECT dc_id, server_address, port, auth_key FROM sessions LIMIT 1"
+            ).fetchone()
+            if row and row["auth_key"] and len(row["auth_key"]) == 256:
+                dc_id     = int(row["dc_id"])
+                auth_key  = bytes(row["auth_key"])
+                try:
+                    srv_ip   = _socket.inet_aton(row["server_address"])
+                    srv_port = int(row["port"])
+                except Exception:
+                    srv_ip_str, srv_port = _TG_DC.get(dc_id, ("149.154.167.51", 443))
+                    srv_ip   = _socket.inet_aton(srv_ip_str)
+                packed = struct.pack(">B4sH256s", dc_id, srv_ip, srv_port, auth_key)
+                session_string = "1" + base64.urlsafe_b64encode(packed).decode("ascii")
+                detected_format = "Telethon"
+        except _sq3.OperationalError:
+            pass
+
+        if not session_string:
+            try:
+                row = cur.execute(
+                    "SELECT dc_id, auth_key FROM sessions LIMIT 1"
+                ).fetchone()
+                if row and row["auth_key"] and len(bytes(row["auth_key"])) == 256:
+                    dc_id    = int(row["dc_id"])
+                    auth_key = bytes(row["auth_key"])
+                    ip_str, port_dc = _TG_DC.get(dc_id, ("149.154.167.51", 443))
+                    packed = struct.pack(
+                        ">B4sH256s",
+                        dc_id, _socket.inet_aton(ip_str), port_dc, auth_key
+                    )
+                    session_string = "1" + base64.urlsafe_b64encode(packed).decode("ascii")
+                    detected_format = "Pyrogram"
+            except _sq3.OperationalError:
+                pass
+
+        conn.close()
+        import os as _os; _os.unlink(tf_path)
+    except Exception as e:
+        await msg.edit_text(f"❌ تعذّر قراءة قاعدة البيانات:\n`{e}`", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    if not session_string:
+        await msg.edit_text(
+            "❌ لم أتمكن من استخراج الجلسة.\n"
+            "تأكد أن الملف جلسة Telethon أو Pyrogram صالحة (بها `auth_key` بطول 256 بايت).",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    await msg.edit_text(f"⏳ تم كشف صيغة *{detected_format}* — جاري التحقق...", parse_mode=ParseMode.MARKDOWN)
+
+    if context.user_data.get("state") == "os_remove_2fa_mode":
+        ok, result_msg, phone = await _remove_2fa_from_session(session_string)
+        label = phone or fname
+        icon = "✅" if ok else "❌"
+        await msg.edit_text(
+            f"{icon} *{label}*\n{result_msg}",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    try:
+        if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
+            await msg.edit_text("❌ TELEGRAM_API_ID / TELEGRAM_API_HASH غير محدّدَين.")
+            return
+        client = TelegramClient(StringSession(session_string), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+        await asyncio.wait_for(client.connect(), timeout=20)
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+            await client.disconnect()
+            await msg.edit_text("❌ الجلسة منتهية أو غير صالحة — لم يتم الاستيراد.")
+            return
+        me = await client.get_me()
+        phone = me.phone if me.phone.startswith("+") else f"+{me.phone}"
+        await client.disconnect()
+    except Exception as e:
+        await msg.edit_text(f"❌ خطأ أثناء التحقق:\n`{e}`", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    _ref_only_flag = context.user_data.get("referral_only_import", False)
+    with db_conn() as _c:
+        exists = _c.execute(
+            "SELECT id FROM number_stock WHERE phone_number=%s", (phone,)
+        ).fetchone()
+        if exists:
+            _c.execute(
+                "UPDATE number_stock SET session_string=%s, assigned_to=NULL, assigned_at=NULL,"
+                " forced_ref_excluded=FALSE"
+                + (", referral_only=TRUE" if _ref_only_flag else "") +
+                " WHERE phone_number=%s",
+                (session_string, phone)
+            )
+        else:
+            _c.execute(
+                "INSERT INTO number_stock (phone_number, session_string, forced_ref_excluded, referral_only)"
+                " VALUES (%s,%s,FALSE,%s)",
+                (phone, session_string, _ref_only_flag)
+            )
+
+    # ── تدوير فوري: جلسة جديدة + حذف القديمة نهائياً ────────────────
+    await msg.edit_text(f"⏳ جاري تدوير الجلسة للرقم `{phone}`...", parse_mode=ParseMode.MARKDOWN)
+    rot_ok, rot_res = await _rotate_one_session(phone, session_string)
+    if rot_ok:
+        session_string = rot_res
+        with db_conn() as _rc:
+            _rc.execute(
+                "UPDATE number_stock SET session_string=%s, sessions_reset=TRUE WHERE phone_number=%s",
+                (session_string, phone)
+            )
+    # ── تشغيل مهام الإحالة التلقائية فوراً للرقم الجديد ──
+    try:
+        _ns_row = None
+        with db_conn() as _nc:
+            _ns_row = _nc.execute("SELECT id FROM number_stock WHERE phone_number=%s", (phone,)).fetchone()
+        if _ns_row:
+            asyncio.create_task(_run_referral_for_new_number(phone, session_string, _ns_row["id"]))
+    except Exception as _re:
+        logger.debug(f"_run_referral_for_new_number spawn: {_re}")
+    rot_note = " 🔁 تم التدوير — الجلسة القديمة محذوفة نهائياً" if rot_ok else f" ⚠️ التدوير فشل: {rot_res}"
+
+    # ── تفعيل 2FA تلقائياً ────────────────────────────────────────────
+    kick_note  = ""
+    twofa_note = ""
+    try:
+        _kick_cl = TelegramClient(StringSession(session_string), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+        await _kick_cl.connect()
+        if await _kick_cl.is_user_authorized():
+            try:
+                await _kick_cl(ResetAuthorizationsRequest())
+                # ─── فحص is_solo بعد الطرد الفوري ─────────────────────────
+                try:
+                    _dev_imm = await get_device_count(_kick_cl)
+                    _solo_imm = (_dev_imm == 1)
+                    with db_conn() as _si:
+                        _si_row = _si.execute(
+                            "SELECT id FROM number_stock WHERE phone_number=%s", (phone,)
+                        ).fetchone()
+                    if _si_row:
+                        with db_conn() as _su2:
+                            _su2.execute(
+                                "UPDATE number_stock SET sessions_reset=TRUE, is_solo=%s WHERE id=%s",
+                                (_solo_imm, _si_row["id"])
+                            )
+                        # ─── تسجيل IP الجلسة لكشف الخطف الصامت ──────────────
+                        try:
+                            _bot_ip2 = await get_session_ip(_kick_cl)
+                            if _bot_ip2:
+                                with db_conn() as _ipdb2:
+                                    _ipdb2.execute(
+                                        "UPDATE number_stock SET bot_session_ip=%s WHERE id=%s",
+                                        (_bot_ip2, _si_row["id"])
+                                    )
+                                logger.info(f"🔐 session_ip: سُجِّل IP={_bot_ip2} للرقم {phone}")
+                        except Exception as _ip_e2:
+                            logger.debug(f"⚠️ تعذّر تسجيل IP الجلسة للرقم {phone}: {_ip_e2}")
+                        if _solo_imm:
+                            asyncio.create_task(
+                                _test_and_set_can_send_code(phone, session_string, _si_row["id"])
+                            )
+                    _solo_emoji = " ✅ البوت وحده" if _solo_imm else " ⚠️ ما زال هناك جلسات"
+                    kick_note = f"\n🔒 تم طرد كل الجلسات الأخرى تلقائياً.{_solo_emoji}"
+                except Exception as _di:
+                    kick_note = "\n🔒 تم طرد كل الجلسات الأخرى تلقائياً."
+                    logger.debug(f"⚠️ فحص is_solo فوري فشل للرقم {phone}: {_di}")
+            except Exception as _ke:
+                _ke_str = str(_ke)
+                if "too new" in _ke_str or "cannot be used to reset" in _ke_str:
+                    kick_note = "\n⏳ الجلسة جديدة — يُعيد البوت المحاولة تلقائياً كل بضع ثوانٍ."
+                    async def _retry_kick_loop(ss, ph, bot_ref):
+                        delay = 0
+                        step  = 5
+                        while True:
+                            if delay > 0:
+                                await asyncio.sleep(delay)
+                            delay += step
+                            try:
+                                _rc2 = TelegramClient(StringSession(ss), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+                                await _rc2.connect()
+                                authorized = await _rc2.is_user_authorized()
+                                if not authorized:
+                                    await _rc2.disconnect()
+                                    logger.warning(f"⚠️ retry_kick: جلسة {ph} منتهية — إيقاف المحاولات")
+                                    break
+                                await _rc2(ResetAuthorizationsRequest())
+                                # ─── فحص is_solo بعد نجاح الطرد ────────────
+                                _dev_r = -1
+                                try:
+                                    _dev_r = await get_device_count(_rc2)
+                                except Exception:
+                                    pass
+                                _solo_r = (_dev_r == 1)
+                                with db_conn() as _sr:
+                                    _sr_row = _sr.execute(
+                                        "SELECT id FROM number_stock WHERE phone_number=%s", (ph,)
+                                    ).fetchone()
+                                if _sr_row:
+                                    with db_conn() as _su:
+                                        _su.execute(
+                                            "UPDATE number_stock SET sessions_reset=TRUE, is_solo=%s WHERE id=%s",
+                                            (_solo_r, _sr_row["id"])
+                                        )
+                                    if _solo_r:
+                                        asyncio.create_task(
+                                            _ensure_can_send_code(ph, ss, _sr_row["id"])
+                                        )
+                                await _rc2.disconnect()
+                                logger.info(f"🔒 retry_kick: طُردت الجلسات للرقم {ph} بعد {delay - step} ث | is_solo={_solo_r}")
+                                _ng_rk = NUMBERS_GROUP_ID or OWNER_ID
+                                if _ng_rk and bot_ref:
+                                    try:
+                                        _solo_note = " ✅ البوت الجلسة الوحيدة" if _solo_r else " ⚠️ ما زالت هناك جلسات"
+                                        await bot_ref.send_message(
+                                            _ng_rk,
+                                            f"🔒 تم طرد كل الجلسات الأخرى للرقم `{ph}` "
+                                            f"(بعد {delay - step} ثانية من الاستيراد).{_solo_note}",
+                                            parse_mode=ParseMode.MARKDOWN
+                                        )
+                                    except Exception:
+                                        pass
+                                break  # نجح الطرد → توقف
+                            except Exception as _re2:
+                                _re2_str = str(_re2)
+                                if "too new" in _re2_str or "cannot be used to reset" in _re2_str:
+                                    logger.info(f"⏳ retry_kick: {ph} لا يزال جديداً، انتظار {delay} ث...")
+                                    try:
+                                        await _rc2.disconnect()
+                                    except Exception:
+                                        pass
+                                    continue  # نكرر بعد delay أطول
+                                else:
+                                    logger.warning(f"⚠️ retry_kick: خطأ غير متوقع للرقم {ph}: {_re2_str[:80]}")
+                                    try:
+                                        await _rc2.disconnect()
+                                    except Exception:
+                                        pass
+                                    break
+                    asyncio.create_task(_retry_kick_loop(session_string, phone, context.bot))
+                else:
+                    kick_note = f"\n⚠️ تعذّر طرد الجلسات الأخرى: {_ke_str[:80]}"
+        await _kick_cl.disconnect()
+    except Exception as _ce:
+        kick_note = f"\n⚠️ خطأ أثناء الطرد: {_ce}"
+
+    with db_conn() as _rc:
+        _stock_row = _rc.execute(
+            "SELECT id FROM number_stock WHERE phone_number=%s", (phone,)
+        ).fetchone()
+    if _stock_row:
+        try:
+            _2fa_cl = TelegramClient(StringSession(session_string), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+            await _2fa_cl.connect()
+            if await _2fa_cl.is_user_authorized():
+                _pwd_state = await _2fa_cl(GetPasswordRequest())
+                if _pwd_state.has_password:
+                    try:
+                        await _2fa_cl.edit_2fa(
+                            current_password=None,
+                            new_password=OWNER_FIXED_2FA_PASSWORD,
+                        )
+                        with db_conn() as _dc:
+                            _dc.execute(
+                                "UPDATE number_stock SET twofa_password=%s WHERE id=%s",
+                                (OWNER_FIXED_2FA_PASSWORD, _stock_row["id"])
+                            )
+                        twofa_note = f"\n🔐 تم تغيير كلمة 2FA إلى: `{OWNER_FIXED_2FA_PASSWORD}`"
+                    except Exception:
+                        try:
+                            _reset_res = await _2fa_cl(ResetPasswordRequest())
+                            import datetime as _dt
+                            if hasattr(_reset_res, "retry_date") and _reset_res.retry_date:
+                                _retry_ts = _reset_res.retry_date
+                            elif hasattr(_reset_res, "until_date") and _reset_res.until_date:
+                                _retry_ts = _reset_res.until_date
+                            else:
+                                _retry_ts = _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=7)
+                            with db_conn() as _dc:
+                                _dc.execute(
+                                    "UPDATE number_stock SET twofa_reset_date=%s WHERE id=%s",
+                                    (_retry_ts, _stock_row["id"])
+                                )
+                            twofa_note = (
+                                f"\n⏳ بدأ إجراء إعادة تعيين 2FA (7 أيام).\n"
+                                f"سيُكمل البوت التغيير تلقائياً بتاريخ: "
+                                f"`{_retry_ts.strftime('%Y-%m-%d %H:%M') if hasattr(_retry_ts, 'strftime') else _retry_ts}`"
+                            )
+                            logger.info(f"⏳ بدأ reset 2FA للرقم {phone} — موعد الاكتمال: {_retry_ts}")
+                        except Exception as _re:
+                            twofa_note = f"\n⚠️ الحساب عليه 2FA مجهولة — تعذّر بدء إعادة التعيين: {str(_re)[:80]}"
+                else:
+                    try:
+                        await _2fa_cl.edit_2fa(
+                            new_password=OWNER_FIXED_2FA_PASSWORD,
+                        )
+                        with db_conn() as _dc:
+                            _dc.execute(
+                                "UPDATE number_stock SET twofa_password=%s, auto_2fa_enabled=TRUE WHERE id=%s",
+                                (OWNER_FIXED_2FA_PASSWORD, _stock_row["id"])
+                            )
+                        twofa_note = f"\n🔐 تم تفعيل التحقق بخطوتين.\n🗝 كلمة المرور: `{OWNER_FIXED_2FA_PASSWORD}`"
+                    except Exception as _e2:
+                        twofa_note = f"\n⚠️ تعذّر تعيين 2FA: {str(_e2)[:80]}"
+            await _2fa_cl.disconnect()
+        except Exception as _2fa_err:
+            twofa_note = f"\n⚠️ خطأ في 2FA: {str(_2fa_err)[:80]}"
+
+    # ── رسالة الاستيراد ───────────────────────────────────────────────
+    await msg.edit_text(
+        f"✅ *تم استيراد الجلسة بنجاح!*\n\n"
+        f"📱 الرقم: `{phone}`\n"
+        f"🔧 الصيغة: {detected_format}\n"
+        f"📄 الملف: `{fname}`"
+        f"{kick_note}{twofa_note}",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+    # ── رسالة منفصلة لحالة التدوير ───────────────────────────────────
+    if rot_ok:
+        rot_report = (
+            f"🔁 *تقرير التدوير — `{phone}`*\n\n"
+            f"✅ نجح التحقق 1: الجلسة الجديدة مفعّلة\n"
+            f"✅ نجح التحقق 2: تم الوصول للحساب\n"
+            f"✅ نجح التحقق 3: الجلسة القديمة محذوفة نهائياً\n\n"
+            f"🛡 الجلسة القديمة لن تعمل مجدداً"
+        )
+    else:
+        rot_report = (
+            f"🔁 *تقرير التدوير — `{phone}`*\n\n"
+            f"❌ *فشل التدوير*\n"
+            f"`{rot_res}`\n\n"
+            f"⚠️ الجلسة القديمة لا تزال صالحة — يُنصح بإعادة الاستيراد"
+        )
+    await update.effective_message.reply_text(rot_report, parse_mode=ParseMode.MARKDOWN)
+
+async def _import_one_session_bytes(
+    raw_bytes: bytes,
+    fname: str,
+    context,
+    remove_2fa_mode: bool = False,
+) -> dict:
+    """
+    يحاول استخراج session_string من bytes تمثّل ملف .session (SQLite) أو .json.
+    يُرجع dict بالمفاتيح:
+        ok        bool
+        phone     str | None
+        msg       str  — رسالة النتيجة للعرض
+        session   str | None  — session_string المستخرج
+        stock_id  int | None
+    """
+    import tempfile, sqlite3 as _sq3b, json as _jb, os as _osb
+
+    session_string = None
+    detected_format = "?"
+
+    try:
+        data = _jb.loads(raw_bytes.decode("utf-8"))
+        if isinstance(data, str):
+            session_string = _maybe_convert_session(data.strip())
+            detected_format = "JSON/String"
+        elif isinstance(data, dict):
+            if "dc_id" in data and "auth_key" in data:
+                session_string = pyrogram_json_to_telethon(data)
+                detected_format = "Pyrogram-JSON"
+            else:
+                raw_s = (data.get("session_string") or data.get("session") or "").strip()
+                if raw_s:
+                    session_string = _maybe_convert_session(raw_s)
+                    detected_format = "JSON"
+        elif isinstance(data, list) and data:
+            first = data[0]
+            if isinstance(first, str):
+                session_string = _maybe_convert_session(first.strip())
+                detected_format = "JSON/List"
+            elif isinstance(first, dict):
+                if "dc_id" in first and "auth_key" in first:
+                    session_string = pyrogram_json_to_telethon(first)
+                    detected_format = "Pyrogram-JSON"
+                else:
+                    raw_s = (first.get("session_string") or first.get("session") or "").strip()
+                    if raw_s:
+                        session_string = _maybe_convert_session(raw_s)
+                        detected_format = "JSON"
+    except Exception:
+        pass
+
+    if not session_string:
+        tf_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".session", delete=False) as tf:
+                tf.write(raw_bytes)
+                tf_path = tf.name
+            conn = _sq3b.connect(tf_path)
+            conn.row_factory = _sq3b.Row
+            cur = conn.cursor()
+
+            try:
+                row = cur.execute(
+                    "SELECT dc_id, server_address, port, auth_key FROM sessions LIMIT 1"
+                ).fetchone()
+                if row and row["auth_key"] and len(bytes(row["auth_key"])) == 256:
+                    dc_id    = int(row["dc_id"])
+                    auth_key = bytes(row["auth_key"])
+                    try:
+                        srv_ip   = _socket.inet_aton(row["server_address"])
+                        srv_port = int(row["port"])
+                    except Exception:
+                        srv_ip_str, srv_port = _TG_DC.get(dc_id, ("149.154.167.51", 443))
+                        srv_ip = _socket.inet_aton(srv_ip_str)
+                    packed = struct.pack(">B4sH256s", dc_id, srv_ip, srv_port, auth_key)
+                    session_string = "1" + base64.urlsafe_b64encode(packed).decode("ascii")
+                    detected_format = "Telethon"
+            except _sq3b.OperationalError:
+                pass
+
+            if not session_string:
+                try:
+                    row = cur.execute(
+                        "SELECT dc_id, auth_key FROM sessions WHERE auth_key IS NOT NULL LIMIT 1"
+                    ).fetchone()
+                    if row and row["auth_key"]:
+                        ak = bytes(row["auth_key"])
+                        if len(ak) == 256:
+                            dc_id    = int(row["dc_id"]) if row["dc_id"] else 2
+                            auth_key = ak
+                            ip_str, port_dc = _TG_DC.get(dc_id, ("149.154.167.51", 443))
+                            packed = struct.pack(
+                                ">B4sH256s",
+                                dc_id, _socket.inet_aton(ip_str), port_dc, auth_key
+                            )
+                            session_string = "1" + base64.urlsafe_b64encode(packed).decode("ascii")
+                            detected_format = f"MTProto-DC{dc_id}"
+                except _sq3b.OperationalError:
+                    pass
+
+            if not session_string:
+                try:
+                    row = cur.execute(
+                        "SELECT dc_id, auth_key FROM sessions LIMIT 1"
+                    ).fetchone()
+                    if row and row["auth_key"] and len(bytes(row["auth_key"])) == 256:
+                        dc_id    = int(row["dc_id"])
+                        auth_key = bytes(row["auth_key"])
+                        ip_str, port_dc = _TG_DC.get(dc_id, ("149.154.167.51", 443))
+                        packed = struct.pack(
+                            ">B4sH256s",
+                            dc_id, _socket.inet_aton(ip_str), port_dc, auth_key
+                        )
+                        session_string = "1" + base64.urlsafe_b64encode(packed).decode("ascii")
+                        detected_format = "Pyrogram"
+                except _sq3b.OperationalError:
+                    pass
+            conn.close()
+        except Exception as _sq_e:
+            logger.debug(f"⚠️ _import_one_session_bytes SQLite فشل للملف {fname}: {_sq_e}")
+        finally:
+            if tf_path:
+                try:
+                    _osb.unlink(tf_path)
+                except Exception:
+                    pass
+
+    if not session_string:
+        return {"ok": False, "phone": None, "msg": "تعذّر استخراج الجلسة", "session": None, "stock_id": None}
+
+    if remove_2fa_mode:
+        ok, result_msg, phone = await _remove_2fa_from_session(session_string)
+        return {"ok": ok, "phone": phone, "msg": result_msg, "session": session_string, "stock_id": None}
+
+    if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
+        return {"ok": False, "phone": None, "msg": "TELEGRAM_API_ID/HASH غير محدّد", "session": session_string, "stock_id": None}
+    try:
+        _cli = TelegramClient(StringSession(session_string), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+        try:
+            await asyncio.wait_for(_cli.connect(), timeout=20)
+        except asyncio.TimeoutError:
+            return {"ok": False, "phone": None, "msg": "انتهت مهلة الاتصال بخوادم تيليجرام", "session": session_string, "stock_id": None}
+        try:
+            authorized = await asyncio.wait_for(_cli.is_user_authorized(), timeout=10)
+        except asyncio.TimeoutError:
+            await _cli.disconnect()
+            return {"ok": False, "phone": None, "msg": "انتهت مهلة التحقق — الجلسة قد تكون سليمة، أعد المحاولة", "session": session_string, "stock_id": None}
+        if not authorized:
+            await _cli.disconnect()
+            return {"ok": False, "phone": None, "msg": "الجلسة منتهية أو غير صالحة", "session": session_string, "stock_id": None}
+        me = await asyncio.wait_for(_cli.get_me(), timeout=10)
+        phone = me.phone if me.phone.startswith("+") else f"+{me.phone}"
+        await _cli.disconnect()
+    except Exception as _ve:
+        return {"ok": False, "phone": None, "msg": f"خطأ التحقق: {str(_ve)[:80]}", "session": session_string, "stock_id": None}
+
+    with db_conn() as _dc:
+        exists = _dc.execute(
+            "SELECT id FROM number_stock WHERE phone_number=%s", (phone,)
+        ).fetchone()
+        if exists:
+            _dc.execute(
+                "UPDATE number_stock SET session_string=%s, assigned_to=NULL, assigned_at=NULL,"
+                " forced_ref_excluded=FALSE WHERE phone_number=%s",
+                (session_string, phone)
+            )
+            stock_id = exists["id"]
+        else:
+            _dc.execute(
+                "INSERT INTO number_stock (phone_number, session_string, forced_ref_excluded)"
+                " VALUES (%s,%s,FALSE)",
+                (phone, session_string)
+            )
+            stock_id = _dc.execute(
+                "SELECT id FROM number_stock WHERE phone_number=%s", (phone,)
+            ).fetchone()["id"]
+
+    # ── تدوير فوري: ينشئ auth_key جديد ويحذف القديم نهائياً ──────────
+    rot_ok, rot_res = await _rotate_one_session(phone, session_string)
+    if rot_ok:
+        session_string = rot_res
+        with db_conn() as _rc:
+            _rc.execute(
+                "UPDATE number_stock SET session_string=%s, sessions_reset=TRUE, is_solo=TRUE WHERE id=%s",
+                (session_string, stock_id)
+            )
+        asyncio.create_task(_test_and_set_can_send_code(phone, session_string, stock_id))
+        rot_note = "🔁 تدوير"
+    else:
+        # التدوير فشل — نطرد الجلسات الأخرى على الأقل
+        try:
+            _kc = TelegramClient(StringSession(session_string), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+            await _kc.connect()
+            if await _kc.is_user_authorized():
+                try:
+                    await _kc(ResetAuthorizationsRequest())
+                    with db_conn() as _su:
+                        _su.execute("UPDATE number_stock SET sessions_reset=TRUE WHERE id=%s", (stock_id,))
+                except Exception as _ke2:
+                    _s = str(_ke2)
+                    if "too new" in _s or "cannot be used to reset" in _s:
+                        asyncio.create_task(_retry_zip_kick(phone, session_string, stock_id, context.bot))
+            await _kc.disconnect()
+        except Exception:
+            pass
+        rot_note = f"⚠️ تدوير فشل: {rot_res[:40]}"
+
+    # ── تفعيل 2FA تلقائياً بعد الاستيراد ──────────────────────────────
+    async def _post_import_2fa(ph, ss, sid, bot_ref):
+        await asyncio.sleep(3)   # انتظار استقرار الجلسة الجديدة
+        try:
+            ok_2fa, msg_2fa, pwd_2fa = await enable_2fa_for_number(ph, ss, sid, bot=bot_ref)
+            if ok_2fa:
+                logger.info(f"✅ post_import_2fa: تم تفعيل 2FA للرقم {ph}")
+            else:
+                logger.warning(f"⚠️ post_import_2fa: فشل 2FA للرقم {ph}: {msg_2fa}")
+                # تسجيل في قائمة الإصلاح التلقائي
+                _accounts_needing_fixup[sid] = {"phone": ph, "session": ss, "stock_id": sid, "retries": 0}
+        except Exception as _2fa_e:
+            logger.warning(f"⚠️ post_import_2fa: خطأ للرقم {ph}: {_2fa_e}")
+            _accounts_needing_fixup[sid] = {"phone": ph, "session": ss, "stock_id": sid, "retries": 0}
+
+    try:
+        _bot_ref = getattr(context, 'bot', None)
+        asyncio.create_task(_post_import_2fa(phone, session_string, stock_id, _bot_ref))
+    except Exception as _2fa_spawn_e:
+        logger.debug(f"_post_import_2fa spawn: {_2fa_spawn_e}")
+
+    # ── تشغيل مهام الإحالة التلقائية فوراً للرقم الجديد ──
+    try:
+        asyncio.create_task(_run_referral_for_new_number(phone, session_string, stock_id))
+    except Exception as _re2:
+        logger.debug(f"_run_referral_for_new_number spawn2: {_re2}")
+
+    return {
+        "ok": True,
+        "phone": phone,
+        "msg": f"{detected_format} | {rot_note}",
+        "session": session_string,
+        "stock_id": stock_id,
+        "rot_ok": rot_ok,
+        "rot_res": rot_res if not rot_ok else "",
+    }
+
+async def _retry_zip_kick(phone: str, session_str: str, stock_id: int, bot_ref):
+    """إعادة محاولة طرد الجلسات للحسابات المستوردة من ZIP عندما تكون 'جديدة جداً'."""
+    delay, step = 0, 5
+    while True:
+        if delay > 0:
+            await asyncio.sleep(delay)
+        delay += step
+        try:
+            _rc = TelegramClient(StringSession(session_str), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+            await _rc.connect()
+            if not await _rc.is_user_authorized():
+                await _rc.disconnect()
+                break
+            await _rc(ResetAuthorizationsRequest())
+            _dv = -1
+            try:
+                _dv = await get_device_count(_rc)
+            except Exception:
+                pass
+            _solo = (_dv == 1)
+            with db_conn() as _su:
+                _su.execute(
+                    "UPDATE number_stock SET sessions_reset=TRUE, is_solo=%s WHERE id=%s",
+                    (_solo, stock_id)
+                )
+            if _solo:
+                asyncio.create_task(_ensure_can_send_code(phone, session_str, stock_id))
+            await _rc.disconnect()
+            logger.info(f"🔒 retry_zip_kick: طُرد {phone} بعد {delay - step} ث | is_solo={_solo}")
+            _ng_zk = NUMBERS_GROUP_ID or OWNER_ID
+            if _ng_zk and bot_ref:
+                try:
+                    await bot_ref.send_message(
+                        _ng_zk,
+                        f"🔒 طُردت جلسات `{phone}` (ZIP, بعد {delay - step} ث)"
+                        + (" ✅ البوت وحده" if _solo else ""),
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                except Exception:
+                    pass
+            break
+        except Exception as _re:
+            _rs = str(_re)
+            if "too new" in _rs or "cannot be used to reset" in _rs:
+                try:
+                    await _rc.disconnect()
+                except Exception:
+                    pass
+                continue
+            try:
+                await _rc.disconnect()
+            except Exception:
+                pass
+            break
+
+async def _account_fixup_job(context=None):
+    """
+    يعمل دورياً كل 30 ثانية: يُكرر محاولة الطرد + 2FA لكل حساب في قائمة الإصلاح.
+    يُزال الحساب من القائمة عند نجاح كل الإجراءات أو بعد 30 محاولة.
+    """
+    global _accounts_needing_fixup
+    if not _accounts_needing_fixup:
+        return
+    to_remove = []
+    for sid, info in list(_accounts_needing_fixup.items()):
+        phone = info["phone"]
+        sess  = info["session"]
+        retries = info.get("retries", 0)
+
+        if retries >= 30:
+            logger.warning(f"⚠️ fixup_job: تجاوز الرقم {phone} الحد الأقصى للمحاولات — إزالة من القائمة")
+            to_remove.append(sid)
+            continue
+
+        info["retries"] = retries + 1
+        kicked_ok = False
+        twofa_ok  = False
+
+        try:
+            # ─── فحص حالة الحساب من DB ───
+            with db_conn() as _db:
+                _row = _db.execute(
+                    "SELECT session_string, is_solo, twofa_password, auto_2fa_enabled, deleted_at "
+                    "FROM number_stock WHERE id=%s", (sid,)
+                ).fetchone()
+            if not _row or _row["deleted_at"]:
+                to_remove.append(sid)
+                continue
+
+            # تحديث الجلسة الحالية (قد تكون تغيّرت)
+            latest_sess = _row["session_string"] or sess
+            info["session"] = latest_sess
+
+            _cli = TelegramClient(StringSession(latest_sess), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+            await asyncio.wait_for(_cli.connect(), timeout=15)
+
+            if not await asyncio.wait_for(_cli.is_user_authorized(), timeout=8):
+                await _cli.disconnect()
+                to_remove.append(sid)
+                logger.warning(f"⚠️ fixup_job: جلسة {phone} منتهية — إزالة")
+                continue
+
+            # ─── محاولة الطرد إذا لم يكن البوت وحيداً ───
+            if not _row["is_solo"]:
+                try:
+                    await asyncio.wait_for(_cli(ResetAuthorizationsRequest()), timeout=15)
+                    dev_cnt = await asyncio.wait_for(get_device_count(_cli), timeout=8)
+                    is_solo = (dev_cnt == 1)
+                    with db_conn() as _du:
+                        _du.execute(
+                            "UPDATE number_stock SET sessions_reset=TRUE, is_solo=%s WHERE id=%s",
+                            (is_solo, sid)
+                        )
+                    kicked_ok = True
+                    logger.info(f"🔒 fixup_job: طُردت جلسات {phone} | is_solo={is_solo}")
+                    if is_solo:
+                        asyncio.create_task(_test_and_set_can_send_code(phone, latest_sess, sid))
+                except Exception as _ke:
+                    _kes = str(_ke)
+                    if "too new" in _kes or "cannot be used to reset" in _kes:
+                        logger.debug(f"⏳ fixup_job: {phone} لا يزال جديداً — سيُعاد لاحقاً")
+                    else:
+                        logger.warning(f"⚠️ fixup_job: فشل طرد {phone}: {_kes[:60]}")
+            else:
+                kicked_ok = True  # البوت وحيد مسبقاً
+
+            # ─── محاولة تفعيل 2FA إذا لم يكن مفعّلاً ───
+            if not (_row["twofa_password"] and _row["auto_2fa_enabled"]):
+                try:
+                    bot_ref = getattr(context, 'bot', None) if context else None
+                    ok_2fa, msg_2fa, _ = await enable_2fa_for_number(phone, latest_sess, sid, bot=bot_ref)
+                    if ok_2fa:
+                        twofa_ok = True
+                        logger.info(f"✅ fixup_job: تم تفعيل 2FA للرقم {phone}")
+                    else:
+                        logger.debug(f"⚠️ fixup_job: فشل 2FA للرقم {phone}: {msg_2fa}")
+                except Exception as _2fa_e:
+                    logger.debug(f"⚠️ fixup_job: خطأ 2FA للرقم {phone}: {_2fa_e}")
+            else:
+                twofa_ok = True  # 2FA مفعّل مسبقاً
+
+            await _cli.disconnect()
+
+            if kicked_ok and twofa_ok:
+                to_remove.append(sid)
+                asyncio.create_task(_test_and_set_can_send_code(phone, latest_sess, sid))
+                logger.info(f"✅ fixup_job: اكتمل إصلاح الرقم {phone} — يُزال من القائمة")
+
+        except Exception as _fe:
+            logger.debug(f"⚠️ fixup_job: خطأ عام للرقم {phone}: {_fe}")
+        await asyncio.sleep(0.5)
+
+    for sid in to_remove:
+        _accounts_needing_fixup.pop(sid, None)
+
+
+async def handle_zip_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    يستقبل ملف ZIP من المالك يحتوي على ملفات .session (Telethon/Pyrogram/MTProto).
+    يفكّك الضغط، يُلغي التكرار (حساب واحد = ملف .session واحد)،
+    ويستورد كل جلسة تلقائياً مع التحقق وطرد الجلسات الأخرى.
+    يُستدعى أيضاً من handle_unsupported_message كـ fallback.
+    """
+    user = update.effective_user
+    if not user or user.id != OWNER_ID:
+        return
+    doc = update.message.document
+    if not doc:
+        return
+    fname = doc.file_name or "sessions.zip"
+    fname_l = fname.lower()
+    mime_l  = (doc.mime_type or "").lower()
+    if not (fname_l.endswith(".zip") or "zip" in mime_l or
+            fname_l.endswith(".gz") or "octet" in mime_l):
+        return
+
+    msg = await update.message.reply_text(
+        f"📦 استلمت `{fname}` — جاري التنزيل وفك الضغط...",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+    raw_zip = None
+    _last_err3 = None
+    for _att3 in range(3):
+        try:
+            tg_file = await context.bot.get_file(doc.file_id)
+            raw_zip = await tg_file.download_as_bytearray()
+            break
+        except Exception as e:
+            _last_err3 = e
+            if _att3 < 2:
+                await asyncio.sleep(3)
+    if raw_zip is None:
+        await msg.edit_text(f"❌ تعذّر تنزيل الملف (3 محاولات):\n`{_last_err3}`", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    import zipfile, io
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(bytes(raw_zip)))
+        all_names = [
+            n for n in zf.namelist()
+            if not n.startswith("__MACOSX") and not n.endswith("/")
+        ]
+    except Exception as e:
+        await msg.edit_text(f"❌ تعذّر فتح ZIP:\n`{e}`", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    session_bases = {
+        n.rsplit(".", 1)[0].split("/")[-1]
+        for n in all_names if n.lower().endswith(".session")
+    }
+    entries = []
+    seen_bases = set()
+    for n in all_names:
+        short = n.split("/")[-1]
+        base  = short.rsplit(".", 1)[0]
+        ext   = short.rsplit(".", 1)[-1].lower() if "." in short else ""
+        if ext == "session":
+            entries.append(n)
+            seen_bases.add(base)
+        elif ext == "json" and base not in session_bases:
+            entries.append(n)
+
+    if not entries:
+        await msg.edit_text(
+            f"❌ لا توجد ملفات `.session` داخل الـ ZIP.\n"
+            f"الملفات الموجودة: {', '.join(n.split('/')[-1] for n in all_names[:10])}",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    total = len(entries)
+    remove_2fa_mode = (context.user_data.get("state") == "os_remove_2fa_mode")
+    await msg.edit_text(
+        f"📦 وجدت *{total}* حساب — جاري التحقق والاستيراد...\n"
+        f"_(قد يستغرق {total * 3}–{total * 8} ثانية)_",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+    ok_list   = []
+    fail_list = []
+    rot_ok_list   = []   # (phone, rot_res) للناجحات
+    rot_fail_list = []   # (phone, rot_res) للفاشلات
+
+    for idx, entry_name in enumerate(entries):
+        short = entry_name.split("/")[-1]
+        try:
+            file_bytes = zf.read(entry_name)
+        except Exception as _re:
+            fail_list.append(f"`{short}` — تعذّر القراءة: {str(_re)[:60]}")
+            continue
+
+        if (idx + 1) % 5 == 0 or (idx + 1) == total:
+            try:
+                await msg.edit_text(
+                    f"📦 *{idx+1}/{total}* جاري المعالجة والتدوير...\n"
+                    f"✅ {len(ok_list)} نجح | ❌ {len(fail_list)} فشل",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            except Exception:
+                pass
+
+        result = await _import_one_session_bytes(file_bytes, short, context, remove_2fa_mode)
+        label  = result["phone"] or short
+        if result["ok"]:
+            ok_list.append(f"`{label}`")
+            if result.get("rot_ok"):
+                rot_ok_list.append(label)
+            else:
+                rot_fail_list.append((label, result.get("rot_res", "")))
+        else:
+            fail_list.append(f"`{short}` — {result['msg']}")
+
+    zf.close()
+
+    # ── رسالة الاستيراد ───────────────────────────────────────────────
+    lines = [f"📦 *نتيجة استيراد ZIP* — *{len(ok_list)} نجح* / {total} إجمالي\n"]
+    if ok_list:
+        lines.append(f"✅ *نجح ({len(ok_list)}):*")
+        lines.extend(f"  • {x}" for x in ok_list[:35])
+        if len(ok_list) > 35:
+            lines.append(f"  ... و{len(ok_list)-35} آخرين")
+    if fail_list:
+        lines.append(f"\n❌ *فشل ({len(fail_list)}):*")
+        lines.extend(f"  • {x}" for x in fail_list[:15])
+        if len(fail_list) > 15:
+            lines.append(f"  ... و{len(fail_list)-15} آخرين")
+
+    summary = "\n".join(lines)
+    if len(summary) > 4000:
+        summary = summary[:3950] + "\n...(مقتطع)"
+    await msg.edit_text(summary, parse_mode=ParseMode.MARKDOWN)
+
+    # ── رسالة منفصلة لحالة التدوير ───────────────────────────────────
+    rot_lines = [f"🔁 *تقرير التدوير — ZIP ({total} حساب)*\n"]
+    if rot_ok_list:
+        rot_lines.append(f"✅ *نجح التدوير ({len(rot_ok_list)}):*")
+        for _ph in rot_ok_list[:30]:
+            rot_lines.append(f"  • `{_ph}` — الجلسة القديمة محذوفة نهائياً")
+        if len(rot_ok_list) > 30:
+            rot_lines.append(f"  ... و{len(rot_ok_list)-30} آخرين")
+    if rot_fail_list:
+        rot_lines.append(f"\n❌ *فشل التدوير ({len(rot_fail_list)}):*")
+        for _ph, _res in rot_fail_list[:15]:
+            rot_lines.append(f"  • `{_ph}` — {_res[:60]}")
+        if len(rot_fail_list) > 15:
+            rot_lines.append(f"  ... و{len(rot_fail_list)-15} آخرين")
+    if not rot_ok_list and not rot_fail_list:
+        rot_lines.append("⚠️ لم يُجرَ أي تدوير (كل الاستيرادات فشلت)")
+
+    rot_summary = "\n".join(rot_lines)
+    if len(rot_summary) > 4000:
+        rot_summary = rot_summary[:3950] + "\n...(مقتطع)"
+    await update.effective_message.reply_text(rot_summary, parse_mode=ParseMode.MARKDOWN)
+
+async def handle_unsupported_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """شبكة أمان: تُستدعى لأي رسالة لا تحمل نصاً أو وصفاً (صورة/فيديو/ملصق بلا caption،
+    جهة اتصال، موقع، ملف...) ولا تطابق أي معالج آخر. بدون هذا المعالج كان البوت يبقى
+    صامتاً تماماً بلا أي رد إن أرسل المستخدم قناته بالتوجيه/المشاركة بدل كتابة اليوزرنيم."""
+    if not update.message:
+        return
+    state = context.user_data.get("state", "")
+    user_id = update.effective_user.id if update.effective_user else None
+    is_own = (user_id == OWNER_ID)
+
+    # بعض تطبيقات تيليجرام ترسل الفيديو كملف بمحرر MIME أو امتداد غير قياسي،
+    # لذلك نعيده لمسار الستوريات حتى لا يرفضه معالج الوسائط العام.
+    if is_own and state == "os_story_upload" and update.message.document:
+        await handle_story_photo(update, context)
+        return
+
+    # ── استقبال فيديو رفض الإيميل (للمالك فقط) ──
+    _video_states = {"os_await_reject_pass_video", "os_await_reject_verify_video"}
+    if is_own and state in _video_states:
+        vid = update.message.video or update.message.document
+        if vid:
+            file_id = vid.file_id
+            if state == "os_await_reject_pass_video":
+                set_setting("gmail_reject_wrong_pass_video", file_id)
+                await update.message.reply_text("✅ تم حفظ فيديو رفض الباسورد الخطأ.", reply_markup=owner_settings_kb())
+            elif state == "os_await_reject_verify_video":
+                set_setting("gmail_reject_need_verify_video", file_id)
+                await update.message.reply_text("✅ تم حفظ فيديو رفض يحتاج تحقق.", reply_markup=owner_settings_kb())
+            context.user_data["state"] = "main_menu"
+        else:
+            await update.message.reply_text("⚠️ أرسل فيديو فقط.", reply_markup=owner_settings_kb())
+            context.user_data["state"] = "main_menu"
+        return
+
+    if state == "os_remove_2fa_mode" and update.effective_user.id == OWNER_ID:
+        doc = update.message.document
+        if doc:
+            fname = doc.file_name or "file"
+            msg = await update.message.reply_text(
+                f"⏳ جاري معالجة `{fname}`...", parse_mode=ParseMode.MARKDOWN
+            )
+            try:
+                tg_file  = await context.bot.get_file(doc.file_id)
+                raw_bytes = await tg_file.download_as_bytearray()
+            except Exception as e:
+                await msg.edit_text(f"❌ تعذّر تنزيل الملف: `{e}`", parse_mode=ParseMode.MARKDOWN)
+                return
+
+            session_string = None
+            try:
+                import json as _j2
+                data2 = _j2.loads(raw_bytes.decode("utf-8"))
+                if isinstance(data2, str):
+                    session_string = _maybe_convert_session(data2.strip())
+                elif isinstance(data2, dict):
+                    if "dc_id" in data2 and "auth_key" in data2:
+                        session_string = pyrogram_json_to_telethon(data2)
+                    else:
+                        raw_s = (data2.get("session_string") or data2.get("session") or "").strip()
+                        if raw_s:
+                            session_string = _maybe_convert_session(raw_s)
+                elif isinstance(data2, list) and data2:
+                    first = data2[0]
+                    if isinstance(first, str):
+                        session_string = _maybe_convert_session(first.strip())
+                    elif isinstance(first, dict):
+                        if "dc_id" in first and "auth_key" in first:
+                            session_string = pyrogram_json_to_telethon(first)
+                        else:
+                            raw_s = (first.get("session_string") or first.get("session") or "").strip()
+                            if raw_s:
+                                session_string = _maybe_convert_session(raw_s)
+            except Exception:
+                pass
+
+            if not session_string:
+                try:
+                    import tempfile, sqlite3 as _sq3b, struct as _st2, base64 as _b2, socket as _sk2
+                    with tempfile.NamedTemporaryFile(suffix=".session", delete=False) as tf2:
+                        tf2.write(raw_bytes)
+                        tf2_path = tf2.name
+                    conn2 = _sq3b.connect(tf2_path)
+                    conn2.row_factory = _sq3b.Row
+                    cur2 = conn2.cursor()
+                    for cols in (
+                        "dc_id, server_address, port, auth_key",
+                        "dc_id, auth_key",
+                    ):
+                        try:
+                            row2 = cur2.execute(f"SELECT {cols} FROM sessions LIMIT 1").fetchone()
+                            if row2 and row2["auth_key"] and len(bytes(row2["auth_key"])) == 256:
+                                dc2 = int(row2["dc_id"])
+                                ak2 = bytes(row2["auth_key"])
+                                try:
+                                    ip2   = _sk2.inet_aton(row2["server_address"])
+                                    prt2  = int(row2["port"])
+                                except Exception:
+                                    ip_s2, prt2 = _TG_DC.get(dc2, ("149.154.167.51", 443))
+                                    ip2 = _sk2.inet_aton(ip_s2)
+                                session_string = "1" + _b2.urlsafe_b64encode(
+                                    _st2.pack(">B4sH256s", dc2, ip2, prt2, ak2)
+                                ).decode("ascii")
+                                break
+                        except Exception:
+                            pass
+                    conn2.close()
+                    import os as _os2; _os2.unlink(tf2_path)
+                except Exception:
+                    pass
+
+            if not session_string:
+                try:
+                    raw_text = raw_bytes.decode("utf-8", errors="ignore").strip()
+                    if raw_text.startswith("1") and len(raw_text) > 100:
+                        session_string = raw_text.split()[0]
+                except Exception:
+                    pass
+
+            if not session_string:
+                await msg.edit_text(
+                    "❌ لم أتمكن من استخراج جلسة من هذا الملف.\n"
+                    "تأكد أنه ملف `.session` أو `.json` يحتوي على بيانات الجلسة.",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                return
+
+            ok, result_msg, phone = await _remove_2fa_from_session(session_string)
+            icon = "✅" if ok else "❌"
+            await msg.edit_text(
+                f"{icon} *{phone or fname}*\n{result_msg}",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
+        await update.message.reply_text(
+            "🔓 أنت في وضع إزالة التحقق — أرسل ملف الجلسة أو أرسل /start للخروج."
+        )
+        return
+
+    if state == "thank_owner_photo" and not is_own and update.message.photo:
+        user = update.effective_user
+        sender = f"{user.full_name or 'مستخدم'}"
+        if user.username:
+            sender += f" (@{user.username})"
+        caption = f"💌 صورة شكر جديدة\n\n👤 المرسل: {sender}\n🆔 ID: {user.id}"
+        try:
+            await context.bot.send_photo(
+                chat_id=OWNER_ID,
+                photo=update.message.photo[-1].file_id,
+                caption=caption
+            )
+            await update.message.reply_text(
+                get_setting("thank_owner_success_message")
+                or "✅ تم إرسال شكرك إلى المالك، شكراً لك!",
+                reply_markup=main_menu_kb(False)
+            )
+        except Exception:
+            logger.exception("فشل إرسال صورة شكر إلى المالك")
+            await update.message.reply_text(
+                "⚠️ تعذر إرسال الصورة حالياً، حاول مرة أخرى لاحقاً.",
+                reply_markup=main_menu_kb(False)
+            )
+        context.user_data["state"] = "main_menu"
+        return
+
+    if state == "await_fund_channel":
+        await update.message.reply_text(
+            "⚠️ لم يصلني نص. يرجى إرسال *يوزرنيم قناتك كرسالة نصية* مباشرة، مثال: @mychannel\n"
+            "(لا ترسله كمشاركة أو توجيه لمنشور — اكتب اليوزرنيم بنفسك)",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    if state.startswith("await_") or state.startswith("os_await"):
+        await update.message.reply_text("⚠️ لم يصلني نص. يرجى إرسال ردك كرسالة نصية فقط.")
+        return
+    is_own = (update.effective_user.id == OWNER_ID)
+
+    # ── fallback: ملف ZIP من المالك → استيراد جلسات ──────────────────────
+    if is_own and update.message.document:
+        doc_fb = update.message.document
+        fname_fb = (doc_fb.file_name or "").lower()
+        mime_fb  = (doc_fb.mime_type or "").lower()
+        # وضع الاستيراد الحصري للإحالة: الملفات تُستورد بـ referral_only=TRUE
+        if state == "os_ref_only_import_ready" or context.user_data.get("referral_only_import"):
+            context.user_data["referral_only_import"] = True
+            if fname_fb.endswith(".zip") or "zip" in mime_fb:
+                await handle_zip_file(update, context)
+                return
+            if fname_fb.endswith(".session"):
+                await handle_session_file(update, context)
+                return
+            if fname_fb.endswith(".json") or "json" in mime_fb:
+                await handle_json_file(update, context)
+                return
+            if fname_fb.endswith(".txt") or "text/plain" in mime_fb:
+                await handle_hex_text_file(update, context)
+                return
+        if fname_fb.endswith(".zip") or "zip" in mime_fb:
+            await handle_zip_file(update, context)
+            return
+        if fname_fb.endswith(".session"):
+            await handle_session_file(update, context)
+            return
+        if fname_fb.endswith(".json") or "json" in mime_fb:
+            await handle_json_file(update, context)
+            return
+        if fname_fb.endswith(".txt") or "text/plain" in mime_fb:
+            await handle_hex_text_file(update, context)
+            return
+
+    await update.message.reply_text("🏠 القائمة الرئيسية:", reply_markup=main_menu_kb(is_own))
+
