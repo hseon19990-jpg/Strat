@@ -962,8 +962,9 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
         entries: list[tuple[str, object]],
         preferred=None,
         context: str = "button",
+        message=None,
     ) -> tuple[bool, str, list, str, int]:
-        """يضغط الزر المفضل أولاً ثم يجرب كل الأزرار المتبقية."""
+        """يضغط من الرسالة الأصلية بالصف/العمود ثم يستخدم الزر كاحتياط."""
         ordered = []
         if preferred is not None:
             for label, button in entries:
@@ -985,7 +986,35 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                 f"{display_label!r} ({context}, {phone})"
             )
             try:
-                await button.click()
+                clicked = False
+                if message is not None:
+                    for row_index, row in enumerate(
+                        getattr(message, "buttons", None) or []
+                    ):
+                        for column_index, message_button in enumerate(row or []):
+                            if message_button is button:
+                                try:
+                                    await message.click(row_index, column_index)
+                                    clicked = True
+                                    logger.info(
+                                        f"🖱️ تم إرسال callback عبر الرسالة "
+                                        f"[{row_index},{column_index}] ({phone})"
+                                    )
+                                except Exception as message_click_error:
+                                    logger.warning(
+                                        f"⚠️ فشل msg.click[{row_index},{column_index}]، "
+                                        f"سيتم استخدام button.click(): {message_click_error}"
+                                    )
+                                break
+                        if clicked or any(
+                            message_button is button for message_button in (row or [])
+                        ):
+                            break
+                if not clicked:
+                    await button.click()
+                    logger.info(
+                        f"🖱️ تم إرسال callback عبر button.click() ({phone})"
+                    )
             except Exception as click_error:
                 logger.warning(
                     f"⚠️ فشل الضغط على زر Captcha {display_label!r}: "
@@ -1006,7 +1035,6 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                 return True, last_result, latest_msgs, display_label, attempt
 
         return False, last_result, latest_msgs, clicked_label, len(ordered)
-
 
     # ── حلقة المحاولات (تدعم تحقق متعدد المراحل) ─────────────
     for _round in range(max_attempts):
@@ -1160,7 +1188,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                         processed_ids.add(msg_id)
                         solved, result, msgs, clicked_label, attempts = (
                             await _click_button_entries_until_success(
-                                button_entries, chosen, "visual"
+                                button_entries, chosen, "visual", msg
                             )
                         )
                         all_details.append(
@@ -1475,7 +1503,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                     processed_ids.add(msg_id)
                     solved, result, msgs, clicked_label, attempts = (
                         await _click_button_entries_until_success(
-                            button_entries, chosen, "inline"
+                            button_entries, chosen, "inline", msg
                         )
                     )
                     all_details.append(
