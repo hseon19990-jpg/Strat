@@ -362,6 +362,28 @@ class ForcedRefAIService(RakshService):
 
     # ─── 4. حل التحقق المدمج (يدعم مشاركة الرقم + المنطق القديم) ───
 
+    @staticmethod
+    def _is_invitation_link_button(button) -> bool:
+        """تمييز أزرار روابط الدعوة حتى لو كانت Callback وليست URL صريحاً."""
+        button_url = getattr(button, "url", None)
+        if button_url:
+            return True
+
+        button_text = (getattr(button, "text", "") or "").strip().casefold()
+        invitation_markers = (
+            "رابط الدعوة",
+            "رابط دعوة",
+            "الدعوة",
+            "دعوة",
+            "invite",
+            "invitation",
+            "join link",
+            "انضمام",
+            "انضم",
+            "رابط",
+        )
+        return any(marker in button_text for marker in invitation_markers)
+
     async def _solve_verification(
         self,
         client,
@@ -457,8 +479,8 @@ class ForcedRefAIService(RakshService):
                     if msg.reply_markup:
                         for row in msg.reply_markup.rows:
                             for btn in row.buttons:
-                                # لا نضغط أي زر رابط، بما فيه رابط الدعوة.
-                                if not getattr(btn, 'url', None):
+                                # لا نضغط زر رابط الدعوة، سواء كان URL أو Callback.
+                                if not self._is_invitation_link_button(btn):
                                     buttons.append(btn)
                     # نفضل الأزرار التي تحوي كلمات مفتاحية
                     for btn in buttons:
@@ -466,8 +488,6 @@ class ForcedRefAIService(RakshService):
                         if any(kw in btn_text for kw in ['متابعة', 'التالي', 'ابدأ', 'تحقق', 'continue', 'next', 'start', 'verify']):
                             proceed_button = btn
                             break
-                        if not proceed_button:
-                            proceed_button = btn
                     if proceed_button:
                         break
                 if proceed_button:
@@ -696,9 +716,8 @@ class ForcedRefAIService(RakshService):
             buttons = []
             for row in getattr(verification_message, 'buttons', None) or []:
                 for btn in row:
-                    # أزرار الروابط قد تكون رابط دعوة أو رابط انضمام؛ لا نضغطها
-                    # أثناء حل التحقق، ونكتفي بأزرار التحقق غير المرتبطة بروابط.
-                    if not getattr(btn, 'url', None):
+                    # لا نضغط زر رابط الدعوة حتى لو كان Callback بلا URL.
+                    if not self._is_invitation_link_button(btn):
                         buttons.append(btn)
 
             button_clicked = False
@@ -727,10 +746,6 @@ class ForcedRefAIService(RakshService):
                     and b not in prioritized
                 ]
                 prioritized.extend(verify_buttons)
-
-                # إذا لم نجد زراً محدداً، نضغط على أول زر
-                if not prioritized:
-                    prioritized = buttons
 
                 for btn in prioritized:
                     try:
