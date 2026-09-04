@@ -2233,10 +2233,27 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
         t = (text or "").lower()
         return any(k.lower() in t for k in FAIL_KW)
 
-    async def _wait_and_check(limit: int = 3) -> tuple:
-        """ينتظر رد البوت ويُرجع ('success'|'fail'|'unknown', new_msgs)."""
+    active_button_message_id = None
+
+    async def _wait_and_check(limit: int = 6) -> tuple:
+        """ينتظر الرد ويفحص أيضاً رسالة التحقق نفسها بعد الضغط."""
         await asyncio.sleep(3)
         new_msgs = await client.get_messages(bot_entity, limit=limit)
+
+        # بعض بوتات التحقق لا ترسل رسالة نجاح جديدة؛ بل تحذف أزرار الرسالة
+        # نفسها. يجب إعادة جلب الرسالة الأصلية بدلاً من الاعتماد على كائن زر قديم.
+        if active_button_message_id:
+            try:
+                live_message = await client.get_messages(
+                    bot_entity, ids=active_button_message_id
+                )
+                if live_message is None or not getattr(live_message, "buttons", None):
+                    return "success", new_msgs
+            except Exception as _button_state_error:
+                logger.debug(
+                    f"تعذر فحص حالة رسالة التحقق ({phone}): {_button_state_error}"
+                )
+
         for m in new_msgs:
             t = getattr(m, "message", "") or ""
             if _is_success(t):
@@ -2387,19 +2404,28 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                 try:
                     btn_labels  = []
                     btn_objects = {}
+                    btn_entries = []
                     for row in msg.buttons:
                         for btn in row:
-                            label = getattr(btn, "text", "") or ""
+                            label = str(getattr(btn, "text", "") or "")
                             url   = getattr(btn, "url",  None) or ""
                             # تخطي أزرار روابط القنوات — تُعالج لاحقاً في do_referral_for_number
                             if url and ("t.me/" in url or "telegram.me/" in url):
                                 continue
+                            # لا نهمل الأزرار التي لا يعيد Telethon نصها (يحدث
+                            # أحياناً مع Custom/Premium Emoji). تبقى متاحة
+                            # للمحاولة الاحتياطية مثل مسار التصويت القديم.
+                            btn_entries.append((label, btn))
                             if label:
                                 btn_labels.append(label)
                                 btn_objects[label] = btn
-                    if not btn_labels:
+                    if not btn_entries:
                         continue
-                    logger.info(f"🔘 Captcha buttons detected: {len(btn_labels)} ({phone})")
+                    active_button_message_id = msg_id
+                    logger.info(
+                        f"🔘 Captcha buttons detected: {len(btn_entries)} "
+                        f"({phone})"
+                    )
                     # هل تبدو رسالة تحقق؟ (تحقق، رياضيات، إيموجي...)
                     is_verif = (
                         any(k in msg_text_lower for k in CAPTCHA_KW)
@@ -2473,6 +2499,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                     chosen = None
                     chosen_label = None
                     chosen_source = "AI"
+                    answer = None
                     target_emoji = _extract_target_emoji(msg_text)
                     if target_emoji:
                         ranked_buttons = []
@@ -2491,7 +2518,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             )
 
                     # إذا لم يوجد تطابق مباشر، استخدم Gemini كاحتياط.
-                    if not chosen:
+                    if not chosen and btn_labels:
                         all_emoji_btns = all(
                             bool(_extract_emojis_from_text(lbl)) for lbl in btn_labels
                         )
@@ -2561,8 +2588,32 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                     last_result = "unknown"
 
                     async def _click_button_and_check(label, button, source):
+                        click_button = button
+                        # بعد كل نقرة يعيد Telegram بناء أزرار الرسالة. نأخذ
+                        # نسخة حديثة عندما يكون للزر نص، ونستخدم الكائن الأصلي
+                        # فقط كاحتياط للأزرار التي لا يعيد Telethon نصها.
+                        if label and active_button_message_id:
+                            try:
+                                live_message = await client.get_messages(
+                                    bot_entity, ids=active_button_message_id
+                                )
+                                for live_row in (getattr(live_message, "buttons", None) or []):
+                                    for live_button in live_row:
+                                        live_label = str(
+                                            getattr(live_button, "text", "") or ""
+                                        )
+                                        if live_label == label:
+                                            click_button = live_button
+                                            break
+                                    else:
+                                        continue
+                                    break
+                            except Exception as _refresh_error:
+                                logger.debug(
+                                    f"تعذر تحديث زر التحقق ({phone}): {_refresh_error}"
+                                )
                         try:
-                            await button.click()
+                            await click_button.click()
                         except Exception as click_error:
                             logger.warning(
                                 f"⚠️ فشل الضغط على زر Captcha ({source}, {phone}): {click_error}"
@@ -2594,11 +2645,15 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             reverse=True,
                         )
                         for candidate_msg in ordered_messages:
-                            for row in (candidate_msg.buttons or []):
-                                for button in row:
-                                    label = getattr(button, "text", "") or ""
+                            for row_index, row in enumerate(candidate_msg.buttons or []):
+                                for column_index, button in enumerate(row):
+                                    raw_label = str(getattr(button, "text", "") or "")
+                                    label = raw_label or (
+                                        f"__empty_button_{getattr(candidate_msg, 'id', 0)}_"
+                                        f"{row_index}_{column_index}"
+                                    )
                                     url = getattr(button, "url", None) or ""
-                                    if not label or label in seen:
+                                    if label in seen:
                                         continue
                                     if url and ("t.me/" in url or "telegram.me/" in url):
                                         continue
@@ -2608,23 +2663,16 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
 
                     # إن لم ينجح AI، أعد ترتيب الأزرار بحيث يأتي الرمز الموجود
                     # بعد عبارة التعليمات أولاً، ثم جرّب بقية الأزرار كلها.
-                    target_emoji = None
-                    try:
-                        import re as _captcha_re
-                        target_match = _captcha_re.search(
-                            r"(?:اضغط\s+على\s+الرمز|اختر\s+الإيموجي|الإيموجي\s+الصحيح|"
-                            r"correct\s+emoji|select\s+emoji|choose\s+emoji|pick\s+emoji)"
-                            r"\s*[:：]?\s*(.*)$",
-                            msg_text,
-                            flags=_captcha_re.IGNORECASE,
-                        )
-                        target_tail = target_match.group(1) if target_match else msg_text
-                        for text_emoji in _extract_emojis_from_text(target_tail):
-                            if any(text_emoji in label for label in btn_labels):
+                    if not target_emoji:
+                        # مسار قديم مفيد لبعض الصيغ: إن لم نلتقط العبارة
+                        # المعروفة، نستخدم آخر إيموجي من الرسالة يطابق زرّاً.
+                        for text_emoji in reversed(_extract_emojis_from_text(msg_text)):
+                            if not btn_labels or any(
+                                _emoji_match_score(text_emoji, label)
+                                for label in btn_labels
+                            ):
                                 target_emoji = text_emoji
                                 break
-                    except Exception:
-                        target_emoji = None
 
                     fallback_attempts = 0
                     while fallback_attempts < 12:
