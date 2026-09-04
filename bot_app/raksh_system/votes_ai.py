@@ -122,33 +122,20 @@ class VotesAIService(ForcedRefAIService):
             if not bot_entity:
                 return False, "تعذر العثور على البوت."
 
-            # نحدد نقطة البداية قبل /start حتى لا نستخدم تحدياً قديماً.
-            start_after_message_id = 0
-            try:
-                old_messages = await client.get_messages(bot_entity, limit=50)
-                start_after_message_id = max(
-                    (getattr(msg, "id", 0) or 0)
-                    for msg in (old_messages or [])
-                ) if old_messages else 0
-            except Exception as exc:
-                logger.warning(f"تعذر تحديد نقطة بداية التحقق: {exc}")
-
             await client(StartBotRequest(
                 bot=bot_entity,
                 peer=bot_entity,
                 start_param=bot_start_param or "",
             ))
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(2.0)
 
             # استخدام نفس الكلاس يضمن نفس: الضغط، القراءة كل ثانيتين،
             # الرسالة المعدلة، الرسالة الجديدة، النص، caption، الكيبورد
             # وطلب مشاركة الرقم.
-            verifier = ForcedRefAIService()
-            verified = await verifier._solve_verification(
+            verified = await self._solve_verification(
                 client,
                 bot_entity,
                 session.get("phone_number"),
-                start_after_message_id=start_after_message_id,
             )
             if not verified:
                 return False, "فشل التحقق بعد محاولات متعددة."
