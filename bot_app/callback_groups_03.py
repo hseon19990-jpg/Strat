@@ -2572,9 +2572,11 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                         _lbl  = t['label'].replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
                         _user = t['bot_username'].replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
                         _sp   = str(t['start_param'] or "").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+                        _verify = "🤖 تحقق AI" if t.get("use_ai", True) else "🔑 بدون تحقق"
                         lines.append(
                             f"{st} <b>{_lbl}</b>\n"
                             f"   📌 @{_user} | كود: <code>{_sp}</code>\n"
+                            f"   🔐 {_verify}\n"
                             f"   ✅ {_stats['done']} | ❌ {_stats['failed']} | ⏳ {_stats['pending']}\n"
                         )
                         kb_rows.append([InlineKeyboardButton(
@@ -2637,12 +2639,14 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                 _lbl  = task['label'].replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
                 _user = task['bot_username'].replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
                 _sp   = str(task['start_param'] or "").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+                _verify = "🤖 تحقق AI" if task.get("use_ai", True) else "🔑 بدون تحقق"
                 _ch_line = f"\n📢 القنوات الإجبارية: <code>{_chs}</code>" if _chs else ""
                 _fl_line = f"\n📂 رابط المجلد: <code>{_fl}</code>" if _fl else ""
                 text = (
                     f"⚙️ <b>{_lbl}</b>\n\n"
                     f"📌 البوت: @{_user}\n"
                     f"🔑 كود الإحالة: <code>{_sp}</code>"
+                    f"\n🔐 نمط التحقق: {_verify}"
                     f"{_ch_line}{_fl_line}\n"
                     f"الحالة: {status_icon}\n\n"
                     f"📊 <b>الإحصاء:</b>\n"
@@ -2756,6 +2760,7 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                             _t["bot_username"], _t.get("start_param","") or "",
                             mandatory_channels=_t.get("mandatory_channels","") or "",
                             folder_link=_t.get("folder_link","") or "",
+                            use_ai=bool(_t.get("use_ai", True)),
                             stock_id=_num.get("id",0),
                         )
                         _st = "done" if _ok else "failed"
@@ -2800,6 +2805,7 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                             task["bot_username"], task["start_param"],
                             mandatory_channels=task.get("mandatory_channels", "") or "",
                             folder_link=task.get("folder_link", "") or "",
+                            use_ai=bool(task.get("use_ai", True)),
                             stock_id=num.get("id", 0),
                         )
                     except Exception as _bg_ex:
