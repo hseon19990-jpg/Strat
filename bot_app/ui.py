@@ -1937,7 +1937,8 @@ async def show_category_services(update: Update, context: ContextTypes.DEFAULT_T
     for s in svcs:
         ico = '🔑' if s.get('service_type') == 'mandatory_sub' else ('⭐' if s['category'] == 'post_stars' else '🔹')
         status = f" {'✅' if s['active'] else '❌'}" if _is_own_v else ""
-        rows.append([InlineKeyboardButton(f"{ico} {s['name_ar']}{status}", callback_data=f"svc:{s['id']}" )])
+        display_name = _arabic_only_service_name(s["name_ar"])
+        rows.append([InlineKeyboardButton(f"{ico} {display_name}{status}", callback_data=f"svc:{s['id']}" )])
     # ==================== نهاية الدالة show_category_services ====================
     extra_items = get_menu_items(f"cat:{category}")
     rows.extend(build_kb_rows(extra_items))
