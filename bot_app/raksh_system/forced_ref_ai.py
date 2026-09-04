@@ -17,103 +17,7 @@ def _verification_message_text(message) -> str:
     return ""
 
 
-def _normalize_choice_text(value: str) -> str:
-    """توحيد نصوص الأزرار حتى نطابق العربية والأرقام بأمان."""
-    value = str(value or "").strip().casefold()
-    value = value.replace("أ", "ا").replace("إ", "ا").replace("آ", "ا")
-    value = value.replace("ى", "ي").replace("ة", "ه")
-    value = re.sub(r"[\u064B-\u065F\u0670]", "", value)
-    value = value.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
-    return re.sub(r"\s+", " ", value).strip(" .:،,؛;!?؟-–—")
-
-
-def _verification_choice_button(message, text: str):
-    """
-    اختيار زر التحقق عندما يكون التحدي من خيارين أو أكثر.
-
-    لا نضغط زرًا عشوائيًا: لا نختار إلا إذا كان النص يحدد الإيموجي،
-    رقم/حرف الخيار، أو اسم الزر نفسه. هذا يمنع اعتبار زر رابط أو زر
-    واجهة عادي إجابةً للتحقق.
-    """
-    buttons = [
-        btn
-        for row in (getattr(message, "buttons", None) or [])
-        for btn in (row if isinstance(row, (list, tuple)) else [row])
-        if not getattr(btn, "url", None)
-    ]
-    if not buttons:
-        return None
-
-    labels = [
-        _normalize_choice_text(getattr(btn, "text", ""))
-        for btn in buttons
-    ]
-    folded_text = _normalize_choice_text(text)
-
-    # 1) تحديات الإيموجي: «اختر نفس الإيموجي: 🍎»
-    emoji_pattern = re.compile(
-        "[\U0001F300-\U0001FAFF\u2600-\u27BF\U0001F1E0-\U0001F1FF]"
-    )
-    target_emojis = emoji_pattern.findall(text)
-    if target_emojis:
-        target_emoji = target_emojis[-1]
-        for btn, label in zip(buttons, labels):
-            if label == _normalize_choice_text(target_emoji) or target_emoji in getattr(btn, "text", ""):
-                return btn
-
-    # 2) «الخيار الأول/الثاني» أو «option A/B» أو «زر رقم 2».
-    ordinal_indexes = {
-        "الاول": 0, "الأول": 0, "اول": 0, "first": 0,
-        "الثاني": 1, "الثانيه": 1, "الثاني": 1, "second": 1,
-        "الثالث": 2, "الثالثه": 2, "third": 2,
-        "الرابع": 3, "الرابعه": 3, "fourth": 3,
-    }
-    ordinal_match = re.search(
-        r"(?:الخيار|الزر|زر|option|button)\s*"
-        r"(?:رقم\s*)?(الأول|الاول|اول|الثاني|الثانيه|الثالث|الثالثه|الرابع|الرابعه|"
-        r"first|second|third|fourth|\d+|[a-d])\b",
-        folded_text,
-    )
-    if ordinal_match:
-        token = ordinal_match.group(1)
-        if token in ordinal_indexes:
-            index = ordinal_indexes[token]
-        elif token.isdigit():
-            index = int(token) - 1
-        else:
-            index = ord(token) - ord("a")
-        if 0 <= index < len(buttons):
-            return buttons[index]
-
-    # 3) الخيار المكتوب بين علامات اقتباس، مثل: اختر «نعم».
-    quoted_values = re.findall(r"[«“\"']([^»”\"']+)[»”\"']", text)
-    for quoted in quoted_values:
-        quoted_normalized = _normalize_choice_text(quoted)
-        for btn, label in zip(buttons, labels):
-            if quoted_normalized and quoted_normalized == label:
-                return btn
-
-    # 4) إذا ذكر السؤال اسم خيار واحد بوضوح، نطابقه مع زر واحد فقط.
-    # لا نستخدم هذا المسار إذا ظهر أكثر من زر في النص حتى لا نختار عشوائيًا.
-    meaningful = [
-        (btn, label)
-        for btn, label in zip(buttons, labels)
-        if label and len(label) > 1 and label in folded_text
-    ]
-    if len(meaningful) == 1 and any(
-        marker in folded_text
-        for marker in ("اختر", "اختار", "الصحيح", "correct", "choose", "select")
-    ):
-        return meaningful[0][0]
-
-    return None
-
-
-# التحقق لا يحتاج انتظار ثانيتين بين كل قراءة؛ هذا كان يضيف دقيقة تقريباً
-# للحساب الواحد. نقرأ بسرعة مع إبقاء فاصل صغير حتى لا نكرر طلبات Telegram
-# بلا داعٍ.
-VERIFICATION_READ_INTERVAL_SECONDS = 0.25
-VERIFICATION_MAX_WAIT_CYCLES = 8
+VERIFICATION_READ_INTERVAL_SECONDS = 2.0
 
 
 class ForcedRefAIService(RakshService):
@@ -173,10 +77,7 @@ class ForcedRefAIService(RakshService):
 
     def get_start_keyboard(self) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([
-            [InlineKeyboardButton(
-                "⏭️ تخطي (بدون قنوات)",
-                callback_data=f"raksh_{self.service_type}:skip_channels",
-            )],
+            [InlineKeyboardButton("⏭️ تخطي (بدون قنوات)", callback_data="raksh_forced_ref_ai:skip_channels")],
             [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
         ])
 
@@ -314,13 +215,13 @@ class ForcedRefAIService(RakshService):
                     [
                         InlineKeyboardButton(
                             f"💰 دفع بالنقاط ({points_cost} نقطة)",
-                            callback_data=f"raksh_{self.service_type}:payment:points:{quantity}:{points_cost}"
+                            callback_data=f"raksh_forced_ref_ai:payment:points:{quantity}:{points_cost}"
                         )
                     ],
                     [
                         InlineKeyboardButton(
                             f"⭐ دفع بالنجوم ({stars_cost} نجمة)",
-                            callback_data=f"raksh_{self.service_type}:payment:stars:{quantity}:{stars_cost}"
+                            callback_data=f"raksh_forced_ref_ai:payment:stars:{quantity}:{stars_cost}"
                         )
                     ],
                     [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
@@ -392,7 +293,7 @@ class ForcedRefAIService(RakshService):
                     [
                         InlineKeyboardButton(
                             "✅ تأكيد الطلب",
-                            callback_data=f"raksh_{self.service_type}:confirm:{payment_method}:{quantity}:{total_cost}"
+                            callback_data=f"raksh_forced_ref_ai:confirm:{payment_method}:{quantity}:{total_cost}"
                         ),
                         InlineKeyboardButton(
                             "❌ إلغاء",
@@ -485,7 +386,7 @@ class ForcedRefAIService(RakshService):
             "проверить",
         )
 
-        for _ in range(VERIFICATION_MAX_WAIT_CYCLES):
+        for _ in range(12):
             try:
                 messages = await client.get_messages(bot_entity, limit=10)
             except Exception:
@@ -543,7 +444,7 @@ class ForcedRefAIService(RakshService):
         2. إذا طلب البوت مشاركة رقم الهاتف – نرسل الرقم ونضغط متابعة.
         3. وإلا نستخدم المنطق القديم: استخراج الكود، حل المسائل، الضغط على الأزرار العادية.
         """
-        MAX_WAIT = VERIFICATION_MAX_WAIT_CYCLES
+        MAX_WAIT = 12
         CHECK_INTERVAL = VERIFICATION_READ_INTERVAL_SECONDS
 
         # بعض البوتات ترسل زرًا أوليًا، وبعد الضغط عليه تعدّل نفس الرسالة
@@ -838,7 +739,7 @@ class ForcedRefAIService(RakshService):
         المنطق القديم: استخراج الكود، حل المسائل، الضغط على الأزرار
         (نسخة محسنة من _solve_forced_ref_verification في common.py)
         """
-        max_attempts = 24
+        max_attempts = 30
         base_id = 0
         processed_ids = set(processed_message_ids or ())
         # أبقينا الوسيط للتوافق مع أي استدعاء قديم، لكن لا نتجاهل رسالة
@@ -1010,26 +911,7 @@ class ForcedRefAIService(RakshService):
                 else:
                     continue
 
-            # 3. التحقق من خيارين أو عدة خيارات.
-            # نستخدم نص السؤال لتحديد الزر الصحيح، ولا نضغط أول زر عشوائيًا.
-            choice_button = _verification_choice_button(
-                verification_message,
-                text,
-            )
-            if choice_button:
-                try:
-                    await choice_button.click()
-                    logger.info(
-                        f"🖱️ تم اختيار زر التحقق الصحيح: "
-                        f"{getattr(choice_button, 'text', '')}"
-                    )
-                    processed_ids.add(verification_message.id)
-                    await asyncio.sleep(VERIFICATION_READ_INTERVAL_SECONDS)
-                    continue
-                except Exception as exc:
-                    logger.warning(f"⚠️ فشل اختيار زر التحقق: {exc}")
-
-            # 4. الضغط على أزرار التحقق العامة
+            # 3. الضغط على الأزرار
             buttons = []
             for row in getattr(verification_message, 'buttons', None) or []:
                 for btn in row:
@@ -1130,7 +1012,7 @@ class ForcedRefAIService(RakshService):
                 peer=bot_entity,
                 start_param=start_param or ""
             ))
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(2.0)
 
             # حل التحقق باستخدام الدالة المدمجة
             success = await self._solve_verification(
