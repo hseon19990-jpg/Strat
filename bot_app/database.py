@@ -348,6 +348,7 @@ def init_db():
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS bot_session_ip TEXT",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS forced_ref_excluded BOOLEAN DEFAULT FALSE",
               "ALTER TABLE services ADD COLUMN IF NOT EXISTS platform TEXT DEFAULT 'tg'",
+              "ALTER TABLE services ADD COLUMN IF NOT EXISTS source_name TEXT",
               "ALTER TABLE users ADD COLUMN IF NOT EXISTS banned INTEGER DEFAULT 0",
               "ALTER TABLE users ADD COLUMN IF NOT EXISTS banned_at TIMESTAMPTZ",
               "ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT",
