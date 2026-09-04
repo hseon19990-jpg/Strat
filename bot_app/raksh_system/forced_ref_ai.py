@@ -460,41 +460,36 @@ class ForcedRefAIService(RakshService):
                     logger.info(f"🖱️ تم الضغط على زر '{getattr(proceed_button, 'text', '')}'")
                 except Exception as e:
                     logger.warning(f"⚠️ فشل الضغط على زر المتابعة: {e}")
+                    return False
+            else:
+                logger.warning(f"⚠️ لم يظهر زر المتابعة بعد مشاركة الرقم من {phone_number}")
+                return False
 
-            # انتظار تأكيد النجاح (اختفاء الأزرار أو رسالة تأكيد)
-            for _ in range(MAX_WAIT):
-                try:
-                    latest = await client.get_messages(bot_entity, limit=3)
-                    success = False
-                    for msg in latest:
-                        if msg.out:
-                            continue
-                        if not msg.reply_markup and (getattr(msg, 'message', '') or '').strip():
-                            success = True
-                            break
-                        text = (getattr(msg, 'message', '') or '').strip().casefold()
-                        if any(kw in text for kw in ['تم', 'نجاح', 'مرحباً', 'شكراً', 'success', 'done', 'welcome']):
-                            success = True
-                            break
-                    if success:
-                        logger.info(f"✅ تم التحقق بنجاح (مشاركة الرقم) من {phone_number}")
-                        return True
-                except Exception:
-                    pass
-                await asyncio.sleep(CHECK_INTERVAL)
-
-            # فحص أخير: هل اختفت أزرار طلب الرقم؟
             try:
-                original = await client.get_messages(bot_entity, ids=contact_request_msg.id)
-                if original and not original.reply_markup:
-                    logger.info(f"✅ اختفت أزرار طلب الرقم، نعتبر النجاح من {phone_number}")
-                    return True
-            except Exception:
-                pass
-
-            # إذا لم نجد تأكيداً، نعتبر العملية ناجحة (لعدم وجود خطأ واضح)
-            logger.warning(f"⚠️ لم نؤكد التحقق لكننا سنعتبره ناجحاً (مشاركة الرقم) من {phone_number}")
-            return True
+                # بعد الضغط على الزر الأول ننتظر ثم نعيد قراءة كامل محادثة
+                # التحقق من رسالة طلب الرقم حتى آخر رسالة، لا آخر 3 رسائل فقط.
+                await asyncio.sleep(2.0)
+                followup_messages = []
+                async for msg in client.iter_messages(
+                    bot_entity,
+                    min_id=contact_request_msg.id,
+                    reverse=True,
+                ):
+                    followup_messages.append(msg)
+                logger.info(
+                    f"🔄 إعادة قراءة رسائل التحقق بعد زر المتابعة: "
+                    f"{len(followup_messages)} رسالة من {phone_number}"
+                )
+                return await self._solve_legacy_verification(
+                    client,
+                    bot_entity,
+                    phone_number,
+                    base_id=contact_request_msg.id,
+                    initial_messages=followup_messages,
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ تعذر قراءة المرحلة الثانية للتحقق: {e}")
+                return False
 
         # ─── المرحلة 2: لم يطلب الرقم → استخدم المنطق القديم ───
         logger.info(f"🔍 لم يطلب البوت رقم هاتف، ننتقل إلى المنطق القديم لـ {phone_number}")
@@ -503,27 +498,39 @@ class ForcedRefAIService(RakshService):
         # ولكن سنعيد تنفيذه هنا لتكامل الملف
         return await self._solve_legacy_verification(client, bot_entity, phone_number)
 
-    async def _solve_legacy_verification(self, client, bot_entity, phone_number: str) -> bool:
+    async def _solve_legacy_verification(
+        self,
+        client,
+        bot_entity,
+        phone_number: str,
+        base_id: int = 0,
+        initial_messages: Optional[List] = None,
+    ) -> bool:
         """
         المنطق القديم: استخراج الكود، حل المسائل، الضغط على الأزرار
         (نسخة محسنة من _solve_forced_ref_verification في common.py)
         """
         max_attempts = 30
-        base_id = 0
+        processed_ids = set()
 
-        try:
-            out_messages = await client.get_messages(bot_entity, limit=10)
-            for msg in out_messages:
-                if msg.out:
-                    base_id = msg.id
-                    logger.info(f"🔑 نقطة البداية هي رسالة الحساب رقم: {base_id}")
-                    break
-        except Exception as e:
-            logger.warning(f"تعذر تحديد الرسالة المرجعية: {e}")
+        if not base_id:
+            try:
+                out_messages = await client.get_messages(bot_entity, limit=10)
+                for msg in out_messages:
+                    if msg.out:
+                        base_id = msg.id
+                        logger.info(f"🔑 نقطة البداية هي رسالة الحساب رقم: {base_id}")
+                        break
+            except Exception as e:
+                logger.warning(f"تعذر تحديد الرسالة المرجعية: {e}")
 
         for attempt in range(max_attempts):
             try:
-                messages = await client.get_messages(bot_entity, limit=20)
+                if initial_messages is not None:
+                    messages = initial_messages
+                    initial_messages = None
+                else:
+                    messages = await client.get_messages(bot_entity, limit=100)
             except Exception as exc:
                 if "two different IP" in str(exc) or "AuthKeyDuplicated" in str(exc):
                     logger.error(f"⚠️ الجلسة {phone_number} تستخدم من IP مختلف - سيتم تعطيلها")
@@ -535,10 +542,42 @@ class ForcedRefAIService(RakshService):
             incoming_messages = [msg for msg in messages if not msg.out]
             incoming_messages.sort(key=lambda m: m.id)
 
-            new_messages = [msg for msg in incoming_messages if msg.id > base_id]
+            new_messages = [
+                msg for msg in incoming_messages
+                if msg.id > base_id and msg.id not in processed_ids
+            ]
             if not new_messages:
                 await asyncio.sleep(1.0)
                 continue
+
+            # النجاح لا يعتمد على اختفاء الأزرار أو مجرد إرسال إجابة.
+            for msg in reversed(new_messages):
+                success_text = (getattr(msg, "message", "") or "").strip().casefold()
+                if (
+                    any(marker in success_text for marker in (
+                        "تم التحقق بنجاح",
+                        "تم التحقق",
+                        "نجح التحقق",
+                        "verification successful",
+                        "verification complete",
+                        "تم قبولك",
+                        "تم التسجيل بنجاح",
+                        "مرحباً بك في المجموعة",
+                        "welcome to the group",
+                    ))
+                    and not any(marker in success_text for marker in (
+                        "أرسل النص",
+                        "ارسل النص",
+                        "النص التالي",
+                        "أرسل الكود",
+                        "ارسل الكود",
+                        "send the text",
+                        "resend",
+                        "أعد إرسال",
+                    ))
+                ):
+                    logger.info(f"✅ تم تأكيد التحقق من {phone_number}: {success_text[:120]}")
+                    return True
 
             verification_message = None
             for msg in new_messages:
@@ -567,7 +606,9 @@ class ForcedRefAIService(RakshService):
                 try:
                     await client.send_message(bot_entity, send_text)
                     logger.info(f"✅ تم إرسال الكود: {send_text}")
-                    return True
+                    processed_ids.add(verification_message.id)
+                    await asyncio.sleep(2.0)
+                    continue
                 except Exception:
                     return False
 
@@ -597,7 +638,9 @@ class ForcedRefAIService(RakshService):
                         if result is not None:
                             await client.send_message(bot_entity, result)
                             logger.info(f"✅ تم حل المسألة: {a} {op} {b} = {result}")
-                            return True
+                            processed_ids.add(verification_message.id)
+                            await asyncio.sleep(2.0)
+                            break
                     except Exception:
                         continue
 
@@ -642,22 +685,18 @@ class ForcedRefAIService(RakshService):
                     try:
                         await btn.click()
                         logger.info(f"🖱️ تم الضغط على الزر: {getattr(btn, 'text', '')}")
+                        processed_ids.add(verification_message.id)
                         await asyncio.sleep(2.0)
-                        # التحقق من اختفاء الأزرار
-                        refreshed = await client.get_messages(bot_entity, ids=verification_message.id)
-                        if isinstance(refreshed, (list, tuple)):
-                            refreshed = refreshed[0] if refreshed else None
-                        if refreshed is None or not getattr(refreshed, 'buttons', None):
-                            logger.info(f"✅ اختفت الأزرار بعد الضغط، نجاح من {phone_number}")
-                            return True
+                        # لا نعلن النجاح هنا؛ نعيد قراءة الرسائل لمعالجة
+                        # التحقق التالي الذي قد يظهر بعد هذا الزر.
+                        break
                     except Exception:
                         continue
 
             await asyncio.sleep(2.0)
 
-        # بعد كل المحاولات، نعتبر العملية ناجحة إذا لم يحدث خطأ واضح
-        logger.warning(f"⚠️ لم نتمكن من حل التحقق لكننا سنعتبره ناجحاً (legacy) من {phone_number}")
-        return True
+        logger.warning(f"⚠️ لم تصل رسالة نجاح صريحة بعد التحقق من {phone_number}")
+        return False
 
     # ─── 5. التنفيذ الرئيسي ───
 
