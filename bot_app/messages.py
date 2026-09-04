@@ -392,7 +392,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await asyncio.wait_for(client.connect(), timeout=15)
                 except asyncio.TimeoutError:
                     fail_list.append(f"#{idx+1}: انتهت مهلة الاتصال")
-                    continue                if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
+                    continue
+                if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
                     await client.disconnect()
                     fail_list.append(f"#{idx+1}: جلسة منتهية أو غير مفعّلة")
                     continue
@@ -3093,7 +3094,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if state == 'await_forced_ref_link':
         await _forced_ref_handle_link(update, context)
-        return    if state == 'await_forced_ref_qty':
+        return
+    if state == 'await_forced_ref_qty':
         await _forced_ref_handle_qty(update, context, user)
         return
     if state == 'await_forced_ref_delay':
