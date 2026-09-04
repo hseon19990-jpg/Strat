@@ -425,6 +425,24 @@ def init_db():
               PRIMARY KEY (user_id, channel_id)
           )""")
           c.execute("""
+          CREATE TABLE IF NOT EXISTS raksh_channel_memberships (
+              id                  SERIAL PRIMARY KEY,
+              phone_number        TEXT NOT NULL,
+              channel_ref         TEXT NOT NULL,
+              telegram_channel_id BIGINT,
+              joined_at           TIMESTAMPTZ DEFAULT NOW(),
+              leave_at            TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '72 hours'),
+              UNIQUE (phone_number, channel_ref)
+          )""")
+          c.execute("""
+          CREATE INDEX IF NOT EXISTS raksh_channel_memberships_due_idx
+          ON raksh_channel_memberships (leave_at)
+          """)
+          c.execute("""
+          CREATE INDEX IF NOT EXISTS raksh_channel_memberships_channel_idx
+          ON raksh_channel_memberships (channel_ref)
+          """)
+          c.execute("""
           CREATE TABLE IF NOT EXISTS referral_tasks (
               id                  SERIAL PRIMARY KEY,
               label               TEXT NOT NULL,
@@ -553,6 +571,7 @@ def init_db():
               ('forced_ref_ai_visible',         '0'),
               ('referral_task_delay',            '30'),  # تأخير بين الحسابات في مهام الإحالة (ثوانٍ)
               ('internal_leave_grace_hours', '24'),
+              ('raksh_channel_leave_hours', '72'),
               ('gmail_points_reward', '10000'),
               ('gmail_intro_message', 'للحصول على النقاط يجب عليك تقديم حساب جيميل لا تستخدمه، سيتم مراجعته من قبل المالك وإضافة النقاط بعد التحقق.'),
               ('gmail_button_label', '📧 احصل على نقاط مقابل إيميل جيميل'),
