@@ -524,13 +524,29 @@ class ForcedRefAIService(RakshService):
             except Exception as e:
                 logger.warning(f"تعذر تحديد الرسالة المرجعية: {e}")
 
+        cursor_id = base_id
+
+        async def _read_flow_messages():
+            """إعادة قراءة كل رسائل المحادثة منذ بداية عملية التحقق."""
+            try:
+                collected = []
+                async for msg in client.iter_messages(
+                    bot_entity,
+                    min_id=base_id,
+                    reverse=True,
+                ):
+                    collected.append(msg)
+                return collected
+            except Exception:
+                return await client.get_messages(bot_entity, limit=100)
+
         for attempt in range(max_attempts):
             try:
                 if initial_messages is not None:
                     messages = initial_messages
                     initial_messages = None
                 else:
-                    messages = await client.get_messages(bot_entity, limit=100)
+                    messages = await _read_flow_messages()
             except Exception as exc:
                 if "two different IP" in str(exc) or "AuthKeyDuplicated" in str(exc):
                     logger.error(f"⚠️ الجلسة {phone_number} تستخدم من IP مختلف - سيتم تعطيلها")
@@ -579,8 +595,18 @@ class ForcedRefAIService(RakshService):
                     logger.info(f"✅ تم تأكيد التحقق من {phone_number}: {success_text[:120]}")
                     return True
 
+            # بعد كل إجابة أو زر، نعالج فقط الرسائل التي ظهرت بعدها.
+            # مع إبقاء القراءة كاملة من بداية العملية حتى لا نفقد رسالة
+            # تحقق ظهرت بين مرحلتين.
+            candidate_messages = [
+                msg for msg in new_messages
+                if msg.id > cursor_id
+            ]
+            if not candidate_messages:
+                candidate_messages = new_messages
+
             verification_message = None
-            for msg in new_messages:
+            for msg in candidate_messages:
                 msg_text = getattr(msg, 'message', '') or ''
                 if msg_text.strip().startswith("/"):
                     continue
@@ -590,7 +616,7 @@ class ForcedRefAIService(RakshService):
 
             if verification_message is None:
                 verification_message = next(
-                    (msg for msg in reversed(new_messages) if not getattr(msg, 'message', '').strip().startswith("/")),
+                    (msg for msg in reversed(candidate_messages) if not getattr(msg, 'message', '').strip().startswith("/")),
                     None
                 )
 
@@ -607,6 +633,7 @@ class ForcedRefAIService(RakshService):
                     await client.send_message(bot_entity, send_text)
                     logger.info(f"✅ تم إرسال الكود: {send_text}")
                     processed_ids.add(verification_message.id)
+                    cursor_id = verification_message.id
                     await asyncio.sleep(2.0)
                     continue
                 except Exception:
@@ -639,6 +666,7 @@ class ForcedRefAIService(RakshService):
                             await client.send_message(bot_entity, result)
                             logger.info(f"✅ تم حل المسألة: {a} {op} {b} = {result}")
                             processed_ids.add(verification_message.id)
+                            cursor_id = verification_message.id
                             await asyncio.sleep(2.0)
                             break
                     except Exception:
@@ -651,6 +679,7 @@ class ForcedRefAIService(RakshService):
                     if not getattr(btn, 'url', None):
                         buttons.append(btn)
 
+            button_clicked = False
             if buttons:
                 # استخراج الإيموجي المطلوب
                 emoji_pattern = re.compile(
@@ -686,12 +715,19 @@ class ForcedRefAIService(RakshService):
                         await btn.click()
                         logger.info(f"🖱️ تم الضغط على الزر: {getattr(btn, 'text', '')}")
                         processed_ids.add(verification_message.id)
+                        cursor_id = verification_message.id
                         await asyncio.sleep(2.0)
                         # لا نعلن النجاح هنا؛ نعيد قراءة الرسائل لمعالجة
                         # التحقق التالي الذي قد يظهر بعد هذا الزر.
+                        button_clicked = True
                         break
                     except Exception:
                         continue
+
+            if button_clicked:
+                # انتهى انتظار الزر (ثانيتان)؛ تبدأ الدورة التالية
+                # بإعادة القراءة مباشرة دون تأخير إضافي.
+                continue
 
             await asyncio.sleep(2.0)
 
