@@ -314,9 +314,34 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
 
         if data in SERVICE_PLATFORM_MENUS:
             context.user_data["state"] = data
-            context.user_data["current_platform"] = PLATFORM_MENU_MAP.get(data, "tg")
+            current_platform = PLATFORM_MENU_MAP.get(data, "tg")
+            context.user_data["current_platform"] = current_platform
             items = get_menu_items(data)
             rows = build_kb_rows(items)
+            existing_actions = {
+                str(item.get("action_value", ""))
+                for item in items
+            }
+            with db_conn() as c:
+                dynamic_categories = c.execute(
+                    """
+                    SELECT DISTINCT category
+                    FROM services
+                    WHERE platform=%s AND active=1
+                    ORDER BY category
+                    """,
+                    (current_platform,),
+                ).fetchall()
+            for item in dynamic_categories:
+                category = item.get("category")
+                action = f"cat:{category}"
+                if category in SERVICES_MENU_CATEGORIES and action not in existing_actions:
+                    rows.append([
+                        InlineKeyboardButton(
+                            f"📦 {CATEGORY_MAP.get(category, category)}",
+                            callback_data=action,
+                        )
+                    ])
             platform_label = next((lbl for lbl, val in SERVICE_PLATFORMS if val == data), "خدمات")
             if is_own:
                 rows.append([InlineKeyboardButton("🧩 إضافة/إزالة خيار", callback_data=f"mb_menu:{data}")])
