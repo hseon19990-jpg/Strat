@@ -1,4 +1,3 @@
-# raksh_system.py
 """Public compatibility facade for the modular raksh services."""
 
 from .common import *
@@ -8,7 +7,7 @@ from .forced_ref_ai import ForcedRefAIService
 from .comment import CommentService
 from .poll import PollService
 from .votes import VotesService
-from .votes_ai_fixed import VotesAIService
+from .votes_ai import VotesAIService
 from .premium_reaction import PremiumReactionService
 
 # ═══ 9. تسجيل الخدمات ═══
@@ -665,16 +664,16 @@ async def _handle_raksh_callback_impl(
         )
         return
     
-    # ─── تخطي القنوات (الافتراضي) ───
-    if data in {"raksh:skip_channels", "raksh_votes_ai:skip_channels"}:
+    # ─── تخطي القنوات ───
+    if data == "raksh:skip_channels":
         context.user_data["raksh_channels"] = []
         context.user_data["raksh_step"] = "link"
         svc = RAKSH_SERVICES.get(context.user_data.get("raksh_service"))
         await query.edit_message_text(
             f"✅ تم تخطي القنوات.\n\n"
-            f"🔗 <b>أرسل الرابط المطلوب:</b>\n"
+            f"🔗 *أرسل الرابط المطلوب:*\n"
             f"{_get_link_instruction(context.user_data.get('raksh_service'))}",
-            parse_mode=ParseMode.HTML,
+            parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
             ])
@@ -919,29 +918,12 @@ async def handle_raksh_callback(
 async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """معالج النصوص للرشق الرئيسي"""
     user = update.effective_user
-    message = getattr(update, "message", None)
-    text = (
-        getattr(message, "text", None)
-        or getattr(message, "caption", None)
-        or ""
-    ).strip()
+    text = update.message.text
     state = context.user_data.get("raksh_step")
     service_type = context.user_data.get("raksh_service")
     
     if not state:
         return False
-
-    if state in {"channel", "link", "quantity", "payment", "confirm"} and service_type not in RAKSH_SERVICES:
-        logger.warning(
-            "انتهت جلسة الرشق قبل استقبال الرسالة: user=%s state=%s service=%s",
-            getattr(user, "id", None), state, service_type,
-        )
-        _clear_raksh_state(context)
-        await update.message.reply_text(
-            "⚠️ انتهت جلسة طلب التصويت. ابدأ الطلب من جديد عبر /raksh.",
-            reply_markup=raksh_menu_kb(getattr(user, "id", None) == OWNER_ID),
-        )
-        return True
     
     # ─── تعديل الأسعار (للمالك) ───
     if state == "admin_price":
@@ -1007,9 +989,9 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(
             f"✅ تم حفظ القنوات.\n\n"
-            f"🔗 <b>أرسل الرابط المطلوب:</b>\n"
+            f"🔗 *أرسل الرابط المطلوب:*\n"
             f"{_get_link_instruction(service_type)}",
-            parse_mode=ParseMode.HTML,
+            parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
             ])
