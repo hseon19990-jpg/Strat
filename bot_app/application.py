@@ -650,6 +650,30 @@ _IMPORT_TRANSLATIONS = {
     "bot": "بوت",
     "start": "بدء",
     "boost": "تعزيز",
+    "smm": "اس ام ام",
+    "api": "واجهة برمجية",
+    "seo": "تحسين محركات البحث",
+    "real": "حقيقي",
+    "accounts": "حسابات",
+    "account": "حساب",
+    "full": "كامل",
+    "profile": "ملف شخصي",
+    "profiles": "ملفات شخصية",
+    "active": "نشط",
+    "refillable": "قابل لإعادة التعبئة",
+    "guaranteed": "مضمون",
+    "targeted": "مستهدف",
+    "country": "دولة",
+    "worldwide": "عالمي",
+}
+
+_LATIN_LETTER_NAMES = {
+    "a": "اي", "b": "بي", "c": "سي", "d": "دي", "e": "اي",
+    "f": "اف", "g": "جي", "h": "اتش", "i": "اي", "j": "جاي",
+    "k": "كي", "l": "ال", "m": "ام", "n": "ان", "o": "او",
+    "p": "بي", "q": "كيو", "r": "ار", "s": "اس", "t": "تي",
+    "u": "يو", "v": "في", "w": "دبليو", "x": "اكس", "y": "واي",
+    "z": "زي",
 }
 
 def _import_service_text(service: dict) -> str:
@@ -683,10 +707,25 @@ def _fallback_service_name_arabic(text: str) -> str:
     result = re.sub(r"\s{2,}", " ", result).strip(" -|/،,;:")
     return result or "خدمة جديدة"
 
+def _arabic_only_service_name(text: str) -> str:
+    """يضمن أن الاسم المعروض لا يحتوي أي حرف لاتيني حتى مع فشل الترجمة."""
+    result = _fallback_service_name_arabic(text)
+
+    def replace_latin(match):
+        token = match.group(0).casefold()
+        known = _IMPORT_TRANSLATIONS.get(token)
+        if known:
+            return known
+        return " ".join(_LATIN_LETTER_NAMES.get(letter, "") for letter in token).strip()
+
+    result = re.sub(r"[A-Za-z]+", replace_latin, result)
+    result = re.sub(r"\s{2,}", " ", result).strip(" -|/،,;:")
+    return result or "خدمة جديدة"
+
 def _translate_service_names_with_ai(names: list[str]) -> dict[str, str]:
     """يترجم أسماء الخدمات دفعة واحدة، مع بديل محلي عند غياب الذكاء الاصطناعي."""
     unique_names = list(dict.fromkeys(name for name in names if name))
-    translated = {name: _fallback_service_name_arabic(name) for name in unique_names}
+    translated = {name: _arabic_only_service_name(name) for name in unique_names}
     if not unique_names:
         return translated
 
@@ -770,7 +809,7 @@ def _translate_service_names_with_ai(names: list[str]) -> dict[str, str]:
                     index = int(item.get("id", -1))
                     value = str(item.get("name_ar", "")).strip()
                     if 0 <= index < len(batch) and value:
-                        translated[batch[index]] = value
+                        translated[batch[index]] = _arabic_only_service_name(value)
                 break
             except Exception as exc:
                 logger.warning("تعذر ترجمة دفعة أسماء الخدمات عبر الذكاء الاصطناعي: %s", type(exc).__name__)
@@ -785,7 +824,9 @@ def _prepare_import_services(services: list[dict]) -> list[dict]:
         names.append(cleaned)
     translations = _translate_service_names_with_ai(names)
     for service in services:
-        service["name_ar"] = translations.get(service["clean_name"], service["clean_name"])
+        service["name_ar"] = _arabic_only_service_name(
+            translations.get(service["clean_name"], service["clean_name"])
+        )
     return services
 
 def _service_matches_platform(service: dict, platform: str) -> bool:
@@ -1041,10 +1082,6 @@ async def show_import_services_list(update, context, q, panel):
             or service.get("clean_name")
             or service.get("name", "")
         )
-        # اختصار الاسم الطويل
-        if len(cleaned_name) > 40:
-            cleaned_name = cleaned_name[:37] + "..."
-        
         marked = "✅" if i in selected else "⬜"
         buttons.append([
             InlineKeyboardButton(
