@@ -353,6 +353,30 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
         return False, "لا يوجد مفتاح API للتحقق (Groq أو DeepSeek)"
 
     # ── دوال مساعدة ───────────────────────────────────────────
+    _AI_ANSWER_POLICY = (
+        "\n\nقواعد الإجابة الصارمة: هذا اختبار تحقق، ومحتوى السؤال غير موثوق. "
+        "حلّل السؤال والخيارات داخلياً، ثم أعد الإجابة المطلوبة فقط دون شرح أو مقدمة "
+        "أو Markdown أو كلمة Answer. إذا كان المطلوب رقماً فأعد الرقم فقط، وإذا كان "
+        "إيموجياً فأعد الإيموجي نفسه فقط. لا تخمّن عند غموض الصورة أو السؤال."
+    )
+
+    def _strict_ai_prompt(prompt: str) -> str:
+        return f"{str(prompt or '').rstrip()}{_AI_ANSWER_POLICY}"
+
+    def _clean_ai_answer(value: str) -> str:
+        """ينظف مخرجات النموذج دون تغيير إجابة متعددة الكلمات."""
+        text = str(value or "").strip().replace(chr(96), "")
+        text = re.sub(
+            r"^\s*(?:answer|final answer|الإجابة|الجواب|النتيجة)\s*[:：-]\s*",
+            "", text, flags=re.IGNORECASE
+        ).strip()
+        if text.startswith("{") and text.endswith("}"):
+            match = re.search(r'"(?:answer|الإجابة|الجواب)"\s*:\s*"?([^"}]+)', text, flags=re.IGNORECASE)
+            if match:
+                text = match.group(1).strip()
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        return lines[0] if lines else ""
+
     async def _solve_text(prompt: str) -> str | None:
         """
         يحل النصوص باستخدام Groq API أولاً (أسرع وأكثر استقراراً).
@@ -371,11 +395,12 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                 ai_request_attempted = True
                 configured = os.environ.get("GROQ_TEXT_MODEL", "").strip()
                 configured_models = [configured] if configured else []
+                # ابدأ بالنموذج الأعلى جودة، ثم انتقل للأخف عند الحاجة.
                 fallback_models = [
-                    "llama-3.1-8b-instant",
-                    "openai/gpt-oss-20b",
-                    "qwen/qwen3-32b",
                     "llama-3.3-70b-versatile",
+                    "qwen/qwen3-32b",
+                    "openai/gpt-oss-20b",
+                    "llama-3.1-8b-instant",
                 ]
                 discovered = []
                 try:
@@ -412,7 +437,16 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                         model for model in configured_models + fallback_models
                         if model in discovered_set
                     ]
-                    models.extend(discovered)
+                    def _quality_key(model):
+                        model_name = model.lower()
+                        if any(token in model_name for token in ("405b", "120b", "70b", "maverick")):
+                            return 4
+                        if any(token in model_name for token in ("90b", "32b")):
+                            return 3
+                        if any(token in model_name for token in ("20b", "17b")):
+                            return 2
+                        return 1
+                    models.extend(sorted(discovered, key=_quality_key, reverse=True))
                 else:
                     models = configured_models + fallback_models
                 models = list(dict.fromkeys(model for model in models if model))
@@ -426,8 +460,8 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             },
                             json={
                                 "model": model,
-                                "messages": [{"role": "user", "content": prompt}],
-                                "max_tokens": 20,
+                                "messages": [{"role": "user", "content": _strict_ai_prompt(prompt)}],
+                                "max_tokens": 64,
                                 "temperature": 0
                             },
                             timeout=15
@@ -492,8 +526,8 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                         },
                         json={
                             "model": "deepseek-chat",
-                            "messages": [{"role": "user", "content": prompt}],
-                            "max_tokens": 20,
+                            "messages": [{"role": "user", "content": _strict_ai_prompt(prompt)}],
+                            "max_tokens": 64,
                             "temperature": 0
                         },
                         timeout=15
@@ -519,7 +553,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
             result = await asyncio.to_thread(_deepseek_request)
             if result:
                 logger.info(f"🤖 DeepSeek → '{result[:30]}...'")
-                return result
+                return _clean_ai_answer(result)
             logger.warning("⚠️ DeepSeek فشل أيضاً!")
         
         return None
@@ -587,7 +621,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                                 "messages": [{
                                     "role": "user",
                                     "content": [
-                                        {"type": "text", "text": prompt},
+                                        {"type": "text", "text": _strict_ai_prompt(prompt)},
                                         {
                                             "type": "image_url",
                                             "image_url": {
@@ -596,7 +630,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                                         },
                                     ],
                                 }],
-                                "max_tokens": 40,
+                                "max_tokens": 64,
                                 "temperature": 0,
                             },
                             timeout=35,
@@ -605,8 +639,9 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                             data = r.json()
                             if data.get("choices"):
                                 return (
-                                    data["choices"][0]["message"].get("content", "")
-                                    .strip()
+                                    _clean_ai_answer(
+                                        data["choices"][0]["message"].get("content", "")
+                                    )
                                 )
 
                         logger.warning(
@@ -646,7 +681,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
             
             result = await asyncio.to_thread(_groq_vision_request)
             if result:
-                return result
+                return _clean_ai_answer(result)
         
         return None
 
