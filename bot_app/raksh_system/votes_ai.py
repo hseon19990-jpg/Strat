@@ -76,7 +76,7 @@ class VotesAIService(ForcedRefAIService):
         # لا نستخدم underscore في المثال لأن رسالة البداية تُرسل بـ Markdown
         # وقد يفسره Telegram كتنسيق غير مكتمل ويرفض تعديل الرسالة.
         return (
-            "🔹 رابط بوت: `https://t.me/i8YYBot?start=compvote-xxx`\n"
+            "🔹 رابط بوت: `https://t.me/xxxBot?start=compvote-xxx`\n"
             "🔹 أو رابط منشور/تصويت: `https://t.me/channel/123`"
         )
 
