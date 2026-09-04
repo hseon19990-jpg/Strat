@@ -130,7 +130,7 @@ class VotesAIService(RakshService):
                 peer=bot_entity,
                 start_param=bot_start_param or "",
             ))
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(0.5)
 
             # استخدام نفس الكلاس يضمن نفس: الضغط، القراءة كل ثانيتين،
             # الرسالة المعدلة، الرسالة الجديدة، النص، caption، الكيبورد
@@ -192,7 +192,7 @@ class VotesAIService(RakshService):
 
             if vote_button:
                 await vote_button.click()
-                await asyncio.sleep(2.0)
+                await asyncio.sleep(0.5)
                 return True, f"✅ تم التصويت مع التحقق من {session['phone_number']}"
 
             return False, "تم التحقق، لكن لم يتم العثور على تصويت في المنشور."

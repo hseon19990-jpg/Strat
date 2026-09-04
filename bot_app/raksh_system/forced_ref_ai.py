@@ -17,7 +17,11 @@ def _verification_message_text(message) -> str:
     return ""
 
 
-VERIFICATION_READ_INTERVAL_SECONDS = 2.0
+# التحقق لا يحتاج انتظار ثانيتين بين كل قراءة؛ هذا كان يضيف دقيقة تقريباً
+# للحساب الواحد. نقرأ بسرعة مع إبقاء فاصل صغير حتى لا نكرر طلبات Telegram
+# بلا داعٍ.
+VERIFICATION_READ_INTERVAL_SECONDS = 0.25
+VERIFICATION_MAX_WAIT_CYCLES = 8
 
 
 class ForcedRefAIService(RakshService):
@@ -386,7 +390,7 @@ class ForcedRefAIService(RakshService):
             "проверить",
         )
 
-        for _ in range(12):
+        for _ in range(VERIFICATION_MAX_WAIT_CYCLES):
             try:
                 messages = await client.get_messages(bot_entity, limit=10)
             except Exception:
@@ -444,7 +448,7 @@ class ForcedRefAIService(RakshService):
         2. إذا طلب البوت مشاركة رقم الهاتف – نرسل الرقم ونضغط متابعة.
         3. وإلا نستخدم المنطق القديم: استخراج الكود، حل المسائل، الضغط على الأزرار العادية.
         """
-        MAX_WAIT = 12
+        MAX_WAIT = VERIFICATION_MAX_WAIT_CYCLES
         CHECK_INTERVAL = VERIFICATION_READ_INTERVAL_SECONDS
 
         # بعض البوتات ترسل زرًا أوليًا، وبعد الضغط عليه تعدّل نفس الرسالة
@@ -739,7 +743,7 @@ class ForcedRefAIService(RakshService):
         المنطق القديم: استخراج الكود، حل المسائل، الضغط على الأزرار
         (نسخة محسنة من _solve_forced_ref_verification في common.py)
         """
-        max_attempts = 30
+        max_attempts = 24
         base_id = 0
         processed_ids = set(processed_message_ids or ())
         # أبقينا الوسيط للتوافق مع أي استدعاء قديم، لكن لا نتجاهل رسالة
@@ -1012,7 +1016,7 @@ class ForcedRefAIService(RakshService):
                 peer=bot_entity,
                 start_param=start_param or ""
             ))
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(0.5)
 
             # حل التحقق باستخدام الدالة المدمجة
             success = await self._solve_verification(
