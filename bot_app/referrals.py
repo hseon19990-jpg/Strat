@@ -1129,10 +1129,12 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                                 "the exact answer-button labels:\n"
                                 + "\n".join(button_descriptions)
                                 + "\n\n"
-                                "Inspect the image and select the one button that "
-                                "matches the emoji, symbol, object, or picture shown. "
-                                "If the image shows an emoji, compare it with the "
-                                "emoji buttons. Do not solve it as OCR. "
+                                "Analyze the visual shape of the emoji/symbol in the image "
+                                "and compare it directly with the available button shapes. "
+                                "Ignore decorative emojis in the instruction text (especially "
+                                "the first emoji); do not use the first text emoji as the answer. "
+                                "Choose the button whose appearance matches the image. "
+                                "Do not solve this as OCR. "
                                 "Return ONLY the exact button label, with no explanation. "
                                 "Return NONE if no button can be matched.\n"
                                 f"Message text: {msg_text or '(none)'}"
@@ -1956,7 +1958,8 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
         except Exception:
             pass
 
-        # ── الخطوة 3: ضغط رابط الدعوة ──
+        # ── الخطوة 3: ضغط رابط الدعوة أولاً ──
+        logger.info(f"🔗 ضغط رابط الإحالة @{_clean_uname}?start={start_param or ''} ({phone})")
         await asyncio.wait_for(
             client(StartBotRequest(
                 bot=bot_entity,
@@ -2006,7 +2009,7 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
             _ai_solved = False
             _ai_detail = "لم يتم حل الكابتشا"
 
-            for _ai_attempt in range(2):
+            for _ai_attempt in range(3):
                 if _ai_attempt > 0:
                     await asyncio.sleep(1.5)
                 msgs = await asyncio.wait_for(
@@ -2014,10 +2017,10 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
                 )
                 logger.info(
                     f"🤖 محاولة حل الكابتشا للرقم {phone} "
-                    f"(المحاولة {_ai_attempt + 1}/2)"
+                    f"(المحاولة {_ai_attempt + 1}/3)"
                 )
                 _ai_solved, _ai_detail = await solve_captcha_with_ai(
-                    client, bot_entity, msgs, phone, max_attempts=2
+                    client, bot_entity, msgs, phone, max_attempts=3
                 )
                 if _ai_solved:
                     logger.info(
