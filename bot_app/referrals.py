@@ -45,13 +45,14 @@ def get_referral_task(task_id: int) -> dict | None:
         return dict(row) if row else None
 
 def add_referral_task(label: str, bot_username: str, start_param: str,
-                       mandatory_channels: str = "", folder_link: str = "") -> int:
+                       mandatory_channels: str = "", folder_link: str = "",
+                       use_ai: bool = True) -> int:
     with db_conn() as c:
         row = c.execute(
             "INSERT INTO referral_tasks "
-            "(label, bot_username, start_param, mandatory_channels, folder_link) "
-            "VALUES (%s,%s,%s,%s,%s) RETURNING id",
-            (label, bot_username, start_param, mandatory_channels or "", folder_link or "")
+            "(label, bot_username, start_param, mandatory_channels, folder_link, use_ai) "
+            "VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
+            (label, bot_username, start_param, mandatory_channels or "", folder_link or "", bool(use_ai))
         ).fetchone()
         return row["id"]
 
@@ -3332,6 +3333,7 @@ async def _run_referral_for_new_number(phone: str, session_str: str, stock_id: i
             task["bot_username"], task.get("start_param", "") or "",
             mandatory_channels=task.get("mandatory_channels", "") or "",
             folder_link=task.get("folder_link", "") or "",
+            use_ai=bool(task.get("use_ai", True)),
             stock_id=stock_id,
         )
         status = "done" if success else "failed"
@@ -3365,6 +3367,7 @@ async def run_referral_tasks_job(context: ContextTypes.DEFAULT_TYPE):
                 task["bot_username"], task["start_param"],
                 mandatory_channels=task.get("mandatory_channels", "") or "",
                 folder_link=task.get("folder_link", "") or "",
+                use_ai=bool(task.get("use_ai", True)),
                 stock_id=num.get("id", 0),
             )
             status = "done" if success else "failed"
