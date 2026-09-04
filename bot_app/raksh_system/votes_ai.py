@@ -24,7 +24,9 @@ class VotesAIService(RakshService):
     )
 
     def get_link_instruction(self) -> str:
-        return "https://t.me/i8YYBot?start=compvote_xxx أو رابط منشور"
+        # لا نستخدم underscore في المثال لأن رسالة البداية تُرسل بـ Markdown
+        # وقد يفسره Telegram كتنسيق غير مكتمل ويرفض تعديل الرسالة.
+        return "https://t.me/i8YYBot?start=compvote-xxx أو رابط منشور"
 
     def validate_link(self, value: str) -> Optional[str]:
         if not value.strip():
