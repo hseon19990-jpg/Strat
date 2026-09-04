@@ -162,15 +162,15 @@ def main():
     app.add_handler(CommandHandler("mass_reset",          cmd_mass_reset))
     app.add_handler(CommandHandler("rotate_sessions",     cmd_rotate_sessions))
     
-    # ════════════════════════════════════════════════════════════════
+    # ════════════════════════════════════════════════════════════
     # 🔥 أمر اختبار AI (للمالك فقط)
-    # ════════════════════════════════════════════════════════════════
+    # ════════════════════════════════════════════════════════════
     app.add_handler(CommandHandler("testai", cmd_test_ai))
-    # ════════════════════════════════════════════════════════════════
+    # ════════════════════════════════════════════════════════════
     
-    # ════════════════════════════════════════════════════════════════
+    # ════════════════════════════════════════════════════════════
     # 🔥 نظام الرشق الجديد (RAKSH SYSTEM)
-    # ════════════════════════════════════════════════════════════════
+    # ════════════════════════════════════════════════════════════
     app.add_handler(CommandHandler("raksh", cmd_raksh))
     # لا تلتقط أزرار البوت العامة؛ هذا المعالج مخصص لـ Raksh فقط.
     # بدون pattern كان يطابق كل CallbackQuery ويمنع handle_callback من العمل.
@@ -184,7 +184,13 @@ def main():
     )
     app.add_handler(PreCheckoutQueryHandler(raksh_pre_checkout))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, raksh_successful_payment))
-    # ════════════════════════════════════════════════════════════════
+    # ════════════════════════════════════════════════════════════
+    
+    # ════════════════════════════════════════════════════════════
+    # 🔥 استيراد الخدمات من المواقع
+    # ════════════════════════════════════════════════════════════
+    app.add_handler(CommandHandler("import_services", cmd_import_services))
+    # ════════════════════════════════════════════════════════════
     
     app.add_handler(MessageHandler(
         filters.ChatType.PRIVATE & (
@@ -235,9 +241,9 @@ def main():
             delete_group_service_messages
         ))
 
-    # ════════════════════════════════════════════════════════════════
+    # ════════════════════════════════════════════════════════════
     # 🔥 أمر الطلبات المتأخرة (للمالك فقط) - مدمج هنا لضمان العمل
-    # ════════════════════════════════════════════════════════════════
+    # ════════════════════════════════════════════════════════════
     async def cmd_delayed_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
         if user.id != OWNER_ID:
@@ -286,7 +292,7 @@ def main():
             await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
     
     app.add_handler(CommandHandler("delayed_orders", cmd_delayed_orders))
-    # ════════════════════════════════════════════════════════════════
+    # ════════════════════════════════════════════════════════════
 
     async def post_init(application):
         # ─── معالج عالمي للاستثناءات غير المعالجة في asyncio tasks ────────
@@ -369,16 +375,16 @@ def main():
         asyncio.create_task(_clear_webhook(), name="telegram-webhook-cleanup")
         logger.info("✅ Telegram metadata synchronization scheduled in background")
         
-        # ════════════════════════════════════════════════════════════════
+        # ════════════════════════════════════════════════════════════
         # 🔥 سجل حالة مفاتيح AI عند بدء التشغيل
-        # ════════════════════════════════════════════════════════════════
+        # ════════════════════════════════════════════════════════════
         groq_key = os.environ.get("GROQ_API_KEY", "")
         deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "")
         logger.info(f"🔑 GROQ_API_KEY موجود: {bool(groq_key)} | طوله: {len(groq_key)}")
         logger.info(f"🔑 DEEPSEEK_API_KEY موجود: {bool(deepseek_key)} | طوله: {len(deepseek_key)}")
         if not groq_key and not deepseek_key:
             logger.warning("⚠️ لا يوجد مفتاح Groq أو DeepSeek — خدمات التحقق التلقائي لن تعمل.")
-        # ════════════════════════════════════════════════════════════════
+        # ════════════════════════════════════════════════════════════
         
         logger.info("ℹ️ Telegram command synchronization scheduled in background")
         # ─── تعويض المبيعات المكررة عند الإقلاع ────
@@ -476,9 +482,9 @@ def main():
         allowed_updates=["message", "callback_query", "pre_checkout_query", "successful_payment", "chat_member", "my_chat_member"],
     )
 
-# ════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════
 # 🔥 أمر اختبار AI (للمالك فقط)
-# ════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════
 async def cmd_test_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user.id != OWNER_ID:
@@ -571,7 +577,433 @@ async def cmd_test_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += "\n📌 جرّب الآن طلب إحالة بتحقق للتأكد من عمل مسار الكابتشا."
     
     await update.message.reply_text(msg)
-# ════════════════════════════════════════════════════════════════
+
+# ════════════════════════════════════════════════════════════
+# ═══ استيراد الخدمات من المواقع ═══
+# ════════════════════════════════════════════════════════════
+
+async def cmd_import_services(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر المالك: /import_services - استيراد خدمات من مواقع SMM"""
+    user = update.effective_user
+    if user.id != OWNER_ID:
+        await update.message.reply_text("⛔ هذا الأمر للمالك فقط.")
+        return
+
+    # عرض قائمة المواقع المتاحة
+    await update.message.reply_text(
+        "🌐 *استيراد الخدمات من المواقع*\n\n"
+        "اختر الموقع الذي تريد استيراد الخدمات منه:",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("1️⃣ SMMMAIN", callback_data="import_services:panel:1")],
+            [InlineKeyboardButton("2️⃣ JustAnotherPanel", callback_data="import_services:panel:2")],
+            [InlineKeyboardButton("3️⃣ SmmFollows", callback_data="import_services:panel:3")],
+        ])
+    )
+
+
+async def handle_import_services_callback(update, context, q, data, user, is_own):
+    """معالج أزرار استيراد الخدمات"""
+    if not is_own:
+        await q.answer("⛔ هذا الخيار للمالك فقط.", show_alert=True)
+        return
+
+    # ─── اختيار الموقع ───
+    if data.startswith("import_services:panel:"):
+        panel = int(data.split(":")[2])
+        context.user_data["import_panel"] = panel
+        site_name = PANEL_MAP.get(panel, PANEL_MAP[1])["name"]
+        
+        # عرض قائمة التطبيقات (المنصات)
+        await q.edit_message_text(
+            f"🌐 *استيراد الخدمات من {site_name}*\n\n"
+            "اختر المنصة (التطبيق):",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📱 تيليجرام", callback_data="import_services:platform:tg")],
+                [InlineKeyboardButton("📸 انستغرام", callback_data="import_services:platform:ig")],
+                [InlineKeyboardButton("🎵 تيك توك", callback_data="import_services:platform:tt")],
+                [InlineKeyboardButton("💬 واتساب", callback_data="import_services:platform:wa")],
+                [InlineKeyboardButton("📘 فيس بوك", callback_data="import_services:platform:fb")],
+                [InlineKeyboardButton("▶️ يوتيوب", callback_data="import_services:platform:yt")],
+                [InlineKeyboardButton("👻 سناب شات", callback_data="import_services:platform:sc")],
+                [InlineKeyboardButton("🐦 تويتر", callback_data="import_services:platform:tw")],
+                [InlineKeyboardButton("🔄 جميع المنصات", callback_data="import_services:platform:ALL")],
+            ])
+        )
+        return
+
+    # ─── اختيار المنصة ───
+    if data.startswith("import_services:platform:"):
+        platform = data.split(":")[2]
+        panel = context.user_data.get("import_panel", 1)
+        context.user_data["import_platform"] = platform
+        
+        # جلب جميع الخدمات من الموقع
+        await q.answer("⏳ جاري جلب الخدمات من الموقع...", show_alert=False)
+        
+        services = await asyncio.to_thread(smm_services_list, panel, True)
+        if not services:
+            await q.edit_message_text(
+                "❌ تعذر جلب الخدمات من الموقع.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 رجوع", callback_data="import_services:panel:" + str(panel))
+                ]])
+            )
+            return
+
+        # تصفية الخدمات حسب المنصة
+        if platform != "ALL":
+            platform_keywords = {
+                "tg": ["telegram", "t.me", "tg"],
+                "ig": ["instagram", "insta"],
+                "tt": ["tiktok", "tik"],
+                "wa": ["whatsapp", "whats"],
+                "fb": ["facebook", "fb"],
+                "yt": ["youtube", "yt"],
+                "sc": ["snapchat", "snap"],
+                "tw": ["twitter", "tw"],
+            }
+            keywords = platform_keywords.get(platform, [])
+            filtered_services = []
+            for service in services:
+                service_name = str(service.get("name", "")).lower()
+                if any(kw in service_name for kw in keywords):
+                    filtered_services.append(service)
+            services = filtered_services
+
+        # تخزين الخدمات في user_data
+        context.user_data["import_services_list"] = services
+        context.user_data["import_selected_services"] = []
+        context.user_data["import_page"] = 0
+        
+        # عرض قائمة الخدمات مع أزرار الاختيار
+        await show_import_services_list(update, context, q, panel)
+        return
+
+    # ─── اختيار خدمة من القائمة ───
+    if data.startswith("import_services:toggle:"):
+        parts = data.split(":")
+        if len(parts) < 3:
+            return
+        try:
+            service_index = int(parts[2])
+        except ValueError:
+            return
+        
+        services = context.user_data.get("import_services_list", [])
+        if service_index < 0 or service_index >= len(services):
+            await q.answer("⚠️ الخدمة غير موجودة.", show_alert=True)
+            return
+        
+        selected = context.user_data.get("import_selected_services", [])
+        if service_index in selected:
+            selected.remove(service_index)
+        else:
+            selected.append(service_index)
+        context.user_data["import_selected_services"] = selected
+        
+        # تحديث عرض القائمة
+        await show_import_services_list(update, context, q, context.user_data.get("import_panel", 1))
+        return
+
+    # ─── التنقل بين الصفحات ───
+    if data == "import_services:page_next":
+        context.user_data["import_page"] = context.user_data.get("import_page", 0) + 1
+        await show_import_services_list(update, context, q, context.user_data.get("import_panel", 1))
+        return
+
+    if data == "import_services:page_prev":
+        context.user_data["import_page"] = max(0, context.user_data.get("import_page", 1) - 1)
+        await show_import_services_list(update, context, q, context.user_data.get("import_panel", 1))
+        return
+
+    # ─── إضافة الخدمات المحددة ───
+    if data == "import_services:add_selected":
+        selected = context.user_data.get("import_selected_services", [])
+        if not selected:
+            await q.answer("⚠️ لم تحدد أي خدمة.", show_alert=True)
+            return
+        
+        # عرض تأكيد الإضافة
+        await show_import_services_confirmation(update, context, q)
+        return
+
+    # ─── تأكيد الإضافة ───
+    if data == "import_services:confirm":
+        await import_selected_services(update, context, q)
+        return
+
+    # ─── إلغاء ───
+    if data == "import_services:cancel":
+        context.user_data.pop("import_services_list", None)
+        context.user_data.pop("import_selected_services", None)
+        context.user_data.pop("import_panel", None)
+        context.user_data.pop("import_platform", None)
+        context.user_data.pop("import_page", None)
+        await q.edit_message_text(
+            "❌ تم إلغاء استيراد الخدمات.",
+            reply_markup=owner_settings_kb()
+        )
+        return
+
+    # ─── تعديل اسم خدمة ───
+    if data.startswith("import_services:edit_name:"):
+        parts = data.split(":")
+        try:
+            service_index = int(parts[2])
+        except ValueError:
+            return
+        
+        context.user_data["edit_import_service_index"] = service_index
+        context.user_data["state"] = "os_await_import_service_name"
+        
+        services = context.user_data.get("import_services_list", [])
+        if service_index < 0 or service_index >= len(services):
+            await q.answer("⚠️ الخدمة غير موجودة.", show_alert=True)
+            return
+        
+        service = services[service_index]
+        current_name = str(service.get("name", ""))
+        await q.edit_message_text(
+            f"✏️ *تعديل اسم الخدمة*\n\n"
+            f"الاسم الحالي:\n{current_name}\n\n"
+            "أرسل الاسم الجديد:",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+
+async def show_import_services_list(update, context, q, panel):
+    """عرض قائمة الخدمات مع أزرار الاختيار"""
+    services = context.user_data.get("import_services_list", [])
+    selected = context.user_data.get("import_selected_services", [])
+    platform = context.user_data.get("import_platform", "ALL")
+    
+    if not services:
+        await q.edit_message_text(
+            "❌ لا توجد خدمات متاحة.",
+            reply_markup=owner_settings_kb()
+        )
+        return
+    
+    # تقسيم الخدمات إلى صفحات
+    page_size = 10
+    total_services = len(services)
+    total_pages = max(1, (total_services + page_size - 1) // page_size)
+    
+    # الحصول على الصفحة الحالية من user_data
+    current_page = context.user_data.get("import_page", 0)
+    current_page = min(current_page, total_pages - 1)
+    
+    start = current_page * page_size
+    end = min(start + page_size, total_services)
+    
+    lines = [
+        f"📋 *الخدمات المتاحة* ({total_services} خدمة)\n"
+        f"📍 المنصة: {platform}\n"
+        f"📄 الصفحة {current_page + 1}/{total_pages}\n"
+        f"✅ المحددة: {len(selected)}\n\n"
+        "اضغط على الخدمة لتحديدها أو إلغاء تحديدها:"
+    ]
+    
+    buttons = []
+    for i in range(start, end):
+        service = services[i]
+        name = str(service.get("name", ""))
+        # تنظيف الاسم
+        cleaned_name = _strip_price_from_desc(name) or name
+        # اختصار الاسم الطويل
+        if len(cleaned_name) > 40:
+            cleaned_name = cleaned_name[:37] + "..."
+        
+        marked = "✅" if i in selected else "⬜"
+        buttons.append([
+            InlineKeyboardButton(
+                f"{marked} {cleaned_name}",
+                callback_data=f"import_services:toggle:{i}"
+            )
+        ])
+    
+    # أزرار التنقل
+    nav_buttons = []
+    if current_page > 0:
+        nav_buttons.append(InlineKeyboardButton("⬅️ السابق", callback_data="import_services:page_prev"))
+    if current_page < total_pages - 1:
+        nav_buttons.append(InlineKeyboardButton("التالي ➡️", callback_data="import_services:page_next"))
+    if nav_buttons:
+        buttons.append(nav_buttons)
+    
+    # أزرار الإجراءات
+    action_buttons = []
+    if selected:
+        action_buttons.append(InlineKeyboardButton(f"✅ إضافة المحددة ({len(selected)})", callback_data="import_services:add_selected"))
+    action_buttons.append(InlineKeyboardButton("🔙 رجوع للمواقع", callback_data="import_services:panel:" + str(panel)))
+    action_buttons.append(InlineKeyboardButton("❌ إلغاء", callback_data="import_services:cancel"))
+    
+    buttons.append(action_buttons)
+    
+    await q.edit_message_text(
+        "\n".join(lines),
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+
+async def show_import_services_confirmation(update, context, q):
+    """عرض تأكيد إضافة الخدمات المحددة"""
+    selected = context.user_data.get("import_selected_services", [])
+    services = context.user_data.get("import_services_list", [])
+    panel = context.user_data.get("import_panel", 1)
+    
+    if not selected:
+        return
+    
+    lines = ["📋 *تأكيد إضافة الخدمات*\n\n"]
+    
+    for index in selected:
+        if index >= len(services):
+            continue
+        service = services[index]
+        name = str(service.get("name", ""))
+        cleaned_name = _strip_price_from_desc(name) or name
+        rate = float(service.get("rate", 0) or 0)
+        min_qty = int(service.get("min", 0) or 0)
+        max_qty = int(service.get("max", 0) or 0)
+        
+        # حساب السعر بالنقاط: 0.01 دولار = 1000 نقطة
+        price_per_1000 = rate * 100000
+        
+        lines.append(f"• {cleaned_name}")
+        lines.append(f"  └ 💰 {price_per_1000:.1f} نقطة/1000 | 📉 {min_qty} | 📈 {max_qty}")
+        lines.append("")
+    
+    lines.append("هل تريد إضافة هذه الخدمات؟")
+    
+    await q.edit_message_text(
+        "\n".join(lines),
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ تأكيد الإضافة", callback_data="import_services:confirm")],
+            [InlineKeyboardButton("❌ إلغاء", callback_data="import_services:cancel")],
+        ])
+    )
+
+
+async def import_selected_services(update, context, q):
+    """إضافة الخدمات المحددة إلى قاعدة البيانات"""
+    selected = context.user_data.get("import_selected_services", [])
+    services = context.user_data.get("import_services_list", [])
+    panel = context.user_data.get("import_panel", 1)
+    platform = context.user_data.get("import_platform", "ALL")
+    
+    if not selected:
+        return
+    
+    added = 0
+    errors = []
+    
+    for index in selected:
+        if index >= len(services):
+            continue
+        service = services[index]
+        
+        try:
+            api_id = int(service.get("service", 0))
+            name = str(service.get("name", ""))
+            cleaned_name = _strip_price_from_desc(name) or name
+            rate = float(service.get("rate", 0) or 0)
+            min_qty = int(service.get("min", 0) or 0)
+            max_qty = int(service.get("max", 0) or 0)
+            desc = str(service.get("type", ""))
+            
+            # حساب السعر بالنقاط: 0.01 دولار = 1000 نقطة
+            price_per_1000 = rate * 100000
+            
+            # تحديد الفئة حسب المنصة
+            category = "other"
+            platform_keywords = {
+                "followers": ["followers", "subscribers", "members"],
+                "views": ["views", "visits", "impressions"],
+                "interactions": ["comments", "likes", "reactions"],
+                "story_views": ["story", "stories"],
+                "start_bot": ["start", "bot"],
+                "boost": ["boost"],
+                "post_stars": ["stars", "star"],
+            }
+            service_name_lower = cleaned_name.lower()
+            for cat, keywords in platform_keywords.items():
+                if any(kw in service_name_lower for kw in keywords):
+                    category = cat
+                    break
+            
+            # إضافة الخدمة إلى قاعدة البيانات
+            with db_conn() as c:
+                c.execute(
+                    """
+                    INSERT INTO services (category, api_service_id, panel, platform, name_ar, description, min_qty, max_qty, price_per_point)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (category, api_id, panel, platform, cleaned_name, desc, min_qty, max_qty, price_per_1000)
+                )
+            added += 1
+            
+        except Exception as e:
+            errors.append(f"خطأ في الخدمة #{index}: {str(e)}")
+    
+    # تنظيف حالة الاستيراد
+    context.user_data.pop("import_services_list", None)
+    context.user_data.pop("import_selected_services", None)
+    context.user_data.pop("import_panel", None)
+    context.user_data.pop("import_platform", None)
+    context.user_data.pop("import_page", None)
+    
+    result_text = f"✅ *تمت إضافة {added} خدمة بنجاح!*\n"
+    if errors:
+        result_text += f"\n⚠️ أخطاء: {len(errors)}\n"
+        result_text += "\n".join(f"• {e}" for e in errors[:5])
+    
+    await q.edit_message_text(
+        result_text,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=owner_settings_kb()
+    )
+
+
+async def handle_import_services_text(update, context):
+    """معالجة النصوص الخاصة باستيراد الخدمات"""
+    user = update.effective_user
+    text = update.message.text
+    state = context.user_data.get("state", "")
+    
+    # تعديل اسم خدمة
+    if state == "os_await_import_service_name":
+        if user.id != OWNER_ID:
+            return False
+        
+        service_index = context.user_data.get("edit_import_service_index")
+        services = context.user_data.get("import_services_list", [])
+        
+        if service_index is None or service_index >= len(services):
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text("⚠️ انتهت جلسة التعديل.")
+            return True
+        
+        # تحديث اسم الخدمة في القائمة
+        services[service_index]["name"] = text.strip()
+        context.user_data["import_services_list"] = services
+        context.user_data.pop("edit_import_service_index", None)
+        context.user_data["state"] = "main_menu"
+        
+        await update.message.reply_text(
+            f"✅ تم تعديل الاسم إلى: {text.strip()}",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 رجوع للقائمة", callback_data="import_services:panel:" + str(context.user_data.get("import_panel", 1)))
+            ]])
+        )
+        return True
+    
+    return False
 
 if __name__ == "__main__":
     main()

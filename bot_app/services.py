@@ -28,12 +28,23 @@ CATEGORY_MAP = {
 }
 
 RAKSH_ACCOUNTS_LABEL_SETTING = "raksh_accounts_label"
-DEFAULT_RAKSH_ACCOUNTS_LABEL = "خدمات تلي مميزة"
+DEFAULT_RAKSH_ACCOUNTS_LABEL = "خدمات تيليجرام أسطورية"
 
 def get_raksh_accounts_label() -> str:
     """يعيد الاسم المخصص لقسم حسابات الرشق مع قيمة افتراضية آمنة."""
     configured = (get_setting(RAKSH_ACCOUNTS_LABEL_SETTING) or "").strip()
-    return " ".join(configured.split())[:64] or DEFAULT_RAKSH_ACCOUNTS_LABEL
+    
+    # إذا كان الاسم المخصص فارغاً أو يساوي الاسم القديم، نعيد الاسم الجديد دائماً
+    if not configured or configured in {
+        "حسابات خدمات الرشق",
+        "خدمات الرشق",
+        "خدمات المرتقى",
+        "خدمات تلي مميزة",
+    }:
+        return "خدمات تيليجرام أسطورية"
+    
+    # وإلا نعيد الاسم المخصص الذي اختاره المالك
+    return " ".join(configured.split())[:64]
 
 SERVICE_PLATFORMS = [
     ("📱 تيلجرام", "services_menu_tg"),
@@ -68,14 +79,34 @@ PLATFORM_LABEL_MAP = {
     "tw": "🐦 تويتر",
 }
 
-MENU_LABELS = {"main": "القائمة الرئيسية", "owner_settings": "قائمة إعدادات المالك", "collect_points": "تجميع نقاط", "contact_support": "تواصل مع الدعم", "services_menu": "قائمة الخدمات"}
+MENU_LABELS = {
+    "main": "القائمة الرئيسية",
+    "owner_settings": "قائمة إعدادات المالك",
+    "collect_points": "تجميع نقاط",
+    "contact_support": "تواصل مع الدعم",
+    "services_menu": "قائمة الخدمات",
+}
 MENU_LABELS.update({v: f"خدمات: {lbl.split(' ', 1)[1]}" for lbl, v in SERVICE_PLATFORMS})
 MENU_LABELS.update({f"cat:{k}": f"قائمة فئة: {v}" for k, v in CATEGORY_MAP.items()})
 MENU_LABELS["legendary_services"] = "الخدمات الأسطورية"
 
-SERVICES_MENU_CATEGORIES = ["followers", "views", "interactions", "story_views", "start_bot", "boost", "post_stars", "other"]
+SERVICES_MENU_CATEGORIES = [
+    "followers",
+    "views",
+    "interactions",
+    "story_views",
+    "start_bot",
+    "boost",
+    "post_stars",
+    "other",
+]
 
-MANAGEABLE_MENUS = ["main", "owner_settings", "services_menu", "legendary_services"] + [v for _, v in SERVICE_PLATFORMS] + [f"cat:{k}" for k in CATEGORY_MAP]
+MANAGEABLE_MENUS = [
+    "main",
+    "owner_settings",
+    "services_menu",
+    "legendary_services",
+] + [v for _, v in SERVICE_PLATFORMS] + [f"cat:{k}" for k in CATEGORY_MAP]
 
 LEGENDARY_SERVICES_MESSAGE = (
     "👑 *الخدمات الأسطورية*\n\n"
@@ -108,15 +139,8 @@ _LEGENDARY_SERVICE_TYPES = {
     for _, action, _ in LEGENDARY_SERVICE_OPTIONS
 }
 
-
 def resolve_legendary_service_type(action_value: str) -> str | None:
-    """Resolve current and legacy callback values to a service type.
-
-    Menu buttons are persisted in the database, so an older callback value can
-    remain there after the callback format changes. Only known service types
-    are accepted so settings/payment callbacks cannot be mistaken for a
-    service.
-    """
+    """Resolve current and legacy callback values to a service type."""
     if not action_value:
         return None
 
@@ -133,7 +157,6 @@ def resolve_legendary_service_type(action_value: str) -> str | None:
         if candidate in _LEGENDARY_SERVICE_TYPES:
             return candidate
     return None
-
 
 def normalize_legendary_menu_item(item):
     """Return a menu item with the callback format understood by the router."""
@@ -162,12 +185,15 @@ def normalize_legendary_menu_item(item):
 BUILTIN_DEFAULTS = {
     "main": [
         ("🐺 خدمات", "services_menu", 1),
-        ("👑 خدمات أسطورية", "legendary_services", 1),
+        ("👑 خدمات تيليجرام أسطورية", "legendary_services", 1),
         ("🦇 تمويل قناتك حقيقي", "fund_channel", 1),
         ("👻 رابط دعوة", "referral", 1),
-        ("👍 شحن نقاط", "charge_points", 2), ("⭐ تجميع نقاط", "collect_points", 2),
-        ("🎁 استبدال نقاط بجوائز", "exchange_points", 2), ("🎙 تحويل النقاط", "transfer_points", 2),
-        ("🎟 استخدام كود", "use_promo", 2), ("⭐ معلوماتي", "my_info", 2),
+        ("👍 شحن نقاط", "charge_points", 2),
+        ("⭐ تجميع نقاط", "collect_points", 2),
+        ("🎁 استبدال نقاط بجوائز", "exchange_points", 2),
+        ("🎙 تحويل النقاط", "transfer_points", 2),
+        ("🎟 استخدام كود", "use_promo", 2),
+        ("⭐ معلوماتي", "my_info", 2),
         ("📱 ارقامي", "my_numbers", 1),
         ("🎁 الأكثر دعوةً اليوم", "top_ref_today", 2),
         ("✅ تواصل مع الدعم", "contact_support", 2),
@@ -179,89 +205,117 @@ BUILTIN_DEFAULTS = {
     "services_menu": [(label, value, 2) for label, value in SERVICE_PLATFORMS],
     "legendary_services": LEGENDARY_SERVICE_OPTIONS,
     "services_menu_tg": [
-        ("👥 رشق متابعين", "cat:followers", 2), ("👁 رشق مشاهدات", "cat:views", 2),
-        ("💬 رشق تفاعلات", "cat:interactions", 2), ("📖 رشق مشاهدات ستوري", "cat:story_views", 2),
-        ("🤖 رشق بدء (ستارت) بوت", "cat:start_bot", 2), ("📣 تعزيز قناة أو كروب", "cat:boost", 2),
+        ("👥 رشق متابعين", "cat:followers", 2),
+        ("👁 رشق مشاهدات", "cat:views", 2),
+        ("💬 رشق تفاعلات", "cat:interactions", 2),
+        ("📖 رشق مشاهدات ستوري", "cat:story_views", 2),
+        ("🤖 رشق بدء (ستارت) بوت", "cat:start_bot", 2),
+        ("📣 تعزيز قناة أو كروب", "cat:boost", 2),
         ("⭐ نجوم على بوست قناة", "cat:post_stars", 1),
         ("🔧 خدمات أخرى", "cat:other", 1),
     ],
     "services_menu_ig": [
-        ("👥 متابعين",         "cat:followers",    2), ("👁 مشاهدات",        "cat:views",       2),
-        ("💬 تفاعلات",          "cat:interactions", 2), ("📖 مشاهدات ستوري",  "cat:story_views", 2),
-        ("🔧 خدمات أخرى",      "cat:other",        1),
+        ("👥 متابعين", "cat:followers", 2),
+        ("👁 مشاهدات", "cat:views", 2),
+        ("💬 تفاعلات", "cat:interactions", 2),
+        ("📖 مشاهدات ستوري", "cat:story_views", 2),
+        ("🔧 خدمات أخرى", "cat:other", 1),
     ],
     "services_menu_tt": [
-        ("👥 متابعين",         "cat:followers",    2), ("👁 مشاهدات",        "cat:views",       2),
-        ("💬 تفاعلات",          "cat:interactions", 2),
-        ("🔧 خدمات أخرى",      "cat:other",        1),
+        ("👥 متابعين", "cat:followers", 2),
+        ("👁 مشاهدات", "cat:views", 2),
+        ("💬 تفاعلات", "cat:interactions", 2),
+        ("🔧 خدمات أخرى", "cat:other", 1),
     ],
     "services_menu_wa": [
-        ("👥 أعضاء",           "cat:followers",    2), ("👁 مشاهدات",        "cat:views",       2),
-        ("🔧 خدمات أخرى",      "cat:other",        1),
+        ("👥 أعضاء", "cat:followers", 2),
+        ("👁 مشاهدات", "cat:views", 2),
+        ("🔧 خدمات أخرى", "cat:other", 1),
     ],
     "services_menu_fb": [
-        ("👥 متابعين",         "cat:followers",    2), ("👁 مشاهدات",        "cat:views",       2),
-        ("💬 تفاعلات",          "cat:interactions", 2),
-        ("🔧 خدمات أخرى",      "cat:other",        1),
+        ("👥 متابعين", "cat:followers", 2),
+        ("👁 مشاهدات", "cat:views", 2),
+        ("💬 تفاعلات", "cat:interactions", 2),
+        ("🔧 خدمات أخرى", "cat:other", 1),
     ],
     "services_menu_yt": [
-        ("👥 مشتركين",         "cat:followers",    2), ("👁 مشاهدات",        "cat:views",       2),
-        ("💬 تفاعلات",          "cat:interactions", 2),
-        ("🔧 خدمات أخرى",      "cat:other",        1),
+        ("👥 مشتركين", "cat:followers", 2),
+        ("👁 مشاهدات", "cat:views", 2),
+        ("💬 تفاعلات", "cat:interactions", 2),
+        ("🔧 خدمات أخرى", "cat:other", 1),
     ],
     "services_menu_sc": [
-        ("👥 متابعين",         "cat:followers",    2), ("👁 مشاهدات",        "cat:views",       2),
-        ("📖 مشاهدات ستوري",   "cat:story_views",  2),
-        ("🔧 خدمات أخرى",      "cat:other",        1),
+        ("👥 متابعين", "cat:followers", 2),
+        ("👁 مشاهدات", "cat:views", 2),
+        ("📖 مشاهدات ستوري", "cat:story_views", 2),
+        ("🔧 خدمات أخرى", "cat:other", 1),
     ],
     "services_menu_tw": [
-        ("👥 متابعين",         "cat:followers",    2), ("👁 مشاهدات",        "cat:views",       2),
-        ("💬 تفاعلات",          "cat:interactions", 2),
-        ("🔧 خدمات أخرى",      "cat:other",        1),
+        ("👥 متابعين", "cat:followers", 2),
+        ("👁 مشاهدات", "cat:views", 2),
+        ("💬 تفاعلات", "cat:interactions", 2),
+        ("🔧 خدمات أخرى", "cat:other", 1),
     ],
     "owner_settings": [
-        ("➕ إضافة خدمة", "os:add_service", 2), ("📋 قائمة الخدمات", "os:list_services", 2),
-        ("🗂 عرض الخدمات", "os:view_services", 2), ("🔍 الفحص", "os:inspect_services", 2),
+        ("➕ إضافة خدمة", "os:add_service", 2),
+        ("📋 قائمة الخدمات", "os:list_services", 2),
+        ("🗂 عرض الخدمات", "os:view_services", 2),
+        ("🔍 الفحص", "os:inspect_services", 2),
         ("📦 قسم الطلبات", "os:orders_section", 2),
         ("📝 تعديل وصف عدة خدمات", "os:share_description", 2),
-        ("🎁 تعديل الهدية اليومية", "os:edit_gift", 2), ("🎀 جوائز مخصصة", "os:manage_prizes", 2),
+        ("🎁 تعديل الهدية اليومية", "os:edit_gift", 2),
+        ("🎀 جوائز مخصصة", "os:manage_prizes", 2),
         ("🔗 تعديل نقاط الدعوة", "os:edit_referral", 2),
-        ("⭐ سعر النجمة شحن", "os:edit_star_rate", 2), ("🏆 سعر نجمة الجوائز", "os:edit_exchange_rate", 2),
+        ("⭐ سعر النجمة شحن", "os:edit_star_rate", 2),
+        ("🏆 سعر نجمة الجوائز", "os:edit_exchange_rate", 2),
         ("📦 باقات الاستبدال بنجوم", "os:manage_star_packages", 1),
         ("📱 سعر رقم تيلغرام", "os:edit_number_cost", 2),
-        ("⭐ سعر رقم بالنجوم", "os:edit_number_stars", 2), ("💌 رسالة الترحيب", "os:edit_welcome", 2),
+        ("⭐ سعر رقم بالنجوم", "os:edit_number_stars", 2),
+        ("💌 رسالة الترحيب", "os:edit_welcome", 2),
         ("📥 مخزون أرقام تيلغرام", "os:manage_numbers", 2),
         ("🎟 أكواد شراء رقم", "os:manage_num_codes", 2),
         ("🔄 سعر تمويل داخلي", "os:edit_internal_cost", 2),
         ("🎁 نقاط الانضمام للقنوات", "os:edit_join_reward", 1),
         ("❌ خصم مغادرة القناة", "os:edit_leave_penalty", 1),
         ("⏱ مهلة المغادرة الآمنة (ساعة)", "os:edit_leave_grace", 1),
-        ("⭐ إجباري: حد أدنى (نجوم)", "os:edit_mstars_min", 2), ("⭐ إجباري: حد الشريحة 1", "os:edit_mstars_t1max", 2),
-        ("⭐ إجباري: سعر ش1 (×100)", "os:edit_mstars_t1p", 2), ("⭐ إجباري: سعر ش2 (×100)", "os:edit_mstars_t2p", 2),
-        ("📧 إيميلات جيميل", "os:list_gmail", 2), ("🔐 حسابات التحقق", "os:verified_gmail", 2),
+        ("⭐ إجباري: حد أدنى (نجوم)", "os:edit_mstars_min", 2),
+        ("⭐ إجباري: حد الشريحة 1", "os:edit_mstars_t1max", 2),
+        ("⭐ إجباري: سعر ش1 (×100)", "os:edit_mstars_t1p", 2),
+        ("⭐ إجباري: سعر ش2 (×100)", "os:edit_mstars_t2p", 2),
+        ("📧 إيميلات جيميل", "os:list_gmail", 2),
+        ("🔐 حسابات التحقق", "os:verified_gmail", 2),
         ("📋 سجل كل الإيميلات", "os:all_gmail_history", 2),
         ("⚙️ نقاط طلب جيميل", "os:edit_gmail_reward", 2),
         ("✏️ نص رسالة الجيميل", "os:edit_gmail_msg", 2),
         ("🏷 اسم زر الإيميل", "os:edit_gmail_btn_label", 2),
-        ("📨 رسالة طلب الإيميل", "os:edit_gmail_email_prompt", 2), ("🔑 رسالة طلب الباسورد", "os:edit_gmail_pass_prompt", 2),
+        ("📨 رسالة طلب الإيميل", "os:edit_gmail_email_prompt", 2),
+        ("🔑 رسالة طلب الباسورد", "os:edit_gmail_pass_prompt", 2),
         ("💬 نص طلب ملاحظة التحقق", "os:edit_gmail_verification_note_prompt", 2),
         ("🔒 تعليمات تسجيل الخروج", "os:edit_gmail_logout_instructions", 2),
-        ("📹 فيديو رفض: باسورد خطأ", "os:edit_reject_pass_video", 2), ("✏️ نص رفض: باسورد خطأ", "os:edit_reject_pass_caption", 2),
-        ("📹 فيديو رفض: يحتاج تحقق", "os:edit_reject_verify_video", 2), ("✏️ نص رفض: يحتاج تحقق", "os:edit_reject_verify_caption", 2),
+        ("📹 فيديو رفض: باسورد خطأ", "os:edit_reject_pass_video", 2),
+        ("✏️ نص رفض: باسورد خطأ", "os:edit_reject_pass_caption", 2),
+        ("📹 فيديو رفض: يحتاج تحقق", "os:edit_reject_verify_video", 2),
+        ("✏️ نص رفض: يحتاج تحقق", "os:edit_reject_verify_caption", 2),
         ("✏️ رسالة رفض: إيميل خطأ", "os:edit_reject_email_msg", 1),
-        ("💰 إجباري-نقاط: سعر/عضو", "os:edit_mpoints_price", 2), ("💰 إجباري-نقاط: حد أدنى", "os:edit_mpoints_min", 2),
-        ("📡 إدارة قنوات الاشتراك", "os:manage_channels", 2), ("👥 حد أدنى تمويل داخلي", "os:edit_internal_min", 2),
+        ("💰 إجباري-نقاط: سعر/عضو", "os:edit_mpoints_price", 2),
+        ("💰 إجباري-نقاط: حد أدنى", "os:edit_mpoints_min", 2),
+        ("📡 إدارة قنوات الاشتراك", "os:manage_channels", 2),
+        ("👥 حد أدنى تمويل داخلي", "os:edit_internal_min", 2),
         ("❌ إلغاء صفقة", "os:cancel_order", 2),
         ("✅ إكمال طلب", "os:complete_order", 2),
-        ("🎟 إنشاء كود ترويجي", "os:create_promo", 2), ("📋 أكواد ترويجية", "os:list_promos", 2),
+        ("🎟 إنشاء كود ترويجي", "os:create_promo", 2),
+        ("📋 أكواد ترويجية", "os:list_promos", 2),
         ("🚫 إدارة الحظر", "os:ban_menu", 2),
         ("🔍 من استخدم الكود", "os:search_code", 2),
         ("💰 منح/خصم نقاط", "os:manage_points", 2),
-        ("💬 رابط تواصل المالك", "os:edit_contact", 2), ("✏️ نص زر التواصل", "os:edit_contact_label", 2),
+        ("💬 رابط تواصل المالك", "os:edit_contact", 2),
+        ("✏️ نص زر التواصل", "os:edit_contact_label", 2),
         ("💌 إعدادات شكر المالك", "os:thank_owner_settings", 1),
         ("📲 تعديل نص اسيا سيل", "os:edit_asiacell", 2),
-        ("✏️ نص زر الدعم بالقائمة", "os:edit_support_label", 2), ("📢 رسالة جماعية", "os:broadcast", 2),
-        ("🔐 تفعيل/تعطيل التحقق", "os:toggle_captcha", 2), ("📊 إحصائيات", "os:stats", 2),
+        ("✏️ نص زر الدعم بالقائمة", "os:edit_support_label", 2),
+        ("📢 رسالة جماعية", "os:broadcast", 2),
+        ("🔐 تفعيل/تعطيل التحقق", "os:toggle_captcha", 2),
+        ("📊 إحصائيات", "os:stats", 2),
         ("🛠 وضع الصيانة", "os:toggle_maintenance", 2),
         ("📱 استبدال الأرقام", "os:toggle_number_exchange", 2),
         ("🏆 الأكثر إرسالاً لرابط الدعوة", "os:top_referrers", 2),
@@ -274,15 +328,22 @@ BUILTIN_DEFAULTS = {
         ("📱 أرقام إحالة بوت إجباري", "os:bot_ref_numbers", 1),
         ("👥 الأعضاء المقيدين", "os:restricted_members", 1),
         ("💰 تعديل أسعار الخدمات الأسطورية", "legendary:price_settings", 1),
+        ("🌐 استيراد الخدمات من المواقع", "import_services", 1),
     ],
 }
 
 GOTO_TARGETS = [
-    ("🏠 القائمة الرئيسية", "main_menu"), ("🛍 خدمات", "services_menu"),
-    ("🔗 رابط دعوة", "referral"), ("💰 تجميع نقاط", "collect_points"),
+    ("🏠 القائمة الرئيسية", "main_menu"),
+    ("🛍 خدمات", "services_menu"),
+    ("🔗 رابط دعوة", "referral"),
+    ("💰 تجميع نقاط", "collect_points"),
     ("💎 شحن نقاط", "charge_points"),
-    ("🏆 استبدال نقاط بجوائز", "exchange_points"), ("↔️ تحويل النقاط", "transfer_points"),
-    ("🎟 استخدام كود", "use_promo"), ("ℹ️ معلوماتي", "my_info"), ("📱 ارقامي", "my_numbers"), ("📺 تمويل قناتك حقيقي", "fund_channel"),
+    ("🏆 استبدال نقاط بجوائز", "exchange_points"),
+    ("↔️ تحويل النقاط", "transfer_points"),
+    ("🎟 استخدام كود", "use_promo"),
+    ("ℹ️ معلوماتي", "my_info"),
+    ("📱 ارقامي", "my_numbers"),
+    ("📺 تمويل قناتك حقيقي", "fund_channel"),
 ] + SERVICE_PLATFORMS + [(v, f"cat:{k}") for k, v in CATEGORY_MAP.items()]
 
 def seed_menu_items(menu: str):
@@ -309,16 +370,16 @@ def seed_menu_items(menu: str):
                 (min_order - 1,)
             )
         _main_icon_migration = {
-            "services_menu":    ("🛍 خدمات", "🐺 خدمات", 1),
-            "fund_channel":     ("📺 تمويل قناتك حقيقي", "🦇 تمويل قناتك حقيقي", 1),
-            "referral":         ("🔗 رابط دعوة", "👻 رابط دعوة", 1),
-            "charge_points":    ("💎 شحن نقاط", "👍 شحن نقاط", 2),
-            "collect_points":   ("💰 تجميع نقاط", "⭐ تجميع نقاط", 2),
-            "exchange_points":  ("🏆 استبدال نقاط بجوائز", "🎁 استبدال نقاط بجوائز", 2),
-            "transfer_points":  ("↔️ تحويل النقاط", "🎙 تحويل النقاط", 2),
-            "my_info":          ("ℹ️ معلوماتي", "⭐ معلوماتي", 2),
-            "top_ref_today":    ("🏆 الأكثر دعوةً اليوم", "🎁 الأكثر دعوةً اليوم", 2),
-            "contact_support":  ("🛎 تواصل مع الدعم", "✅ تواصل مع الدعم", 2),
+            "services_menu": ("🛍 خدمات", "🐺 خدمات", 1),
+            "fund_channel": ("📺 تمويل قناتك حقيقي", "🦇 تمويل قناتك حقيقي", 1),
+            "referral": ("🔗 رابط دعوة", "👻 رابط دعوة", 1),
+            "charge_points": ("💎 شحن نقاط", "👍 شحن نقاط", 2),
+            "collect_points": ("💰 تجميع نقاط", "⭐ تجميع نقاط", 2),
+            "exchange_points": ("🏆 استبدال نقاط بجوائز", "🎁 استبدال نقاط بجوائز", 2),
+            "transfer_points": ("↔️ تحويل النقاط", "🎙 تحويل النقاط", 2),
+            "my_info": ("ℹ️ معلوماتي", "⭐ معلوماتي", 2),
+            "top_ref_today": ("🏆 الأكثر دعوةً اليوم", "🎁 الأكثر دعوةً اليوم", 2),
+            "contact_support": ("🛎 تواصل مع الدعم", "✅ تواصل مع الدعم", 2),
         }
         with db_conn() as c:
             for action_value, (old_label, new_label, new_width) in _main_icon_migration.items():
@@ -335,8 +396,6 @@ def seed_menu_items(menu: str):
                 old_cats
             )
     if menu == "legendary_services":
-        # Migrate buttons saved by older versions without changing their
-        # custom label, order, or enabled state.
         with db_conn() as c:
             existing_rows = c.execute(
                 "SELECT id, label, action_value FROM menu_items "

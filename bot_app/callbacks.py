@@ -122,6 +122,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if _handled is not True:
             return
 
+    # ─── معالج استيراد الخدمات ───
+    if data.startswith("import_services:"):
+        await handle_import_services_callback(update, context, q, data, user, is_own)
+        return
+
     try:
         await q.answer()
     except Exception:
