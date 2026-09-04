@@ -362,7 +362,13 @@ class ForcedRefAIService(RakshService):
 
     # ─── 4. حل التحقق المدمج (يدعم مشاركة الرقم + المنطق القديم) ───
 
-    async def _solve_verification(self, client, bot_entity, phone_number: str) -> bool:
+    async def _solve_verification(
+        self,
+        client,
+        bot_entity,
+        phone_number: str,
+        base_id: int = 0,
+    ) -> bool:
         """
         حل التحقق بذكاء:
         1. إذا طلب البوت مشاركة رقم الهاتف (زر KeyboardButtonRequestPhone) – نرسل الرقم ونضغط متابعة.
@@ -370,6 +376,15 @@ class ForcedRefAIService(RakshService):
         """
         MAX_WAIT = 12
         CHECK_INTERVAL = 1.0
+
+        # base_id هو آخر معرف رسالة قبل ضغط رابط الإحالة. كل الرسائل القديمة
+        # قبله خارج عملية التحقق ويجب ألا تؤثر على اختيار المرحلة الحالية.
+        if not base_id:
+            try:
+                latest_messages = await client.get_messages(bot_entity, limit=1)
+                base_id = latest_messages[0].id if latest_messages else 0
+            except Exception:
+                base_id = 0
 
         # ─── المرحلة 1: البحث عن طلب مشاركة رقم الهاتف ───
         contact_request_msg = None
@@ -382,6 +397,8 @@ class ForcedRefAIService(RakshService):
 
             for msg in messages:
                 if msg.out:
+                    continue
+                if base_id and msg.id <= base_id:
                     continue
                 if msg.reply_markup:
                     for row in msg.reply_markup.rows:
@@ -434,10 +451,13 @@ class ForcedRefAIService(RakshService):
                 for msg in messages:
                     if msg.out:
                         continue
+                    if base_id and msg.id <= base_id:
+                        continue
                     buttons = []
                     if msg.reply_markup:
                         for row in msg.reply_markup.rows:
                             for btn in row.buttons:
+                                # لا نضغط أي زر رابط، بما فيه رابط الدعوة.
                                 if not getattr(btn, 'url', None):
                                     buttons.append(btn)
                     # نفضل الأزرار التي تحوي كلمات مفتاحية
@@ -467,24 +487,24 @@ class ForcedRefAIService(RakshService):
 
             try:
                 # بعد الضغط على الزر الأول ننتظر ثم نعيد قراءة كامل محادثة
-                # التحقق من رسالة طلب الرقم حتى آخر رسالة، لا آخر 3 رسائل فقط.
+                # التحقق منذ لحظة ضغط رابط الإحالة حتى آخر رسالة.
                 await asyncio.sleep(2.0)
                 followup_messages = []
                 async for msg in client.iter_messages(
                     bot_entity,
-                    min_id=contact_request_msg.id,
+                    min_id=base_id,
                     reverse=True,
                 ):
                     followup_messages.append(msg)
                 logger.info(
                     f"🔄 إعادة قراءة رسائل التحقق بعد زر المتابعة: "
-                    f"{len(followup_messages)} رسالة من {phone_number}"
+                    f"{len(followup_messages)} رسالة منذ ضغط الرابط من {phone_number}"
                 )
                 return await self._solve_legacy_verification(
                     client,
                     bot_entity,
                     phone_number,
-                    base_id=contact_request_msg.id,
+                    base_id=base_id,
                     initial_messages=followup_messages,
                 )
             except Exception as e:
@@ -676,6 +696,8 @@ class ForcedRefAIService(RakshService):
             buttons = []
             for row in getattr(verification_message, 'buttons', None) or []:
                 for btn in row:
+                    # أزرار الروابط قد تكون رابط دعوة أو رابط انضمام؛ لا نضغطها
+                    # أثناء حل التحقق، ونكتفي بأزرار التحقق غير المرتبطة بروابط.
                     if not getattr(btn, 'url', None):
                         buttons.append(btn)
 
@@ -764,6 +786,15 @@ class ForcedRefAIService(RakshService):
             resolved = await client(ResolveUsernameRequest(clean_username))
             bot_entity = resolved.users[0] if resolved.users else resolved.chats[0]
 
+            # حفظ نقطة البداية قبل ضغط رابط الإحالة. سيعيد محلّل التحقق قراءة
+            # كل الرسائل التي تظهر بعد هذه النقطة، لا آخر رسالة فقط.
+            verification_base_id = 0
+            try:
+                latest_messages = await client.get_messages(bot_entity, limit=1)
+                verification_base_id = latest_messages[0].id if latest_messages else 0
+            except Exception as e:
+                logger.warning(f"تعذر تحديد نقطة بداية رابط الإحالة: {e}")
+
             # بدء البوت
             await client(StartBotRequest(
                 bot=bot_entity,
@@ -773,7 +804,12 @@ class ForcedRefAIService(RakshService):
             await asyncio.sleep(2.0)
 
             # حل التحقق باستخدام الدالة المدمجة
-            success = await self._solve_verification(client, bot_entity, session.get("phone_number"))
+            success = await self._solve_verification(
+                client,
+                bot_entity,
+                session.get("phone_number"),
+                base_id=verification_base_id,
+            )
 
             if success:
                 return True, f"✅ تمت الإحالة مع التحقق من {session['phone_number']}"
