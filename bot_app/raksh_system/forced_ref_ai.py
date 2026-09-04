@@ -173,7 +173,10 @@ class ForcedRefAIService(RakshService):
 
     def get_start_keyboard(self) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([
-            [InlineKeyboardButton("⏭️ تخطي (بدون قنوات)", callback_data="raksh_forced_ref_ai:skip_channels")],
+            [InlineKeyboardButton(
+                "⏭️ تخطي (بدون قنوات)",
+                callback_data=f"raksh_{self.service_type}:skip_channels",
+            )],
             [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
         ])
 
@@ -311,13 +314,13 @@ class ForcedRefAIService(RakshService):
                     [
                         InlineKeyboardButton(
                             f"💰 دفع بالنقاط ({points_cost} نقطة)",
-                            callback_data=f"raksh_forced_ref_ai:payment:points:{quantity}:{points_cost}"
+                            callback_data=f"raksh_{self.service_type}:payment:points:{quantity}:{points_cost}"
                         )
                     ],
                     [
                         InlineKeyboardButton(
                             f"⭐ دفع بالنجوم ({stars_cost} نجمة)",
-                            callback_data=f"raksh_forced_ref_ai:payment:stars:{quantity}:{stars_cost}"
+                            callback_data=f"raksh_{self.service_type}:payment:stars:{quantity}:{stars_cost}"
                         )
                     ],
                     [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
@@ -389,7 +392,7 @@ class ForcedRefAIService(RakshService):
                     [
                         InlineKeyboardButton(
                             "✅ تأكيد الطلب",
-                            callback_data=f"raksh_forced_ref_ai:confirm:{payment_method}:{quantity}:{total_cost}"
+                            callback_data=f"raksh_{self.service_type}:confirm:{payment_method}:{quantity}:{total_cost}"
                         ),
                         InlineKeyboardButton(
                             "❌ إلغاء",

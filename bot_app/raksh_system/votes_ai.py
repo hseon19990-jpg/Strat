@@ -3,8 +3,14 @@ from .common import *
 from .forced_ref_ai import ForcedRefAIService
 
 
-class VotesAIService(RakshService):
-    """خدمة رشق تصويت مع تحقق - تستخدم نفس تحقق الإحالة."""
+class VotesAIService(ForcedRefAIService):
+    """
+    خدمة رشق تصويت مع تحقق.
+
+    ترث تدفق الإحالة بالكامل: القنوات الإجبارية، الرابط، الكمية، الدفع،
+    والتحقق متعدد المراحل. الاستثناء الوحيد هو أن الرابط قد يكون رابط بوت
+    أو رابط منشور/قناة لتنفيذ التصويت بعد اكتمال التحقق.
+    """
 
     service_type = "votes_ai"
     label = "🛡 رشق تصويت مع تحقق"
