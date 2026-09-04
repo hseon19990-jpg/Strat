@@ -3234,7 +3234,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ انتهت صلاحية المسودة، ابدأ من جديد.", reply_markup=owner_settings_kb())
             return
         label = f"@{bot_user} — {start_p[:20]}"
-        task_id = add_referral_task(label, bot_user, start_p, mandatory_channels, folder_link)
+        task_id = add_referral_task(label, bot_user, start_p, mandatory_channels, folder_link, use_ai=True)
         context.user_data["state"] = "main_menu"
         context.user_data.pop("ref_task_draft", None)
         ch_line = f"\n📢 القنوات الإجبارية: `{mandatory_channels}`" if mandatory_channels else ""
@@ -3243,7 +3243,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ *تمت إضافة مهمة الإحالة بنجاح!*\n\n"
             f"📌 البوت: `@{bot_user}`\n"
             f"🔑 الكود: `{start_p}`"
-            f"{ch_line}{fl_line}\n\n"
+            f"{ch_line}{fl_line}\n"
+            f"🔐 التحقق: مفعّل — لن تُسجّل الإحالة ناجحة قبل تأكيد البوت\n\n"
             f"ستُنفَّذ تلقائياً على كل الأرقام كل ساعة.\n"
             f"يمكنك أيضاً تشغيلها فوراً من ⚙️ تفاصيل المهمة.",
             parse_mode=ParseMode.MARKDOWN,
