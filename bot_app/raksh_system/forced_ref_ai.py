@@ -8,6 +8,51 @@ from telethon.tl.types import (
     KeyboardButtonRow,
 )
 
+import unicodedata
+
+_EMOJI_PATTERN = re.compile(
+    "[\U0001F300-\U0001FAFF\u2600-\u27BF\U0001F1E0-\U0001F1FF]"
+)
+
+
+def _button_text(button) -> str:
+    """قراءة نص الزر من MessageButton أو كائن Telegram الخام."""
+    text = getattr(button, "text", None)
+    if not text:
+        raw_button = getattr(button, "button", None)
+        text = getattr(raw_button, "text", None)
+    return str(text or "")
+
+
+def _normalize_emoji(value: str) -> str:
+    """توحيد الإيموجي المخصص مع إزالة variation selector و ZWJ."""
+    value = unicodedata.normalize("NFKC", str(value or ""))
+    return "".join(
+        char for char in value
+        if char not in {"\ufe0e", "\ufe0f", "\u200d"}
+        and not 0x1F3FB <= ord(char) <= 0x1F3FF
+    )
+
+
+def _target_emoji(text: str) -> str:
+    """استخراج آخر رمز في نص «اضغط على الرمز: ...» باعتباره الهدف."""
+    matches = _EMOJI_PATTERN.findall(text or "")
+    return matches[-1] if matches else ""
+
+
+def _button_matches_emoji(button, target: str) -> bool:
+    label = _button_text(button)
+    if not label or not target:
+        return False
+    normalized_label = _normalize_emoji(label)
+    normalized_target = _normalize_emoji(target)
+    return (
+        normalized_label == normalized_target
+        or normalized_target in normalized_label
+        or target in label
+    )
+
+
 class ForcedRefAIService(RakshService):
     """خدمة إحالة بوت إجباري مع تحقق - كل شيء في مكان واحد"""
 
@@ -547,52 +592,40 @@ class ForcedRefAIService(RakshService):
 
             # ═══ 4️⃣ الضغط على الأزرار العادية ═══
             if all_buttons:
-                # استخراج الإيموجي المطلوب
-                emoji_pattern = re.compile(
-                    "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E0-\U0001F1FF]"
-                )
-                target_emoji = None
-                found_emojis = emoji_pattern.findall(text)
-                if found_emojis:
-                    target_emoji = found_emojis[-1]
-
-                # لا نضغط أزراراً عشوائية أو أزرار مشاركة الرقم مرة أخرى.
+                # ندعم الإيموجي العادي والمخصص، مع قراءة MessageButton
+                # والغلاف الداخلي حتى لا يفشل التطابق بسبب اختلاف Telethon.
+                target_emoji = _target_emoji(text)
                 safe_buttons = [
                     b for b in all_buttons
                     if b.__class__.__name__ != "KeyboardButtonRequestPhone"
                 ]
                 prioritized = []
                 if target_emoji:
-                    exact = [
+                    prioritized.extend(
                         b for b in safe_buttons
-                        if getattr(b, 'text', '') == target_emoji
-                    ]
-                    prioritized.extend(exact)
-                    partial = [
-                        b for b in safe_buttons
-                        if target_emoji in (getattr(b, 'text', '') or '')
-                        and b not in exact
-                    ]
-                    prioritized.extend(partial)
+                        if _button_matches_emoji(b, target_emoji)
+                    )
 
-                verify_keywords = ['تحقق', 'verify', 'اضغط هنا', 'continue', 'التالي', 'متابعة']
+                verify_keywords = [
+                    'تحقق', 'verify', 'اضغط هنا', 'continue',
+                    'التالي', 'متابعة',
+                ]
                 verify_buttons = [
                     b for b in safe_buttons
                     if any(
-                        kw in (getattr(b, 'text', '') or '').casefold()
-                        for kw in verify_keywords
+                        keyword in _button_text(b).casefold()
+                        for keyword in verify_keywords
                     ) and b not in prioritized
                 ]
                 prioritized.extend(verify_buttons)
 
-                # إذا لم يذكر نص التحقق إيموجياً أو زر تحقق واضحاً، لا نغامر
-                # بالضغط على بقية الأزرار لأنها قد تكون أزراراً وظيفية عادية.
+                # لا نضغط زرًا عشوائيًا إذا لم يحدد السؤال الإجابة.
                 if not prioritized:
                     handled_button_messages.add(verification_message.id)
                     await asyncio.sleep(1.0)
                     continue
 
-                button_text = getattr(prioritized[0], 'text', '') or ''
+                button_text = _button_text(prioritized[0])
                 handled_button_messages.add(verification_message.id)
 
                 try:
@@ -613,7 +646,7 @@ class ForcedRefAIService(RakshService):
                     for btn in row:
                         if (
                             not getattr(btn, 'url', None)
-                            and getattr(btn, 'text', '') == button_text
+                            and _button_text(btn) == button_text
                         ):
                             button_to_click = btn
                             break
