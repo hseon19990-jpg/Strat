@@ -49,6 +49,30 @@ RAKSH_VOTE_DELAY_SECONDS = 3
 RAKSH_MAX_EXECUTIONS_PER_DAY = 999999999999999999
 RAKSH_MAX_EXECUTIONS_PER_HOUR = 99999999999
 RAKSH_NO_VERIFICATION_MESSAGE = "بدون زر تحقق"
+RAKSH_DUPLICATE_MARKER = "RAKSH_DUPLICATE"
+RAKSH_VERIFICATION_FAILURE_MARKER = "RAKSH_VERIFICATION_FAILURE"
+# هذه الخدمات تحتاج نتيجة تنفيذ فعلية، بخلاف بقية خدمات الرشق.
+RAKSH_RESULT_EXCEPTIONS = frozenset({"forced_ref", "forced_ref_ai", "votes_ai"})
+RAKSH_DUPLICATE_TEXT_MARKERS = (
+    "مفعل مسبق",
+    "مفعّل مسبق",
+    "مفعل من قبل",
+    "مفعّل من قبل",
+    "مشترك مسبق",
+    "مشترك من قبل",
+    "مشترك بالفعل",
+    "تم تفعيل حسابك مسبق",
+    "سبق تفعيل",
+    "لقد صوّتت لهذا الشخص من قبل",
+    "لقد صوتت لهذا الشخص من قبل",
+    "already active",
+    "already activated",
+    "already subscribed",
+    "already joined",
+    "already voted",
+    "already registered",
+    "you are already",
+)
 # الحساب الذي يبدأ به كل طلب رشق عند توفر جلسته وصلاحيتها.
 RAKSH_PRIORITY_PHONE = "8801709839107"
 
@@ -75,6 +99,38 @@ def _get_raksh_session_lock(phone_number: str) -> asyncio.Lock:
     if key not in _RAKSH_SESSION_LOCKS:
         _RAKSH_SESSION_LOCKS[key] = asyncio.Lock()
     return _RAKSH_SESSION_LOCKS[key]
+
+
+def _raksh_is_duplicate_text(text: str) -> bool:
+    """هل تشير رسالة البوت إلى أن العملية كانت منفذة مسبقاً؟"""
+    normalized = (text or "").strip().casefold()
+    return bool(normalized) and any(
+        marker.casefold() in normalized
+        for marker in RAKSH_DUPLICATE_TEXT_MARKERS
+    )
+
+
+async def _raksh_has_duplicate_response(
+    client,
+    entity,
+    after_id: int = 0,
+    limit: int = 20,
+) -> bool:
+    """فحص رسائل جديدة من البوت بحثاً عن تفعيل/تصويت مكرر."""
+    try:
+        messages = await client.get_messages(entity, limit=limit)
+    except Exception:
+        return False
+    for message in messages:
+        message_id = getattr(message, "id", 0) or 0
+        if after_id and message_id <= after_id:
+            continue
+        if getattr(message, "out", False):
+            continue
+        text = getattr(message, "text", None) or getattr(message, "message", "") or ""
+        if _raksh_is_duplicate_text(text):
+            return True
+    return False
 
 def _positive_setting(key: str, fallback: int) -> int:
     """قراءة إعداد مع التحقق من الصحة"""
@@ -986,6 +1042,24 @@ class RakshService:
             f"🔗 *أرسل الرابط المطلوب:*\n"
             f"{self.get_link_instruction()}"
         )
+
+    def get_payment_warning(self) -> str:
+        """تنبيه للخدمات التي قد تعيد نتيجة مكررة أو بلا تحقق."""
+        if self.service_type in {"forced_ref", "forced_ref_ai"}:
+            return (
+                "⚠️ *تنبيه قبل الدفع والبدء:*\n"
+                "قد يكون البوت مفعّلاً لهذا الحساب مسبقاً. "
+                "إذا كان الدفع بالنجوم فستُعاد قيمة الحساب المكرر، "
+                "أما الدفع بالنقاط فلا يُعاد له تعويض."
+            )
+        if self.service_type == "votes_ai":
+            return (
+                "⚠️ *تنبيه قبل الدفع والبدء:*\n"
+                "قد يكون البوت أو التصويت منفذاً لهذا الحساب مسبقاً. "
+                "إذا لم ينجز أي حساب التحقق، يكون التعويض عند الدفع بالنقاط فقط؛ "
+                "الدفع بالنجوم لا يُعاد."
+            )
+        return ""
 
     def get_start_keyboard(self) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([
