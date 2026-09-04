@@ -1015,9 +1015,10 @@ async def handle_import_services_callback(update, context, q, data, user, is_own
         service = services[service_index]
         current_name = str(service.get("name_ar") or service.get("clean_name") or service.get("name", ""))
         await q.edit_message_text(
-            f"✏️ *تعديل اسم الخدمة*\n\n"
+            f"✏️ *تعديل اسم الخدمة فقط*\n\n"
             f"الاسم الحالي:\n{current_name}\n\n"
-            "أرسل الاسم الجديد:",
+            "أرسل الاسم الجديد فقط.\n"
+            "سيتم ترجمة الاسم إلى العربية دون تغيير رقم الخدمة أو السعر أو الحدود:",
             parse_mode=ParseMode.MARKDOWN
         )
         return
@@ -1277,10 +1278,19 @@ async def handle_import_services_text(update, context):
             await update.message.reply_text("⚠️ انتهت جلسة التعديل.")
             return True
         
-        # تحديث اسم الخدمة في القائمة
-        new_name = text.strip()
+        # ترجمة الاسم فقط؛ لا نلمس رقم الخدمة أو السعر أو الحدود أو الوصف.
+        requested_name = text.strip()
+        if not requested_name:
+            await update.message.reply_text("⚠️ أرسل اسماً جديداً فقط.")
+            return True
+        translated_names = await asyncio.to_thread(
+            _translate_service_names_with_ai,
+            [requested_name],
+        )
+        new_name = _arabic_only_service_name(
+            translated_names.get(requested_name, requested_name)
+        )
         services[service_index]["name_ar"] = new_name
-        services[service_index]["clean_name"] = new_name
         context.user_data["import_services_list"] = services
         context.user_data.pop("edit_import_service_index", None)
         context.user_data["state"] = "main_menu"
