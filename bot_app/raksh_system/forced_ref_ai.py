@@ -656,14 +656,41 @@ class ForcedRefAIService(RakshService):
             if not candidate_messages:
                 candidate_messages = new_messages
 
-            verification_message = None
-            for msg in candidate_messages:
-                msg_text = getattr(msg, 'message', '') or ''
-                if msg_text.strip().startswith("/"):
-                    continue
-                if any(kw in msg_text for kw in ["أرسل", "التالي", "بالضبط", "اكتب", "retype", "type", "اضغط", "اختر", "انقر"]):
-                    verification_message = msg
-                    break
+            # أعطِ رسالة الكود أولوية صريحة. بعض البوتات ترسل رسالة ترحيب
+            # ثم رسالة «النص التالي» في نفس الدفعة، لذلك لا نعتمد على أول
+            # رسالة عامة تصلح كمرحلة تحقق.
+            code_prompt_markers = (
+                "النص التالي",
+                "أرسل النص",
+                "ارسل النص",
+                "أرسل الكود",
+                "ارسل الكود",
+                "send the text",
+                "send the code",
+                "retype",
+                "type",
+            )
+            verification_message = next(
+                (
+                    msg for msg in candidate_messages
+                    if not (getattr(msg, "message", "") or "").strip().startswith("/")
+                    and any(
+                        marker in (getattr(msg, "message", "") or "").casefold()
+                        for marker in code_prompt_markers
+                    )
+                    and _extract_code_from_text(getattr(msg, "message", "") or "")
+                ),
+                None,
+            )
+
+            if verification_message is None:
+                for msg in candidate_messages:
+                    msg_text = getattr(msg, 'message', '') or ''
+                    if msg_text.strip().startswith("/"):
+                        continue
+                    if any(kw in msg_text for kw in ["أرسل", "التالي", "بالضبط", "اكتب", "retype", "type", "اضغط", "اختر", "انقر"]):
+                        verification_message = msg
+                        break
 
             if verification_message is None:
                 verification_message = next(
