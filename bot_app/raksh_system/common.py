@@ -646,30 +646,151 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
 
     return False
 
-async def _join_channel_and_schedule_leave(client, channel_ref: str):
-    """الانضمام للقناة وجدولة المغادرة"""
-    try:
-        if channel_ref.startswith("invite:"):
-            invite_hash = channel_ref[7:]
-            await client(ImportChatInviteRequest(invite_hash))
-        else:
-            entity = await client.get_entity(channel_ref)
-            await client(JoinChannelRequest(entity))
+RAKSH_CHANNEL_MAX_LEAVE_HOURS = 72
+RAKSH_CHANNEL_FREE_LIMIT = 5
+RAKSH_CHANNEL_EXTRA_POINT_PRICE = 15
 
-        async def _leave_later():
-            await asyncio.sleep(random.randint(600, 1800))
+def _raksh_channel_leave_hours() -> int:
+    """مهلة مغادرة حسابات الرشق؛ لا تتجاوز 72 ساعة."""
+    try:
+        configured = int(get_setting("raksh_channel_leave_hours") or RAKSH_CHANNEL_MAX_LEAVE_HOURS)
+    except (TypeError, ValueError):
+        configured = RAKSH_CHANNEL_MAX_LEAVE_HOURS
+    return max(1, min(configured, RAKSH_CHANNEL_MAX_LEAVE_HOURS))
+
+def _normalize_raksh_channel_ref(channel_ref: str) -> str:
+    value = str(channel_ref or "").strip()
+    if value.startswith("invite:"):
+        return "invite:" + value[7:].strip().lower()
+    if value.startswith("@"):
+        return "@" + value[1:].strip().lower()
+    return value.lower()
+
+def _is_already_joined_error(error: Exception) -> bool:
+    return type(error).__name__ in {
+        "UserAlreadyParticipantError",
+        "AlreadyParticipantError",
+    }
+
+async def _join_channel_and_schedule_leave(
+    client, channel_ref: str, phone_number: Optional[str] = None
+) -> bool:
+    """ينضم للقناة ويسجل مهلة مغادرة دائمة قابلة لإعادة الضبط."""
+    normalized_ref = _normalize_raksh_channel_ref(channel_ref)
+    if not normalized_ref:
+        return False
+
+    entity = None
+    try:
+        if normalized_ref.startswith("invite:"):
+            invite_hash = normalized_ref[7:]
+            updates = await client(ImportChatInviteRequest(invite_hash))
+            entity = next(iter(getattr(updates, "chats", None) or []), None)
+        else:
+            entity = await client.get_entity(normalized_ref)
             try:
-                if channel_ref.startswith("invite:"):
-                    pass
-                else:
-                    entity = await client.get_entity(channel_ref)
+                await client(JoinChannelRequest(entity))
+            except Exception as join_error:
+                if not _is_already_joined_error(join_error):
+                    raise
+                logger.info(f"الحساب عضو مسبقاً في القناة {normalized_ref}; سيتم إعادة ضبط المؤقت")
+    except Exception as error:
+        if not _is_already_joined_error(error):
+            logger.warning(f"تعذر الانضمام للقناة {normalized_ref}: {error}")
+            return False
+
+    if not phone_number:
+        logger.warning(f"تم الانضمام للقناة {normalized_ref} بلا رقم حساب؛ لن تُحفظ مهلة المغادرة")
+        return True
+
+    leave_hours = _raksh_channel_leave_hours()
+    telegram_channel_id = getattr(entity, "id", None)
+    with db_conn() as c:
+        # إعادة استخدام القناة تمدد مهلة جميع الحسابات المرتبطة بها،
+        # لذلك لا يغادر حساب قديم أثناء حملة جديدة على نفس القناة.
+        c.execute(
+            "UPDATE raksh_channel_memberships "
+            "SET leave_at=NOW() + (%s * INTERVAL '1 hour') "
+            "WHERE channel_ref=%s",
+            (leave_hours, normalized_ref),
+        )
+        c.execute(
+            "INSERT INTO raksh_channel_memberships "
+            "(phone_number, channel_ref, telegram_channel_id, joined_at, leave_at) "
+            "VALUES (%s,%s,%s,NOW(),NOW() + (%s * INTERVAL '1 hour')) "
+            "ON CONFLICT (phone_number, channel_ref) DO UPDATE SET "
+            "telegram_channel_id=COALESCE(EXCLUDED.telegram_channel_id, raksh_channel_memberships.telegram_channel_id), "
+            "joined_at=NOW(), leave_at=EXCLUDED.leave_at",
+            (str(phone_number).strip(), normalized_ref, telegram_channel_id, leave_hours),
+        )
+    logger.info(
+        f"✅ تم حفظ عضوية {normalized_ref} للحساب {phone_number}; "
+        f"المغادرة بعد {leave_hours} ساعة (قابلة لإعادة الضبط)"
+    )
+    return True
+
+async def cleanup_expired_raksh_channel_memberships(context=None) -> None:
+    """يخرج الحسابات من القنوات التي انتهت مهلة عضويتها."""
+    with db_conn() as c:
+        rows = c.execute(
+            "SELECT m.id, m.phone_number, m.channel_ref, m.telegram_channel_id, ns.session_string "
+            "FROM raksh_channel_memberships m "
+            "JOIN number_stock ns ON ns.phone_number=m.phone_number "
+            "WHERE m.leave_at <= NOW() AND ns.session_string IS NOT NULL "
+            "ORDER BY m.phone_number, m.id LIMIT 100"
+        ).fetchall()
+
+    grouped = {}
+    for row in rows:
+        grouped.setdefault(str(row["phone_number"]), {"session": row["session_string"], "rows": []})["rows"].append(dict(row))
+
+    for phone_number, account in grouped.items():
+        client = TelegramClient(StringSession(account["session"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+        try:
+            await asyncio.wait_for(client.connect(), timeout=20)
+            if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+                logger.warning(f"⏳ لا يمكن إخراج {phone_number}: الجلسة غير مصرح بها")
+                continue
+            for membership in account["rows"]:
+                with db_conn() as c:
+                    current = c.execute(
+                        "SELECT channel_ref, telegram_channel_id FROM raksh_channel_memberships "
+                        "WHERE id=%s AND leave_at <= NOW()",
+                        (membership["id"],),
+                    ).fetchone()
+                if not current:
+                    continue
+                ref = current["channel_ref"]
+                try:
+                    if ref.startswith("invite:") and current["telegram_channel_id"]:
+                        dialogs = await client.get_dialogs()
+                        entity = next(
+                            (dialog.entity for dialog in dialogs
+                             if getattr(dialog.entity, "id", None) == current["telegram_channel_id"]),
+                            None,
+                        )
+                        if entity is None:
+                            raise RuntimeError("لم يتم العثور على القناة الخاصة في محادثات الحساب")
+                    else:
+                        entity = await client.get_entity(ref)
                     await client(LeaveChannelRequest(entity))
+                    with db_conn() as c:
+                        c.execute("DELETE FROM raksh_channel_memberships WHERE id=%s", (membership["id"],))
+                    logger.info(f"👋 غادر الحساب {phone_number} القناة {ref} بعد انتهاء المهلة")
+                except Exception as error:
+                    error_name = type(error).__name__
+                    if error_name in {"UserNotParticipantError", "ChannelInvalidError", "ChannelPrivateError"} or "not a participant" in str(error).lower():
+                        with db_conn() as c:
+                            c.execute("DELETE FROM raksh_channel_memberships WHERE id=%s", (membership["id"],))
+                    else:
+                        logger.warning(f"تعذر إخراج {phone_number} من {ref}: {error}")
+        except Exception as error:
+            logger.warning(f"تعذر فحص عضويات الرشق المنتهية للحساب {phone_number}: {error}")
+        finally:
+            try:
+                await client.disconnect()
             except Exception:
                 pass
-
-        asyncio.create_task(_leave_later())
-    except Exception as e:
-        logger.warning(f"تعذر الانضمام للقناة {channel_ref}: {e}")
 
 def _find_bot_start_link(message) -> Tuple[Optional[str], Optional[str]]:
     """استخراج رابط البوت من أزرار المنشور"""
@@ -785,7 +906,7 @@ class RakshService:
             "stars_quantity": _positive_setting(keys["stars_quantity"], self.config.stars_quantity),
         }
 
-    def get_total(self, quantity: int, payment_method: str) -> int:
+    def get_total(self, quantity: int, payment_method: str, channel_count: int = 0) -> int:
         if quantity <= 0:
             return 0
         config = self.get_price_config()
@@ -793,7 +914,14 @@ class RakshService:
         quantity_key = "stars_quantity" if payment_method == "stars" else "points_quantity"
         price = config[price_key]
         bundle_quantity = config[quantity_key]
-        return ((quantity + bundle_quantity - 1) // bundle_quantity) * price
+        total = ((quantity + bundle_quantity - 1) // bundle_quantity) * price
+        if self.config.has_channel and payment_method == "points":
+            try:
+                extra_channels = max(0, int(channel_count) - RAKSH_CHANNEL_FREE_LIMIT)
+            except (TypeError, ValueError):
+                extra_channels = 0
+            total += extra_channels * RAKSH_CHANNEL_EXTRA_POINT_PRICE
+        return total
 
     def get_rate_text(self, payment_method: str) -> str:
         config = self.get_price_config()
