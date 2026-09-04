@@ -477,6 +477,14 @@ def _get_link_instruction(service_type: str) -> str:
         return svc.get_link_instruction()
     return "أرسل الرابط المطلوب"
 
+def _get_link_prompt_label(service_type: str) -> str:
+    """عنوان حقل الرابط حسب الخدمة"""
+    svc = get_raksh_service(service_type)
+    getter = getattr(svc, "get_link_prompt_label", None) if svc else None
+    if callable(getter):
+        return getter()
+    return "الرابط المطلوب"
+
 def _parse_raksh_rate_updates(text: str) -> Dict[str, Tuple[int, int]]:
     """قراءة تحديثات الأسعار"""
     updates = {}
@@ -669,10 +677,11 @@ async def _handle_raksh_callback_impl(
         context.user_data["raksh_channels"] = []
         context.user_data["raksh_step"] = "link"
         svc = RAKSH_SERVICES.get(context.user_data.get("raksh_service"))
+        service_type = context.user_data.get("raksh_service")
         await query.edit_message_text(
             f"✅ تم تخطي القنوات.\n\n"
-            f"🔗 *أرسل الرابط المطلوب:*\n"
-            f"{_get_link_instruction(context.user_data.get('raksh_service'))}",
+            f"🔗 *أرسل {_get_link_prompt_label(service_type)}:*\n"
+            f"{_get_link_instruction(service_type)}",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
@@ -989,7 +998,7 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(
             f"✅ تم حفظ القنوات.\n\n"
-            f"🔗 *أرسل الرابط المطلوب:*\n"
+            f"🔗 *أرسل {_get_link_prompt_label(service_type)}:*\n"
             f"{_get_link_instruction(service_type)}",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([
