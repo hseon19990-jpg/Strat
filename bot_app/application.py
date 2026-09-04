@@ -5,6 +5,7 @@ handlers can continue to call each other while the code stays separated by
 domain.
 """
 from .referrals import run_referral_tasks_job
+from .raksh_system.common import cleanup_expired_raksh_channel_memberships
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 from telegram.ext import ExtBot, Updater
@@ -451,6 +452,8 @@ def main():
         app.job_queue.run_repeating(retry_pending_session_resets, interval=600, first=90)
         logger.info("🔒 تم تفعيل إعادة المحاولة الدورية لطرد جلسات الأرقام (كل 10 دقائق)")
         app.job_queue.run_repeating(run_referral_tasks_job, interval=3600, first=120)
+        app.job_queue.run_repeating(cleanup_expired_raksh_channel_memberships, interval=300, first=60)
+        logger.info("👋 تم تفعيل إخراج حسابات الرشق بعد انتهاء مهلة القنوات (كل 5 دقائق)")
         logger.info("🤝 تم تفعيل مهام الإحالة التلقائية (كل ساعة)")
         app.job_queue.run_repeating(compensate_duplicate_sales_job, interval=21600, first=300)
         logger.info("🔁 تم تفعيل فحص البيع المكرر وتعويض المتضررين (كل 6 ساعات)")
