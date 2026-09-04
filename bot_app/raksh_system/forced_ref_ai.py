@@ -47,9 +47,33 @@ class ForcedRefAIService(RakshService):
 
     def get_start_keyboard(self) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([
-            [InlineKeyboardButton("⏭️ تخطي (بدون قنوات)", callback_data="raksh_forced_ref_ai:skip_channels")],
+            [InlineKeyboardButton(
+                "⏭️ تخطي (بدون قنوات)",
+                callback_data=f"{self.get_callback_prefix()}:skip_channels",
+            )],
             [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
         ])
+
+    def get_callback_prefix(self) -> str:
+        return "raksh_forced_ref_ai"
+
+    def get_link_prompt_label(self) -> str:
+        return "رابط البوت"
+
+    def get_saved_link_label(self) -> str:
+        return self.get_link_prompt_label()
+
+    def get_quantity_label(self) -> str:
+        return "عدد الإحالات المطلوبة"
+
+    def get_activity_label(self) -> str:
+        return "إحالة"
+
+    def get_execution_label(self) -> str:
+        return "الانضمام للقنوات وحل التحقق"
+
+    def get_invoice_label(self) -> str:
+        return "إحالة بوت إجباري مع تحقق"
 
     def get_link_instruction(self) -> str:
         return "@BotUsername start123  أو  t.me/BotUsername?start=123"
@@ -93,7 +117,7 @@ class ForcedRefAIService(RakshService):
 
             await update.message.reply_text(
                 f"✅ تم حفظ القنوات الإجبارية ({len(context.user_data['raksh_channels'])} قناة).\n\n"
-                f"🔗 *أرسل رابط البوت:*\n"
+                f"🔗 *أرسل {self.get_link_prompt_label()}:*\n"
                 f"{self.get_link_instruction()}",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
@@ -127,8 +151,8 @@ class ForcedRefAIService(RakshService):
                 return True
 
             await update.message.reply_text(
-                f"✅ تم حفظ رابط البوت.\n\n"
-                f"🔢 *أرسل عدد الإحالات المطلوبة:*\n"
+                f"✅ تم حفظ {self.get_saved_link_label()}.\n\n"
+                f"🔢 *أرسل {self.get_quantity_label()}:*\n"
                 f"(الحد الأقصى: {max_qty})",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
@@ -177,7 +201,7 @@ class ForcedRefAIService(RakshService):
             await update.message.reply_text(
                 f"📋 *تفاصيل الطلب*\n\n"
                 f"📢 القنوات الإجبارية: {len(context.user_data.get('raksh_channels', []))} قناة\n"
-                f"🔗 رابط البوت: `{context.user_data['raksh_link']}`\n"
+                f"🔗 {self.get_saved_link_label()}: `{context.user_data['raksh_link']}`\n"
                 f"🔢 العدد: {quantity}\n\n"
                 f"💳 *اختر طريقة الدفع:*",
                 parse_mode=ParseMode.MARKDOWN,
@@ -185,13 +209,13 @@ class ForcedRefAIService(RakshService):
                     [
                         InlineKeyboardButton(
                             f"💰 دفع بالنقاط ({points_cost} نقطة)",
-                            callback_data=f"raksh_forced_ref_ai:payment:points:{quantity}:{points_cost}"
+                            callback_data=f"{self.get_callback_prefix()}:payment:points:{quantity}:{points_cost}"
                         )
                     ],
                     [
                         InlineKeyboardButton(
                             f"⭐ دفع بالنجوم ({stars_cost} نجمة)",
-                            callback_data=f"raksh_forced_ref_ai:payment:stars:{quantity}:{stars_cost}"
+                            callback_data=f"{self.get_callback_prefix()}:payment:stars:{quantity}:{stars_cost}"
                         )
                     ],
                     [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
@@ -221,7 +245,7 @@ class ForcedRefAIService(RakshService):
 
             await query.edit_message_text(
                 f"✅ تم تخطي القنوات.\n\n"
-                f"🔗 *أرسل رابط البوت:*\n"
+                f"🔗 *أرسل {self.get_link_prompt_label()}:*\n"
                 f"{self.get_link_instruction()}",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
@@ -253,7 +277,7 @@ class ForcedRefAIService(RakshService):
             await query.edit_message_text(
                 f"📋 *تأكيد الطلب*\n\n"
                 f"📢 القنوات الإجبارية: {len(context.user_data.get('raksh_channels', []))} قناة\n"
-                f"🔗 رابط البوت: `{context.user_data.get('raksh_link', '')}`\n"
+                f"🔗 {self.get_saved_link_label()}: `{context.user_data.get('raksh_link', '')}`\n"
                 f"🔢 العدد: {quantity}\n"
                 f"💳 طريقة الدفع: {'💰 نقاط' if payment_method == 'points' else '⭐ نجوم'}\n"
                 f"💰 التكلفة: {total_cost} {'نقطة' if payment_method == 'points' else 'نجمة'}\n\n"
@@ -263,7 +287,7 @@ class ForcedRefAIService(RakshService):
                     [
                         InlineKeyboardButton(
                             "✅ تأكيد الطلب",
-                            callback_data=f"raksh_forced_ref_ai:confirm:{payment_method}:{quantity}:{total_cost}"
+                            callback_data=f"{self.get_callback_prefix()}:confirm:{payment_method}:{quantity}:{total_cost}"
                         ),
                         InlineKeyboardButton(
                             "❌ إلغاء",
@@ -312,7 +336,7 @@ class ForcedRefAIService(RakshService):
                     f"🔗 الرابط: `{context.user_data.get('raksh_link', '')}`\n"
                     f"🔢 العدد: {quantity}\n"
                     f"💰 تم خصم: {total_cost} نقطة\n\n"
-                    f"⏳ جاري الانضمام للقنوات وحل التحقق...",
+                    f"⏳ جاري {self.get_execution_label()}...",
                     parse_mode=ParseMode.MARKDOWN
                 )
                 from .raksh_system import _start_raksh_execution
@@ -326,11 +350,11 @@ class ForcedRefAIService(RakshService):
                 await context.bot.send_invoice(
                     chat_id=user.id,
                     title=self.config.name,
-                    description=f"{quantity} إحالة مع تحقق | {total_cost} نجمة",
+                    description=f"{quantity} {self.get_activity_label()} مع تحقق | {total_cost} نجمة",
                     payload=f"raksh_stars:{user.id}:{self.service_type}:{quantity}:{total_cost}",
                     provider_token="",
                     currency="XTR",
-                    prices=[LabeledPrice("إحالة بوت إجباري مع تحقق", total_cost)],
+                    prices=[LabeledPrice(self.get_invoice_label(), total_cost)],
                 )
                 return True
 
