@@ -53,10 +53,25 @@ def _strip_price_from_desc(desc: str, price_per_point: float = 0.0) -> str | Non
 
     text = _normalize_desc(desc)   # K→ألف، /D→/يوم، كيلوجرام→ألف … أولاً
 
-    text = re.sub(r"\$\s*\d+(?:[.,]\d+)?(?:\s*/\s*\d+)?", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"\d+(?:[.,]\d+)?\s*\$", "", text)
-    text = re.sub(r"USD\s*\d+(?:[.,]\d+)?", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"\d+(?:[.,]\d+)?\s*USD", "", text, flags=re.IGNORECASE)
+    # احذف عبارة السعر كاملة، بما فيها الصياغة العربية مثل:
+    # "0.05 دولار لكل 1000" و"3.33 دولار لكل 1000".
+    text = re.sub(
+        r"(?:[-|/\\،,;:]\s*)?"
+        r"(?:\$\s*\d+(?:[.,]\d+)?|\d+(?:[.,]\d+)?\s*\$|"
+        r"USD\s*\d+(?:[.,]\d+)?|\d+(?:[.,]\d+)?\s*USD|"
+        r"\d+(?:[.,]\d+)?\s*(?:دولار|دولارات|دولاراً))"
+        r"(?:\s*(?:لكل|per)\s*(?:\d+(?:[.,]\d+)?|ألف|1000))?",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"(?:[-|/\\،,;:]\s*)?\d+(?:[.,]\d+)?\s*(?:دولار|دولارات|دولاراً)"
+        r"(?:\s*(?:لكل|per)\s*(?:\d+(?:[.,]\d+)?|ألف|1000))?",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
 
     if price_per_point and price_per_point > 0:
         panel_price = price_per_point / 100_000
