@@ -816,17 +816,14 @@ def _translate_service_names_with_ai(names: list[str]) -> dict[str, str]:
     return translated
 
 def _prepare_import_services(services: list[dict]) -> list[dict]:
-    names = []
     for service in services:
-        cleaned = _import_service_text(service)
-        service["source_name"] = str(service.get("name", "") or cleaned)
-        service["clean_name"] = cleaned
-        names.append(cleaned)
-    translations = _translate_service_names_with_ai(names)
-    for service in services:
-        service["name_ar"] = _arabic_only_service_name(
-            translations.get(service["clean_name"], service["clean_name"])
-        )
+        # اسم الموقع الأصلي لا يُترجم ولا يُعاد تشكيله. الاسم العربي
+        # الذي يظهر للأعضاء يحدده المالك لاحقاً من إعدادات الخدمة.
+        source_name = str(service.get("name", "") or service.get("type", "")).strip()
+        service["source_name"] = source_name
+        service["site_name"] = source_name
+        service["clean_name"] = _import_service_text(service)
+        service["name_ar"] = source_name or service["clean_name"]
     return services
 
 def _service_matches_platform(service: dict, platform: str) -> bool:
@@ -1018,7 +1015,8 @@ async def handle_import_services_callback(update, context, q, data, user, is_own
             f"✏️ *تعديل اسم الخدمة فقط*\n\n"
             f"الاسم الحالي:\n{current_name}\n\n"
             "أرسل الاسم الجديد فقط.\n"
-            "سيتم ترجمة الاسم إلى العربية دون تغيير رقم الخدمة أو السعر أو الحدود:",
+            "اسم الموقع الأصلي يبقى محفوظاً كما هو، وسيظهر الاسم الذي تكتبه للأعضاء "
+            "دون تغيير رقم الخدمة أو السعر أو الحدود:",
             parse_mode=ParseMode.MARKDOWN
         )
         return
@@ -1186,7 +1184,7 @@ async def import_selected_services(update, context, q):
             api_id = int(service.get("service", 0))
             cleaned_name = str(
                 service.get("name_ar")
-                or service.get("clean_name")
+                or service.get("source_name")
                 or service.get("name", "")
             ).strip()
             rate = float(service.get("rate", 0) or 0)
@@ -1218,21 +1216,42 @@ async def import_selected_services(update, context, q):
                     c.execute(
                         """
                         UPDATE services
-                        SET category=%s, platform=%s, name_ar=%s, description=%s,
+                        SET category=%s, platform=%s, source_name=%s, name_ar=%s, description=%s,
                             min_qty=%s, max_qty=%s, price_per_point=%s, active=TRUE
                         WHERE id=%s
                         """,
-                        (category, platform, cleaned_name, desc, min_qty, max_qty, price_per_1000, existing["id"]),
+                        (
+                            category,
+                            platform,
+                            str(service.get("source_name") or service.get("name") or cleaned_name),
+                            cleaned_name,
+                            desc,
+                            min_qty,
+                            max_qty,
+                            price_per_1000,
+                            existing["id"],
+                        ),
                     )
                 else:
                     c.execute(
                         """
                         INSERT INTO services
-                            (category, api_service_id, panel, platform, name_ar, description,
+                            (category, api_service_id, panel, platform, source_name, name_ar, description,
                              min_qty, max_qty, price_per_point)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """,
-                        (category, api_id, panel, platform, cleaned_name, desc, min_qty, max_qty, price_per_1000),
+                        (
+                            category,
+                            api_id,
+                            panel,
+                            platform,
+                            str(service.get("source_name") or service.get("name") or cleaned_name),
+                            cleaned_name,
+                            desc,
+                            min_qty,
+                            max_qty,
+                            price_per_1000,
+                        ),
                     )
             added += 1
             
@@ -1278,18 +1297,12 @@ async def handle_import_services_text(update, context):
             await update.message.reply_text("⚠️ انتهت جلسة التعديل.")
             return True
         
-        # ترجمة الاسم فقط؛ لا نلمس رقم الخدمة أو السعر أو الحدود أو الوصف.
+        # الاسم العربي يكتبه المالك يدوياً؛ لا نترجم اسم الموقع تلقائياً.
         requested_name = text.strip()
         if not requested_name:
             await update.message.reply_text("⚠️ أرسل اسماً جديداً فقط.")
             return True
-        translated_names = await asyncio.to_thread(
-            _translate_service_names_with_ai,
-            [requested_name],
-        )
-        new_name = _arabic_only_service_name(
-            translated_names.get(requested_name, requested_name)
-        )
+        new_name = requested_name
         services[service_index]["name_ar"] = new_name
         context.user_data["import_services_list"] = services
         context.user_data.pop("edit_import_service_index", None)
