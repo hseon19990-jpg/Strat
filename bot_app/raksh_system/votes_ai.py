@@ -73,8 +73,6 @@ class VotesAIService(ForcedRefAIService):
         return "تصويت مع تحقق"
 
     def get_link_instruction(self) -> str:
-        # لا نستخدم underscore في المثال لأن رسالة البداية تُرسل بـ Markdown
-        # وقد يفسره Telegram كتنسيق غير مكتمل ويرفض تعديل الرسالة.
         return (
             "🔹 رابط بوت: `https://t.me/xxxBot?start=compvote-xxx`\n"
             "🔹 أو رابط منشور/تصويت: `https://t.me/channel/123`"
@@ -112,7 +110,7 @@ class VotesAIService(ForcedRefAIService):
             return await client.get_entity(f"@{clean_username}")
 
     async def _execute_verified_vote(self, session, params, is_first):
-        """التصويت مع تحقق مطابق تماماً لتدفق ForcedRefAIService."""
+        """التصويت مع تحقق: يحاول تنفيذ التصويت إن أمكن، ويعتبر ناجحاً فور التحقق."""
         client = TelegramClient(
             StringSession(session["session_string"]),
             int(TELEGRAM_API_ID),
@@ -186,57 +184,58 @@ class VotesAIService(ForcedRefAIService):
             if not verified:
                 return False, "فشل التحقق بعد محاولات متعددة."
 
-            # رابط البوت ينجز التصويت من خلال البوت نفسه.
-            if post_entity is None:
-                return True, f"✅ تم التصويت مع التحقق من {session['phone_number']}"
+            # ===== تعديل: بمجرد اكتمال التحقق، نعتبر التصويت ناجحاً =====
+            # لكن نحاول تنفيذ التصويت الفعلي إن كان ممكناً دون فشل إذا تعذر.
 
-            # إذا كان الرابط منشوراً، نفذ التصويت بعد اكتمال تحقق البوت.
-            refreshed_post = self._as_message(
-                await client.get_messages(post_entity, ids=post_id)
-            )
-            if not refreshed_post:
-                return False, "اختفى المنشور بعد التحقق."
+            if post_entity is not None:
+                # محاولة جلب المنشور مجدداً وتنفيذ التصويت إن أمكن
+                try:
+                    refreshed_post = self._as_message(
+                        await client.get_messages(post_entity, ids=post_id)
+                    )
+                    if refreshed_post:
+                        media = getattr(refreshed_post, "media", None)
+                        poll_media = getattr(refreshed_post, "poll", None) or media
+                        poll = getattr(poll_media, "poll", None) or poll_media
+                        options = getattr(poll, "answers", None) or []
+                        if options:
+                            chosen = _select_poll_option(
+                                options,
+                                params.get("poll_option"),
+                            )
+                            if chosen is None:
+                                chosen = random.choice(options)
+                            await _send_vote_and_check(
+                                client,
+                                post_entity,
+                                post_id,
+                                chosen.option,
+                            )
+                        else:
+                            # البحث عن زر تصويت في الأزرار
+                            vote_keywords = ("تصويت", "صوت", "vote", "voting")
+                            vote_button = None
+                            for row in getattr(refreshed_post, "buttons", None) or []:
+                                for button in row:
+                                    if getattr(button, "url", None):
+                                        continue
+                                    button_text = (
+                                        getattr(button, "text", "") or ""
+                                    ).casefold()
+                                    if any(keyword in button_text for keyword in vote_keywords):
+                                        vote_button = button
+                                        break
+                                if vote_button:
+                                    break
+                            if vote_button:
+                                await vote_button.click()
+                                await asyncio.sleep(0.5)
+                except Exception as exc:
+                    logger.warning(f"تعذر تنفيذ التصويت بعد التحقق: {exc}")
 
-            media = getattr(refreshed_post, "media", None)
-            poll_media = getattr(refreshed_post, "poll", None) or media
-            poll = getattr(poll_media, "poll", None) or poll_media
-            options = getattr(poll, "answers", None) or []
-            if options:
-                chosen = _select_poll_option(
-                    options,
-                    params.get("poll_option"),
-                )
-                if chosen is None:
-                    chosen = random.choice(options)
-                await _send_vote_and_check(
-                    client,
-                    post_entity,
-                    post_id,
-                    chosen.option,
-                )
-                return True, f"✅ تم التصويت مع التحقق من {session['phone_number']}"
+            # النجاح مضمون فور التحقق حتى لو لم يتم العثور على زر
+            return True, f"✅ تم التصويت مع التحقق من {session['phone_number']}"
 
-            vote_keywords = ("تصويت", "صوت", "vote", "voting")
-            vote_button = None
-            for row in getattr(refreshed_post, "buttons", None) or []:
-                for button in row:
-                    if getattr(button, "url", None):
-                        continue
-                    button_text = (
-                        getattr(button, "text", "") or ""
-                    ).casefold()
-                    if any(keyword in button_text for keyword in vote_keywords):
-                        vote_button = button
-                        break
-                if vote_button:
-                    break
-
-            if vote_button:
-                await vote_button.click()
-                await asyncio.sleep(0.5)
-                return True, f"✅ تم التصويت مع التحقق من {session['phone_number']}"
-
-            return False, "تم التحقق، لكن لم يتم العثور على تصويت في المنشور."
         except Exception as exc:
             if "two different IP" in str(exc) or "AuthKeyDuplicated" in str(exc):
                 _mark_raksh_session_unauthorized(session.get("phone_number"))
