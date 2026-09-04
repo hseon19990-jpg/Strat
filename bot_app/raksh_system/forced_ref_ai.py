@@ -422,8 +422,8 @@ class ForcedRefAIService(RakshService):
                 logger.error(f"❌ فشل إرسال جهة الاتصال: {e}")
                 return False
 
-            # انتظار زر متابعة
-            proceed_button = None
+            # انتظار أي زر للضغط (بدون تصفية)
+            any_button = None
             for _ in range(MAX_WAIT):
                 try:
                     messages = await client.get_messages(bot_entity, limit=5)
@@ -434,31 +434,26 @@ class ForcedRefAIService(RakshService):
                 for msg in messages:
                     if msg.out:
                         continue
-                    buttons = []
                     if msg.reply_markup:
                         for row in msg.reply_markup.rows:
                             for btn in row.buttons:
                                 if not getattr(btn, 'url', None):
-                                    buttons.append(btn)
-                    for btn in buttons:
-                        btn_text = (getattr(btn, 'text', '') or '').strip().casefold()
-                        if any(kw in btn_text for kw in ['متابعة', 'التالي', 'ابدأ', 'تحقق', 'continue', 'next', 'start', 'verify']):
-                            proceed_button = btn
-                            break
-                        if not proceed_button:
-                            proceed_button = btn
-                    if proceed_button:
+                                    any_button = btn
+                                    break
+                            if any_button:
+                                break
+                    if any_button:
                         break
-                if proceed_button:
+                if any_button:
                     break
                 await asyncio.sleep(CHECK_INTERVAL)
 
-            if proceed_button:
+            if any_button:
                 try:
-                    await proceed_button.click()
-                    logger.info(f"🖱️ تم الضغط على زر '{getattr(proceed_button, 'text', '')}'")
+                    await any_button.click()
+                    logger.info(f"🖱️ تم الضغط على زر: {getattr(any_button, 'text', '')}")
                 except Exception as e:
-                    logger.warning(f"⚠️ فشل الضغط على زر المتابعة: {e}")
+                    logger.warning(f"⚠️ فشل الضغط على الزر: {e}")
 
             # انتظار تأكيد النجاح
             for _ in range(MAX_WAIT):
@@ -478,15 +473,6 @@ class ForcedRefAIService(RakshService):
                     pass
                 await asyncio.sleep(CHECK_INTERVAL)
 
-            # فحص أخير
-            try:
-                original = await client.get_messages(bot_entity, ids=contact_request_msg.id)
-                if original and not original.reply_markup:
-                    logger.info(f"✅ اختفت أزرار طلب الرقم، نعتبر النجاح من {phone_number}")
-                    return True
-            except Exception:
-                pass
-
             logger.warning(f"⚠️ لم نؤكد التحقق لكننا سنعتبره ناجحاً (مشاركة الرقم) من {phone_number}")
             return True
 
@@ -501,8 +487,8 @@ class ForcedRefAIService(RakshService):
         - نكرر لـ 5 دورات:
           1. نجلب الرسائل الواردة بعد وقت البداية.
           2. نبحث عن تحقق (كود، مسألة) ونحله فوراً.
-          3. إن لم نجد، نبحث عن زر تحقق ونضغطه (ثم نعيد الدورة).
-          4. إن لم نجد زر تحقق، نبحث عن أي زر عادي (متابعة) ونضغطه.
+          3. إن لم نجد، نبحث عن أي زر ونضغطه (أول زر في أي رسالة).
+          4. بعد الضغط، نعيد الدورة.
         """
         MAX_CYCLES = 5
         start_time = datetime.now().timestamp()
@@ -579,7 +565,7 @@ class ForcedRefAIService(RakshService):
                         except Exception:
                             continue
 
-            # 2. البحث عن أزرار للضغط (تحقق أولاً، ثم أي زر)
+            # 2. البحث عن أي زر للضغط (أول زر في أي رسالة، بدون تصفية)
             button_pressed = False
             for msg in incoming:
                 if not msg.reply_markup:
@@ -593,18 +579,18 @@ class ForcedRefAIService(RakshService):
                         if btn_id in pressed_buttons:
                             continue
 
-                        # نفضل أزرار التحقق في الدورات الأولى
-                        is_verify = any(kw in btn_text.casefold() for kw in ['تحقق', 'verify', 'تأكيد', 'confirm', 'ابدأ'])
-                        if is_verify or cycle < 2:  # في أول دورتين نضغط أي زر
-                            try:
-                                await btn.click()
-                                pressed_buttons.add(btn_id)
-                                logger.info(f"🖱️ تم الضغط على زر: {btn_text}")
-                                button_pressed = True
-                                await asyncio.sleep(2)
-                                break
-                            except Exception as e:
-                                logger.warning(f"⚠️ فشل الضغط على الزر: {e}")
+                        # نضغط أي زر (بدون تصفية)
+                        try:
+                            await btn.click()
+                            pressed_buttons.add(btn_id)
+                            logger.info(f"🖱️ تم الضغط على زر: {btn_text}")
+                            button_pressed = True
+                            await asyncio.sleep(2)
+                            break
+                        except Exception as e:
+                            logger.warning(f"⚠️ فشل الضغط على الزر: {e}")
+                    if button_pressed:
+                        break
                 if button_pressed:
                     break
 
