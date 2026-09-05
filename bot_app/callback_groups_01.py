@@ -283,6 +283,32 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             )
             return
 
+        if data in {"raksh_menu", "raksh_services"}:
+            context.user_data["state"] = "raksh_menu"
+            try:
+                rows = build_kb_rows(get_menu_items("raksh_menu"))
+            except Exception:
+                logger.exception("فشل تحميل قائمة خدمات الرشق")
+                await q.answer(
+                    "❌ تعذر تحميل خدمات الرشق حالياً. حاول مرة أخرى بعد قليل.",
+                    show_alert=True,
+                )
+                return
+            if is_own:
+                rows.append([
+                    InlineKeyboardButton(
+                        "🧩 إضافة/إزالة خيار",
+                        callback_data="mb_menu:raksh_menu",
+                    )
+                ])
+            rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")])
+            await q.edit_message_text(
+                "🛍 *خدمات الرشق*\nاختر الخدمة المطلوبة:",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup(rows),
+            )
+            return
+
         if data in {"legendary_services", "legendary", "legendary_service"}:
             if not is_own and not is_legendary_services_visible():
                 await q.answer("⚠️ خدمات أسطورية مخفية حالياً من قبل المالك.", show_alert=True)
