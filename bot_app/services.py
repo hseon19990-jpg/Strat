@@ -200,6 +200,7 @@ RAKSH_MENU_DEFAULTS = [
 BUILTIN_DEFAULTS = {
 "main": [
         ("🐺 خدمات", "services_menu", 1),
+         ("🛍 خدمات الرشق", "raksh_menu", 1),
         ("👑 خدمات تيليجرام أسطورية", "legendary_services", 1),
         ("🦇 تمويل قناتك حقيقي", "fund_channel", 1),
         ("👻 رابط دعوة", "referral", 1),
