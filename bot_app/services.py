@@ -184,7 +184,7 @@ def normalize_legendary_menu_item(item):
 
 BUILTIN_DEFAULTS = {
     "main": [
-        ("رشق حقيقي", "services_menu", 1),
+        ("🐺 خدمات", "services_menu", 1),
         ("👑 خدمات تيليجرام أسطورية", "legendary_services", 1),
         ("🦇 تمويل قناتك حقيقي", "fund_channel", 1),
         ("👻 رابط دعوة", "referral", 1),
@@ -369,14 +369,8 @@ def seed_menu_items(menu: str):
                 "UPDATE menu_items SET sort_order=? WHERE menu='main' AND action_value='services_menu'",
                 (min_order - 1,)
             )
-            # ترقية أسماء الزر القديمة فقط، مع الحفاظ على أي اسم مخصص جديد.
-            c.execute(
-                "UPDATE menu_items SET label=?, width=1 WHERE menu='main' "
-                "AND action_value='services_menu' AND label IN (?, ?, ?, ?)",
-                ("رشق حقيقي", "🐺 خدمات", "🛍 خدمات", "خدمات الرشق", "خدمات الرشق 🔥")
-            )
         _main_icon_migration = {
-            "services_menu": ("خدمات الرشق 🔥", "رشق حقيقي", 1),
+            "services_menu": ("🛍 خدمات", "🐺 خدمات", 1),
             "fund_channel": ("📺 تمويل قناتك حقيقي", "🦇 تمويل قناتك حقيقي", 1),
             "referral": ("🔗 رابط دعوة", "👻 رابط دعوة", 1),
             "charge_points": ("💎 شحن نقاط", "👍 شحن نقاط", 2),

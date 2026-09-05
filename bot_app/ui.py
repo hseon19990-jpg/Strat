@@ -45,11 +45,9 @@ def supervisor_panel_kb():
 
 def main_menu_kb(is_owner=False, is_supervisor_user=False):
     menu_items = get_menu_items("main")
-    # لا نعرض الاسم القديم إذا كانت قاعدة البيانات لم تُرقَّ بعد.
+    # تغيير نص زر خدمات الرشق فقط، دون تغيير محتوى قسم الخدمات.
     for index, item in enumerate(menu_items):
-        if item["action_value"] == "services_menu" and item["label"] in {
-            "🐺 خدمات", "🛍 خدمات", "خدمات الرشق", "خدمات الرشق 🔥",
-        }:
+        if item["action_value"] == "services_menu":
             normalized = dict(item)
             normalized["label"] = "رشق حقيقي"
             menu_items[index] = normalized
