@@ -9,6 +9,7 @@ from .poll import PollService
 from .votes import VotesService
 from .votes_ai import VotesAIService
 from .premium_reaction import PremiumReactionService
+from ..services import get_menu_items
 
 # ═══ 9. تسجيل الخدمات ═══
 # ════════════════════════════════════════════════════════
@@ -338,43 +339,46 @@ def _set_raksh_service_enabled(service_type: str, enabled: bool) -> None:
         svc.set_enabled(enabled)
 
 def raksh_menu_kb(is_owner: bool = False):
-    """قائمة الخدمات"""
-    buttons = []
-    for key, svc in RAKSH_SERVICES.items():
-        if not is_owner and not svc.is_enabled():
-            continue
-        service_button = InlineKeyboardButton(
-            svc.config.name, callback_data=f"raksh:start:{key}"
-        )
-        if is_owner:
-            enabled = svc.is_enabled()
-            buttons.append([
-                service_button,
-                InlineKeyboardButton(
-                    "✅ مفعلة" if enabled else "🚫 مخفية",
-                    callback_data=f"raksh:toggle:{key}",
-                ),
-            ])
-        else:
-            buttons.append([service_button])
+      """قائمة خدمات الرشق القابلة للترتيب من إدارة الأزرار."""
+      buttons = []
+      for item in get_menu_items("raksh_menu"):
+          action = item["action_value"]
+          if action.startswith("raksh:start:"):
+              key = action.split(":", 2)[2]
+              svc = RAKSH_SERVICES.get(key)
+              if not svc or (not is_owner and not svc.is_enabled()):
+                  continue
+              service_button = InlineKeyboardButton(
+                  svc.config.name, callback_data=action
+              )
+              if is_owner:
+                  enabled = svc.is_enabled()
+                  buttons.append([
+                      service_button,
+                      InlineKeyboardButton(
+                          "✅ مفعلة" if enabled else "🚫 مخفية",
+                          callback_data=f"raksh:toggle:{key}",
+                      ),
+                  ])
+              else:
+                  buttons.append([service_button])
+          elif action == "os:raksh_accounts" and is_owner:
+              buttons.append([
+                  InlineKeyboardButton(
+                      f"🔥 إدارة {get_raksh_accounts_label()}",
+                      callback_data=action,
+                  )
+              ])
+          elif action == "raksh:settings" and is_owner:
+              buttons.append([
+                  InlineKeyboardButton(
+                      "⚙️ إدارة الأسعار",
+                      callback_data=action,
+                  )
+              ])
+      buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")])
+      return InlineKeyboardMarkup(buttons)
     
-    if is_owner:
-        buttons.append([
-            InlineKeyboardButton(
-                f"🔥 إدارة {get_raksh_accounts_label()}",
-                callback_data="os:raksh_accounts",
-            )
-        ])
-        buttons.append([
-            InlineKeyboardButton(
-                "⚙️ إدارة الأسعار",
-                callback_data="raksh:settings",
-            )
-        ])
-    
-    buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")])
-    return InlineKeyboardMarkup(buttons)
-
 def raksh_price_settings_kb():
     """أزرار إدارة الأسعار"""
     rows = []

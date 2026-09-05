@@ -89,6 +89,7 @@ MENU_LABELS = {
 MENU_LABELS.update({v: f"خدمات: {lbl.split(' ', 1)[1]}" for lbl, v in SERVICE_PLATFORMS})
 MENU_LABELS.update({f"cat:{k}": f"قائمة فئة: {v}" for k, v in CATEGORY_MAP.items()})
 MENU_LABELS["legendary_services"] = "الخدمات الأسطورية"
+MENU_LABELS["raksh_menu"] = "قائمة خدمات الرشق"
 
 SERVICES_MENU_CATEGORIES = [
     "followers",
@@ -106,6 +107,7 @@ MANAGEABLE_MENUS = [
     "owner_settings",
     "services_menu",
     "legendary_services",
+    "raksh_menu",
 ] + [v for _, v in SERVICE_PLATFORMS] + [f"cat:{k}" for k in CATEGORY_MAP]
 
 LEGENDARY_SERVICES_MESSAGE = (
@@ -182,7 +184,20 @@ def normalize_legendary_menu_item(item):
     normalized["action_value"] = f"legendary:start:{service_type}"
     return normalized
 
-BUILTIN_DEFAULTS = {
+RAKSH_MENU_DEFAULTS = [
+      ("📱 مشاهدة ستوري وتفاعل", "raksh:start:story", 1),
+      ("🔑 إحالة بوت إجباري", "raksh:start:forced_ref", 1),
+      ("🤖 إحالة بوت إجباري مع تحقق", "raksh:start:forced_ref_ai", 1),
+      ("💬 رشق تعليق", "raksh:start:comment", 1),
+      ("📊 رشق استفتاء", "raksh:start:poll", 1),
+      ("🗳 رشق أصوات", "raksh:start:votes", 1),
+      ("🛡 رشق تصويت مع تحقق", "raksh:start:votes_ai", 1),
+      ("✨ رشق تفاعل مميز", "raksh:start:premium_reaction", 1),
+      ("🔥 إدارة خدمات الرشق", "os:raksh_accounts", 1),
+      ("⚙️ إدارة الأسعار", "raksh:settings", 1),
+    ]
+
+    BUILTIN_DEFAULTS = {
     "main": [
         ("🐺 خدمات", "services_menu", 1),
         ("👑 خدمات تيليجرام أسطورية", "legendary_services", 1),
@@ -204,6 +219,7 @@ BUILTIN_DEFAULTS = {
     ],
     "services_menu": [(label, value, 2) for label, value in SERVICE_PLATFORMS],
     "legendary_services": LEGENDARY_SERVICE_OPTIONS,
+    "raksh_menu": RAKSH_MENU_DEFAULTS,
     "services_menu_tg": [
         ("👥 رشق متابعين", "cat:followers", 2),
         ("👁 رشق مشاهدات", "cat:views", 2),
