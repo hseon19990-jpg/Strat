@@ -588,7 +588,7 @@ async def _handle_raksh_callback_impl(
             await query.answer("⛔ هذا الخيار للمالك فقط.", show_alert=True)
             return
         await query.edit_message_text(
-            "⚙️ *إعدادات أسعار خدمات الرشق*\n\n"
+            "⚙️ *إعدادات أسعار رشق حقيقي*\n\n"
             "اضغط على الخدمة، ثم أرسل السعرين بصيغة:\n"
             "⭐ `نجوم 1 لكل 10`\n"
             "💰 `نقاط 30 لكل 1`\n\n"
