@@ -547,8 +547,11 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                 context.user_data["state"] = "main_menu"
                 for k in ("mb_menu", "mb_type", "mb_label"):
                     context.user_data.pop(k, None)
+            managed_menus = list(MANAGEABLE_MENUS)
+            if "raksh_menu" not in managed_menus:
+                managed_menus.append("raksh_menu")
             rows = [[InlineKeyboardButton(MENU_LABELS.get(m, m), callback_data=f"mb_menu:{m}")]
-                    for m in MANAGEABLE_MENUS]
+                    for m in managed_menus]
             rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
             await q.edit_message_text("🧩 *إدارة الأزرار:*\nاختر القائمة التي تريد التحكم بها:",
                                        parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(rows))
