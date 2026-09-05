@@ -35,6 +35,13 @@ def _load_unassigned_name_accounts() -> list[dict]:
             """
         ).fetchall()
 
+def _smm_preview_value(value, limit: int) -> str:
+    """Return bounded HTML-safe text for the order preview."""
+    text = str(value or "")
+    if len(text) > limit:
+        text = text[: limit - 1] + "…"
+    return html.escape(text, quote=False)
+
 async def _apply_account_name(phone: str, display_name: str) -> None:
     with db_conn() as c:
         row = c.execute(
@@ -627,29 +634,75 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if state == "await_smm_link":
-        context.user_data["smm_link"] = text
+        link = text.strip()
+        if not link:
+            await update.message.reply_text("⚠️ أرسل رابطاً صالحاً.")
+            return
         svc  = context.user_data.get("smm_svc", {})
         qty  = context.user_data.get("smm_qty", 0)
         cost = context.user_data.get("smm_cost", 0)
-        db_user = get_user(user.id)
+        if not svc:
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text(
+                "⚠️ انتهت جلسة الخدمة. ابدأ الطلب من جديد.",
+                reply_markup=main_menu_kb(is_own),
+            )
+            return
+        try:
+            db_user = get_user(user.id)
+        except Exception:
+            logger.exception("فشل تحميل رصيد المستخدم قبل تأكيد طلب الخدمة")
+            await update.message.reply_text(
+                "⚠️ تعذر تجهيز الطلب حالياً. أرسل الرابط مرة أخرى بعد لحظات."
+            )
+            return
         pts = db_user["points"] if db_user else 0
         desc_text = svc.get("description") or ""
-        context.user_data["state"] = "confirm_smm"
-        await update.message.reply_text(
-            f"📋 *تفاصيل الطلب:*\n\n"
-            f"🔹 الخدمة: {svc.get('name_ar', '')}\n"
-            f"🔢 الكمية: {qty}\n"
-            f"🔗 الرابط: `{text}`\n"
-            + (f"📝 {desc_text}\n" if desc_text else "") +
-            f"💰 التكلفة: {cost} نقطة\n"
-            f"💎 رصيدك: {pts} نقطة",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ تأكيد الطلب", callback_data="confirm_order:yes"),
-                 InlineKeyboardButton("❌ إلغاء", callback_data="confirm_order:no")],
-                [InlineKeyboardButton("🔙 رجوع (تغيير الرابط)", callback_data="smm_back:link")]
-            ])
+
+        # Do not interpolate panel/user data into Markdown. Service
+        # descriptions commonly contain brackets, underscores, or backticks,
+        # and Telegram rejects the entire message when those are unescaped.
+        service_name_html = _smm_preview_value(
+            svc.get("name_ar") or "الخدمة", 300
         )
+        link_html = _smm_preview_value(link, 1500)
+        desc_html = _smm_preview_value(desc_text, 1200)
+        preview_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ تأكيد الطلب", callback_data="confirm_order:yes"),
+             InlineKeyboardButton("❌ إلغاء", callback_data="confirm_order:no")],
+            [InlineKeyboardButton("🔙 رجوع (تغيير الرابط)", callback_data="smm_back:link")]
+        ])
+        preview_html = (
+            f"📋 <b>تفاصيل الطلب:</b>\n\n"
+            f"🔹 الخدمة: {service_name_html}\n"
+            f"🔢 الكمية: {qty}\n"
+            f"🔗 الرابط: <code>{link_html}</code>\n"
+            + (f"📝 {desc_html}\n" if desc_text else "")
+            + f"💰 التكلفة: {cost} نقطة\n"
+            + f"💎 رصيدك: {pts} نقطة"
+        )
+        try:
+            await update.message.reply_text(
+                preview_html,
+                parse_mode=ParseMode.HTML,
+                reply_markup=preview_markup,
+            )
+        except Exception:
+            # A malformed/overlong panel value must never leave the user in
+            # confirm_smm with no message. Retry without entity parsing.
+            logger.exception("فشل إرسال معاينة طلب الخدمة بصيغة HTML")
+            await update.message.reply_text(
+                "📋 تفاصيل الطلب:\n\n"
+                f"🔹 الخدمة: {str(svc.get('name_ar') or 'الخدمة')[:300]}\n"
+                f"🔢 الكمية: {qty}\n"
+                f"🔗 الرابط: {link[:1500]}\n"
+                + (f"📝 {str(desc_text)[:1200]}\n" if desc_text else "")
+                + f"💰 التكلفة: {cost} نقطة\n"
+                + f"💎 رصيدك: {pts} نقطة",
+                reply_markup=preview_markup,
+            )
+        context.user_data["smm_link"] = link
+        context.user_data["state"] = "confirm_smm"
         return
 
     if state == "await_smm_qty":
@@ -715,7 +768,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             await update.message.reply_text(
                 f"✅ *تمت العملية بنجاح!*\n\n"
-                f"🔹 الخدمة: {svc['name_ar']}\n"
+                f"🔹 الخدمة: {md_escape(svc['name_ar'])}\n"
                 f"🔢 الكمية: {qty}\n"
                 f"💰 التكلفة: {cost} نقطة",
                 parse_mode=ParseMode.MARKDOWN,
@@ -728,9 +781,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await notify_group(
                 context.application,
                 f"🆕 <b>طلب جديد</b>\n"
-                f"👤 المستخدم: <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
-                f"🔹 الخدمة: {svc['name_ar']}\n"
-                f"🔗 الرابط: {link}\n"
+                f"👤 المستخدم: <a href='tg://user?id={user.id}'>{html.escape(user.full_name or 'مستخدم', quote=False)}</a>\n"
+                f"🔹 الخدمة: {html.escape(str(svc.get('name_ar') or 'الخدمة'), quote=False)}\n"
+                f"🔗 الرابط: {html.escape(link, quote=False)}\n"
                 f"🔢 الكمية: {qty}\n"
                 f"💰 التكلفة: {cost} نقطة\n"
                 f"📌 الكود: {code}"

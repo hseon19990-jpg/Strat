@@ -506,6 +506,11 @@ def build_kb_rows(items):
 def md_escape(text: str) -> str:
     if not text:
         return text
+    # Telegram Markdown (legacy) treats these characters as formatting
+    # delimiters. Service names/descriptions come from panel APIs and may
+    # contain them, so an unescaped value can make the whole reply fail with
+    # BadRequest: Can't parse entities.
+    text = str(text).replace("\\", "\\\\")
     for ch in ("_", "*", "`", "["):
         text = text.replace(ch, f"\\{ch}")
     return text

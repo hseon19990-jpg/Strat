@@ -425,7 +425,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             cat = svc["category"]
             await q.answer("✅ تم تحديث حالة الخدمة.")
             await q.edit_message_text(
-                f"🔹 *{svc['name_ar']}*\n\n"
+                f"🔹 *{md_escape(svc['name_ar'])}*\n\n"
                 f"📉 الحد الأدنى: {svc['min_qty']}\n"
                 f"📈 الحد الأعلى: {svc['max_qty']}\n"
                 f"💰 السعر: {fmt_price(svc['price_per_point'])} نقطة / 1000 وحدة\n"
@@ -467,7 +467,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 ])
             detail_rows.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"cat:{cat}")])
             await q.edit_message_text(
-                f"🔹 *{svc['name_ar']}*\n\n"
+                f"🔹 *{md_escape(svc['name_ar'])}*\n\n"
                 f"📉 الحد الأدنى: {svc['min_qty']}\n"
                 f"📈 الحد الأعلى: {svc['max_qty']}\n"
                 f"💰 السعر: {fmt_price(svc['price_per_point'])} نقطة / 1000 وحدة\n"
@@ -582,7 +582,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             cat = context.user_data.get("smm_cat", svc.get("category", ""))
             context.user_data["state"] = "await_smm_qty"
             await q.edit_message_text(
-                f"🔹 *{svc['name_ar']}*\n\n"
+                f"🔹 *{md_escape(svc['name_ar'])}*\n\n"
                 f"📉 الحد الأدنى: {svc['min_qty']}\n"
                 f"📈 الحد الأعلى: {svc['max_qty']}\n"
                 f"💰 السعر: {fmt_price(svc['price_per_point'])} نقطة / 1000 وحدة\n\n"
@@ -662,7 +662,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                     )
                 await q.edit_message_text(
                     f"✅ *تمت العملية بنجاح!*\n\n"
-                    f"🔹 الخدمة: {svc['name_ar']}\n"
+                    f"🔹 الخدمة: {md_escape(svc['name_ar'])}\n"
                     f"🔢 الكمية: {qty}\n"
                     f"💰 التكلفة: {cost} نقطة",
                     parse_mode=ParseMode.MARKDOWN,
@@ -676,9 +676,9 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 await notify_group(
                     context.application,
                     f"🆕 <b>طلب جديد</b>\n"
-                    f"👤 المستخدم: <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
-                    f"🔹 الخدمة: {svc['name_ar']}\n"
-                    f"🔗 الرابط: {link}\n"
+                    f"👤 المستخدم: <a href='tg://user?id={user.id}'>{html.escape(user.full_name or 'مستخدم', quote=False)}</a>\n"
+                    f"🔹 الخدمة: {html.escape(str(svc['name_ar']), quote=False)}\n"
+                    f"🔗 الرابط: {html.escape(str(link), quote=False)}\n"
                     f"🔢 الكمية: {qty}\n"
                     f"💰 التكلفة: {cost} نقطة\n"
                     f"📌 الكود: {code}"
