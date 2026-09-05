@@ -140,8 +140,6 @@ async def execute_raksh_service(
     if not svc:
         raise RuntimeError(f"خدمة غير معروفة: {service_type}")
     
-    max_concurrent = svc.config.max_concurrent
-    
     # ابدأ دائمًا بالحساب المفضل إن كانت جلسته موجودة وصالحة، ثم
     # وزّع بقية الحسابات عشوائيًا كما كان سابقًا.
     preferred_sessions = [
@@ -160,30 +158,57 @@ async def execute_raksh_service(
             f"{RAKSH_PRIORITY_PHONE}"
         )
     
-    success_count = 0
-    success_phones = []
-    success_details = []
-    failed_phones = []
-    failed_details = []
-    used_phones = set()
-    
-    if max_concurrent == 1 or service_type in {"votes_ai", "forced_ref", "forced_ref_ai"}:
-        if service_type == "votes_ai":
-            async with _RAKSH_VOTE_FLOW_LOCK:
-                return await _execute_raksh_sequential(
-                    svc, shuffled, params, user_id,
-                    quantity, progress_callback, service_type
-                )
-        
-        return await _execute_raksh_sequential(
-            svc, shuffled, params, user_id,
-            quantity, progress_callback, service_type
-        )
-    
-    return await _execute_raksh_parallel(
+    # كل خدمات الرشق تمر الآن عبر طابور تسلسلي واحد حتى يكون الفاصل
+    # بين أي حسابين 1-3 دقائق، وحتى لا تتنافس جلستان على نفس الموارد.
+    if service_type == "votes_ai":
+        async with _RAKSH_VOTE_FLOW_LOCK:
+            return await _execute_raksh_sequential(
+                svc, shuffled, params, user_id,
+                quantity, progress_callback, service_type
+            )
+    return await _execute_raksh_sequential(
         svc, shuffled, params, user_id,
-        quantity, progress_callback, service_type, max_concurrent
+        quantity, progress_callback, service_type
     )
+
+
+def _is_retryable_raksh_session_message(message: str) -> bool:
+    """تمييز حالات الجلسة المؤقتة عن الفشل النهائي."""
+    text = str(message or "").casefold()
+    transient_markers = (
+        "الجلسة قيد الاستخدام",
+        "الجلسة مشغولة",
+        "جلسة نشطة",
+        "قيد الاستخدام",
+        "busy",
+        "active session",
+        "temporarily",
+        "timeout",
+        "timed out",
+        "connection reset",
+        "flood wait",
+        "a wait of",
+    )
+    return any(marker in text for marker in transient_markers)
+
+
+async def _wait_for_raksh_session(
+    session_lock: asyncio.Lock,
+    phone: str,
+) -> bool:
+    """انتظار تحرير الجلسة بدلاً من اعتبارها فاشلة فوراً."""
+    if not session_lock.locked():
+        return True
+
+    logger.info(f"⏳ الجلسة {phone} قيد الاستخدام؛ بانتظار تجهيزها")
+    deadline = asyncio.get_running_loop().time() + RAKSH_SESSION_WAIT_TIMEOUT_SECONDS
+    while session_lock.locked():
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            logger.warning(f"⌛ انتهت مهلة انتظار الجلسة {phone}")
+            return False
+        await asyncio.sleep(min(RAKSH_SESSION_POLL_SECONDS, remaining))
+    return True
 
 async def _execute_raksh_sequential(
     svc: RakshService,
@@ -194,45 +219,87 @@ async def _execute_raksh_sequential(
     progress_callback,
     service_type: str,
 ) -> Tuple[int, List[str], List[str], List[str], List[str]]:
-    """تنفيذ الخدمات بشكل تسلسلي"""
+    """تنفيذ الخدمات تسلسلياً مع انتظار الجلسات وإعادة المحاولة."""
     success_count = 0
     success_phones = []
     success_details = []
     failed_phones = []
     failed_details = []
-    used_phones = set()
-    
-    for i in range(quantity):
-        if not sessions:
-            break
-        session = sessions.pop(0)
+    completed_count = 0
+    attempt_count = 0
+    channel_setup_done = False
+    reserved_phones = set()
+    retry_counts = {}
+    queued_phones = set()
+    queue = []
+
+    # إزالة التكرارات مع الحفاظ على ترتيب الحساب المفضل أولاً.
+    for session in sessions:
+        phone = session.get("phone_number")
+        if phone and phone not in queued_phones:
+            queue.append(session)
+            queued_phones.add(phone)
+
+    while success_count < quantity and queue:
+        session = queue.pop(0)
         phone = session["phone_number"]
-        if phone in used_phones:
-            continue
-        used_phones.add(phone)
-        
-        if not _reserve_raksh_execution_slot(user_id, service_type, phone):
-            failed_phones.append(phone)
-            failed_details.append("تم تجاوز حد التنفيذ")
-            continue
-        
+        queued_phones.discard(phone)
+
+        if attempt_count:
+            delay = svc.get_delay_seconds(params.get("delay_seconds"))
+            logger.info(f"⏱️ انتظار {delay} ثانية قبل الحساب {phone}")
+            await asyncio.sleep(delay)
+        attempt_count += 1
+
+        if phone not in reserved_phones:
+            if not _reserve_raksh_execution_slot(user_id, service_type, phone):
+                failed_phones.append(phone)
+                failed_details.append("تم تجاوز حد التنفيذ")
+                completed_count += 1
+                continue
+            reserved_phones.add(phone)
+
         session_lock = _get_raksh_session_lock(phone)
-        if session_lock.locked():
+        if not await _wait_for_raksh_session(session_lock, phone):
+            retry_counts[phone] = retry_counts.get(phone, 0) + 1
+            if retry_counts[phone] < RAKSH_SESSION_RETRY_LIMIT:
+                queue.append(session)
+                queued_phones.add(phone)
+                logger.info(
+                    f"🔁 إعادة جدولة الجلسة {phone} "
+                    f"({retry_counts[phone]}/{RAKSH_SESSION_RETRY_LIMIT})"
+                )
+                continue
             failed_phones.append(phone)
-            failed_details.append("الجلسة قيد الاستخدام")
+            failed_details.append("تعذر تجهيز الجلسة بعد الانتظار")
+            completed_count += 1
             continue
-        
+
         async with session_lock:
             try:
+                channel_setup_done_before = channel_setup_done
+                channel_setup_done = True
                 ok, msg = await svc.execute(
                     session=session,
                     params=params,
-                    is_first=(i == 0),
+                    is_first=not channel_setup_done_before,
                 )
             except Exception as e:
                 ok = False
                 msg = f"❌ خطأ: {str(e)}"
-        
+
+        if not ok and _is_retryable_raksh_session_message(msg):
+            retry_counts[phone] = retry_counts.get(phone, 0) + 1
+            if retry_counts[phone] < RAKSH_SESSION_RETRY_LIMIT:
+                queue.append(session)
+                queued_phones.add(phone)
+                logger.info(
+                    f"🔁 الجلسة {phone} مؤقتاً غير جاهزة؛ "
+                    f"ستعاد المحاولة ({retry_counts[phone]}/{RAKSH_SESSION_RETRY_LIMIT})"
+                )
+                continue
+
+        completed_count += 1
         if ok:
             success_count += 1
             success_phones.append(phone)
@@ -240,13 +307,14 @@ async def _execute_raksh_sequential(
         else:
             failed_phones.append(phone)
             failed_details.append(msg)
-        
+
         if progress_callback:
-            await progress_callback(i + 1, quantity, success_count, len(failed_details))
-        
-        if i < quantity - 1 and sessions:
-            delay = svc.get_delay_seconds(params.get("delay_seconds"))
-            await asyncio.sleep(delay)
+            await progress_callback(
+                completed_count,
+                quantity,
+                success_count,
+                len(failed_details),
+            )
     
     await _remove_invalid_raksh_sessions(failed_phones)
     return success_count, success_phones, success_details, failed_phones, failed_details
