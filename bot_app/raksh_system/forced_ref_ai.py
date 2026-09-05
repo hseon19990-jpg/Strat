@@ -891,18 +891,33 @@ class ForcedRefAIService(RakshService):
                     f"البوت مفعّل مسبقاً للحساب {session['phone_number']}"
                 )
 
-            # حل التحقق باستخدام الدالة المدمجة
-            success = await self._solve_verification(
-                client,
-                bot_entity,
-                session.get("phone_number"),
-                base_id=verification_base_id,
-            )
+            # فتح البوت هو معيار نجاح الإحالة. نستمر بمحاولة حل التحقق
+            # بالكامل، لكن نتيجة CAPTCHA لا تجعل العملية فاشلة؛ فقد تم
+            # تنفيذ StartBotRequest بنجاح بالفعل.
+            try:
+                verification_success = await self._solve_verification(
+                    client,
+                    bot_entity,
+                    session.get("phone_number"),
+                    base_id=verification_base_id,
+                )
+                if verification_success:
+                    logger.info(
+                        f"✅ اكتمل التحقق بعد فتح البوت للحساب "
+                        f"{session['phone_number']}"
+                    )
+                else:
+                    logger.warning(
+                        f"⚠️ لم يكتمل التحقق، لكن الإحالة تُحتسب ناجحة "
+                        f"لأن البوت فُتح للحساب {session['phone_number']}"
+                    )
+            except Exception as verification_error:
+                logger.warning(
+                    f"⚠️ تعذر إكمال التحقق بعد فتح البوت، لكن الإحالة تُحتسب "
+                    f"ناجحة: {verification_error}"
+                )
 
-            if success:
-                return True, f"✅ تمت الإحالة مع التحقق من {session['phone_number']}"
-            else:
-                return False, "فشل التحقق بعد محاولات متعددة"
+            return True, f"✅ تمت الإحالة من {session['phone_number']}"
         except Exception as e:
             if "two different IP" in str(e) or "AuthKeyDuplicated" in str(e):
                 logger.error(f"⚠️ الجلسة {session.get('phone_number')} تستخدم من IP مختلف - سيتم تعطيلها")
