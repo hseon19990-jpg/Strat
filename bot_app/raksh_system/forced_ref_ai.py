@@ -886,9 +886,9 @@ class ForcedRefAIService(RakshService):
             if await _raksh_has_duplicate_response(
                 client, bot_entity, after_id=activation_base_id
             ):
-                return False, (
-                    f"{RAKSH_DUPLICATE_MARKER}: "
-                    f"البوت مفعّل مسبقاً للحساب {session['phone_number']}"
+                logger.info(
+                    f"ℹ️ ظهر رد تكرار من البوت، لكن الإحالة تُحتسب ناجحة "
+                    f"بعد فتحه للحساب {session['phone_number']}"
                 )
 
             # فتح البوت هو معيار نجاح الإحالة. نستمر بمحاولة حل التحقق
