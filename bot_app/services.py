@@ -370,6 +370,45 @@ def seed_menu_items(menu: str):
             "('daily_gift','join_channels','totp_generator')"
         )
     if menu == "main":
+        # Older deployments may have created the Raksh button with a legacy
+        # action type/value. Repair it before the generic defaults migration
+        # checks existing builtin values; otherwise the owner can neither see
+        # nor reorder the button from the main-menu manager.
+        with db_conn() as c:
+            raksh_row = c.execute(
+                "SELECT id, action_type, action_value FROM menu_items "
+                "WHERE menu='main' AND action_value IN "
+                "('raksh_menu', 'raksh_services', 'raksh_service') "
+                "ORDER BY id LIMIT 1"
+            ).fetchone()
+            if raksh_row:
+                if (
+                    raksh_row["action_type"] != "builtin"
+                    or raksh_row["action_value"] != "raksh_menu"
+                ):
+                    c.execute(
+                        "UPDATE menu_items SET action_type='builtin', action_value=? "
+                        "WHERE id=? AND menu='main'",
+                        ("raksh_menu", raksh_row["id"]),
+                    )
+            else:
+                row = c.execute(
+                    "SELECT COALESCE(MAX(sort_order), -1) AS m "
+                    "FROM menu_items WHERE menu='main'"
+                ).fetchone()
+                c.execute(
+                    "INSERT INTO menu_items "
+                    "(menu,label,action_type,action_value,width,sort_order,enabled) "
+                    "VALUES (?,?,?,?,?,?,1)",
+                    (
+                        "main",
+                        "🛍 خدمات الرشق",
+                        "builtin",
+                        "raksh_menu",
+                        1,
+                        (row["m"] or -1) + 1,
+                    ),
+                )
         with db_conn() as c:
             old_cats = tuple(f"cat:{k}" for k in SERVICES_MENU_CATEGORIES)
             c.execute(
