@@ -43,9 +43,14 @@ RAKSH_CUSTOM_REACTION_PREFIX = "__raksh_custom_reaction__:"
 RAKSH_REACTION_LOOKUP_MAX_SESSIONS = 3
 RAKSH_REACTION_LOOKUP_TIMEOUT_SECONDS = 5
 RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS = 4
-RAKSH_MIN_DELAY_SECONDS = 3
-RAKSH_MAX_DELAY_SECONDS = 3
-RAKSH_VOTE_DELAY_SECONDS = 3
+# الفاصل بين حساب وآخر في جميع خدمات الرشق.
+RAKSH_MIN_DELAY_SECONDS = 60
+RAKSH_MAX_DELAY_SECONDS = 180
+RAKSH_VOTE_DELAY_SECONDS = 60
+# لا نعتبر قفل الجلسة فشلاً فورياً؛ ننتظر تجهيزها ثم نستخدم خطة بديلة.
+RAKSH_SESSION_WAIT_TIMEOUT_SECONDS = 900
+RAKSH_SESSION_POLL_SECONDS = 5
+RAKSH_SESSION_RETRY_LIMIT = 3
 RAKSH_MAX_EXECUTIONS_PER_DAY = 999999999999999999
 RAKSH_MAX_EXECUTIONS_PER_HOUR = 99999999999
 RAKSH_NO_VERIFICATION_MESSAGE = "بدون زر تحقق"
@@ -1077,11 +1082,18 @@ class RakshService:
     # ─── أدوات ───
 
     def get_delay_seconds(self, custom_delay: Optional[int] = None) -> int:
+        # لا يسمح إعداد قديم أو قيمة مخصصة بإلغاء الفاصل الآمن بين الحسابات.
         if custom_delay is not None:
-            return max(0, min(custom_delay, 86400))
-        if self.config.min_delay == self.config.max_delay:
-            return self.config.min_delay
-        return random.randint(self.config.min_delay, self.config.max_delay)
+            try:
+                custom_delay = int(custom_delay)
+            except (TypeError, ValueError):
+                custom_delay = None
+            if custom_delay is not None:
+                return max(
+                    RAKSH_MIN_DELAY_SECONDS,
+                    min(custom_delay, RAKSH_MAX_DELAY_SECONDS),
+                )
+        return random.randint(RAKSH_MIN_DELAY_SECONDS, RAKSH_MAX_DELAY_SECONDS)
 
     def get_execution_params(self, context) -> Dict:
         return {
