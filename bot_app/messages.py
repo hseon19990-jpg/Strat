@@ -627,7 +627,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if state == "await_smm_link":
-        context.user_data["smm_link"] = text
+        link = text.strip()
+        if not link:
+            await update.message.reply_text("⚠️ أرسل رابطاً صالحاً.")
+            return
+        context.user_data["smm_link"] = link
         svc  = context.user_data.get("smm_svc", {})
         qty  = context.user_data.get("smm_qty", 0)
         cost = context.user_data.get("smm_cost", 0)
@@ -635,15 +639,22 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pts = db_user["points"] if db_user else 0
         desc_text = svc.get("description") or ""
         context.user_data["state"] = "confirm_smm"
+
+        # Do not interpolate panel/user data into Markdown. Service
+        # descriptions commonly contain brackets, underscores, or backticks,
+        # and Telegram rejects the entire message when those are unescaped.
+        service_name_html = html.escape(str(svc.get("name_ar") or "الخدمة"), quote=False)
+        link_html = html.escape(link, quote=False)
+        desc_html = html.escape(str(desc_text), quote=False)
         await update.message.reply_text(
-            f"📋 *تفاصيل الطلب:*\n\n"
-            f"🔹 الخدمة: {svc.get('name_ar', '')}\n"
+            f"📋 <b>تفاصيل الطلب:</b>\n\n"
+            f"🔹 الخدمة: {service_name_html}\n"
             f"🔢 الكمية: {qty}\n"
-            f"🔗 الرابط: `{text}`\n"
-            + (f"📝 {desc_text}\n" if desc_text else "") +
+            f"🔗 الرابط: <code>{link_html}</code>\n"
+            + (f"📝 {desc_html}\n" if desc_text else "") +
             f"💰 التكلفة: {cost} نقطة\n"
             f"💎 رصيدك: {pts} نقطة",
-            parse_mode=ParseMode.MARKDOWN,
+            parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("✅ تأكيد الطلب", callback_data="confirm_order:yes"),
                  InlineKeyboardButton("❌ إلغاء", callback_data="confirm_order:no")],
@@ -715,7 +726,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             await update.message.reply_text(
                 f"✅ *تمت العملية بنجاح!*\n\n"
-                f"🔹 الخدمة: {svc['name_ar']}\n"
+                f"🔹 الخدمة: {md_escape(svc['name_ar'])}\n"
                 f"🔢 الكمية: {qty}\n"
                 f"💰 التكلفة: {cost} نقطة",
                 parse_mode=ParseMode.MARKDOWN,
@@ -728,9 +739,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await notify_group(
                 context.application,
                 f"🆕 <b>طلب جديد</b>\n"
-                f"👤 المستخدم: <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
+                f"👤 المستخدم: <a href='tg://user?id={user.id}'>{html.escape(user.full_name or 'مستخدم', quote=False)}</a>\n"
                 f"🔹 الخدمة: {svc['name_ar']}\n"
-                f"🔗 الرابط: {link}\n"
+                f"🔗 الرابط: {html.escape(link, quote=False)}\n"
                 f"🔢 الكمية: {qty}\n"
                 f"💰 التكلفة: {cost} نقطة\n"
                 f"📌 الكود: {code}"
