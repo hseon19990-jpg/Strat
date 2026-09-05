@@ -49,7 +49,7 @@ def main_menu_kb(is_owner=False, is_supervisor_user=False):
     for index, item in enumerate(menu_items):
         if item["action_value"] == "services_menu":
             normalized = dict(item)
-            normalized["label"] = "رشق حقيقي"
+            normalized["label"] = "خدمات"
             menu_items[index] = normalized
     if not is_owner and not is_legendary_services_visible():
         menu_items = [
