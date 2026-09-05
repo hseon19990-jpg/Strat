@@ -199,8 +199,8 @@ RAKSH_MENU_DEFAULTS = [
 
 BUILTIN_DEFAULTS = {
 "main": [
-        ("🐺 خدمات", "services_menu", 1),
-         ("🛍 خدمات الرشق", "raksh_menu", 1),
+        ("🐺 خدمات", "services_menu", 2),
+         ("🛍 خدمات الرشق", "raksh_menu", 2),
         ("👑 خدمات تيليجرام أسطورية", "legendary_services", 1),
         ("🦇 تمويل قناتك حقيقي", "fund_channel", 1),
         ("👻 رابط دعوة", "referral", 1),
@@ -435,16 +435,44 @@ def seed_menu_items(menu: str):
                     "INSERT INTO menu_items (menu,label,action_type,action_value,width,sort_order,enabled) VALUES (?,?,?,?,?,?,1)",
                     (menu, label, "builtin", value, width, i)
                 )
-            return
-        row = c.execute("SELECT MAX(sort_order) AS m FROM menu_items WHERE menu=?", (menu,)).fetchone()
-        next_order = (row["m"] or 0) + 1
-        for label, value, width in defaults:
-            if value not in existing_values:
+        else:
+            row = c.execute("SELECT MAX(sort_order) AS m FROM menu_items WHERE menu=?", (menu,)).fetchone()
+            next_order = (row["m"] or 0) + 1
+            for label, value, width in defaults:
+                if value not in existing_values:
+                    c.execute(
+                        "INSERT INTO menu_items (menu,label,action_type,action_value,width,sort_order,enabled) VALUES (?,?,?,?,?,?,1)",
+                        (menu, label, "builtin", value, width, next_order)
+                    )
+                    next_order += 1
+
+    if menu == "main":
+        # Keep the two main service entry points together in the first row,
+        # including existing databases whose old rows were full-width.
+        with db_conn() as c:
+            rows = c.execute(
+                "SELECT id, action_value, sort_order FROM menu_items "
+                "WHERE menu='main' AND action_value IN ('services_menu', 'raksh_menu') "
+                "ORDER BY id"
+            ).fetchall()
+            by_value = {}
+            for row in rows:
+                by_value.setdefault(row["action_value"], row)
+            if "services_menu" in by_value and "raksh_menu" in by_value:
+                first_order = min(
+                    by_value["services_menu"]["sort_order"],
+                    by_value["raksh_menu"]["sort_order"],
+                ) - 2
                 c.execute(
-                    "INSERT INTO menu_items (menu,label,action_type,action_value,width,sort_order,enabled) VALUES (?,?,?,?,?,?,1)",
-                    (menu, label, "builtin", value, width, next_order)
+                    "UPDATE menu_items SET width=2, sort_order=? "
+                    "WHERE id=? AND menu='main'",
+                    (first_order, by_value["services_menu"]["id"]),
                 )
-                next_order += 1
+                c.execute(
+                    "UPDATE menu_items SET width=2, sort_order=? "
+                    "WHERE id=? AND menu='main'",
+                    (first_order + 1, by_value["raksh_menu"]["id"]),
+                )
 
 def get_menu_items(menu: str, only_enabled: bool = True):
     seed_menu_items(menu)
