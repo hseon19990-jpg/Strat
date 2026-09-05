@@ -185,20 +185,20 @@ def normalize_legendary_menu_item(item):
     return normalized
 
 RAKSH_MENU_DEFAULTS = [
-      ("📱 مشاهدة ستوري وتفاعل", "raksh:start:story", 1),
-      ("🔑 إحالة بوت إجباري", "raksh:start:forced_ref", 1),
-      ("🤖 إحالة بوت إجباري مع تحقق", "raksh:start:forced_ref_ai", 1),
-      ("💬 رشق تعليق", "raksh:start:comment", 1),
-      ("📊 رشق استفتاء", "raksh:start:poll", 1),
-      ("🗳 رشق أصوات", "raksh:start:votes", 1),
-      ("🛡 رشق تصويت مع تحقق", "raksh:start:votes_ai", 1),
-      ("✨ رشق تفاعل مميز", "raksh:start:premium_reaction", 1),
-      ("🔥 إدارة خدمات الرشق", "os:raksh_accounts", 1),
-      ("⚙️ إدارة الأسعار", "raksh:settings", 1),
-    ]
+    ("📱 مشاهدة ستوري وتفاعل", "raksh:start:story", 1),
+    ("🔑 إحالة بوت إجباري", "raksh:start:forced_ref", 1),
+    ("🤖 إحالة بوت إجباري مع تحقق", "raksh:start:forced_ref_ai", 1),
+    ("💬 رشق تعليق", "raksh:start:comment", 1),
+    ("📊 رشق استفتاء", "raksh:start:poll", 1),
+    ("🗳 رشق أصوات", "raksh:start:votes", 1),
+    ("🛡 رشق تصويت مع تحقق", "raksh:start:votes_ai", 1),
+    ("✨ رشق تفاعل مميز", "raksh:start:premium_reaction", 1),
+    ("🔥 إدارة خدمات الرشق", "os:raksh_accounts", 1),
+    ("⚙️ إدارة الأسعار", "raksh:settings", 1),
+]
 
-    BUILTIN_DEFAULTS = {
-    "main": [
+BUILTIN_DEFAULTS = {
+"main": [
         ("🐺 خدمات", "services_menu", 1),
         ("👑 خدمات تيليجرام أسطورية", "legendary_services", 1),
         ("🦇 تمويل قناتك حقيقي", "fund_channel", 1),
