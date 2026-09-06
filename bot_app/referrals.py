@@ -1890,6 +1890,13 @@ async def _click_check_subscription_button(client, bot_entity, msgs: list) -> bo
     logger.warning("⚠️ لم يُعثر على زر كابتشا مطابق في رسائل البوت")
     return False
 
+def _is_blocked_service_bot(bot_username: str) -> bool:
+    """يمنع تنفيذ أو قبول بوت الخدمة نفسه وبوت الرشق @Arshaqlibot."""
+    _target = str(bot_username or "").lower().lstrip("@").strip()
+    _own = str(globals().get("_OWN_BOT_USERNAME") or "").lower().lstrip("@").strip()
+    return _target == "arshaqlibot" or bool(_own and _target == _own)
+
+
 async def do_referral_for_number(phone: str, session_str: str, bot_username: str, start_param: str,
                                   mandatory_channels: str = "", folder_link: str = "",
                                   use_ai: bool = False, leave_channels_after: bool = False,
@@ -1911,11 +1918,8 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
     logger.info(f"🚀 do_referral_for_number: {phone} → @{bot_username} | use_ai={use_ai} | start_param={start_param}")
 
     _clean_target = bot_username.lower().lstrip("@").strip()
-    # @Arshaqlibot هو بوت الخدمة نفسه: يُحتسب مكتملًا دون اتصال أو Start
-    if _clean_target == "arshaqlibot" or (
-        _OWN_BOT_USERNAME and _clean_target == _OWN_BOT_USERNAME
-    ):
-        return True, True, "البوت المستهدف مستثنى — تم التخطي تلقائياً (مكتمل)"
+    if _is_blocked_service_bot(_clean_target):
+        return True, True, "البوت المستهدف محظور — تم التخطي تلقائياً (مكتمل)"
 
     _DEAD_SESSION_ERRORS = (
         "AuthKeyUnregistered", "SessionRevoked", "SessionExpired",
@@ -2186,6 +2190,11 @@ async def _mansub_handle_link(update, context):
             start_p = parts[1] if len(parts) > 1 else ''
         if not bot_user:
             raise ValueError('اسم البوت فارغ')
+        if _is_blocked_service_bot(bot_user):
+            await update.message.reply_text(
+                '⛔ هذا البوت مستثنى من الخدمة ولا يمكن إنشاء طلب له.'
+            )
+            return
         draft = context.user_data.setdefault('mansub_draft', {})
         draft['bot_user'] = bot_user
         draft['start_p'] = start_p
@@ -2618,6 +2627,11 @@ async def _forced_ref_handle_link(update, context):
             start_p  = parts[1] if len(parts) > 1 else ''
         if not bot_user:
             raise ValueError('اسم البوت فارغ')
+        if _is_blocked_service_bot(bot_user):
+            await update.message.reply_text(
+                '⛔ هذا البوت مستثنى من الخدمة ولا يمكن إنشاء طلب له.'
+            )
+            return
         draft = context.user_data.setdefault('forced_ref_draft', {})
         draft['bot_user'] = bot_user
         draft['start_p']  = start_p
@@ -2917,6 +2931,11 @@ async def _sv_forced_ref_handle_link(update, context):
     if not draft.get('bot_user'):
         await update.message.reply_text('⚠️ لم أتمكن من قراءة رابط البوت. أعد المحاولة.')
         return
+    if _is_blocked_service_bot(draft.get('bot_user')):
+        await update.message.reply_text(
+            '⛔ هذا البوت مستثنى من الخدمة ولا يمكن إنشاء طلب له.'
+        )
+        return
     sv_accounts = get_supervisor_available_accounts(update.effective_user.id)
     avail = len(sv_accounts)
     use_ai = draft.get('use_ai', False)
@@ -3114,7 +3133,7 @@ async def _run_forced_ref_order(order_id, bot_user, start_p, channels, quantity,
             return 30.0
 
     _clean_bot_target = bot_user.lower().lstrip("@").strip()
-    if _OWN_BOT_USERNAME and _clean_bot_target == _OWN_BOT_USERNAME and requester_id != OWNER_ID:
+    if _is_blocked_service_bot(_clean_bot_target):
         with db_conn() as _sc:
             _sc.execute(
                 "UPDATE forced_ref_orders SET status='done', done_count=%s WHERE id=%s",
@@ -3449,8 +3468,8 @@ async def _run_referral_for_new_number(phone: str, session_str: str, stock_id: i
             ).fetchone()
         if _done:
             continue
-        if _OWN_BOT_USERNAME and task["bot_username"].lower().lstrip("@") == _OWN_BOT_USERNAME:
-            mark_referral_completion(task["id"], stock_id, "done", "البوت المستهدف هو البوت نفسه")
+        if _is_blocked_service_bot(task["bot_username"]):
+            mark_referral_completion(task["id"], stock_id, "done", "البوت المستهدف محظور — تم التخطي")
             continue
         success, _reactiv, detail = await do_referral_for_number(
             phone, session_str,
@@ -3475,8 +3494,8 @@ async def run_referral_tasks_job(context: ContextTypes.DEFAULT_TYPE):
     if not tasks:
         return
     for task in tasks:
-        if _OWN_BOT_USERNAME and task["bot_username"].lower().lstrip("@") == _OWN_BOT_USERNAME:
-            logger.info(f"🤝 مهمة [{task['label']}]: البوت المستهدف هو البوت نفسه — تم التخطي")
+        if _is_blocked_service_bot(task["bot_username"]):
+            logger.info(f"🤝 مهمة [{task['label']}]: البوت المستهدف محظور — تم التخطي")
             continue
         pending = get_pending_numbers_for_task(task["id"])
         if not pending:
