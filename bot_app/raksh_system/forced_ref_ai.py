@@ -404,6 +404,50 @@ class ForcedRefAIService(RakshService):
         return any(marker in button_text for marker in invitation_markers)
 
     @staticmethod
+    def _is_verification_success_text(value) -> bool:
+        """Recognize success text from messages and Telegram callback alerts."""
+        text = str(value or "").strip().casefold()
+        if not text:
+            return False
+        success_markers = (
+            "تم التحقق",
+            "تم اجتياز التحقق",
+            "اجتياز الكابتشا",
+            "تم حل التحقق",
+            "تم قبولك",
+            "تم التسجيل بنجاح",
+            "أنت لست روبوت",
+            "لم تعد روبوت",
+            "verification successful",
+            "verification complete",
+            "verified successfully",
+            "captcha solved",
+            "captcha passed",
+            "human verified",
+            "you are verified",
+            "access granted",
+            "welcome to the group",
+        )
+        failure_markers = (
+            "أرسل النص",
+            "ارسل النص",
+            "النص التالي",
+            "أرسل الكود",
+            "ارسل الكود",
+            "send the text",
+            "send the code",
+            "resend",
+            "أعد إرسال",
+            "حاول مرة أخرى",
+            "wrong answer",
+            "إجابة خاطئة",
+        )
+        return (
+            any(marker in text for marker in success_markers)
+            and not any(marker in text for marker in failure_markers)
+        )
+
+    @staticmethod
     def _has_image_media(message) -> bool:
         """Return True for Telegram photo messages and image documents."""
         if getattr(message, "photo", None):
@@ -841,29 +885,7 @@ class ForcedRefAIService(RakshService):
             # النجاح لا يعتمد على اختفاء الأزرار أو مجرد إرسال إجابة.
             for msg in reversed(new_messages):
                 success_text = (getattr(msg, "message", "") or "").strip().casefold()
-                if (
-                    any(marker in success_text for marker in (
-                        "تم التحقق بنجاح",
-                        "تم التحقق",
-                        "نجح التحقق",
-                        "verification successful",
-                        "verification complete",
-                        "تم قبولك",
-                        "تم التسجيل بنجاح",
-                        "مرحباً بك في المجموعة",
-                        "welcome to the group",
-                    ))
-                    and not any(marker in success_text for marker in (
-                        "أرسل النص",
-                        "ارسل النص",
-                        "النص التالي",
-                        "أرسل الكود",
-                        "ارسل الكود",
-                        "send the text",
-                        "resend",
-                        "أعد إرسال",
-                    ))
-                ):
+                if self._is_verification_success_text(success_text):
                     logger.info(f"✅ تم تأكيد التحقق من {phone_number}: {success_text[:120]}")
                     return True
 
@@ -1095,10 +1117,20 @@ class ForcedRefAIService(RakshService):
 
                 for btn in prioritized:
                     try:
-                        await btn.click()
+                        callback_result = await btn.click()
                         logger.info(f"🖱️ تم الضغط على الزر: {getattr(btn, 'text', '')}")
                         processed_ids.add(verification_message.id)
                         cursor_id = verification_message.id
+                        callback_text = getattr(callback_result, "message", "")
+                        if not callback_text:
+                            callback_text = getattr(callback_result, "alert", "")
+                        if self._is_verification_success_text(callback_text):
+                            logger.info(
+                                "✅ أكد رد callback اكتمال التحقق للحساب %s: %s",
+                                phone_number,
+                                str(callback_text)[:120],
+                            )
+                            return True
                         await asyncio.sleep(2.0)
                         # لا نعلن النجاح هنا؛ نعيد قراءة الرسائل لمعالجة
                         # التحقق التالي الذي قد يظهر بعد هذا الزر.
