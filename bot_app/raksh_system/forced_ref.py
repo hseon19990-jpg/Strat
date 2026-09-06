@@ -363,6 +363,10 @@ class ForcedRefService(RakshService):
                 return False, "رابط البوت غير صحيح"
             
             clean_username = bot_username.lstrip("@").strip()
+            if _is_no_action_bot(clean_username):
+                logger.info(f"ℹ️ تم تجاوز فتح البوت المستثنى للحساب {session['phone_number']}: @{clean_username}")
+                return True, f"✅ تمت الإحالة من {session['phone_number']}"
+
             resolved = await client(ResolveUsernameRequest(clean_username))
             bot_entity = resolved.users[0] if resolved.users else resolved.chats[0]
             
