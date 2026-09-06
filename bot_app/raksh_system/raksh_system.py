@@ -13,6 +13,9 @@ from ..services import get_menu_items
 import json
 
 
+OWNER_FAST_BATCH_SIZE = 12
+OWNER_FAST_BATCH_INTERVAL_SECONDS = 2
+
 _ACTIVE_RAKSH_ORDER_IDS = set()
 RAKSH_ORDER_LEASE_MINUTES = 30
 
@@ -394,8 +397,28 @@ async def execute_raksh_service(
     
     # get_sessions جهز ترتيب الأولوية للمالك والعشوائية للأعضاء.
     shuffled = sessions.copy()
-    # كل خدمات الرشق تمر الآن عبر طابور تسلسلي واحد حتى يكون الفاصل
-    # بين أي حسابين 1-3 دقائق، وحتى لا تتنافس جلستان على نفس الموارد.
+    # المالك فقط يعمل على دفعات من 12 حساباً مع فاصل ثانيتين بين الدفعات.
+    # الأعضاء يبقون على المسار التسلسلي والفاصل الحالي بدون تغيير.
+    if user_id == OWNER_ID:
+        if service_type == "votes_ai":
+            async with _RAKSH_VOTE_FLOW_LOCK:
+                return await _execute_raksh_parallel(
+                    svc, shuffled, params, user_id, quantity,
+                    progress_callback, service_type,
+                    OWNER_FAST_BATCH_SIZE,
+                    OWNER_FAST_BATCH_INTERVAL_SECONDS,
+                    order_id,
+                )
+        return await _execute_raksh_parallel(
+            svc, shuffled, params, user_id, quantity,
+            progress_callback, service_type,
+            OWNER_FAST_BATCH_SIZE,
+            OWNER_FAST_BATCH_INTERVAL_SECONDS,
+            order_id,
+        )
+
+    # الأعضاء: كل خدمات الرشق تمر عبر طابور تسلسلي واحد حتى يبقى الفاصل
+    # الحالي كما هو، ولا تتنافس جلستان على نفس الموارد.
     if service_type == "votes_ai":
         async with _RAKSH_VOTE_FLOW_LOCK:
             return await _execute_raksh_sequential(
@@ -597,64 +620,112 @@ async def _execute_raksh_parallel(
     progress_callback,
     service_type: str,
     max_concurrent: int,
+    batch_delay_seconds: int = 0,
+    order_id: Optional[int] = None,
 ) -> Tuple[int, List[str], List[str], List[str], List[str]]:
-    """تنفيذ الخدمات بشكل متوازي"""
-    success_count = 0
-    success_phones = []
-    success_details = []
-    failed_phones = []
-    failed_details = []
-    used_phones = set()
-    
-    semaphore = asyncio.Semaphore(max_concurrent)
-    
+    """تنفيذ دفعات سريعة للمالك مع الحفاظ على ترتيب ونتائج الطلب."""
+    order_items = _load_raksh_order_items(order_id) if order_id else {}
+    success_phones = [
+        phone for phone, item in order_items.items()
+        if item.get("status") == "success"
+    ]
+    success_details = [
+        order_items[phone].get("result_message") or ""
+        for phone in success_phones
+    ]
+    failed_phones = [
+        phone for phone, item in order_items.items()
+        if item.get("status") == "failed"
+    ]
+    failed_details = [
+        order_items[phone].get("last_error") or "فشل"
+        for phone in failed_phones
+    ]
+    success_count = len(success_phones)
+    completed_count = success_count + len(failed_phones)
+    attempted_phones = set(success_phones) | set(failed_phones)
+    pool = list(sessions)
+
     async def execute_one(session, index):
-        nonlocal success_count
         phone = session["phone_number"]
-        if phone in used_phones:
-            return
-        used_phones.add(phone)
-        
-        if not _reserve_raksh_execution_slot(user_id, service_type, phone):
-            failed_phones.append(phone)
-            failed_details.append("تم تجاوز حد التنفيذ")
-            return
-        
+        if not _reserve_raksh_execution_slot(
+            user_id, service_type, phone, order_id=order_id
+        ):
+            return False, "تم تجاوز حد التنفيذ"
+
         session_lock = _get_raksh_session_lock(phone)
-        if session_lock.locked():
-            failed_phones.append(phone)
-            failed_details.append("الجلسة قيد الاستخدام")
-            return
-        
+        if not await _wait_for_raksh_session(session_lock, phone):
+            return False, "تعذر تجهيز الجلسة بعد الانتظار"
+
         async with session_lock:
             try:
-                ok, msg = await svc.execute(
+                return await svc.execute(
                     session=session,
                     params=params,
-                    is_first=(index == 0),
+                    is_first=(success_count == 0 and index == 0),
                 )
             except Exception as e:
-                ok = False
-                msg = f"❌ خطأ: {str(e)}"
-        
-        if ok:
-            success_count += 1
-            success_phones.append(phone)
-            success_details.append(msg)
-        else:
-            failed_phones.append(phone)
-            failed_details.append(msg)
-        
+                return False, f"❌ خطأ: {str(e)}"
+
+    wave_number = 0
+    while pool and success_count < quantity:
+        remaining = quantity - success_count
+        wave = []
+        while pool and len(wave) < min(max_concurrent, remaining):
+            session = pool.pop(0)
+            phone = session.get("phone_number")
+            if not phone or phone in attempted_phones:
+                continue
+            attempted_phones.add(phone)
+            wave.append(session)
+        if not wave:
+            break
+
+        wave_number += 1
+        logger.info(
+            "⚡ owner raksh wave=%s accounts=%s success=%s/%s",
+            wave_number,
+            len(wave),
+            success_count,
+            quantity,
+        )
+        results = await asyncio.gather(
+            *(execute_one(session, index) for index, session in enumerate(wave)),
+            return_exceptions=True,
+        )
+        for session, result in zip(wave, results):
+            phone = session["phone_number"]
+            if isinstance(result, BaseException):
+                ok, msg = False, f"❌ خطأ من {phone}: {str(result)[:80]}"
+            else:
+                ok, msg = result
+            completed_count += 1
+            if ok:
+                success_count += 1
+                success_phones.append(phone)
+                success_details.append(msg)
+            else:
+                failed_phones.append(phone)
+                failed_details.append(msg)
+            if order_id:
+                _mark_raksh_order_item_result(order_id, phone, ok, msg)
+
         if progress_callback:
-            await progress_callback(index + 1, quantity, success_count, len(failed_details))
-    
-    tasks = []
-    for i, session in enumerate(sessions[:quantity]):
-        if session["phone_number"] in used_phones:
-            continue
-        tasks.append(execute_one(session, i))
-    
-    await asyncio.gather(*tasks)
+            await progress_callback(
+                completed_count,
+                quantity,
+                success_count,
+                len(failed_details),
+            )
+
+        if pool and success_count < quantity and batch_delay_seconds:
+            logger.info(
+                "⏳ owner raksh: waiting %ss before wave %s",
+                batch_delay_seconds,
+                wave_number + 1,
+            )
+            await asyncio.sleep(batch_delay_seconds)
+
     await _remove_invalid_raksh_sessions(failed_phones)
     return success_count, success_phones, success_details, failed_phones, failed_details
 
