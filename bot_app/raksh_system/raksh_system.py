@@ -140,9 +140,8 @@ async def execute_raksh_service(
     if not svc:
         raise RuntimeError(f"خدمة غير معروفة: {service_type}")
     
-    # لا يوجد حساب مفضّل ثابت: كل طلب يبدأ بترتيب عشوائي.
+    # get_sessions جهز ترتيب الأولوية للمالك والعشوائية للأعضاء.
     shuffled = sessions.copy()
-    random.shuffle(shuffled)
     # كل خدمات الرشق تمر الآن عبر طابور تسلسلي واحد حتى يكون الفاصل
     # بين أي حسابين 1-3 دقائق، وحتى لا تتنافس جلستان على نفس الموارد.
     if service_type == "votes_ai":
