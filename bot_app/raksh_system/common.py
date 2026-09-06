@@ -348,6 +348,11 @@ def _parse_post_link(value: str) -> Tuple[Optional[str], Optional[int]]:
     except Exception:
         return None, None
 
+RAKSH_NO_ACTION_BOT = "arshaqlibot"
+
+def _is_no_action_bot(bot_username: Optional[str]) -> bool:
+    return str(bot_username or "").lstrip("@").strip().lower() == RAKSH_NO_ACTION_BOT
+
 def _parse_bot_link(value: str) -> Tuple[Optional[str], Optional[str]]:
     """تحليل رابط بوت"""
     value = (value or "").strip()
