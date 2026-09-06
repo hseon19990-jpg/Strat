@@ -140,24 +140,9 @@ async def execute_raksh_service(
     if not svc:
         raise RuntimeError(f"خدمة غير معروفة: {service_type}")
     
-    # ابدأ دائمًا بالحساب المفضل إن كانت جلسته موجودة وصالحة، ثم
-    # وزّع بقية الحسابات عشوائيًا كما كان سابقًا.
-    preferred_sessions = [
-        session for session in sessions
-        if raksh_phone_matches(session.get("phone_number"))
-    ]
-    other_sessions = [
-        session for session in sessions
-        if not raksh_phone_matches(session.get("phone_number"))
-    ]
-    random.shuffle(other_sessions)
-    shuffled = preferred_sessions + other_sessions
-    if preferred_sessions:
-        logger.info(
-            f"⭐ بدء عملية {service_type} بالحساب المفضل "
-            f"{RAKSH_PRIORITY_PHONE}"
-        )
-    
+    # لا يوجد حساب مفضّل ثابت: كل طلب يبدأ بترتيب عشوائي.
+    shuffled = sessions.copy()
+    random.shuffle(shuffled)
     # كل خدمات الرشق تمر الآن عبر طابور تسلسلي واحد حتى يكون الفاصل
     # بين أي حسابين 1-3 دقائق، وحتى لا تتنافس جلستان على نفس الموارد.
     if service_type == "votes_ai":
@@ -648,7 +633,7 @@ async def _handle_raksh_callback_impl(
             f"🔥 *إدارة {md_escape(get_raksh_accounts_label())}*\n\n"
             "✅ مفعلة: تظهر للأعضاء\n"
             "🚫 مخفية: لا تظهر للأعضاء\n\n"
-            f"📊 الحسابات المتاحة: *{get_available_sessions_count()}*",
+            f"📊 الحسابات المتاحة: *{get_available_sessions_count(is_owner=is_own)}*",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=raksh_menu_kb(True),
         )
@@ -710,7 +695,7 @@ async def _handle_raksh_callback_impl(
         await query.edit_message_text(
             f"🔥 *{md_escape(get_raksh_accounts_label())}*\n\n"
             "اختر الخدمة المطلوبة:\n"
-            f"📊 الحسابات المتاحة: *{get_available_sessions_count()}*",
+            f"📊 الحسابات المتاحة: *{get_available_sessions_count(is_owner=is_own)}*",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=raksh_menu_kb(is_own)
         )
@@ -1270,7 +1255,8 @@ async def _start_raksh_execution(
         )
     
     svc = get_raksh_service(service_type)
-    sessions = svc.get_sessions() if svc else []
+    is_owner = user.id == OWNER_ID
+    sessions = svc.get_sessions(is_owner=is_owner) if svc else []
     if not sessions:
         await progress_msg.edit_text(
             "❌ لا توجد حسابات متاحة.",
@@ -1378,7 +1364,7 @@ async def cmd_raksh(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🚫 تم حظرك من استخدام هذا البوت.")
         return
     
-    available_sessions = get_available_sessions_count()
+    available_sessions = get_available_sessions_count(is_owner=(user.id == OWNER_ID))
     
     await update.message.reply_text(
         f"🔥 *{md_escape(get_raksh_accounts_label())}*\n\n"
