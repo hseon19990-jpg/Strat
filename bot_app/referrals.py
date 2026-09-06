@@ -2120,6 +2120,34 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
 
             if _ai_solved:
                 steps.append(f"🤖 AI: {_ai_detail}")
+                # بعد اكتمال التحقق، أعد إرسال /start خمس مرات كما يفعل
+                # المستخدم يدوياً. نستخدم start_param فارغاً حتى يكون هذا
+                # Start عادياً ولا يعيد تشغيل رابط الإحالة من البداية.
+                _start_after_verify_count = 0
+                for _start_attempt in range(5):
+                    try:
+                        await asyncio.wait_for(
+                            client(StartBotRequest(
+                                bot=bot_entity,
+                                peer=bot_entity,
+                                start_param="",
+                            )),
+                            timeout=15,
+                        )
+                        _start_after_verify_count += 1
+                        await asyncio.sleep(0.7)
+                    except Exception as _start_error:
+                        logger.warning(
+                            f"⚠️ فشل ضغط Start بعد التحقق "
+                            f"({_start_attempt + 1}/5، {phone}): {_start_error}"
+                        )
+                steps.append(
+                    f"أعاد Start بعد التحقق "
+                    f"{_start_after_verify_count}/5 مرات"
+                )
+                msgs = await asyncio.wait_for(
+                    client.get_messages(bot_entity, limit=20), timeout=8
+                )
             elif _ai_detail == "لم يُكتشف تحقق":
                 # ضغط زر «تحقق» ليس دليلاً على اكتمال المهمة. إذا ضغطناه
                 # ثم لم تصل رسالة نجاح ولم يتعرف المحلل على التحدي التالي،
