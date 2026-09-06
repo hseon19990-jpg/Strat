@@ -1918,6 +1918,64 @@ async def _solve_captcha_with_gemini(text: str = None, image_bytes: bytes = None
         return None
 
 
+
+
+_VERIFICATION_SUCCESS_MARKERS = (
+    "✅", "✓", "✔", "☑", "تم التحقق", "اجتاز التحقق", "تم اجتياز التحقق",
+    "اكتمل التحقق", "إتمام التحقق", "تم الإتمام", "نجح التحقق",
+    "verified", "verification complete", "verification successful",
+    "successfully verified", "captcha passed", "human verified",
+)
+
+
+def _verification_message_text(message) -> str:
+    if isinstance(message, str):
+        return message
+    parts = []
+    for attr in ("raw_text", "message", "text", "alert"):
+        try:
+            value = getattr(message, attr, None)
+        except Exception:
+            value = None
+        if value:
+            parts.append(str(value))
+    return " ".join(parts)
+
+
+def _verification_success_evidence(messages, source_id=None, source_data=None):
+    """يبحث عن دليل نجاح حقيقي حتى لو وصلت رسالة فشل متأخرة من بوت التحقق."""
+    source = None
+    for message in messages or []:
+        if source_id is not None and getattr(message, "id", None) == source_id:
+            source = message
+            break
+
+    if source is not None:
+        source_buttons = getattr(source, "buttons", None) or []
+        if not source_buttons:
+            return True, "اختفت أزرار التحقق"
+        if source_data:
+            current_data = {
+                getattr(button, "data", None)
+                for row in source_buttons
+                for button in (row or [])
+            }
+            if source_data not in current_data:
+                return True, "اختفى زر التحقق"
+
+    for message in messages or []:
+        text = _verification_message_text(message)
+        button_text = " ".join(
+            str(getattr(button, "text", "") or "")
+            for row in (getattr(message, "buttons", None) or [])
+            for button in (row or [])
+        )
+        combined = f"{text} {button_text}".casefold()
+        if any(marker.casefold() in combined for marker in _VERIFICATION_SUCCESS_MARKERS):
+            return True, "ظهرت علامة صح/رسالة إتمام التحقق"
+
+    return False, ""
+
 async def do_referral_for_number(phone: str, session_str: str, bot_username: str, start_param: str,
                                   mandatory_channels: str = "", folder_link: str = "") -> tuple:
     """
@@ -1968,7 +2026,7 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
         ))
 
         await asyncio.sleep(3)
-        msgs = await client.get_messages(bot_entity, limit=3)
+        msgs = await client.get_messages(bot_entity, limit=10)
         joined_channels = 0
         for msg in msgs:
             if not msg.buttons:
@@ -2000,71 +2058,113 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
             steps.append(f"انضم لـ {joined_channels} قناة (رد البوت)")
 
         # ─── التحقق التلقائي عبر Gemini ──────────────────────────────
-        # يبحث عن زر تحقق (callback لا رابط)، يضغطه، يقرأ الرقم، يُعيد إرساله
-        if GEMINI_API_KEY:
+        # النجاح يُثبت من حالة الواجهة: اختفاء الأزرار، علامة صح، أو رسالة إتمام.
+        # أي رسالة فشل تصل بعد ذلك لا تلغي النجاح المثبت.
+        _verification_succeeded = False
+        _verification_code_sent = False
+        _verification_buttons = [
+            (_vm, _vbtn)
+            for _vm in msgs
+            for _vrow in (getattr(_vm, "buttons", None) or [])
+            for _vbtn in (_vrow or [])
+            if getattr(_vbtn, "data", None) and not getattr(_vbtn, "url", None)
+        ]
+        if not _verification_buttons:
+            _verification_succeeded = True
+            steps.append("لا يوجد تحقق مطلوب")
+        elif GEMINI_API_KEY:
             from telethon.tl.functions.messages import GetBotCallbackAnswerRequest as _GBCA
             _verify_done = False
-            for _vm in msgs:
+            for _vm, _vbtn in _verification_buttons:
                 if _verify_done:
                     break
-                if not _vm.buttons:
-                    continue
-                for _vrow in _vm.buttons:
+                _btn_data = getattr(_vbtn, "data", None)
+                try:
+                    _callback_answer = await client(_GBCA(
+                        peer=bot_entity,
+                        msg_id=_vm.id,
+                        data=_btn_data
+                    ))
+                    _callback_ok, _callback_reason = _verification_success_evidence(
+                        [_callback_answer]
+                    )
+                    if _callback_ok:
+                        _verification_succeeded = True
+                        steps.append(_callback_reason)
+                        _verify_done = True
+                        break
+                    await asyncio.sleep(3)
+
+                    # اقرأ الرسائل، بما فيها الرسالة الأصلية التي قد تُحدّث بدلاً من إنشاء رسالة جديدة.
+                    _new_msgs = await client.get_messages(bot_entity, limit=10)
+                    _state_ok, _state_reason = _verification_success_evidence(
+                        _new_msgs, source_id=_vm.id, source_data=_btn_data
+                    )
+                    if _state_ok:
+                        _verification_succeeded = True
+                        steps.append(_state_reason)
+                        _verify_done = True
+                        break
+
+                    for _nm in _new_msgs:
+                        if _nm.id <= _vm.id:
+                            continue
+                        _code = None
+                        # صورة → Gemini يقرأها
+                        if _nm.photo:
+                            try:
+                                _photo_bytes = await client.download_media(
+                                    _nm.photo, bytes
+                                )
+                                _code = await _solve_captcha_with_gemini(
+                                    image_bytes=_photo_bytes
+                                )
+                            except Exception:
+                                pass
+                        # نص → Gemini يستخرج الرقم
+                        if not _code and _nm.text:
+                            _direct = re.findall(r'\b\d{3,8}\b', _nm.text)
+                            if _direct:
+                                _code = _direct[0]
+                            else:
+                                _code = await _solve_captcha_with_gemini(
+                                    text=_nm.text
+                                )
+                        if _code:
+                            await client.send_message(bot_entity, _code)
+                            _verification_code_sent = True
+                            await asyncio.sleep(3)
+                            _post_code_msgs = await client.get_messages(bot_entity, limit=10)
+                            _code_ok, _code_reason = _verification_success_evidence(
+                                _post_code_msgs, source_id=_vm.id, source_data=_btn_data
+                            )
+                            steps.append(
+                                f"تحقق Gemini: {_code}"
+                                + (f" | {_code_reason}" if _code_ok else "")
+                            )
+                            _verification_succeeded = _code_ok
+                            _verify_done = True
+                            break
                     if _verify_done:
                         break
-                    for _vbtn in _vrow:
-                        _btn_url  = getattr(_vbtn, "url",  None)
-                        _btn_data = getattr(_vbtn, "data", None)
-                        # زر التحقق: له data وليس رابط خارجي
-                        if not _btn_data or _btn_url:
-                            continue
-                        try:
-                            await client(_GBCA(
-                                peer=bot_entity,
-                                msg_id=_vm.id,
-                                data=_btn_data
-                            ))
-                            await asyncio.sleep(3)
-
-                            # اقرأ الرسائل الجديدة بعد الضغط
-                            _new_msgs = await client.get_messages(bot_entity, limit=5)
-                            for _nm in _new_msgs:
-                                if _nm.id <= _vm.id:
-                                    continue
-                                _code = None
-                                # صورة → Gemini يقرأها
-                                if _nm.photo:
-                                    try:
-                                        _photo_bytes = await client.download_media(
-                                            _nm.photo, bytes
-                                        )
-                                        _code = await _solve_captcha_with_gemini(
-                                            image_bytes=_photo_bytes
-                                        )
-                                    except Exception:
-                                        pass
-                                # نص → Gemini يستخرج الرقم
-                                if not _code and _nm.text:
-                                    # أولاً نجرب regex مباشرة
-                                    _direct = re.findall(r'\b\d{3,8}\b', _nm.text)
-                                    if _direct:
-                                        _code = _direct[0]
-                                    else:
-                                        _code = await _solve_captcha_with_gemini(
-                                            text=_nm.text
-                                        )
-                                if _code:
-                                    await client.send_message(bot_entity, _code)
-                                    await asyncio.sleep(3)
-                                    steps.append(f"تحقق Gemini: {_code}")
-                                    _verify_done = True
-                                    break
-                            if _verify_done:
-                                break
-                        except Exception as _ve:
-                            logger.warning(
-                                f"⚠️ Gemini verify {phone}: {_ve}"
-                            )
+                except Exception as _ve:
+                    # الضغط أو قراءة الرد قد يفشل تقنياً بعد أن يكون البوت قد أتم التحقق.
+                    # نعيد فحص الحالة قبل تحويل العملية إلى فشل.
+                    try:
+                        _recheck_msgs = await client.get_messages(bot_entity, limit=10)
+                        _recheck_ok, _recheck_reason = _verification_success_evidence(
+                            _recheck_msgs, source_id=_vm.id, source_data=_btn_data
+                        )
+                    except Exception:
+                        _recheck_ok, _recheck_reason = False, ""
+                    if _recheck_ok:
+                        _verification_succeeded = True
+                        steps.append(_recheck_reason)
+                        _verify_done = True
+                        break
+                    logger.warning(
+                        f"⚠️ Gemini verify {phone}: {_ve}"
+                    )
 
         if _was_reactivated:
             detail = "إعادة تفعيل (البوت كان مفعّلاً مسبقاً)" + (f" | {' | '.join(steps)}" if steps else "")
@@ -2075,6 +2175,14 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
 
     except Exception as e:
         err = str(e)
+        # لا نعتبر العملية فاشلة إذا ظهر دليل إتمام أو أُرسل كود التحقق بالفعل؛
+        # بعض بوتات التحقق ترسل جواباً سلبياً/متأخراً بعد تنفيذ العملية.
+        if _verification_succeeded or _verification_code_sent:
+            detail = "تمت الإحالة بنجاح رغم رد متأخر من بوت التحقق"
+            if steps:
+                detail += " | " + " | ".join(steps)
+            logger.warning(f"⚠️ {detail}: {phone} → {bot_username} ({err[:120]})")
+            return True, False, detail
         logger.error(f"❌ فشلت إحالة {phone} → {bot_username}: {err}")
         return False, False, err[:120]
     finally:
