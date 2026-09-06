@@ -1919,7 +1919,7 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
 
     _clean_target = bot_username.lower().lstrip("@").strip()
     if _is_blocked_service_bot(_clean_target):
-        return True, True, "البوت المستهدف محظور — تم التخطي تلقائياً (مكتمل)"
+        return False, False, "إحالة مرفوضة: لا يمكن تنفيذ إحالة إلى بوت الخدمة @Arshaqlibot"
 
     _DEAD_SESSION_ERRORS = (
         "AuthKeyUnregistered", "SessionRevoked", "SessionExpired",
@@ -2798,6 +2798,18 @@ async def _handle_confirm_forced_ref(update, context, user, q, is_own, data):
         await q.edit_message_text('🔒 حسابك موقوف. تواصل مع المالك.', reply_markup=main_menu_kb(is_own))
         return
 
+    # فحص نهائي قبل خصم النقاط أو إصدار فاتورة النجوم.
+    # @Arshaqlibot مستثنى من الخدمة: لا رشق، لا نجاح، ولا خصم.
+    if _is_blocked_service_bot(bot_user):
+        context.user_data['state'] = 'main_menu'
+        context.user_data.pop('forced_ref_draft', None)
+        await q.edit_message_text(
+            '⛔ لا يمكن تنفيذ إحالة لهذا البوت؛ @Arshaqlibot مستثنى من الخدمة.\n'
+            'لم يتم خصم أي نقاط ولم يتم إنشاء الطلب.',
+            reply_markup=main_menu_kb(is_own)
+        )
+        return
+
     if action == 'stars':
         if total_stars < 1:
             await q.edit_message_text('⚠️ تعذّر حساب تكلفة النجوم.', reply_markup=main_menu_kb(is_own))
@@ -3134,18 +3146,41 @@ async def _run_forced_ref_order(order_id, bot_user, start_p, channels, quantity,
 
     _clean_bot_target = bot_user.lower().lstrip("@").strip()
     if _is_blocked_service_bot(_clean_bot_target):
+        # هذا الحارس يعالج الطلبات القديمة التي أُنشئت قبل منع @Arshaqlibot.
+        # لا نعتبر التخطي نجاحاً، ونردّ التكلفة إن كان الطلب قد دُفع.
+        _refund_points = 0
+        _blocked_status = "failed"
         with db_conn() as _sc:
-            _sc.execute(
-                "UPDATE forced_ref_orders SET status='done', done_count=%s WHERE id=%s",
-                (quantity, order_id)
-            )
-        _ai_label_s = ' 🤖' if use_ai else ''
+            _order_row = _sc.execute(
+                "SELECT cost_points, cost_stars, payment_method, quantity, status "
+                "FROM forced_ref_orders WHERE id=%s",
+                (order_id,)
+            ).fetchone()
+            if _order_row and str(_order_row.get("status") or "").lower() not in {"done", "failed", "cancelled"}:
+                _payment_kind = str(_order_row.get("payment_method") or payment_method).lower()
+                _stars_paid = int(_order_row.get("cost_stars") or cost_stars or 0)
+                _points_paid = int(_order_row.get("cost_points") or 0)
+                if _payment_kind == "stars" and _stars_paid > 0:
+                    _refund_points = _stars_paid * int(get_setting("star_to_points") or "250")
+                else:
+                    _refund_points = _points_paid
+                _sc.execute(
+                    "UPDATE forced_ref_orders SET status=%s, done_count=0, failed_count=%s WHERE id=%s",
+                    (_blocked_status, int(_order_row.get("quantity") or quantity), order_id)
+                )
+        if _refund_points > 0:
+            add_points(requester_id, _refund_points)
         try:
+            _refund_line = (
+                f"\n💰 تم رد <b>{_refund_points:,} نقطة</b>."
+                if _refund_points > 0 else ""
+            )
             await context.bot.send_message(
                 requester_id,
-                f'✅ <b>اكتملت إحالة البوت الإجبارية{_ai_label_s}!</b>\n'
-                f'📌 @{bot_user}\n\n'
-                f'✅ تم: <b>{quantity}</b>  |  ❌ فشل: <b>0</b>',
+                f'❌ <b>تعذر تنفيذ الإحالة الإجبارية</b>\n'
+                f'📌 @{bot_user}\n'
+                f'هذا البوت مستثنى من الخدمة، ولم يدخل أي حساب إليه.'
+                f'{_refund_line}',
                 parse_mode='HTML'
             )
         except Exception:
@@ -3468,9 +3503,6 @@ async def _run_referral_for_new_number(phone: str, session_str: str, stock_id: i
             ).fetchone()
         if _done:
             continue
-        if _is_blocked_service_bot(task["bot_username"]):
-            mark_referral_completion(task["id"], stock_id, "done", "البوت المستهدف محظور — تم التخطي")
-            continue
         success, _reactiv, detail = await do_referral_for_number(
             phone, session_str,
             task["bot_username"], task.get("start_param", "") or "",
@@ -3494,9 +3526,6 @@ async def run_referral_tasks_job(context: ContextTypes.DEFAULT_TYPE):
     if not tasks:
         return
     for task in tasks:
-        if _is_blocked_service_bot(task["bot_username"]):
-            logger.info(f"🤝 مهمة [{task['label']}]: البوت المستهدف محظور — تم التخطي")
-            continue
         pending = get_pending_numbers_for_task(task["id"])
         if not pending:
             continue
