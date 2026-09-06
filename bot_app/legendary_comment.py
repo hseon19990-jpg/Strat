@@ -1944,18 +1944,19 @@ async def execute_legendary_order(update, context, q, is_own: bool, payment_meth
     if refund_points > 0:
         result += f"💰 تم تعويضك: {refund_points} نقطة\n"
     
-    # Add success and failed phone lists
-    if success_phones:
-        result += f"\n✅ *الحسابات الناجحة:*\n"
-        result += "\n".join(f"• `{p}`" for p in success_phones[:20])
-        if len(success_phones) > 20:
-            result += f"\n... و{len(success_phones)-20} أخرى"
-    
-    if failed_details:
-        result += f"\n\n❌ *الفاشلة:*\n"
-        result += "\n".join(f"• {d}" for d in failed_details[:10])
-        if len(failed_details) > 10:
-            result += f"\n... و{len(failed_details)-10} أخرى"
+    # الأعضاء يرون الأعداد فقط؛ المالك يرى تفاصيل أرقام الحسابات.
+    if is_own:
+        if success_phones:
+            result += f"\n✅ *الحسابات الناجحة:*\n"
+            result += "\n".join(f"• `{p}`" for p in success_phones[:20])
+            if len(success_phones) > 20:
+                result += f"\n... و{len(success_phones)-20} أخرى"
+
+        if failed_details:
+            result += f"\n\n❌ *تفاصيل الفشل:*\n"
+            result += "\n".join(f"• {d}" for d in failed_details[:10])
+            if len(failed_details) > 10:
+                result += f"\n... و{len(failed_details)-10} أخرى"
     
     await edit_order_message(
         result,
