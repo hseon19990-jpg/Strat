@@ -377,6 +377,29 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         return lines[0] if lines else ""
 
+    def _normalise_image_answer(value: str) -> str:
+        """يحوّل قراءة صورة الكابتشا إلى نص قابل للإرسال كما هو.
+
+        نماذج الرؤية قد تقرأ صورة مثل ``8 9 2 1 3`` مع مسافات أو فواصل،
+        بينما بوت الكابتشا ينتظر ``89213``. لا نطبق هذا على الإجابات
+        النصية العامة حتى لا نغيّر إجابات متعددة الكلمات.
+        """
+        text = _clean_ai_answer(value)
+        if not text:
+            return ""
+
+        text = text.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
+        compact = re.sub(r"[\s,،;؛|:_\-]+", "", text)
+        if re.fullmatch(r"[0-9]+", compact):
+            return compact
+        if re.fullmatch(r"[A-Za-z0-9]+", compact) and len(compact) >= 2:
+            return compact
+        return text
+
+    def _looks_like_image_text_answer(value: str) -> bool:
+        """يتحقق من أن الإجابة تبدو نصاً/رقماً مستخرجاً من الصورة."""
+        return bool(re.fullmatch(r"[A-Za-z0-9]{2,}", str(value or "").strip()))
+
     async def _solve_text(prompt: str) -> str | None:
         """
         يحل النصوص باستخدام Groq API أولاً (أسرع وأكثر استقراراً).
@@ -1157,17 +1180,19 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                                 "the exact answer-button labels:\n"
                                 + "\n".join(button_descriptions)
                                 + "\n\n"
-                                "Analyze the visual shape of the emoji/symbol in the image "
-                                "and compare it directly with the available button shapes. "
-                                "Ignore decorative emojis in the instruction text (especially "
-                                "the first emoji); do not use the first text emoji as the answer. "
-                                "Choose the button whose appearance matches the image. "
-                                "Do not solve this as OCR. "
-                                "Return ONLY the exact button label, with no explanation. "
+                                "If the image contains distorted letters or digits, read them "
+                                "from left to right and return the complete sequence without "
+                                "spaces or separators. If the image contains an emoji or symbol "
+                                "that must be matched to a button, choose the button whose "
+                                "appearance matches the image. Ignore decorative emojis in the "
+                                "instruction text (especially the first emoji). "
+                                "Return ONLY the exact answer or exact button label, with no explanation. "
                                 "Return NONE if no button can be matched.\n"
                                 f"Message text: {msg_text or '(none)'}"
                             )
-                            answer = await _solve_image(prompt, img_bytes)
+                            answer = _normalise_image_answer(
+                                await _solve_image(prompt, img_bytes)
+                            )
                             logger.info(
                                 f"🤖 AI visual button answer: {answer!r} ({phone})"
                             )
@@ -1184,6 +1209,31 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                                 f"⚠️ لا يوجد تطابق مؤكد؛ سيتم تجربة كل أزرار Captcha "
                                 f"({phone})"
                             )
+
+                            # بعض البوتات ترسل صورة أرقام مع أزرار غير مرتبطة
+                            # بالصورة أو بلا زر إجابة فعلي. في هذه الحالة أرسل
+                            # النص المقروء مباشرة بدلاً من الضغط العشوائي على
+                            # الأزرار.
+                            if not chosen and _looks_like_image_text_answer(answer):
+                                processed_ids.add(msg_id)
+                                await asyncio.sleep(0.5)
+                                await client.send_message(bot_entity, answer)
+                                result, msgs = await _wait_and_check()
+                                if result == "unknown":
+                                    numeric_result, numeric_msgs = (
+                                        await _reply_to_numeric_code(msgs)
+                                    )
+                                    if numeric_result is not None:
+                                        result, msgs = numeric_result, numeric_msgs
+                                all_details.append(f"كابتشا صورة: {answer}")
+                                if result == "success":
+                                    return True, (
+                                        f"نجح التحقق ✅ | {' | '.join(all_details)}"
+                                    )
+                                if result == "fail":
+                                    break
+                                processed_ids.discard(msg_id)
+                                continue
 
                         processed_ids.add(msg_id)
                         solved, result, msgs, clicked_label, attempts = (
@@ -1217,10 +1267,12 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                     prompt = (
                         "هذه صورة كابتشا (CAPTCHA) من بوت تيليغرام.\n"
                         f"النص المرافق للصورة: {msg_text or '(لا يوجد)'}\n\n"
-                        "اقرأ بدقة النص أو الأرقام الظاهرة في الصورة وأجب بها فقط "
-                        "بدون أي شرح أو مسافات إضافية."
+                        "اقرأ بدقة النص أو الأرقام الظاهرة في الصورة من اليسار إلى اليمين. "
+                        "إذا كانت الأحرف أو الأرقام متباعدة بفواصل أو مسافات فادمجها في "
+                        "إجابة واحدة؛ مثال: 8 9 2 1 3 تصبح 89213. "
+                        "أجب بالنص النهائي فقط بدون شرح."
                     )
-                    answer = await _solve_image(prompt, img_bytes)
+                    answer = _normalise_image_answer(await _solve_image(prompt, img_bytes))
                     if answer:
                         logger.info(f"🤖 AI كابتشا صورة → '{answer}' ({phone})")
                         processed_ids.add(msg_id)
