@@ -53,12 +53,15 @@ MIN_DELAY_MINUTES = 1
 MAX_DELAY_MINUTES = 8
 PREMIUM_REACTION_MAX_CONCURRENCY = 12
 PREMIUM_REACTION_ACCOUNT_TIMEOUT_SECONDS = 30
+OWNER_FAST_BATCH_SIZE = 12
+OWNER_FAST_BATCH_INTERVAL_SECONDS = 2
 # The verification vote flow used to process one account at a time and then
 # sleep for 60-180 seconds.  A 30-account test could therefore take 15+
 # minutes even when Telegram and the captcha provider were healthy.
 VOTES_AI_MAX_CONCURRENCY = 30
 VOTES_AI_BATCH_TIMEOUT_SECONDS = 60
 VOTES_AI_ACCOUNT_TIMEOUT_SECONDS = 55
+VOTES_AI_OWNER_BATCH_TIMEOUT_SECONDS = 300
 
 # ==================== LEGENDARY SERVICES MESSAGE ====================
 LEGENDARY_SERVICES_MESSAGE = (
@@ -868,6 +871,32 @@ async def execute_batch(
     if not sessions:
         raise RuntimeError("لا توجد جلسات نشطة متاحة.")
 
+    if is_owner:
+        if service_type == "votes_ai":
+            return await _execute_parallel_votes_ai_batch(
+                quantity=quantity,
+                sessions=sessions,
+                params=params,
+                is_owner=True,
+                custom_delay=custom_delay,
+                progress_callback=progress_callback,
+            )
+        if service_type == "premium_reaction":
+            return await _execute_parallel_premium_reaction_batch(
+                quantity=quantity,
+                sessions=sessions,
+                params=params,
+                is_owner=True,
+                progress_callback=progress_callback,
+            )
+        return await _execute_owner_fast_batch(
+            service_type=service_type,
+            quantity=quantity,
+            sessions=sessions,
+            params=params,
+            progress_callback=progress_callback,
+        )
+
     # Verification votes are intentionally handled as bounded waves.  This
     # keeps the requested quantity exact (a fully parallel replacement queue
     # could overshoot after several in-flight successes) while allowing the
@@ -980,12 +1009,134 @@ async def execute_batch(
     return success_count, success_phones, failed_details
 
 
-async def _execute_parallel_premium_reaction_batch(
+async def _execute_owner_fast_batch(
+    service_type: str,
     quantity: int,
     sessions: list,
     params: dict,
     progress_callback=None,
 ) -> tuple[int, list[str], list[str]]:
+    """Run ordinary legendary services in 12-account waves for the owner."""
+    executors = {
+        "comment": _execute_comment,
+        "poll": _execute_poll_vote,
+        "story": _execute_story_reaction,
+        "votes": _execute_vote,
+    }
+    executor = executors.get(service_type)
+    if not executor:
+        raise RuntimeError(f"خدمة المالك السريعة غير معروفة: {service_type}")
+
+    pool = list(sessions)
+    success_count = 0
+    success_phones: list[str] = []
+    failed_details: list[str] = []
+    attempted_phones: set[str] = set()
+    wave_number = 0
+
+    def build_exec_params(session: dict, is_first: bool) -> dict:
+        exec_params = {
+            "session": session,
+            "channel_ref": params.get("channel_ref"),
+            "is_first": is_first,
+        }
+        if service_type == "comment":
+            exec_params.update(
+                post_ref=params["post_ref"],
+                post_id=params["post_id"],
+                comment_text=params["comment_text"],
+            )
+        elif service_type == "poll":
+            exec_params.update(
+                poll_link=params["poll_link"],
+                poll_option=params["poll_option"],
+            )
+        elif service_type == "story":
+            exec_params.update(
+                story_link=params["story_link"],
+                emojis=params["emojis"],
+            )
+        elif service_type == "votes":
+            exec_params.update(
+                post_ref=params["post_ref"],
+                post_id=params["post_id"],
+                use_ai=False,
+            )
+        return exec_params
+
+    async def run_one(session: dict, is_first: bool) -> tuple[bool, str]:
+        try:
+            return await executor(**build_exec_params(session, is_first))
+        except Exception as exc:
+            return False, f"❌ فشل من {session['phone_number']}: {str(exc)[:80]}"
+
+    while pool and success_count < quantity:
+        remaining = quantity - success_count
+        wave = []
+        while pool and len(wave) < min(OWNER_FAST_BATCH_SIZE, remaining):
+            session = pool.pop(0)
+            phone = session.get("phone_number")
+            if not phone or phone in attempted_phones:
+                continue
+            attempted_phones.add(phone)
+            wave.append(session)
+        if not wave:
+            break
+
+        wave_number += 1
+        logger.info(
+            "⚡ legendary owner wave=%s accounts=%s success=%s/%s",
+            wave_number,
+            len(wave),
+            success_count,
+            quantity,
+        )
+        results = await asyncio.gather(
+            *(run_one(session, success_count == 0 and index == 0)
+              for index, session in enumerate(wave)),
+            return_exceptions=True,
+        )
+        for session, result in zip(wave, results):
+            if isinstance(result, BaseException):
+                ok = False
+                detail = f"❌ فشل من {session['phone_number']}: {str(result)[:80]}"
+            else:
+                ok, detail = result
+            if ok:
+                success_count += 1
+                success_phones.append(session["phone_number"])
+            else:
+                failed_details.append(detail)
+
+        if progress_callback:
+            await progress_callback(
+                min(quantity, success_count + len(failed_details)),
+                quantity,
+                success_count,
+                len(failed_details),
+            )
+
+        if pool and success_count < quantity:
+            await asyncio.sleep(OWNER_FAST_BATCH_INTERVAL_SECONDS)
+
+    return success_count, success_phones, failed_details
+
+
+async def _execute_parallel_premium_reaction_batch(
+    quantity: int,
+    sessions: list,
+    params: dict,
+    is_owner: bool = False,
+    progress_callback=None,
+) -> tuple[int, list[str], list[str]]:
+    if is_owner:
+        return await _execute_owner_fast_premium_reaction_batch(
+            quantity=quantity,
+            sessions=sessions,
+            params=params,
+            progress_callback=progress_callback,
+        )
+
     """Run premium reactions concurrently without artificial waits."""
     shuffled = sessions.copy()
     random.shuffle(shuffled)
@@ -1044,6 +1195,86 @@ async def _execute_parallel_premium_reaction_batch(
     return success_count, success_phones, failed_details
 
 
+async def _execute_owner_fast_premium_reaction_batch(
+    quantity: int,
+    sessions: list,
+    params: dict,
+    progress_callback=None,
+) -> tuple[int, list[str], list[str]]:
+    """Run the owner's premium reactions in 12-account waves."""
+    pool = list(sessions)
+    success_count = 0
+    success_phones: list[str] = []
+    failed_details: list[str] = []
+    attempted_phones: set[str] = set()
+    wave_number = 0
+
+    async def run_one(session: dict, is_first: bool) -> tuple[bool, str]:
+        try:
+            return await asyncio.wait_for(
+                _execute_premium_reaction(
+                    session=session,
+                    post_ref=params["post_ref"],
+                    post_id=params["post_id"],
+                    reaction_text=params["reaction_text"],
+                    channel_ref=params.get("channel_ref"),
+                    is_first=is_first,
+                ),
+                timeout=PREMIUM_REACTION_ACCOUNT_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            return False, (
+                f"❌ فشل من {session['phone_number']}: "
+                f"انتهت المهلة ({PREMIUM_REACTION_ACCOUNT_TIMEOUT_SECONDS}ث)"
+            )
+        except Exception as exc:
+            return False, f"❌ فشل من {session['phone_number']}: {str(exc)[:80]}"
+
+    while pool and success_count < quantity:
+        remaining = quantity - success_count
+        wave = []
+        while pool and len(wave) < min(OWNER_FAST_BATCH_SIZE, remaining):
+            session = pool.pop(0)
+            phone = session.get("phone_number")
+            if not phone or phone in attempted_phones:
+                continue
+            attempted_phones.add(phone)
+            wave.append(session)
+        if not wave:
+            break
+
+        wave_number += 1
+        results = await asyncio.gather(
+            *(run_one(session, success_count == 0 and index == 0)
+              for index, session in enumerate(wave)),
+            return_exceptions=True,
+        )
+        for session, result in zip(wave, results):
+            if isinstance(result, BaseException):
+                ok = False
+                detail = f"❌ فشل من {session['phone_number']}: {str(result)[:80]}"
+            else:
+                ok, detail = result
+            if ok:
+                success_count += 1
+                success_phones.append(session["phone_number"])
+            else:
+                failed_details.append(detail)
+
+        if progress_callback:
+            await progress_callback(
+                min(quantity, success_count + len(failed_details)),
+                quantity,
+                success_count,
+                len(failed_details),
+            )
+
+        if pool and success_count < quantity:
+            await asyncio.sleep(OWNER_FAST_BATCH_INTERVAL_SECONDS)
+
+    return success_count, success_phones, failed_details
+
+
 async def _execute_parallel_votes_ai_batch(
     quantity: int,
     sessions: list,
@@ -1061,11 +1292,14 @@ async def _execute_parallel_votes_ai_batch(
     flow, not a promise that Telegram or an exhausted AI provider will answer
     within that time.
     """
-    del is_owner, custom_delay  # Kept in the signature for caller compatibility.
-
     shuffled = sessions.copy()
-    random.shuffle(shuffled)
+    if not is_owner:
+        random.shuffle(shuffled)
     pool = list(shuffled)
+    max_concurrency = (
+        OWNER_FAST_BATCH_SIZE if is_owner else VOTES_AI_MAX_CONCURRENCY
+    )
+    wave_delay = OWNER_FAST_BATCH_INTERVAL_SECONDS if is_owner else 0
     success_count = 0
     success_phones: list[str] = []
     failed_details: list[str] = []
@@ -1100,7 +1334,7 @@ async def _execute_parallel_votes_ai_batch(
             remaining = quantity - success_count
             wave_size = min(
                 remaining,
-                VOTES_AI_MAX_CONCURRENCY,
+                max_concurrency,
                 len(pool),
             )
             wave = []
@@ -1157,12 +1391,20 @@ async def _execute_parallel_votes_ai_batch(
                 except Exception:
                     pass
 
+            if pool and success_count < quantity and wave_delay:
+                await asyncio.sleep(wave_delay)
+
         return success_count, success_phones, failed_details
 
     try:
+        batch_timeout = (
+            VOTES_AI_OWNER_BATCH_TIMEOUT_SECONDS
+            if is_owner
+            else VOTES_AI_BATCH_TIMEOUT_SECONDS
+        )
         return await asyncio.wait_for(
             _run_waves(),
-            timeout=VOTES_AI_BATCH_TIMEOUT_SECONDS,
+            timeout=batch_timeout,
         )
     except asyncio.TimeoutError:
         logger.warning(
