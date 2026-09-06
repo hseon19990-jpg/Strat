@@ -159,6 +159,24 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await legendary_handle_text(update, context, text):
         return
 
+    if state == "os_legendary_owner_phone_add" and is_own:
+        from .legendary_comment import add_legendary_owner_phone, get_legendary_owner_accounts_kb
+        added, message = add_legendary_owner_phone(text)
+        if not added:
+            await update.message.reply_text(
+                f"{message}\n\nأرسل رقماً آخر أو اضغط إلغاء.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 إلغاء", callback_data="legendary:owner_accounts")
+                ]]),
+            )
+            return
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(
+            message,
+            reply_markup=get_legendary_owner_accounts_kb(),
+        )
+        return
+
     if state in ("thank_owner_ar", "thank_owner_en") and not is_own:
         if not text:
             await update.message.reply_text("⚠️ أرسل رسالة نصية.")
