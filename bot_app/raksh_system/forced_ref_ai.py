@@ -6,6 +6,15 @@
 
 from .common import *
 from telethon.tl.types import InputMediaContact, KeyboardButtonRequestPhone
+from io import BytesIO
+
+try:
+    import ddddocr
+except ImportError:
+    ddddocr = None
+
+
+_CAPTCHA_OCR = None
 
 
 class ForcedRefAIService(RakshService):
@@ -386,6 +395,48 @@ class ForcedRefAIService(RakshService):
         )
         return any(marker in button_text for marker in invitation_markers)
 
+    @staticmethod
+    def _has_image_media(message) -> bool:
+        """Return True for Telegram photo messages and image documents."""
+        if getattr(message, "photo", None):
+            return True
+        media = getattr(message, "media", None)
+        document = getattr(media, "document", None) if media else None
+        mime_type = getattr(document, "mime_type", "") or ""
+        return mime_type.startswith("image/")
+
+    async def _extract_image_captcha(self, client, message, phone_number: str) -> Optional[str]:
+        """Download and recognize numeric/alphanumeric image CAPTCHAs."""
+        if not self._has_image_media(message):
+            return None
+        if ddddocr is None:
+            logger.error("❌ مكتبة ddddocr غير مثبتة؛ لا يمكن حل صورة التحقق")
+            return None
+
+        global _CAPTCHA_OCR
+        try:
+            image_buffer = BytesIO()
+            await client.download_media(message, file=image_buffer)
+            image_bytes = image_buffer.getvalue()
+            if not image_bytes:
+                logger.warning("⚠️ تعذر تنزيل صورة التحقق للحساب %s", phone_number)
+                return None
+
+            if _CAPTCHA_OCR is None:
+                _CAPTCHA_OCR = ddddocr.DdddOcr(show_ad=False, beta=True)
+            raw_result = await asyncio.to_thread(
+                _CAPTCHA_OCR.classification,
+                image_bytes,
+            )
+            code = re.sub(r"[^A-Za-z0-9]", "", str(raw_result or ""))
+            if 3 <= len(code) <= 12:
+                logger.info("🖼️ تم حل صورة التحقق للحساب %s: %s", phone_number, code)
+                return code
+            logger.warning("⚠️ نتيجة OCR غير صالحة للحساب %s: %r", phone_number, raw_result)
+        except Exception as exc:
+            logger.warning("⚠️ فشل تحليل صورة التحقق للحساب %s: %s", phone_number, exc)
+        return None
+
     async def _solve_verification(
         self,
         client,
@@ -674,16 +725,24 @@ class ForcedRefAIService(RakshService):
             )
             verification_message = next(
                 (
-                    msg for msg in candidate_messages
-                    if not (getattr(msg, "message", "") or "").strip().startswith("/")
-                    and any(
-                        marker in (getattr(msg, "message", "") or "").casefold()
-                        for marker in code_prompt_markers
-                    )
-                    and _extract_code_from_text(getattr(msg, "message", "") or "")
+                    msg for msg in reversed(candidate_messages)
+                    if self._has_image_media(msg)
                 ),
                 None,
             )
+            if verification_message is None:
+                verification_message = next(
+                    (
+                        msg for msg in candidate_messages
+                        if not (getattr(msg, "message", "") or "").strip().startswith("/")
+                        and any(
+                            marker in (getattr(msg, "message", "") or "").casefold()
+                            for marker in code_prompt_markers
+                        )
+                        and _extract_code_from_text(getattr(msg, "message", "") or "")
+                    ),
+                    None,
+                )
 
             if verification_message is None:
                 for msg in candidate_messages:
@@ -705,6 +764,23 @@ class ForcedRefAIService(RakshService):
                 continue
 
             text = getattr(verification_message, 'message', '') or ''
+            image_code = await self._extract_image_captcha(
+                client,
+                verification_message,
+                phone_number,
+            )
+            if image_code:
+                try:
+                    await client.send_message(bot_entity, image_code)
+                    logger.info("✅ تم إرسال حل صورة التحقق للحساب %s", phone_number)
+                    processed_ids.add(verification_message.id)
+                    cursor_id = verification_message.id
+                    await asyncio.sleep(2.0)
+                    continue
+                except Exception as exc:
+                    logger.warning("⚠️ تعذر إرسال حل صورة التحقق للحساب %s: %s", phone_number, exc)
+                    return False
+
 
             # 1. استخراج الكود
             send_text = _extract_code_from_text(text)
