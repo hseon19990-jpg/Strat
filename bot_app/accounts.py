@@ -147,11 +147,57 @@ async def check_arab_african_account_quality(user_id: int, user) -> dict:
     return {"passed": passed, "details": details}
 
 async def ask_for_phone_share(update: Update, context: ContextTypes.DEFAULT_TYPE, edit: bool = False):
-    """ينهي التحقق فوراً ويحتسب إحالة العضو الجديد مرة واحدة فقط."""
+    """يطلب رقم الهاتف عند وجود إحالة معلّقة، وإلا ينهي التحقق مباشرةً."""
     user = update.effective_user
-    # credit_referral_if_pending يمنح النقاط فقط إذا كان هذا العضو مدعواً
-    # ولم تُحتسب إحالتُه من قبل. لا نربط المستخدم القديم بداعٍ لاحقاً.
-    await finalize_verification(update, context, user, edit=edit, skip_referral=False)
+
+    # يمكن للمالك تعطيل طلب رقم الهاتف من لوحة الإعدادات.
+    # في هذه الحالة لا نحتسب مكافأة الإحالة تلقائياً لأن شرط التحقق لم
+    # يكتمل، لكن نسمح للمستخدم بمتابعة الدخول إلى البوت.
+    if int(get_setting("phone_verification_enabled") or "1") == 0:
+        await finalize_verification(update, context, user, edit=edit, skip_referral=True)
+        return
+
+    # لا نطلب الرقم من المستخدمين الذين لم يدخلوا عبر رابط إحالة، ولا
+    # نعيد الطلب بعد احتساب الإحالة مسبقاً.
+    db_user = get_user(user.id)
+    invited_by = (db_user or {}).get("invited_by", 0) or 0
+    already_credited = bool((db_user or {}).get("referral_credited", 0))
+    pending = context.user_data.get("referral_pending") or get_setting(
+        f"ref_pending_{user.id}"
+    )
+
+    if not pending and (not invited_by or already_credited):
+        await finalize_verification(update, context, user, edit=edit, skip_referral=False)
+        return
+
+    context.user_data["state"] = "await_phone_share"
+    keyboard = ReplyKeyboardMarkup(
+        [[KeyboardButton("📱 مشاركة رقم هاتفي", request_contact=True)]],
+        one_time_keyboard=True,
+        resize_keyboard=True,
+    )
+    text = (
+        "📲 *خطوة أخيرة!*\n\n"
+        "لاحتساب نقاط إحالة صديقك، نحتاج التحقق من رقم هاتفك.\n"
+        "اضغط الزر أدناه لمشاركة رقمك بأمان مع البوت."
+    )
+
+    if edit and update.callback_query:
+        await update.callback_query.edit_message_text(
+            text,
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        await context.bot.send_message(
+            chat_id=user.id,
+            text="👇 اضغط الزر لمشاركة رقمك:",
+            reply_markup=keyboard,
+        )
+    else:
+        await update.message.reply_text(
+            text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=keyboard,
+        )
 
 # ── معالج مشاركة جهة الاتصال ────────────────────────────────────────────────
 async def handle_contact_share(update: Update, context: ContextTypes.DEFAULT_TYPE):
