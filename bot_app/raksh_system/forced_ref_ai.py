@@ -7,6 +7,7 @@
 from .common import *
 from telethon.tl.types import InputMediaContact, KeyboardButtonRequestPhone
 from io import BytesIO
+import unicodedata
 
 try:
     import ddddocr
@@ -411,6 +412,51 @@ class ForcedRefAIService(RakshService):
         document = getattr(media, "document", None) if media else None
         mime_type = getattr(document, "mime_type", "") or ""
         return mime_type.startswith("image/")
+
+    @staticmethod
+    def _normalise_captcha_label(value: str) -> str:
+        """Normalize button/custom-emoji labels before comparing them."""
+        value = unicodedata.normalize("NFKC", str(value or "")).casefold()
+        value = value.strip(" \t\r\n:：-—.,،؛!?؟")
+        return re.sub(r"[\s\u200d\ufe0e\ufe0f\u20e3]+", "", value)
+
+    @classmethod
+    def _captcha_target_labels(cls, message, text: str) -> list[str]:
+        """Extract normal and Telegram custom-emoji targets from a challenge."""
+        labels = []
+
+        # Standard emoji in the challenge text.
+        labels.extend(re.findall(
+            "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E0-\U0001F1FF]",
+            text,
+        ))
+
+        # Custom emoji are represented by an entity and may not match the
+        # Unicode emoji ranges above. Their visible text is still available
+        # through Telethon's entity iterator and normally matches the button.
+        try:
+            get_entities_text = getattr(message, "get_entities_text", None)
+            if get_entities_text:
+                for entity, entity_text in get_entities_text():
+                    if entity.__class__.__name__ == "MessageEntityCustomEmoji":
+                        labels.append(entity_text)
+        except Exception:
+            pass
+
+        # Some captcha bots use a word or a non-standard symbol after
+        # "اضغط على الرمز:" instead of a regular Unicode emoji.
+        marker_match = re.search(
+            r"(?:الرمز|العلامة|symbol|emoji|icon)\s*[:：-]?\s*([^\s،,.!?؟]+)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if marker_match:
+            labels.append(marker_match.group(1))
+
+        return [
+            label for label in labels
+            if cls._normalise_captcha_label(label)
+        ]
 
     async def _extract_image_captcha(self, client, message, phone_number: str) -> Optional[str]:
         """Download and recognize noisy numeric/alphanumeric image CAPTCHAs.
@@ -962,22 +1008,62 @@ class ForcedRefAIService(RakshService):
 
             button_clicked = False
             if buttons:
-                # استخراج الإيموجي المطلوب
-                emoji_pattern = re.compile(
-                    "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E0-\U0001F1FF]"
-                )
-                target_emoji = None
-                found_emojis = emoji_pattern.findall(text)
-                if found_emojis:
-                    target_emoji = found_emojis[-1]
-
                 # ترتيب الأزرار حسب الأولوية
                 prioritized = []
-                if target_emoji:
-                    exact = [b for b in buttons if getattr(b, 'text', '') == target_emoji]
-                    prioritized.extend(exact)
-                    partial = [b for b in buttons if target_emoji in (getattr(b, 'text', '') or '') and b not in exact]
-                    prioritized.extend(partial)
+                target_labels = {
+                    self._normalise_captcha_label(label)
+                    for label in self._captcha_target_labels(
+                        verification_message,
+                        text,
+                    )
+                }
+                button_labels = {
+                    id(button): self._normalise_captcha_label(
+                        getattr(button, "text", "")
+                    )
+                    for button in buttons
+                }
+
+                # First prefer an exact match. This handles both ordinary
+                # emoji and the custom emoji shown in the attached captcha.
+                exact = [
+                    button for button in buttons
+                    if button_labels.get(id(button)) in target_labels
+                    and button_labels.get(id(button))
+                ]
+                prioritized.extend(exact)
+
+                # If the target is a word (for example "شاهد"), accept a
+                # matching label mentioned after "اضغط على الرمز:".
+                target_tail = text.casefold()
+                marker_positions = [
+                    target_tail.rfind(marker)
+                    for marker in ("الرمز", "العلامة", "symbol", "emoji", "icon")
+                ]
+                marker_position = max(marker_positions)
+                if marker_position >= 0:
+                    target_tail = target_tail[marker_position:]
+                tail_matches = [
+                    button for button in buttons
+                    if button not in prioritized
+                    and button_labels.get(id(button))
+                    and len(button_labels[id(button)]) > 1
+                    and button_labels[id(button)] in self._normalise_captcha_label(target_tail)
+                ]
+                prioritized.extend(tail_matches)
+
+                # Keep the partial match for emoji sequences with variation
+                # selectors or skin-tone modifiers.
+                for target_label in target_labels:
+                    prioritized.extend(
+                        button for button in buttons
+                        if button not in prioritized
+                        and target_label
+                        and (
+                            target_label in button_labels.get(id(button), "")
+                            or button_labels.get(id(button), "") in target_label
+                        )
+                    )
 
                 verify_keywords = ['تحقق', 'verify', 'اضغط هنا', 'continue', 'التالي', 'متابعة']
                 verify_buttons = [
@@ -988,6 +1074,13 @@ class ForcedRefAIService(RakshService):
                 prioritized.extend(verify_buttons)
 
                 if not prioritized:
+                    logger.warning(
+                        "⚠️ تعذر تحديد زر الكابتشا؛ النص=%r، الأزرار=%r، "
+                        "الأهداف=%r",
+                        text[:160],
+                        [getattr(button, "text", "") for button in buttons],
+                        sorted(target_labels),
+                    )
                     # لا نضغط أول زر عشوائياً. نعلّم الرسالة كمعالجة حتى لا
                     # تبقى عالقة في كل دورة، ثم نعيد قراءة الرسائل التالية.
                     processed_ids.add(verification_message.id)
@@ -1110,14 +1203,15 @@ class ForcedRefAIService(RakshService):
                     )
                 else:
                     logger.warning(
-                        f"⚠️ لم يكتمل التحقق، لكن الإحالة تُحتسب ناجحة "
-                        f"لأن البوت فُتح للحساب {session['phone_number']}"
+                        f"⚠️ لم يكتمل التحقق للحساب "
+                        f"{session['phone_number']}؛ لن تُحتسب الإحالة ناجحة"
                     )
+                    return False, "❌ لم يكتمل تحقق البوت."
             except Exception as verification_error:
                 logger.warning(
-                    f"⚠️ تعذر إكمال التحقق بعد فتح البوت، لكن الإحالة تُحتسب "
-                    f"ناجحة: {verification_error}"
+                    f"⚠️ تعذر إكمال التحقق بعد فتح البوت: {verification_error}"
                 )
+                return False, "❌ تعذر إكمال تحقق البوت."
 
             return True, f"✅ تمت الإحالة من {session['phone_number']}"
         except Exception as e:
