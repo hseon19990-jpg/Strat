@@ -158,8 +158,23 @@ async def execute_raksh_service(
             f"{RAKSH_PRIORITY_PHONE}"
         )
     
-    # كل خدمات الرشق تمر الآن عبر طابور تسلسلي واحد حتى يكون الفاصل
-    # بين أي حسابين 1-3 دقائق، وحتى لا تتنافس جلستان على نفس الموارد.
+    # الستوري والتفاعل المميز خدمات مستقلة لكل جلسة؛ تشغيلهما بالتوازي
+    # يختصر وقت الطلب، بينما تبقى التعليقات والإحالات والتصويت على المسار
+    # التسلسلي المحافظ دون تغيير.
+    if service_type in RAKSH_FAST_SERVICE_TYPES:
+        return await _execute_raksh_parallel(
+            svc,
+            shuffled,
+            params,
+            user_id,
+            quantity,
+            progress_callback,
+            service_type,
+            max(1, int(svc.config.max_concurrent or 1)),
+        )
+
+    # بقية خدمات الرشق تمر عبر طابور تسلسلي واحد حتى يبقى الفاصل
+    # بين الحسابات كما هو.
     if service_type == "votes_ai":
         async with _RAKSH_VOTE_FLOW_LOCK:
             return await _execute_raksh_sequential(
