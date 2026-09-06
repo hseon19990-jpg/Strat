@@ -138,9 +138,31 @@ def get_or_create_user(user_id: int, username: str, full_name: str, invited_by: 
     with db_conn() as c:
         row = c.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
         if row:
-            c.execute("UPDATE users SET username=?, full_name=? WHERE user_id=?",
-                      (username, full_name, user_id))
-            return dict(row)
+            # A user may press /start once without a referral link and then
+            # open an invite link before completing verification. Preserve
+            # the first inviter, but keep that valid pending referral.
+            current_inviter = row.get("invited_by") or 0
+            can_attach_referral = (
+                not current_inviter
+                and invited_by
+                and invited_by != user_id
+                and not row.get("verified")
+            )
+            if can_attach_referral:
+                c.execute(
+                    "UPDATE users SET username=?, full_name=?, invited_by=? "
+                    "WHERE user_id=? AND COALESCE(invited_by, 0)=0 "
+                    "AND COALESCE(verified, 0)=0",
+                    (username, full_name, invited_by, user_id),
+                )
+            else:
+                c.execute(
+                    "UPDATE users SET username=?, full_name=? WHERE user_id=?",
+                    (username, full_name, user_id),
+                )
+            return dict(c.execute(
+                "SELECT * FROM users WHERE user_id=%s", (user_id,)
+            ).fetchone())
         num_row = c.execute(
             "UPDATE settings SET value=(value::int+1)::text WHERE key='total_bot_users' RETURNING value::int AS total"
         ).fetchone()
@@ -239,15 +261,15 @@ def credit_referral_if_pending(user_id: int, context=None):
         if not invited_by or invited_by == 0 or invited_by == user_id or already:
             return None
 
-        # إذا قُيّد الداعي بسبب الاشتباه برشق الإحالات، تُوقَف أي إحالات جديدة
-        # حتى يراجعها المالك ويرفع التقييد.
-        inviter_status = c.execute(
-            "SELECT referral_points_blocked FROM users WHERE user_id=%s FOR UPDATE",
+        # التقييد يمنع استخدام النقاط مؤقتاً، لكنه لا يلغي مكافآت
+        # الإحالات الجديدة؛ فقد يقرر المالك لاحقاً إبقاء هذه النقاط.
+        inviter_row = c.execute(
+            "SELECT user_id FROM users WHERE user_id=%s FOR UPDATE",
             (invited_by,),
         ).fetchone()
-        if inviter_status and inviter_status.get("referral_points_blocked"):
+        if not inviter_row:
             logger.info(
-                "Referral skipped: inviter %s is blocked pending owner review",
+                "Referral skipped: inviter %s no longer exists",
                 invited_by,
             )
             return None
