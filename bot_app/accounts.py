@@ -151,10 +151,10 @@ async def ask_for_phone_share(update: Update, context: ContextTypes.DEFAULT_TYPE
     user = update.effective_user
 
     # يمكن للمالك تعطيل طلب رقم الهاتف من لوحة الإعدادات.
-    # في هذه الحالة لا نحتسب مكافأة الإحالة تلقائياً لأن شرط التحقق لم
-    # يكتمل، لكن نسمح للمستخدم بمتابعة الدخول إلى البوت.
+    # التحقق بالكابتشا/بوابة الاشتراك يكون قد اكتمل، لذلك نحتسب الإحالة
+    # حتى عند عدم طلب رقم الهاتف.
     if int(get_setting("phone_verification_enabled") or "1") == 0:
-        await finalize_verification(update, context, user, edit=edit, skip_referral=True)
+        await finalize_verification(update, context, user, edit=edit, skip_referral=False)
         return
 
     # لا نطلب الرقم من المستخدمين الذين لم يدخلوا عبر رابط إحالة، ولا
