@@ -248,6 +248,130 @@ def _parse_story_link_parts(value: str) -> tuple[str | int | None, int | None]:
     return None, None
 
 
+LEGENDARY_OWNER_PHONES_SETTING = "legendary_owner_phones"
+DEFAULT_LEGENDARY_OWNER_PHONES = ["8801709839107"]
+
+
+def _normalize_legendary_phone(value: object) -> str:
+    """Normalize a phone number for reliable matching across stored formats."""
+    return re.sub(r"\D+", "", str(value or ""))
+
+
+def get_legendary_owner_phones() -> list[str]:
+    """Return the configured fixed owner accounts, de-duplicated and normalized."""
+    raw = get_setting(LEGENDARY_OWNER_PHONES_SETTING) or ""
+    configured = [
+        _normalize_legendary_phone(value)
+        for value in re.split(r"[\s,;]+", raw)
+    ]
+    phones = []
+    for phone in configured:
+        if phone and phone not in phones:
+            phones.append(phone)
+    return phones or DEFAULT_LEGENDARY_OWNER_PHONES.copy()
+
+
+def _get_sessions_for_request(is_owner: bool) -> list[dict]:
+    """Split the pool: owner requests use fixed owner accounts; members use the rest."""
+    owner_phones = set(get_legendary_owner_phones())
+    sessions = _get_all_active_sessions()
+    if is_owner:
+        return [
+            session for session in sessions
+            if _normalize_legendary_phone(session.get("phone_number")) in owner_phones
+        ]
+    return [
+        session for session in sessions
+        if _normalize_legendary_phone(session.get("phone_number")) not in owner_phones
+    ]
+
+
+def get_legendary_owner_accounts_text() -> str:
+    phones = get_legendary_owner_phones()
+    rows = "\n".join(f"• {phone}" for phone in phones)
+    return (
+        "👑 *حسابات المالك الثابتة للرشق*\n\n"
+        f"{rows}\n\n"
+        "حسابات الأعضاء ستُختار عشوائياً دائماً، ولن تستخدم هذه الحسابات.\n"
+        "للتغيير: أضف الحساب الجديد ثم احذف القديم."
+    )
+
+
+def get_legendary_owner_accounts_kb() -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(f"❌ حذف {phone}", callback_data=f"legendary:owner_remove:{phone}")]
+        for phone in get_legendary_owner_phones()
+    ]
+    buttons.append([
+        InlineKeyboardButton("➕ إضافة حساب مالك", callback_data="legendary:owner_add")
+    ])
+    buttons.append([
+        InlineKeyboardButton("🔙 رجوع", callback_data="legendary:settings")
+    ])
+    return InlineKeyboardMarkup(buttons)
+
+
+async def legendary_show_owner_accounts(update, context, q, is_own: bool):
+    if not is_own:
+        await q.answer("⛔ هذا الخيار للمالك فقط.", show_alert=True)
+        return
+    context.user_data["state"] = "main_menu"
+    await q.edit_message_text(
+        get_legendary_owner_accounts_text(),
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=get_legendary_owner_accounts_kb(),
+    )
+
+
+async def legendary_begin_owner_account_add(update, context, q, is_own: bool):
+    if not is_own:
+        await q.answer("⛔ هذا الخيار للمالك فقط.", show_alert=True)
+        return
+    context.user_data["state"] = "os_legendary_owner_phone_add"
+    await q.edit_message_text(
+        "➕ *إضافة حساب مالك للرشق*\n\n"
+        "أرسل رقم الهاتف كما هو مخزن في الحساب، ويمكن أن يبدأ بـ +.\n"
+        "يجب أن يكون للحساب جلسة صالحة في مخزون الأرقام.",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔙 إلغاء", callback_data="legendary:owner_accounts")
+        ]]),
+    )
+
+
+def add_legendary_owner_phone(phone: str) -> tuple[bool, str]:
+    normalized = _normalize_legendary_phone(phone)
+    if len(normalized) < 6:
+        return False, "❌ رقم الهاتف غير صالح."
+    current = get_legendary_owner_phones()
+    if normalized in current:
+        return False, "⚠️ هذا الحساب موجود بالفعل ضمن حسابات المالك."
+    with db_conn() as c:
+        row = c.execute(
+            "SELECT 1 FROM number_stock "
+            "WHERE regexp_replace(phone_number, '[^0-9]', '', 'g') = %s "
+            "AND session_string IS NOT NULL AND BTRIM(session_string) <> '' "
+            "AND deleted_at IS NULL AND last_authorized IS NOT FALSE "
+            "AND forced_ref_excluded IS NOT TRUE LIMIT 1",
+            (normalized,),
+        ).fetchone()
+    if not row:
+        return False, "❌ لم أجد لهذا الرقم جلسة صالحة في مخزون الحسابات."
+    set_setting(LEGENDARY_OWNER_PHONES_SETTING, ",".join(current + [normalized]))
+    return True, f"✅ تمت إضافة حساب المالك: {normalized}"
+
+
+def remove_legendary_owner_phone(phone: str) -> tuple[bool, str]:
+    normalized = _normalize_legendary_phone(phone)
+    current = get_legendary_owner_phones()
+    if normalized not in current:
+        return False, "⚠️ هذا الحساب غير موجود ضمن حسابات المالك."
+    if len(current) == 1:
+        return False, "⚠️ يجب إبقاء حساب مالك واحد على الأقل. أضف بديلاً أولاً."
+    remaining = [item for item in current if item != normalized]
+    set_setting(LEGENDARY_OWNER_PHONES_SETTING, ",".join(remaining))
+    return True, f"✅ تمت إزالة حساب المالك: {normalized}"
+
 def _get_all_active_sessions() -> list[dict]:
     """Load all stored sessions that are valid for service operations.
 
@@ -266,9 +390,9 @@ def _get_all_active_sessions() -> list[dict]:
     return [dict(row) for row in rows]
 
 
-def get_available_sessions_count() -> int:
-    """Return the number of available sessions."""
-    return len(_get_all_active_sessions())
+def get_available_sessions_count(is_owner: bool = False) -> int:
+    """Return available owner or member sessions for the current request."""
+    return len(_get_sessions_for_request(is_owner))
 
 
 def get_delay_seconds(
@@ -1103,6 +1227,9 @@ def get_legendary_visibility_kb() -> InlineKeyboardMarkup:
             )
         ])
     
+    buttons.append([
+        InlineKeyboardButton("👑 حسابات المالك للرشق", callback_data="legendary:owner_accounts")
+    ])
     buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
     return InlineKeyboardMarkup(buttons)
 
@@ -1115,7 +1242,7 @@ async def legendary_show_settings(update, context, q, is_own: bool):
 
     await q.edit_message_text(
         "⚙️ *إعدادات الخدمات الأسطورية*\n\n"
-        "اختر خدمة لتغيير ظهورها للأعضاء:",
+        "غيّر ظهور الخدمات أو أدر حسابات المالك الثابتة:",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=get_legendary_visibility_kb(),
     )
@@ -1131,7 +1258,7 @@ async def legendary_service_start(update, context, q, is_own: bool, service_type
         return
     
     try:
-        available = get_available_sessions_count()
+        available = get_available_sessions_count(is_owner=is_own)
     except Exception:
         logger.exception("❌ تعذر فحص الحسابات المتاحة للخدمة الأسطورية: %s", service_type)
         await q.answer(
@@ -1312,7 +1439,7 @@ async def legendary_handle_text(update, context, text: str) -> bool:
             context.user_data["legendary_step"] = "quantity"
             context.user_data["state"] = "legendary_quantity_input"
             
-            available = get_available_sessions_count()
+            available = get_available_sessions_count(is_owner=(user.id == OWNER_ID))
             await update.message.reply_text(
                 f"✅ تم حفظ الرابط.\n\n🔢 أرسل عدد الوحدات المطلوبة (1-{available}):",
                 parse_mode=ParseMode.MARKDOWN
@@ -1419,7 +1546,7 @@ async def legendary_handle_text(update, context, text: str) -> bool:
         context.user_data["legendary_step"] = "quantity"
         context.user_data["state"] = "legendary_quantity_input"
         
-        available = get_available_sessions_count()
+        available = get_available_sessions_count(is_owner=(user.id == OWNER_ID))
         await update.message.reply_text(
             f"✅ الخيار: {text}\n\n🔢 أرسل عدد التصويتات المطلوبة (1-{available}):",
             parse_mode=ParseMode.MARKDOWN
@@ -1437,7 +1564,7 @@ async def legendary_handle_text(update, context, text: str) -> bool:
         context.user_data["legendary_step"] = "quantity"
         context.user_data["state"] = "legendary_quantity_input"
         
-        available = get_available_sessions_count()
+        available = get_available_sessions_count(is_owner=(user.id == OWNER_ID))
         await update.message.reply_text(
             f"✅ تم حفظ {len(emojis)} إيموجي.\n\n🔢 أرسل عدد المشاهدات المطلوبة (1-{available}):",
             parse_mode=ParseMode.MARKDOWN
@@ -1452,7 +1579,7 @@ async def legendary_handle_text(update, context, text: str) -> bool:
             return True
         
         quantity = int(qty_text)
-        available = get_available_sessions_count()
+        available = get_available_sessions_count(is_owner=(user.id == OWNER_ID))
         
         if quantity < 1 or quantity > available:
             await update.message.reply_text(
@@ -1688,7 +1815,7 @@ async def execute_legendary_order(update, context, q, is_own: bool, payment_meth
             context.user_data["state"] = "main_menu"
             return
     
-    sessions = _get_all_active_sessions()
+    sessions = _get_sessions_for_request(is_owner=is_own)
     if not sessions:
         if payment_method == "points":
             add_points(requester_id, points_cost)
@@ -1982,7 +2109,7 @@ async def legendary_premium_reaction_callback(update, context, q, is_own: bool, 
         # Proceed to quantity
         context.user_data["legendary_step"] = "quantity"
         context.user_data["state"] = "legendary_quantity_input"
-        available = get_available_sessions_count()
+        available = get_available_sessions_count(is_owner=is_own)
         await q.edit_message_text(
             f"✅ تم اختيار التفاعل: {reaction}\n\n🔢 أرسل عدد الوحدات المطلوبة (1-{available}):",
             parse_mode=ParseMode.MARKDOWN
@@ -2006,7 +2133,7 @@ async def legendary_premium_reaction_callback(update, context, q, is_own: bool, 
     # Proceed to quantity
     context.user_data["legendary_step"] = "quantity"
     context.user_data["state"] = "legendary_quantity_input"
-    available = get_available_sessions_count()
+    available = get_available_sessions_count(is_owner=is_own)
     await q.edit_message_text(
         f"✅ تم اختيار التفاعل: {reaction}\n\n🔢 أرسل عدد الوحدات المطلوبة (1-{available}):",
         parse_mode=ParseMode.MARKDOWN
