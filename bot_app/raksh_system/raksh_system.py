@@ -15,6 +15,7 @@ import json
 
 OWNER_FAST_BATCH_SIZE = 12
 OWNER_FAST_BATCH_INTERVAL_SECONDS = 2
+RAKSH_ACCOUNT_EXECUTION_TIMEOUT_SECONDS = 180
 
 _ACTIVE_RAKSH_ORDER_IDS = set()
 RAKSH_ORDER_LEASE_MINUTES = 30
@@ -659,15 +660,19 @@ async def _execute_raksh_parallel(
 
         async with session_lock:
             try:
-                return await svc.execute(
-                    session=session,
-                    params=params,
-                    is_first=is_first,
+                return await asyncio.wait_for(
+                    svc.execute(
+                        session=session,
+                        params=params,
+                        is_first=is_first,
+                    ),
+                    timeout=RAKSH_ACCOUNT_EXECUTION_TIMEOUT_SECONDS,
                 )
             except Exception as e:
                 return False, f"❌ خطأ: {str(e)}"
 
     async def process_wave(wave, results):
+        nonlocal completed_count, success_count
         for session, result in zip(wave, results):
             phone = session["phone_number"]
             if isinstance(result, BaseException):
@@ -720,13 +725,14 @@ async def _execute_raksh_parallel(
                 planned,
                 quantity,
             )
+            wave_is_first = wave_number == 1 and success_count == 0
             async def gather_wave():
                 return await asyncio.gather(
                     *(
                         execute_one(
                             session,
                             index,
-                            is_first=(not scheduled and index == 0 and success_count == 0),
+                            is_first=(wave_is_first and index == 0),
                         )
                         for index, session in enumerate(wave)
                     ),
