@@ -1925,6 +1925,8 @@ _VERIFICATION_SUCCESS_MARKERS = (
     "اكتمل التحقق", "إتمام التحقق", "تم الإتمام", "نجح التحقق",
     "verified", "verification complete", "verification successful",
     "successfully verified", "captcha passed", "human verified",
+    "تم التصويت بنجاح", "تمت الإحالة بنجاح", "تم تنفيذ العملية بنجاح",
+    "vote successful", "voted successfully",
 )
 
 
@@ -2028,7 +2030,7 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
         ))
 
         await asyncio.sleep(3)
-        msgs = await client.get_messages(bot_entity, limit=10)
+        msgs = await client.get_messages(bot_entity, limit=50)
         joined_channels = 0
         for msg in msgs:
             if not msg.buttons:
@@ -2096,7 +2098,7 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
                     await asyncio.sleep(3)
 
                     # اقرأ الرسائل، بما فيها الرسالة الأصلية التي قد تُحدّث بدلاً من إنشاء رسالة جديدة.
-                    _new_msgs = await client.get_messages(bot_entity, limit=10)
+                    _new_msgs = await client.get_messages(bot_entity, limit=50)
                     _state_ok, _state_reason = _verification_success_evidence(
                         _new_msgs, source_id=_vm.id, source_data=_btn_data
                     )
@@ -2134,7 +2136,7 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
                             await client.send_message(bot_entity, _code)
                             _verification_code_sent = True
                             await asyncio.sleep(3)
-                            _post_code_msgs = await client.get_messages(bot_entity, limit=10)
+                            _post_code_msgs = await client.get_messages(bot_entity, limit=50)
                             _code_ok, _code_reason = _verification_success_evidence(
                                 _post_code_msgs, source_id=_vm.id, source_data=_btn_data
                             )
@@ -2151,7 +2153,7 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
                     # الضغط أو قراءة الرد قد يفشل تقنياً بعد أن يكون البوت قد أتم التحقق.
                     # نعيد فحص الحالة قبل تحويل العملية إلى فشل.
                     try:
-                        _recheck_msgs = await client.get_messages(bot_entity, limit=10)
+                        _recheck_msgs = await client.get_messages(bot_entity, limit=50)
                         _recheck_ok, _recheck_reason = _verification_success_evidence(
                             _recheck_msgs, source_id=_vm.id, source_data=_btn_data
                         )
