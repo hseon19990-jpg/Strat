@@ -2035,6 +2035,23 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
         except (IndexError, Exception) as _re:
             raise ValueError(f"تعذّر إيجاد البوت @{_clean_uname}: {_re}")
 
+        def _verification_state_signature(messages) -> tuple:
+            """يبني بصمة مستقرة لرسالة التحقق دون الاعتماد على رقم الرسالة."""
+            signature = []
+            for item in messages or []:
+                text = getattr(item, "message", "") or getattr(item, "text", "") or ""
+                has_media = bool(
+                    getattr(item, "photo", None) or getattr(item, "document", None)
+                )
+                labels = tuple(
+                    str(getattr(button, "text", "") or "").strip()
+                    for row in (getattr(item, "buttons", None) or [])
+                    for button in (row or [])
+                )
+                if text or has_media or labels:
+                    signature.append((str(text).strip(), has_media, labels))
+            return tuple(signature)
+
         _was_reactivated = False
         try:
             _prev_msgs = await asyncio.wait_for(client.get_messages(bot_entity, limit=1), timeout=8)
@@ -2123,31 +2140,55 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
                 # بعد اكتمال التحقق، أعد إرسال /start خمس مرات كما يفعل
                 # المستخدم يدوياً. نستخدم start_param فارغاً حتى يكون هذا
                 # Start عادياً ولا يعيد تشغيل رابط الإحالة من البداية.
+                # إذا بقيت بصمة التحقق نفسها، نعيد مجموعة الخمس ضغطات
+                # مرة أخرى، مع حد حماية يمنع الدوران إلى ما لا نهاية.
+                _start_state = _verification_state_signature(msgs)
                 _start_after_verify_count = 0
-                for _start_attempt in range(5):
-                    try:
-                        await asyncio.wait_for(
-                            client(StartBotRequest(
-                                bot=bot_entity,
-                                peer=bot_entity,
-                                start_param="",
-                            )),
-                            timeout=15,
-                        )
-                        _start_after_verify_count += 1
-                        await asyncio.sleep(0.7)
-                    except Exception as _start_error:
-                        logger.warning(
-                            f"⚠️ فشل ضغط Start بعد التحقق "
-                            f"({_start_attempt + 1}/5، {phone}): {_start_error}"
-                        )
+                _start_rounds = 0
+                _start_state_changed = False
+                while _start_rounds < 5:
+                    _start_rounds += 1
+                    _round_count = 0
+                    for _start_attempt in range(5):
+                        try:
+                            await asyncio.wait_for(
+                                client(StartBotRequest(
+                                    bot=bot_entity,
+                                    peer=bot_entity,
+                                    start_param="",
+                                )),
+                                timeout=15,
+                            )
+                            _round_count += 1
+                            _start_after_verify_count += 1
+                            await asyncio.sleep(0.7)
+                        except Exception as _start_error:
+                            logger.warning(
+                                f"⚠️ فشل ضغط Start بعد التحقق "
+                                f"(دورة {_start_rounds}/5، "
+                                f"ضغطة {_start_attempt + 1}/5، {phone}): "
+                                f"{_start_error}"
+                            )
+                    msgs = await asyncio.wait_for(
+                        client.get_messages(bot_entity, limit=20), timeout=8
+                    )
+                    _new_start_state = _verification_state_signature(msgs)
+                    if _new_start_state != _start_state:
+                        _start_state_changed = True
+                        break
+                    logger.warning(
+                        f"⚠️ لم تتغير حالة التحقق بعد مجموعة Start "
+                        f"{_start_rounds}/5 ({phone}) — إعادة التكرار"
+                    )
+                    _start_state = _new_start_state
                 steps.append(
-                    f"أعاد Start بعد التحقق "
-                    f"{_start_after_verify_count}/5 مرات"
+                    f"أعاد Start {_start_after_verify_count} مرة "
+                    f"({_start_rounds} دورات)"
                 )
-                msgs = await asyncio.wait_for(
-                    client.get_messages(bot_entity, limit=20), timeout=8
-                )
+                if _start_state_changed:
+                    steps.append("تغيّرت حالة التحقق بعد إعادة Start")
+                else:
+                    steps.append("لم تتغير حالة التحقق بعد حد التكرار")
             elif _ai_detail == "لم يُكتشف تحقق":
                 # ضغط زر «تحقق» ليس دليلاً على اكتمال المهمة. إذا ضغطناه
                 # ثم لم تصل رسالة نجاح ولم يتعرف المحلل على التحدي التالي،
