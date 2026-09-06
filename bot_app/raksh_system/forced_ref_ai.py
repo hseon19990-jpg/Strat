@@ -385,9 +385,6 @@ class ForcedRefAIService(RakshService):
     def _is_invitation_link_button(button) -> bool:
         """تمييز أزرار روابط الدعوة حتى لو كانت Callback وليست URL صريحاً."""
         button_url = getattr(button, "url", None)
-        if button_url:
-            return True
-
         button_text = (getattr(button, "text", "") or "").strip().casefold()
         invitation_markers = (
             "رابط الدعوة",
@@ -401,7 +398,19 @@ class ForcedRefAIService(RakshService):
             "انضم",
             "رابط",
         )
-        return any(marker in button_text for marker in invitation_markers)
+        if any(marker in button_text for marker in invitation_markers):
+            return True
+        if not button_url:
+            return False
+
+        # A URL alone is not enough to classify a button as an invitation.
+        # Verification bots can use URL buttons for an actual challenge, so
+        # only ignore Telegram invite URLs here.
+        normalized_url = str(button_url).casefold()
+        return bool(re.search(
+            r"(?:https?://)?(?:t\.me|telegram\.me)/(?:\+|joinchat/)",
+            normalized_url,
+        ))
 
     @staticmethod
     def _is_verification_success_text(value) -> bool:
@@ -484,11 +493,24 @@ class ForcedRefAIService(RakshService):
         """Extract normal and Telegram custom-emoji targets from a challenge."""
         labels = []
 
-        # Standard emoji in the challenge text.
-        labels.extend(re.findall(
-            "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E0-\U0001F1FF]",
+        target_marker_match = re.search(
+            r"(?:الرمز|العلامة|symbol|emoji|icon)\s*[:：-]?\s*([^\s،,.!?؟]+)",
             text,
-        ))
+            flags=re.IGNORECASE,
+        )
+        target_offset = (
+            target_marker_match.start(1) if target_marker_match else None
+        )
+
+        # Prefer the value after «اضغط على الرمز» so the robot emoji in a
+        # heading cannot be mistaken for the captcha target.
+        if target_marker_match:
+            labels.append(target_marker_match.group(1))
+        else:
+            labels.extend(re.findall(
+                "[\U0001F300-\U0001FAFF\u2600-\u27BF\U0001F1E0-\U0001F1FF]",
+                text,
+            ))
 
         # Custom emoji are represented by an entity and may not match the
         # Unicode emoji ranges above. Their visible text is still available
@@ -497,21 +519,19 @@ class ForcedRefAIService(RakshService):
             get_entities_text = getattr(message, "get_entities_text", None)
             if get_entities_text:
                 for entity, entity_text in get_entities_text():
-                    if entity.__class__.__name__ == "MessageEntityCustomEmoji":
+                    if (
+                        entity.__class__.__name__ == "MessageEntityCustomEmoji"
+                        and (
+                            target_offset is None
+                            or getattr(entity, "offset", 0) >= target_offset
+                        )
+                    ):
                         labels.append(entity_text)
         except Exception:
             pass
 
         # Some captcha bots use a word or a non-standard symbol after
         # "اضغط على الرمز:" instead of a regular Unicode emoji.
-        marker_match = re.search(
-            r"(?:الرمز|العلامة|symbol|emoji|icon)\s*[:：-]?\s*([^\s،,.!?؟]+)",
-            text,
-            flags=re.IGNORECASE,
-        )
-        if marker_match:
-            labels.append(marker_match.group(1))
-
         return [
             label for label in labels
             if cls._normalise_captcha_label(label)
@@ -861,29 +881,10 @@ class ForcedRefAIService(RakshService):
         saw_verification = False
 
         async def _verification_action_succeeded(message, button=None) -> bool:
-            """يتحقق من اختفاء أزرار التحقق أو وصول رسالة نجاح جديدة."""
-            try:
-                current = await client.get_messages(
-                    bot_entity, ids=getattr(message, "id", 0)
-                )
-                if current:
-                    current_message = (
-                        current[0] if isinstance(current, (list, tuple)) else current
-                    )
-                    current_buttons = getattr(current_message, "buttons", None) or []
-                    if not current_buttons:
-                        return True
-                    target_data = getattr(button, "data", None)
-                    if target_data is not None:
-                        current_data = {
-                            getattr(item, "data", None)
-                            for row in current_buttons
-                            for item in (row or [])
-                        }
-                        if target_data not in current_data:
-                            return True
-            except Exception:
-                pass
+            """يتحقق من وصول رسالة نجاح صريحة بعد الضغط."""
+            # Removing or editing the clicked button is not proof of success:
+            # several captcha bots replace the same message with the next
+            # challenge.  Only an explicit success response is authoritative.
             try:
                 for item in await _read_flow_messages():
                     if self._is_verification_success_text(
@@ -1055,6 +1056,7 @@ class ForcedRefAIService(RakshService):
                 (r'(\d+)\s*\*\s*(\d+)\s*=', 1, 2),
                 (r'(\d+)\s*\/\s*(\d+)\s*=', 1, 2),
             ]
+            math_solved = False
             for pattern, *groups in math_patterns:
                 match = re.search(pattern, text)
                 if match:
@@ -1067,17 +1069,33 @@ class ForcedRefAIService(RakshService):
                         if op == '+': result = str(a + b)
                         elif op == '-': result = str(a - b)
                         elif op == '*': result = str(a * b)
-                        elif op == '/': result = str(a / b) if b != 0 else None
+                        elif op == '/':
+                            if b == 0:
+                                result = None
+                            else:
+                                quotient = a / b
+                                result = (
+                                    str(int(quotient))
+                                    if quotient.is_integer()
+                                    else str(quotient)
+                                )
                         else: result = None
                         if result is not None:
                             await client.send_message(bot_entity, result)
                             logger.info(f"✅ تم حل المسألة: {a} {op} {b} = {result}")
                             processed_ids.add(verification_message.id)
                             cursor_id = verification_message.id
+                            math_solved = True
                             await asyncio.sleep(2.0)
                             break
                     except Exception:
                         continue
+
+            # Do not click a button from the old challenge after submitting
+            # the math answer.  The next Telegram message contains the actual
+            # result or the next verification stage.
+            if math_solved:
+                continue
 
             # 3. الضغط على الأزرار
             buttons = []
