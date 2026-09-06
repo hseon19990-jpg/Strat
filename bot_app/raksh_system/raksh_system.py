@@ -646,7 +646,7 @@ async def _execute_raksh_parallel(
     attempted_phones = set(success_phones) | set(failed_phones)
     pool = list(sessions)
 
-    async def execute_one(session, index):
+    async def execute_one(session, index, is_first=False):
         phone = session["phone_number"]
         if not _reserve_raksh_execution_slot(
             user_id, service_type, phone, order_id=order_id
@@ -662,37 +662,12 @@ async def _execute_raksh_parallel(
                 return await svc.execute(
                     session=session,
                     params=params,
-                    is_first=(success_count == 0 and index == 0),
+                    is_first=is_first,
                 )
             except Exception as e:
                 return False, f"❌ خطأ: {str(e)}"
 
-    wave_number = 0
-    while pool and success_count < quantity:
-        remaining = quantity - success_count
-        wave = []
-        while pool and len(wave) < min(max_concurrent, remaining):
-            session = pool.pop(0)
-            phone = session.get("phone_number")
-            if not phone or phone in attempted_phones:
-                continue
-            attempted_phones.add(phone)
-            wave.append(session)
-        if not wave:
-            break
-
-        wave_number += 1
-        logger.info(
-            "⚡ owner raksh wave=%s accounts=%s success=%s/%s",
-            wave_number,
-            len(wave),
-            success_count,
-            quantity,
-        )
-        results = await asyncio.gather(
-            *(execute_one(session, index) for index, session in enumerate(wave)),
-            return_exceptions=True,
-        )
+    async def process_wave(wave, results):
         for session, result in zip(wave, results):
             phone = session["phone_number"]
             if isinstance(result, BaseException):
@@ -718,13 +693,54 @@ async def _execute_raksh_parallel(
                 len(failed_details),
             )
 
-        if pool and success_count < quantity and batch_delay_seconds:
+    # Schedule the next wave every two seconds instead of waiting for the
+    # slowest account in the previous wave. This is the actual "12 every 2s"
+    # owner behavior; member requests never enter this function.
+    while pool and success_count < quantity:
+        planned = success_count
+        scheduled = []
+        wave_number = 0
+        while pool and planned < quantity:
+            wave = []
+            while pool and len(wave) < min(max_concurrent, quantity - planned):
+                session = pool.pop(0)
+                phone = session.get("phone_number")
+                if not phone or phone in attempted_phones:
+                    continue
+                attempted_phones.add(phone)
+                wave.append(session)
+            if not wave:
+                break
+
+            wave_number += 1
             logger.info(
-                "⏳ owner raksh: waiting %ss before wave %s",
-                batch_delay_seconds,
-                wave_number + 1,
+                "⚡ owner raksh wave=%s accounts=%s planned=%s/%s",
+                wave_number,
+                len(wave),
+                planned,
+                quantity,
             )
-            await asyncio.sleep(batch_delay_seconds)
+            async def gather_wave():
+                return await asyncio.gather(
+                    *(
+                        execute_one(
+                            session,
+                            index,
+                            is_first=(not scheduled and index == 0 and success_count == 0),
+                        )
+                        for index, session in enumerate(wave)
+                    ),
+                    return_exceptions=True,
+                )
+            task = asyncio.create_task(gather_wave())
+            scheduled.append((wave, task))
+            planned += len(wave)
+            if pool and planned < quantity and batch_delay_seconds:
+                await asyncio.sleep(batch_delay_seconds)
+
+        for wave, task in scheduled:
+            results = await task
+            await process_wave(wave, results)
 
     await _remove_invalid_raksh_sessions(failed_phones)
     return success_count, success_phones, success_details, failed_phones, failed_details
