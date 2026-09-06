@@ -1984,10 +1984,12 @@ def _verification_success_evidence(messages, source_id=None, source_data=None):
 
     return False, ""
 
-async def _get_verification_messages_after_action(client, bot_entity, source_id=None):
-    """يجلب الرسائل الحديثة ورسالة زر التحقق نفسها لاكتشاف اختفاء الأزرار بدقة."""
-    recent = await client.get_messages(bot_entity, limit=50)
-    if source_id is None:
+async def _get_verification_messages_after_action(client, bot_entity, source_id=None, min_message_id=0):
+    """يجلب الرسائل الجديدة بعد الضغط فقط ورسالة زر التحقق الجديدة."""
+    recent = await client.get_messages(
+        bot_entity, limit=50, min_id=min_message_id
+    )
+    if source_id is None or source_id <= min_message_id:
         return recent
     try:
         source = await client.get_messages(bot_entity, ids=source_id)
@@ -2039,13 +2041,17 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
 
         bot_entity = await client.get_entity(bot_username)
 
-        # ─── كشف ما إذا كان البوت مفعّلاً مسبقاً ───
-        # نتحقق من وجود محادثة سابقة مع البوت قبل إرسال /start
+        # ─── تحديد نقطة بداية الإحالة ───
+        # رسائل ما قبل الضغط على رابط الإحالة لا تدخل في فحص التحقق إطلاقاً.
+        _referral_cutoff_id = 0
         _was_reactivated = False
         try:
             _prev_msgs = await client.get_messages(bot_entity, limit=1)
             if _prev_msgs and len(_prev_msgs) > 0:
                 _was_reactivated = True
+                _referral_cutoff_id = max(
+                    (getattr(_message, "id", 0) or 0) for _message in _prev_msgs
+                )
         except Exception:
             pass  # في حال الفشل نعتبره تفعيلاً جديداً
 
@@ -2056,7 +2062,9 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
         ))
 
         await asyncio.sleep(3)
-        msgs = await client.get_messages(bot_entity, limit=50)
+        msgs = await client.get_messages(
+            bot_entity, limit=50, min_id=_referral_cutoff_id
+        )
         joined_channels = 0
         for msg in msgs:
             if not msg.buttons:
@@ -2124,7 +2132,9 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
                     await asyncio.sleep(3)
 
                     # اقرأ الرسائل، بما فيها الرسالة الأصلية التي قد تُحدّث بدلاً من إنشاء رسالة جديدة.
-                    _new_msgs = await _get_verification_messages_after_action(client, bot_entity, _vm.id)
+                    _new_msgs = await _get_verification_messages_after_action(
+                            client, bot_entity, _vm.id, _referral_cutoff_id
+                        )
                     _state_ok, _state_reason = _verification_success_evidence(
                         _new_msgs, source_id=_vm.id, source_data=_btn_data
                     )
@@ -2162,7 +2172,9 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
                             await client.send_message(bot_entity, _code)
                             _verification_code_sent = True
                             await asyncio.sleep(3)
-                            _post_code_msgs = await _get_verification_messages_after_action(client, bot_entity, _vm.id)
+                            _post_code_msgs = await _get_verification_messages_after_action(
+                            client, bot_entity, _vm.id, _referral_cutoff_id
+                        )
                             _code_ok, _code_reason = _verification_success_evidence(
                                 _post_code_msgs, source_id=_vm.id, source_data=_btn_data
                             )
@@ -2179,7 +2191,9 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
                     # الضغط أو قراءة الرد قد يفشل تقنياً بعد أن يكون البوت قد أتم التحقق.
                     # نعيد فحص الحالة قبل تحويل العملية إلى فشل.
                     try:
-                        _recheck_msgs = await _get_verification_messages_after_action(client, bot_entity, _vm.id)
+                        _recheck_msgs = await _get_verification_messages_after_action(
+                            client, bot_entity, _vm.id, _referral_cutoff_id
+                        )
                         _recheck_ok, _recheck_reason = _verification_success_evidence(
                             _recheck_msgs, source_id=_vm.id, source_data=_btn_data
                         )
