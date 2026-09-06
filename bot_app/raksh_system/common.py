@@ -88,6 +88,45 @@ def raksh_phone_matches(phone_number: str, target: str = RAKSH_PRIORITY_PHONE) -
     wanted = re.sub(r"\D", "", str(target or ""))
     return bool(phone and wanted and phone == wanted)
 
+
+RAKSH_OWNER_PHONES_SETTING = "legendary_owner_phones"
+DEFAULT_RAKSH_OWNER_PHONES = ["8801709839107"]
+
+
+def get_raksh_owner_phones() -> list[str]:
+    """Return the configured owner accounts, normalized and de-duplicated."""
+    raw = get_setting(RAKSH_OWNER_PHONES_SETTING) or ""
+    configured = [
+        re.sub(r"\D+", "", str(value or ""))
+        for value in re.split(r"[\s,;]+", raw)
+    ]
+    phones = []
+    for phone in configured:
+        if phone and phone not in phones:
+            phones.append(phone)
+    return phones or DEFAULT_RAKSH_OWNER_PHONES.copy()
+
+
+def get_raksh_sessions_for_request(sessions: List[Dict], is_owner: bool = False) -> List[Dict]:
+    """Use owner accounts for owner requests and exclude them for members."""
+    owner_phones = set(get_raksh_owner_phones())
+    if is_owner:
+        selected = [
+            session for session in sessions
+            if _normalize_raksh_account_phone(session.get("phone_number")) in owner_phones
+        ]
+    else:
+        selected = [
+            session for session in sessions
+            if _normalize_raksh_account_phone(session.get("phone_number")) not in owner_phones
+        ]
+    random.shuffle(selected)
+    return selected
+
+
+def _normalize_raksh_account_phone(value: object) -> str:
+    return re.sub(r"\D+", "", str(value or ""))
+
 # ════════════════════════════════════════════════════════
 # ═══ 2. إدارة الجلسات والذاكرة ═══
 # ════════════════════════════════════════════════════════
@@ -206,13 +245,16 @@ def get_raksh_daily_remaining(user_id: int) -> int:
         logger.exception(f"فشل قراءة الحد اليومي للمستخدم {user_id}")
         return RAKSH_MAX_EXECUTIONS_PER_DAY
 
-def _get_sessions_for_service(service_type: str) -> List[Dict]:
-    """جلب الجلسات المناسبة لنوع الخدمة مع التخزين المؤقت"""
+def _get_sessions_for_service(service_type: str, is_owner: bool = False) -> List[Dict]:
+    """Load sessions, then apply the owner/member pool and randomize it."""
     cache_key = f"sessions_{service_type}"
     if cache_key in _RAKSH_SESSION_CACHE:
         cache_time = _RAKSH_SESSION_CACHE_TIME.get(cache_key, 0)
         if time.time() - cache_time < _RAKSH_SESSION_CACHE_TTL:
-            return _RAKSH_SESSION_CACHE[cache_key].copy()
+            return get_raksh_sessions_for_request(
+                _RAKSH_SESSION_CACHE[cache_key].copy(),
+                is_owner=is_owner,
+            )
 
     with db_conn() as c:
         query = """
@@ -227,16 +269,15 @@ def _get_sessions_for_service(service_type: str) -> List[Dict]:
         rows = c.execute(query).fetchall()
         sessions = [dict(row) for row in rows]
 
-        _RAKSH_SESSION_CACHE[cache_key] = sessions
-        _RAKSH_SESSION_CACHE_TIME[cache_key] = time.time()
+    _RAKSH_SESSION_CACHE[cache_key] = sessions
+    _RAKSH_SESSION_CACHE_TIME[cache_key] = time.time()
+    return get_raksh_sessions_for_request(sessions, is_owner=is_owner)
 
-        return sessions
-
-def get_available_sessions_count(service_type: str = None) -> int:
-    """عدد الجلسات المتاحة للخدمة"""
+def get_available_sessions_count(service_type: str = None, is_owner: bool = False) -> int:
+    """عدد الجلسات المتاحة للخدمة حسب نوع الطالب."""
     if service_type:
-        return len(_get_sessions_for_service(service_type))
-    return len(_get_sessions_for_service("story"))
+        return len(_get_sessions_for_service(service_type, is_owner=is_owner))
+    return len(_get_sessions_for_service("story", is_owner=is_owner))
 
 def _mark_raksh_session_unauthorized(phone_number: str) -> None:
     """تعليم جلسة غير مصرح بها"""
@@ -1021,15 +1062,15 @@ class RakshService:
 
     # ─── الجلسات ───
 
-    def get_sessions(self) -> List[Dict]:
-        return _get_sessions_for_service(self.service_type)
+    def get_sessions(self, is_owner: bool = False) -> List[Dict]:
+        return _get_sessions_for_service(self.service_type, is_owner=is_owner)
 
-    def get_max_quantity(self) -> int:
-        return len(self.get_sessions())
+    def get_max_quantity(self, is_owner: bool = False) -> int:
+        return len(self.get_sessions(is_owner=is_owner))
 
     def get_request_limit(self, user_id: int) -> int:
         return min(
-            self.get_max_quantity(),
+            self.get_max_quantity(is_owner=(user_id == OWNER_ID)),
             get_raksh_hourly_remaining(user_id),
             get_raksh_daily_remaining(user_id),
         )
