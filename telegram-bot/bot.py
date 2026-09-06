@@ -1990,6 +1990,8 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
         int(TELEGRAM_API_ID),
         TELEGRAM_API_HASH,
     )
+    _verification_succeeded = False
+    _verification_code_sent = False
     try:
         await client.connect()
         if not await client.is_user_authorized():
@@ -2060,8 +2062,6 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
         # ─── التحقق التلقائي عبر Gemini ──────────────────────────────
         # النجاح يُثبت من حالة الواجهة: اختفاء الأزرار، علامة صح، أو رسالة إتمام.
         # أي رسالة فشل تصل بعد ذلك لا تلغي النجاح المثبت.
-        _verification_succeeded = False
-        _verification_code_sent = False
         _verification_buttons = [
             (_vm, _vbtn)
             for _vm in msgs
