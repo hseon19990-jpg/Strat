@@ -90,6 +90,8 @@ from .raksh_system import (
     handle_raksh_callback,
     raksh_pre_checkout,
     raksh_successful_payment,
+    resume_raksh_orders_job,
+    recover_raksh_orders_on_startup,
 )
 
 def main():
@@ -113,6 +115,9 @@ def main():
 
     start_health_server()
     init_db()
+    recovered_raksh_orders = recover_raksh_orders_on_startup()
+    if recovered_raksh_orders:
+        logger.info(f"🔁 تم تجهيز {recovered_raksh_orders} طلب رشق للاستئناف بعد إعادة النشر")
 
     from telegram.request import HTTPXRequest
 
@@ -458,6 +463,8 @@ def main():
         app.job_queue.run_repeating(retry_pending_session_resets, interval=600, first=90)
         logger.info("🔒 تم تفعيل إعادة المحاولة الدورية لطرد جلسات الأرقام (كل 10 دقائق)")
         app.job_queue.run_repeating(run_referral_tasks_job, interval=3600, first=120)
+        app.job_queue.run_repeating(resume_raksh_orders_job, interval=60, first=20)
+        logger.info("🔁 تم تفعيل استئناف طلبات الرشق المحفوظة كل دقيقة")
         app.job_queue.run_repeating(cleanup_expired_raksh_channel_memberships, interval=300, first=60)
         logger.info("👋 تم تفعيل إخراج حسابات الرشق بعد انتهاء مهلة القنوات (كل 5 دقائق)")
         logger.info("🤝 تم تفعيل مهام الإحالة التلقائية (كل ساعة)")

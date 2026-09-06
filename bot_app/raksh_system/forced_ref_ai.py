@@ -13,6 +13,13 @@ try:
 except ImportError:
     ddddocr = None
 
+try:
+    from PIL import Image, ImageFilter, ImageOps
+except ImportError:
+    Image = None
+    ImageFilter = None
+    ImageOps = None
+
 
 _CAPTCHA_OCR = None
 
@@ -406,7 +413,14 @@ class ForcedRefAIService(RakshService):
         return mime_type.startswith("image/")
 
     async def _extract_image_captcha(self, client, message, phone_number: str) -> Optional[str]:
-        """Download and recognize numeric/alphanumeric image CAPTCHAs."""
+        """Download and recognize noisy numeric/alphanumeric image CAPTCHAs.
+
+        The image CAPTCHAs used by referral bots are often deliberately noisy:
+        thin lines cross the characters, the background contains speckles, and
+        the glyphs can be colored.  Running ddddocr only once on the original
+        JPEG is unreliable, so use a small set of deterministic PIL variants
+        and accept the result that OCR reaches repeatedly.
+        """
         if not self._has_image_media(message):
             return None
         if ddddocr is None:
@@ -424,15 +438,123 @@ class ForcedRefAIService(RakshService):
 
             if _CAPTCHA_OCR is None:
                 _CAPTCHA_OCR = ddddocr.DdddOcr(show_ad=False, beta=True)
-            raw_result = await asyncio.to_thread(
-                _CAPTCHA_OCR.classification,
-                image_bytes,
+
+            def _normalise_ocr_result(raw_result) -> str:
+                # OCR occasionally returns spaces, punctuation, or Arabic-Indic
+                # digits around the actual answer.
+                translated = str(raw_result or "").translate(
+                    str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+                )
+                return re.sub(r"[^A-Za-z0-9]", "", translated)
+
+            def _encode_png(image) -> bytes:
+                output = BytesIO()
+                image.save(output, format="PNG", optimize=True)
+                return output.getvalue()
+
+            def _build_variants() -> list[tuple[str, bytes]]:
+                # Keep the original as the first and highest-priority attempt.
+                variants: list[tuple[str, bytes]] = [("original", image_bytes)]
+                if Image is None or ImageOps is None:
+                    return variants
+
+                with Image.open(BytesIO(image_bytes)) as opened:
+                    source = ImageOps.exif_transpose(opened).convert("RGB")
+                    width, height = source.size
+
+                    # Small Telegram thumbnails lose character edges. Upscale
+                    # before thresholding, but cap the size to avoid expensive
+                    # OCR calls on unusually large documents.
+                    scale = min(4.0, max(1.0, 720.0 / max(width, height, 1)))
+                    if scale > 1.0:
+                        source = source.resize(
+                            (max(1, round(width * scale)), max(1, round(height * scale))),
+                            Image.Resampling.LANCZOS,
+                        )
+
+                    gray = ImageOps.grayscale(source)
+                    gray = ImageOps.autocontrast(gray, cutoff=1)
+                    variants.append(("gray", _encode_png(gray)))
+                    variants.append((
+                        "gray_median",
+                        _encode_png(gray.filter(ImageFilter.MedianFilter(size=3))),
+                    ))
+
+                    # Captcha characters are frequently green, purple, or
+                    # black while the noise is lighter. OCR each RGB channel
+                    # separately so one noisy channel does not dominate.
+                    for channel_name, channel in (
+                        ("red", source.getchannel("R")),
+                        ("green", source.getchannel("G")),
+                        ("blue", source.getchannel("B")),
+                    ):
+                        channel = ImageOps.autocontrast(channel, cutoff=1)
+                        variants.append((channel_name, _encode_png(channel)))
+
+                    # Multiple thresholds handle both pale and dark glyphs.
+                    for threshold in (110, 145, 180, 210):
+                        binary = gray.point(
+                            lambda value, limit=threshold:
+                                255 if value >= limit else 0
+                        )
+                        variants.append((f"threshold_{threshold}", _encode_png(binary)))
+
+                return variants
+
+            variants = _build_variants()
+            candidates: list[tuple[str, str, int]] = []
+            for index, (variant_name, variant_bytes) in enumerate(variants):
+                try:
+                    raw_result = await asyncio.to_thread(
+                        _CAPTCHA_OCR.classification,
+                        variant_bytes,
+                    )
+                except Exception as variant_error:
+                    logger.debug(
+                        "OCR variant %s failed for %s: %s",
+                        variant_name,
+                        phone_number,
+                        variant_error,
+                    )
+                    continue
+
+                code = _normalise_ocr_result(raw_result)
+                if 3 <= len(code) <= 12:
+                    candidates.append((code, variant_name, index))
+
+            if candidates:
+                # Prefer agreement across variants; ties go to the earlier
+                # (less destructive) image variant.
+                counts = {}
+                for code, _variant_name, _index in candidates:
+                    counts[code] = counts.get(code, 0) + 1
+                best_code = min(
+                    counts,
+                    key=lambda code: (
+                        -counts[code],
+                        min(index for candidate, _name, index in candidates if candidate == code),
+                    ),
+                )
+                best_count = counts[best_code]
+                best_variant = next(
+                    name for code, name, _index in candidates if code == best_code
+                )
+                logger.info(
+                    "🖼️ تم حل صورة التحقق للحساب %s: %s "
+                    "(اتفاق %s/%s، variant=%s)",
+                    phone_number,
+                    best_code,
+                    best_count,
+                    len(candidates),
+                    best_variant,
+                )
+                return best_code
+
+            logger.warning(
+                "⚠️ لم تُنتج أي نسخة OCR صالحة للحساب %s (عدد النسخ=%s)",
+                phone_number,
+                len(variants),
             )
-            code = re.sub(r"[^A-Za-z0-9]", "", str(raw_result or ""))
-            if 3 <= len(code) <= 12:
-                logger.info("🖼️ تم حل صورة التحقق للحساب %s: %s", phone_number, code)
-                return code
-            logger.warning("⚠️ نتيجة OCR غير صالحة للحساب %s: %r", phone_number, raw_result)
         except Exception as exc:
             logger.warning("⚠️ فشل تحليل صورة التحقق للحساب %s: %s", phone_number, exc)
         return None

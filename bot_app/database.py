@@ -222,6 +222,47 @@ def init_db():
               created_at    TIMESTAMPTZ DEFAULT NOW()
           )""")
           c.execute("""
+           CREATE TABLE IF NOT EXISTS raksh_orders (
+               id            BIGSERIAL PRIMARY KEY,
+               user_id       BIGINT NOT NULL,
+               service_type  TEXT NOT NULL,
+               quantity      INTEGER NOT NULL,
+               payment_method TEXT NOT NULL,
+               total_cost    INTEGER NOT NULL DEFAULT 0,
+               params        JSONB NOT NULL DEFAULT '{}'::jsonb,
+               status        TEXT NOT NULL DEFAULT 'pending',
+               lease_until   TIMESTAMPTZ,
+               last_error    TEXT,
+               refund_points INTEGER NOT NULL DEFAULT 0,
+               special_count INTEGER NOT NULL DEFAULT 0,
+               result_text   TEXT,
+               created_at    TIMESTAMPTZ DEFAULT NOW(),
+               updated_at    TIMESTAMPTZ DEFAULT NOW(),
+               completed_at  TIMESTAMPTZ
+           )""")
+          c.execute("""
+           CREATE INDEX IF NOT EXISTS raksh_orders_resume_idx
+           ON raksh_orders (status, lease_until, updated_at)
+           """)
+          c.execute("""
+           CREATE TABLE IF NOT EXISTS raksh_order_items (
+               id            BIGSERIAL PRIMARY KEY,
+               order_id      BIGINT NOT NULL REFERENCES raksh_orders(id) ON DELETE CASCADE,
+               position      INTEGER NOT NULL,
+               stock_id      BIGINT,
+               phone_number  TEXT NOT NULL,
+               status        TEXT NOT NULL DEFAULT 'pending',
+               attempts      INTEGER NOT NULL DEFAULT 0,
+               result_message TEXT,
+               last_error    TEXT,
+               updated_at    TIMESTAMPTZ DEFAULT NOW(),
+               UNIQUE(order_id, phone_number)
+           )""")
+          c.execute("""
+           CREATE INDEX IF NOT EXISTS raksh_order_items_status_idx
+           ON raksh_order_items (order_id, status, position)
+           """)
+          c.execute("""
           CREATE TABLE IF NOT EXISTS settings (
               key   TEXT PRIMARY KEY,
               value TEXT
@@ -358,6 +399,11 @@ def init_db():
               "ALTER TABLE forced_ref_orders ADD COLUMN IF NOT EXISTS reactivated_count INTEGER DEFAULT 0",
               "ALTER TABLE forced_ref_orders ADD COLUMN IF NOT EXISTS payment_method TEXT DEFAULT 'points'",
               "ALTER TABLE forced_ref_orders ADD COLUMN IF NOT EXISTS cost_stars INTEGER DEFAULT 0",
+               "ALTER TABLE raksh_execution_usage ADD COLUMN IF NOT EXISTS order_id BIGINT",
+               "ALTER TABLE raksh_orders ADD COLUMN IF NOT EXISTS refund_points INTEGER NOT NULL DEFAULT 0",
+               "ALTER TABLE raksh_orders ADD COLUMN IF NOT EXISTS special_count INTEGER NOT NULL DEFAULT 0",
+               "ALTER TABLE raksh_orders ADD COLUMN IF NOT EXISTS result_text TEXT",
+               "CREATE INDEX IF NOT EXISTS raksh_execution_usage_order_idx ON raksh_execution_usage (order_id, phone_number)",
           ]:
               try: c.execute(_alt)
               except Exception: pass
