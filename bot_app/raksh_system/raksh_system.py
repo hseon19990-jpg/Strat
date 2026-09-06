@@ -1811,12 +1811,26 @@ async def _start_raksh_execution(
         )
         return
 
-    _ACTIVE_RAKSH_ORDER_IDS.add(order_id)
-    try:
-        await _run_raksh_order(context, order_id, progress_msg)
-    finally:
-        _ACTIVE_RAKSH_ORDER_IDS.discard(order_id)
-        _clear_raksh_state(context)
+    # لا نربط تنفيذ الحسابات بعمر callback الخاص بزر Telegram. بعض الخدمات
+    # (خصوصاً التصويت مع التحقق) قد تستغرق وقتاً أطول من المهلة المسموحة
+    # للـ callback؛ انتظارها هنا كان يجعل الطلب ينجح ثم يظهر للمستخدم:
+    # "حدث خطأ أثناء بدء الطلب".
+    async def run_order_in_background():
+        _ACTIVE_RAKSH_ORDER_IDS.add(order_id)
+        try:
+            await _run_raksh_order(context, order_id, progress_msg)
+        except Exception:
+            # _run_raksh_order يحفظ الطلب كـ pending قبل إعادة الاستثناء،
+            # وسيعيده job الاستئناف تلقائياً. لا نعيد خطأً إلى callback.
+            logger.exception(
+                "فشل تنفيذ طلب الرشق في الخلفية order_id=%s",
+                order_id,
+            )
+        finally:
+            _ACTIVE_RAKSH_ORDER_IDS.discard(order_id)
+
+    asyncio.create_task(run_order_in_background())
+    _clear_raksh_state(context)
 
 async def resume_raksh_orders_job(context) -> None:
     """استئناف طلبات الرشق غير المكتملة بعد إعادة النشر أو انقطاع العملية."""
