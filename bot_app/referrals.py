@@ -1891,10 +1891,8 @@ async def _click_check_subscription_button(client, bot_entity, msgs: list) -> bo
     return False
 
 def _is_blocked_service_bot(bot_username: str) -> bool:
-    """يمنع تنفيذ أو قبول بوت الخدمة نفسه وبوت الرشق @Arshaqlibot."""
-    _target = str(bot_username or "").lower().lstrip("@").strip()
-    _own = str(globals().get("_OWN_BOT_USERNAME") or "").lower().lstrip("@").strip()
-    return _target == "arshaqlibot" or bool(_own and _target == _own)
+    """حارس توافق قديم؛ جميع البوتات المطلوبة تمر بمسار StartBot والتحقق."""
+    return False
 
 
 async def do_referral_for_number(phone: str, session_str: str, bot_username: str, start_param: str,
@@ -2798,18 +2796,6 @@ async def _handle_confirm_forced_ref(update, context, user, q, is_own, data):
         await q.edit_message_text('🔒 حسابك موقوف. تواصل مع المالك.', reply_markup=main_menu_kb(is_own))
         return
 
-    # فحص نهائي قبل خصم النقاط أو إصدار فاتورة النجوم.
-    # @Arshaqlibot مستثنى من الخدمة: لا رشق، لا نجاح، ولا خصم.
-    if _is_blocked_service_bot(bot_user):
-        context.user_data['state'] = 'main_menu'
-        context.user_data.pop('forced_ref_draft', None)
-        await q.edit_message_text(
-            '⛔ لا يمكن تنفيذ إحالة لهذا البوت؛ @Arshaqlibot مستثنى من الخدمة.\n'
-            'لم يتم خصم أي نقاط ولم يتم إنشاء الطلب.',
-            reply_markup=main_menu_kb(is_own)
-        )
-        return
-
     if action == 'stars':
         if total_stars < 1:
             await q.edit_message_text('⚠️ تعذّر حساب تكلفة النجوم.', reply_markup=main_menu_kb(is_own))
@@ -3146,8 +3132,7 @@ async def _run_forced_ref_order(order_id, bot_user, start_p, channels, quantity,
 
     _clean_bot_target = bot_user.lower().lstrip("@").strip()
     if _is_blocked_service_bot(_clean_bot_target):
-        # هذا الحارس يعالج الطلبات القديمة التي أُنشئت قبل منع @Arshaqlibot.
-        # لا نعتبر التخطي نجاحاً، ونردّ التكلفة إن كان الطلب قد دُفع.
+        # هذا الحارس لا يُفعّل للبوتات المطلوبة؛ كل إحالة تمر عبر StartBot.
         _refund_points = 0
         _blocked_status = "failed"
         with db_conn() as _sc:
@@ -3368,8 +3353,10 @@ async def _run_forced_ref_order(order_id, bot_user, start_p, channels, quantity,
         reactiv_refunded_pts = reactivated * (_cost_stars_each * _star_rate)
         add_points(requester_id, reactiv_refunded_pts)
 
+    _fully_completed = (done + reactivated) >= quantity
+    _final_status = "done" if _fully_completed else "failed"
     with db_conn() as c:
-        c.execute("UPDATE forced_ref_orders SET status='done' WHERE id=%s", (order_id,))
+        c.execute("UPDATE forced_ref_orders SET status=%s WHERE id=%s", (_final_status, order_id))
 
     _refund_parts = []
     if refunded_pts > 0:
@@ -3394,8 +3381,13 @@ async def _run_forced_ref_order(order_id, bot_user, start_p, channels, quantity,
             lines += f'\n  ... و{len(phones)-limit} آخرين'
         return lines
 
+    _member_title = (
+        f'✅ <b>تم اكتمال طلبك{_ai_label}!</b>'
+        if _fully_completed else
+        f'⚠️ <b>لم يكتمل طلبك بالكامل{_ai_label}.</b>'
+    )
     _member_text = (
-        f'✅ <b>تم اكتمال طلبك{_ai_label}!</b>\n'
+        f'{_member_title}\n'
         f'📌 @{bot_user}\n\n'
         f'✅ المنجز: <b>{done}</b>'
     )
