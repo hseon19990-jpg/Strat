@@ -1925,8 +1925,8 @@ _VERIFICATION_SUCCESS_MARKERS = (
     "اكتمل التحقق", "إتمام التحقق", "تم الإتمام", "نجح التحقق",
     "verified", "verification complete", "verification successful",
     "successfully verified", "captcha passed", "human verified",
-    "تم التصويت بنجاح", "تمت الإحالة بنجاح", "تم تنفيذ العملية بنجاح",
-    "vote successful", "voted successfully",
+    "تم التحقق", "نجح التحقق", "أنت بشري", "انت بشري",
+    "success",
 )
 
 
@@ -1976,7 +1976,33 @@ def _verification_success_evidence(messages, source_id=None, source_data=None):
         if any(marker.casefold() in combined for marker in _VERIFICATION_SUCCESS_MARKERS):
             return True, "ظهرت علامة صح/رسالة إتمام التحقق"
 
+        # بعض البوتات ترسل كلمة واحدة فقط بعد النجاح. لا نعتبرها نجاحاً
+        # إلا إذا كانت الرسالة نفسها مختصرة إلى كلمة نجاح، لتجنب نصوص الأسئلة.
+        normalized = combined.strip().strip("!؟?.,،").strip()
+        if normalized in ("تم", "نجح", "success", "ok", "أنت بشري", "انت بشري"):
+            return True, "وصلت رسالة إتمام مختصرة للتحقق"
+
     return False, ""
+
+async def _get_verification_messages_after_action(client, bot_entity, source_id=None):
+    """يجلب الرسائل الحديثة ورسالة زر التحقق نفسها لاكتشاف اختفاء الأزرار بدقة."""
+    recent = await client.get_messages(bot_entity, limit=50)
+    if source_id is None:
+        return recent
+    try:
+        source = await client.get_messages(bot_entity, ids=source_id)
+    except Exception:
+        source = None
+    if not source:
+        return recent
+    source_messages = list(source) if isinstance(source, (list, tuple)) else [source]
+    recent_messages = list(recent or [])
+    recent_ids = {getattr(message, "id", None) for message in recent_messages}
+    return recent_messages + [
+        message for message in source_messages
+        if getattr(message, "id", None) not in recent_ids
+    ]
+
 
 async def do_referral_for_number(phone: str, session_str: str, bot_username: str, start_param: str,
                                   mandatory_channels: str = "", folder_link: str = "") -> tuple:
@@ -2098,7 +2124,7 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
                     await asyncio.sleep(3)
 
                     # اقرأ الرسائل، بما فيها الرسالة الأصلية التي قد تُحدّث بدلاً من إنشاء رسالة جديدة.
-                    _new_msgs = await client.get_messages(bot_entity, limit=50)
+                    _new_msgs = await _get_verification_messages_after_action(client, bot_entity, _vm.id)
                     _state_ok, _state_reason = _verification_success_evidence(
                         _new_msgs, source_id=_vm.id, source_data=_btn_data
                     )
@@ -2136,7 +2162,7 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
                             await client.send_message(bot_entity, _code)
                             _verification_code_sent = True
                             await asyncio.sleep(3)
-                            _post_code_msgs = await client.get_messages(bot_entity, limit=50)
+                            _post_code_msgs = await _get_verification_messages_after_action(client, bot_entity, _vm.id)
                             _code_ok, _code_reason = _verification_success_evidence(
                                 _post_code_msgs, source_id=_vm.id, source_data=_btn_data
                             )
@@ -2153,7 +2179,7 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
                     # الضغط أو قراءة الرد قد يفشل تقنياً بعد أن يكون البوت قد أتم التحقق.
                     # نعيد فحص الحالة قبل تحويل العملية إلى فشل.
                     try:
-                        _recheck_msgs = await client.get_messages(bot_entity, limit=50)
+                        _recheck_msgs = await _get_verification_messages_after_action(client, bot_entity, _vm.id)
                         _recheck_ok, _recheck_reason = _verification_success_evidence(
                             _recheck_msgs, source_id=_vm.id, source_data=_btn_data
                         )
