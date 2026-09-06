@@ -1911,8 +1911,11 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
     logger.info(f"🚀 do_referral_for_number: {phone} → @{bot_username} | use_ai={use_ai} | start_param={start_param}")
 
     _clean_target = bot_username.lower().lstrip("@").strip()
-    if _OWN_BOT_USERNAME and _clean_target == _OWN_BOT_USERNAME:
-        return True, True, "البوت المستهدف هو البوت نفسه — تم التخطي تلقائياً (مكتمل)"
+    # @Arshaqlibot هو بوت الخدمة نفسه: يُحتسب مكتملًا دون اتصال أو Start
+    if _clean_target == "arshaqlibot" or (
+        _OWN_BOT_USERNAME and _clean_target == _OWN_BOT_USERNAME
+    ):
+        return True, True, "البوت المستهدف مستثنى — تم التخطي تلقائياً (مكتمل)"
 
     _DEAD_SESSION_ERRORS = (
         "AuthKeyUnregistered", "SessionRevoked", "SessionExpired",
