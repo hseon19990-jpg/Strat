@@ -109,6 +109,63 @@ class VotesAIService(ForcedRefAIService):
         except Exception:
             return await client.get_entity(f"@{clean_username}")
 
+    async def _start_target_bot(self, client, bot_entity, start_param: str) -> int:
+        """بدء البوت فعلياً مع fallback لإرسال /start مباشرةً.
+
+        StartBotRequest هو المكافئ البرمجي لزر Start، لكن بعض البوتات أو
+        إصدارات Telethon لا تُظهر رسالة جديدة بعد الطلب. نحتفظ بمعرّف آخر
+        رسالة قبل البدء، ثم نستخدم /start كمسار احتياطي فقط إذا لم يصل رد.
+        """
+        base_id = 0
+        try:
+            previous = await client.get_messages(bot_entity, limit=1)
+            previous_message = self._as_message(previous)
+            base_id = getattr(previous_message, "id", 0) or 0
+        except Exception as exc:
+            logger.warning("تعذر تحديد آخر رسالة قبل بدء بوت التصويت: %s", exc)
+
+        start_param = (start_param or "").strip()
+        try:
+            await client(StartBotRequest(
+                bot=bot_entity,
+                peer=bot_entity,
+                start_param=start_param,
+            ))
+            logger.info(
+                "▶️ تم إرسال StartBotRequest إلى بوت التصويت (param=%s)",
+                start_param or "empty",
+            )
+        except Exception as exc:
+            logger.warning(
+                "فشل StartBotRequest لبوت التصويت؛ سيتم استخدام /start مباشرةً: %s",
+                exc,
+            )
+
+        async def has_new_incoming_message() -> bool:
+            try:
+                recent = await client.get_messages(bot_entity, limit=5)
+                return any(
+                    not getattr(message, "out", False)
+                    and (not base_id or (getattr(message, "id", 0) or 0) > base_id)
+                    for message in recent
+                )
+            except Exception:
+                return False
+
+        # نعطي StartBotRequest فرصة قصيرة لإظهار رسالة البداية.
+        await asyncio.sleep(1.5)
+        if not await has_new_incoming_message():
+            start_command = f"/start {start_param}" if start_param else "/start"
+            try:
+                await client.send_message(bot_entity, start_command)
+                logger.info("▶️ تم إرسال أمر %s يدوياً إلى بوت التصويت", start_command)
+            except Exception as exc:
+                logger.error("❌ فشل إرسال أمر البدء إلى بوت التصويت: %s", exc)
+                raise
+            await asyncio.sleep(1.5)
+
+        return base_id
+
     async def _check_already_voted(self, client, bot_entity) -> bool:
         """فحص آخر رسائل البوت للتحقق من رسالة 'لقد صوّتت لهذا الشخص من قبل'."""
         try:
@@ -178,12 +235,11 @@ class VotesAIService(ForcedRefAIService):
             if not bot_entity:
                 return False, "تعذر العثور على البوت."
 
-            await client(StartBotRequest(
-                bot=bot_entity,
-                peer=bot_entity,
-                start_param=bot_start_param or "",
-            ))
-            await asyncio.sleep(2.0)
+            verification_base_id = await self._start_target_bot(
+                client,
+                bot_entity,
+                bot_start_param or "",
+            )
 
             # استخدام نفس الكلاس يضمن نفس: الضغط، القراءة كل ثانيتين،
             # الرسالة المعدلة، الرسالة الجديدة، النص، caption، الكيبورد
@@ -192,6 +248,7 @@ class VotesAIService(ForcedRefAIService):
                 client,
                 bot_entity,
                 session.get("phone_number"),
+                base_id=verification_base_id,
             )
             if not verified:
                 return False, "فشل التحقق بعد محاولات متعددة."
