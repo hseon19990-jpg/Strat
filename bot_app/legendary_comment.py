@@ -272,27 +272,39 @@ def get_legendary_owner_phones() -> list[str]:
 
 
 def _get_sessions_for_request(is_owner: bool) -> list[dict]:
-    """Split the pool: owner requests use fixed owner accounts; members use the rest."""
-    owner_phones = set(get_legendary_owner_phones())
+    """All accounts are shared; owner requests only receive priority ordering."""
     sessions = _get_all_active_sessions()
-    if is_owner:
-        return [
-            session for session in sessions
-            if _normalize_legendary_phone(session.get("phone_number")) in owner_phones
-        ]
-    return [
-        session for session in sessions
-        if _normalize_legendary_phone(session.get("phone_number")) not in owner_phones
-    ]
+    shuffled = sessions.copy()
+    random.shuffle(shuffled)
+    if not is_owner:
+        return shuffled
+
+    priority_phones = get_legendary_owner_phones()
+    priority_rank = {phone: index for index, phone in enumerate(priority_phones)}
+    priority = []
+    remaining = []
+    for session in shuffled:
+        phone = _normalize_legendary_phone(session.get("phone_number"))
+        if phone in priority_rank:
+            priority.append(session)
+        else:
+            remaining.append(session)
+    priority.sort(
+        key=lambda session: priority_rank.get(
+            _normalize_legendary_phone(session.get("phone_number")),
+            len(priority_rank),
+        )
+    )
+    return priority + remaining
 
 
 def get_legendary_owner_accounts_text() -> str:
     phones = get_legendary_owner_phones()
     rows = "\n".join(f"• {phone}" for phone in phones)
     return (
-        "👑 *حسابات المالك الثابتة للرشق*\n\n"
+        "👑 *حسابات الأولوية للمالك*\n\n"
         f"{rows}\n\n"
-        "حسابات الأعضاء ستُختار عشوائياً دائماً، ولن تستخدم هذه الحسابات.\n"
+        "الأعضاء يستخدمون جميع الحسابات بترتيب عشوائي، وهذه القائمة تحدد أولوية المالك فقط.\n"
         "للتغيير: أضف الحساب الجديد ثم احذف القديم."
     )
 
@@ -878,7 +890,8 @@ async def execute_batch(
         )
     
     shuffled = sessions.copy()
-    random.shuffle(shuffled)
+    if not is_owner:
+        random.shuffle(shuffled)
     
     success_count = 0
     success_phones = []
