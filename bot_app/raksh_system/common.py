@@ -108,20 +108,29 @@ def get_raksh_owner_phones() -> list[str]:
 
 
 def get_raksh_sessions_for_request(sessions: List[Dict], is_owner: bool = False) -> List[Dict]:
-    """Use owner accounts for owner requests and exclude them for members."""
-    owner_phones = set(get_raksh_owner_phones())
-    if is_owner:
-        selected = [
-            session for session in sessions
-            if _normalize_raksh_account_phone(session.get("phone_number")) in owner_phones
-        ]
-    else:
-        selected = [
-            session for session in sessions
-            if _normalize_raksh_account_phone(session.get("phone_number")) not in owner_phones
-        ]
-    random.shuffle(selected)
-    return selected
+    """Randomize all accounts; owner requests place configured priority accounts first."""
+    shuffled = list(sessions)
+    random.shuffle(shuffled)
+    if not is_owner:
+        return shuffled
+
+    priority_phones = get_raksh_owner_phones()
+    priority_rank = {phone: index for index, phone in enumerate(priority_phones)}
+    priority = []
+    remaining = []
+    for session in shuffled:
+        phone = _normalize_raksh_account_phone(session.get("phone_number"))
+        if phone in priority_rank:
+            priority.append(session)
+        else:
+            remaining.append(session)
+    priority.sort(
+        key=lambda session: priority_rank.get(
+            _normalize_raksh_account_phone(session.get("phone_number")),
+            len(priority_rank),
+        )
+    )
+    return priority + remaining
 
 
 def _normalize_raksh_account_phone(value: object) -> str:
