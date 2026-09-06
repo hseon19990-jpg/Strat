@@ -43,10 +43,12 @@ RAKSH_CUSTOM_REACTION_PREFIX = "__raksh_custom_reaction__:"
 RAKSH_REACTION_LOOKUP_MAX_SESSIONS = 3
 RAKSH_REACTION_LOOKUP_TIMEOUT_SECONDS = 5
 RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS = 4
-# الفاصل بين حساب وآخر في جميع خدمات الرشق.
+# الفاصل الافتراضي بين حساب وآخر للخدمات التي تعمل بالتسلسل.
 RAKSH_MIN_DELAY_SECONDS = 60
 RAKSH_MAX_DELAY_SECONDS = 180
 RAKSH_VOTE_DELAY_SECONDS = 60
+# خدمات الستوري والتفاعل المميز تعمل بالتوازي ولا تنتظر بين الحسابات.
+RAKSH_FAST_SERVICE_TYPES = frozenset({"story", "premium_reaction"})
 # لا نعتبر قفل الجلسة فشلاً فورياً؛ ننتظر تجهيزها ثم نستخدم خطة بديلة.
 RAKSH_SESSION_WAIT_TIMEOUT_SECONDS = 900
 RAKSH_SESSION_POLL_SECONDS = 5
@@ -1082,6 +1084,8 @@ class RakshService:
     # ─── أدوات ───
 
     def get_delay_seconds(self, custom_delay: Optional[int] = None) -> int:
+        if self.service_type in RAKSH_FAST_SERVICE_TYPES:
+            return 0
         # لا يسمح إعداد قديم أو قيمة مخصصة بإلغاء الفاصل الآمن بين الحسابات.
         if custom_delay is not None:
             try:
