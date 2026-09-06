@@ -2,6 +2,18 @@
 from .common import *
 from telethon.tl.functions.messages import GetBotCallbackAnswerRequest
 
+
+def _callback_vote_may_have_applied(error: Exception) -> bool:
+    """Telegram may apply a callback before its answer times out."""
+    text = f"{type(error).__name__} {error}".casefold()
+    return any(marker in text for marker in (
+        "botresponsetimeout",
+        "bot response timeout",
+        "timed out",
+        "timeout",
+    ))
+
+
 class VotesService(RakshService):
     """خدمة رشق أصوات - كل شيء في مكان واحد"""
     
@@ -395,6 +407,16 @@ class VotesService(RakshService):
                             return True, f"✅ تم الضغط على زر التصويت من {session['phone_number']}"
                             
                         except Exception as e:
+                            if _callback_vote_may_have_applied(e):
+                                logger.warning(
+                                    "⚠️ انتهت مهلة رد زر التصويت بعد الإرسال؛ "
+                                    "سيُحتسب التصويت بصورة غير مؤكدة: %s",
+                                    e,
+                                )
+                                return True, (
+                                    f"✅ تم إرسال التصويت من "
+                                    f"{session['phone_number']}"
+                                )
                             logger.warning(f"فشل الضغط على الزر: {e}")
                             continue
             
@@ -417,7 +439,17 @@ class VotesService(RakshService):
                             
                             await asyncio.sleep(1.0)
                             return True, f"✅ تم الضغط على الزر من {session['phone_number']}"
-                        except Exception:
+                        except Exception as e:
+                            if _callback_vote_may_have_applied(e):
+                                logger.warning(
+                                    "⚠️ انتهت مهلة رد زر التصويت الاحتياطي؛ "
+                                    "سيُحتسب التصويت بصورة غير مؤكدة: %s",
+                                    e,
+                                )
+                                return True, (
+                                    f"✅ تم إرسال التصويت من "
+                                    f"{session['phone_number']}"
+                                )
                             continue
             
             return False, "لم يتم العثور على زر قابل للضغط في المنشور"
