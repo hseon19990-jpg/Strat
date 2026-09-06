@@ -1330,18 +1330,7 @@ async def _start_raksh_execution(
     if special_count > 0:
         result_text += f"🔁 استرداد نصف المبلغ لـ {special_count} حساب (بدون زر تحقق)\n"
     
-    if success_phones:
-        result_text += f"\n✅ *الحسابات الناجحة ({len(success_phones)}):*\n"
-        result_text += "\n".join(f"• `{p}`" for p in success_phones[:10])
-        if len(success_phones) > 10:
-            result_text += f"\n... و{len(success_phones)-10} أخرى"
-    
-    if failed_details:
-        result_text += f"\n\n❌ *الفاشلة ({len(failed_details)}):*\n"
-        result_text += "\n".join(f"• {d[:80]}" for d in failed_details[:5])
-        if len(failed_details) > 5:
-            result_text += f"\n... و{len(failed_details)-5} أخرى"
-    
+    # تظهر للطالب الأعداد فقط؛ أرقام الحسابات تُرسل للمالك عبر إشعار منفصل.
     await progress_msg.edit_text(
         result_text,
         parse_mode=ParseMode.MARKDOWN,
