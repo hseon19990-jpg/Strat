@@ -242,7 +242,10 @@ async def _join_folder_link(client, folder_url: str) -> str:
         logger.warning(f"⚠️ تعذّر الانضمام للمجلد: {e}")
         return f"فشل المجلد: {str(e)[:60]}"
 
-async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "", max_attempts: int = 3) -> tuple:
+async def solve_captcha_with_ai(
+    client, bot_entity, msgs: list, phone: str = "", max_attempts: int = 3,
+    min_message_id: int = 0,
+) -> tuple:
     """
     يستخدم Groq أو DeepSeek لكشف وحل جميع أنواع التحقق الشائعة في بوتات تيليغرام.
     يُرجع (solved: bool, detail: str).
@@ -276,9 +279,8 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
         "verification complete", "مبروك", "success", "accepted",
         "verified", "congratulations", "passed", "اجتزت التحقق",
         "تم قبولك", "تم التسجيل بنجاح", "انتهت عملية التحقق",
-        "تم التفعيل بنجاح", "تم التصويت", "صوتك", "سجلنا تصويتك",
-        "تم تسجيل التصويت",
-        "vote recorded", "vote accepted", "voted successfully", "your vote",
+        "تم التفعيل بنجاح", "أنت بشري", "انت بشري",
+        "✅", "✓", "✔", "☑",
     ]
     FAIL_KW = [
         "إجابة خاطئة", "wrong answer", "incorrect answer",
@@ -724,7 +726,61 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
         )
         if any(marker in t for marker in challenge_markers):
             return False
+        normalized = t.strip(" !؟?.,،")
+        if normalized in {"تم", "نجح", "success", "ok", "أنت بشري", "انت بشري"}:
+            return True
         return any(k.casefold() in t for k in SUCCESS_KW)
+
+    def _message_text(message) -> str:
+        return (
+            getattr(message, "message", "")
+            or getattr(message, "text", "")
+            or ""
+        )
+
+    def _has_success_evidence(messages, source_id=None, source_button=None) -> bool:
+        """يقبل نجاح التحقق من اختفاء الزر أو رسالة إتمام جديدة فقط."""
+        source = None
+        for item in messages or []:
+            if source_id is not None and getattr(item, "id", None) == source_id:
+                source = item
+                break
+
+        if source is not None:
+            buttons = getattr(source, "buttons", None) or []
+            if not buttons:
+                return True
+            source_data = getattr(source_button, "data", None)
+            if source_data is not None:
+                current_data = {
+                    getattr(button, "data", None)
+                    for row in buttons
+                    for button in (row or [])
+                }
+                if source_data not in current_data:
+                    return True
+
+        success_markers = (
+            "✅", "✓", "✔", "☑", "تم التحقق", "نجح التحقق",
+            "verification successful", "verification complete",
+            "verified", "successfully verified", "مبروك",
+            "اجتزت التحقق", "تم قبولك", "انتهت عملية التحقق",
+            "أنت بشري", "انت بشري",
+        )
+        for item in messages or []:
+            text = _message_text(item)
+            labels = " ".join(
+                str(getattr(button, "text", "") or "")
+                for row in (getattr(item, "buttons", None) or [])
+                for button in (row or [])
+            )
+            combined = f"{text} {labels}".casefold()
+            if any(marker.casefold() in combined for marker in success_markers):
+                return True
+            normalized = combined.strip(" !؟?.,،")
+            if normalized in {"تم", "نجح", "success", "ok", "أنت بشري", "انت بشري"}:
+                return True
+        return False
 
     def _is_fail(text: str) -> bool:
         t = (text or "").lower()
@@ -924,23 +980,44 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
             return [custom_ids[-1]]
         return custom_ids[-1:]
 
-    async def _wait_and_check(limit: int = 3) -> tuple:
-        """ينتظر الرد الجديد فقط لتجنب اعتبار رسائل التحقق القديمة فشلاً."""
+    async def _get_new_messages(limit: int = 50, source_id=None):
+        recent = await client.get_messages(
+            bot_entity, limit=limit, min_id=min_message_id
+        )
+        if source_id is None or source_id <= min_message_id:
+            return recent
+        try:
+            source = await client.get_messages(bot_entity, ids=source_id)
+        except Exception:
+            source = None
+        if not source:
+            return recent
+        source_items = list(source) if isinstance(source, (list, tuple)) else [source]
+        recent_items = list(recent or [])
+        recent_ids = {getattr(item, "id", None) for item in recent_items}
+        return recent_items + [
+            item for item in source_items
+            if getattr(item, "id", None) not in recent_ids
+        ]
+
+    async def _wait_and_check(
+        limit: int = 3, source_id=None, source_button=None
+    ) -> tuple:
+        """ينتظر الرسائل الجديدة فقط ويتحقق من اختفاء زر التحقق أو رسالة الإتمام."""
         last_msgs = []
         for _ in range(3):
             await asyncio.sleep(0.5)
-            last_msgs = await client.get_messages(bot_entity, limit=limit)
+            last_msgs = await _get_new_messages(limit=limit, source_id=source_id)
+            if _has_success_evidence(last_msgs, source_id, source_button):
+                return "success", last_msgs
             recent_msgs = last_msgs[:limit]
             for m in recent_msgs:
-                t = getattr(m, "message", "") or getattr(m, "text", "") or ""
-                if _is_success(t):
+                if _is_success(_message_text(m)):
                     return "success", last_msgs
             for m in recent_msgs:
-                t = getattr(m, "message", "") or getattr(m, "text", "") or ""
-                if _is_fail(t):
+                if _is_fail(_message_text(m)):
                     return "fail", last_msgs
-            # وجود رسالة نصية جديدة وحده لا يعني نجاح التحقق؛ فقد تكون
-            # المرحلة التالية من الكابتشا بعد الضغط على زر سابق.
+            # قد تكون المرحلة التالية من التحقق وستصل في الدورة التالية.
         return "unknown", last_msgs
 
     all_details: list[str] = []
@@ -1045,7 +1122,10 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
                 )
                 continue
 
-            last_result, latest_msgs = await _wait_and_check()
+            last_result, latest_msgs = await _wait_and_check(
+                source_id=getattr(message, "id", None),
+                source_button=button,
+            )
             if last_result == "unknown":
                 numeric_result, numeric_msgs = await _reply_to_numeric_code(latest_msgs)
                 if numeric_result is not None:
@@ -1072,7 +1152,7 @@ async def solve_captcha_with_ai(client, bot_entity, msgs: list, phone: str = "",
 
         if _round > 0:
             await asyncio.sleep(1.5)
-            msgs = await client.get_messages(bot_entity, limit=15)
+            msgs = await _get_new_messages(limit=15)
 
         for msg in msgs:
             msg_id = getattr(msg, "id", 0)
@@ -2052,11 +2132,16 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
                     signature.append((str(text).strip(), has_media, labels))
             return tuple(signature)
 
+        # كل فحص للتحقق يبدأ من الرسائل التي ستصل بعد ضغط رابط الإحالة.
+        _referral_cutoff_id = 0
         _was_reactivated = False
         try:
             _prev_msgs = await asyncio.wait_for(client.get_messages(bot_entity, limit=1), timeout=8)
             if _prev_msgs and len(_prev_msgs) > 0:
                 _was_reactivated = True
+                _referral_cutoff_id = max(
+                    (getattr(_message, "id", 0) or 0) for _message in _prev_msgs
+                )
         except Exception:
             pass
 
@@ -2071,7 +2156,7 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
             timeout=15,
         )
         await asyncio.sleep(2)
-        msgs = await asyncio.wait_for(client.get_messages(bot_entity, limit=15), timeout=8)
+        msgs = await asyncio.wait_for(client.get_messages(bot_entity, limit=15, min_id=_referral_cutoff_id), timeout=8)
 
         _initial_verify_clicked = False
         _any_verify_clicked = False
@@ -2080,10 +2165,10 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
             if _initial_verify_clicked:
                 _any_verify_clicked = True
                 await asyncio.sleep(2)
-                msgs = await asyncio.wait_for(client.get_messages(bot_entity, limit=20), timeout=8)
+                msgs = await asyncio.wait_for(client.get_messages(bot_entity, limit=20, min_id=_referral_cutoff_id), timeout=8)
                 break
             await asyncio.sleep(1)
-            msgs = await asyncio.wait_for(client.get_messages(bot_entity, limit=20), timeout=8)
+            msgs = await asyncio.wait_for(client.get_messages(bot_entity, limit=20, min_id=_referral_cutoff_id), timeout=8)
 
         # ── الخطوة 4: التعامل مع اشتراط البوت الانضمام لقنواته (حلقة متكررة) ──
         _total_joined_from_bot = 0
@@ -2099,7 +2184,7 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
                 _any_verify_clicked = True
                 steps.append(f"ضغط زر التحقق من الاشتراك (جولة {_sub_round + 1})")
             await asyncio.sleep(2)
-            msgs = await asyncio.wait_for(client.get_messages(bot_entity, limit=15), timeout=8)
+            msgs = await asyncio.wait_for(client.get_messages(bot_entity, limit=15, min_id=_referral_cutoff_id), timeout=8)
         if _total_joined_from_bot > 0:
             logger.info(f"🔗 {phone}: انضم إجمالاً لـ {_total_joined_from_bot} قناة من ردود البوت")
 
@@ -2115,14 +2200,15 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
                 if _ai_attempt > 0:
                     await asyncio.sleep(1.5)
                 msgs = await asyncio.wait_for(
-                    client.get_messages(bot_entity, limit=50), timeout=8
+                    client.get_messages(bot_entity, limit=50, min_id=_referral_cutoff_id), timeout=8
                 )
                 logger.info(
                     f"🤖 محاولة حل الكابتشا للرقم {phone} "
                     f"(المحاولة {_ai_attempt + 1}/3)"
                 )
                 _ai_solved, _ai_detail = await solve_captcha_with_ai(
-                    client, bot_entity, msgs, phone, max_attempts=3
+                    client, bot_entity, msgs, phone, max_attempts=3,
+                    min_message_id=_referral_cutoff_id,
                 )
                 if _ai_solved:
                     logger.info(
@@ -2170,7 +2256,7 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
                                 f"{_start_error}"
                             )
                     msgs = await asyncio.wait_for(
-                        client.get_messages(bot_entity, limit=20), timeout=8
+                        client.get_messages(bot_entity, limit=20, min_id=_referral_cutoff_id), timeout=8
                     )
                     _new_start_state = _verification_state_signature(msgs)
                     if _new_start_state != _start_state:
@@ -2190,16 +2276,9 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
                 else:
                     steps.append("لم تتغير حالة التحقق بعد حد التكرار")
             elif _ai_detail == "لم يُكتشف تحقق":
-                # ضغط زر «تحقق» ليس دليلاً على اكتمال المهمة. إذا ضغطناه
-                # ثم لم تصل رسالة نجاح ولم يتعرف المحلل على التحدي التالي،
-                # نوقف العملية بدلاً من تسجيل إحالة غير مكتملة كنجاح.
-                if _initial_verify_clicked or _any_verify_clicked:
-                    return (
-                        False,
-                        False,
-                        "تم ضغط زر التحقق لكن لم تصل رسالة نجاح أو مطلب قابل للحل",
-                    )
-                steps.append("لم يطلب البوت تحققاً إضافياً")
+                # عدم اكتشاف تحقق جديد بعد الضغط يعني أن البوت لا يطلب
+                # تحققاً في هذه العملية؛ لا نستخدم رسائل قديمة للحكم بالفشل.
+                steps.append("لم يطلب البوت تحققاً جديداً")
             else:
                 return False, False, f"فشل حل الكابتشا بعد 2 محاولات: {_ai_detail}"
 
