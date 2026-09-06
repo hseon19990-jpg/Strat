@@ -23,7 +23,9 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 legendary_service_start, legendary_skip_channel, legendary_payment_choice,
                 legendary_set_delay,
                 legendary_show_settings, legendary_toggle_visibility, get_price_settings_kb,
-                legendary_edit_price, legendary_payment_callback, legendary_premium_reaction_callback
+                legendary_edit_price, legendary_payment_callback, legendary_premium_reaction_callback,
+                legendary_show_owner_accounts, legendary_begin_owner_account_add,
+                remove_legendary_owner_phone
             )
 
             if data == "legendary:settings" and is_own:
@@ -32,6 +34,21 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
 
             if data == "legendary:set_delay" and is_own:
                 await legendary_set_delay(update, context, q, is_own)
+                return
+
+            if data == "legendary:owner_accounts" and is_own:
+                await legendary_show_owner_accounts(update, context, q, is_own)
+                return
+
+            if data == "legendary:owner_add" and is_own:
+                await legendary_begin_owner_account_add(update, context, q, is_own)
+                return
+
+            if data.startswith("legendary:owner_remove:") and is_own:
+                phone = data.rsplit(":", 1)[-1]
+                removed, message = remove_legendary_owner_phone(phone)
+                await q.answer(message, show_alert=True)
+                await legendary_show_owner_accounts(update, context, q, is_own)
                 return
 
             # ─── تعديل الأسعار (المالك) ───
