@@ -251,12 +251,29 @@ class VotesAIService(ForcedRefAIService):
                 base_id=verification_base_id,
             )
             if not verified:
+                # The bot may have accepted the vote and only failed to
+                # expose the final verification message. Treat an explicit
+                # "already voted" response as an achieved result instead of
+                # reporting a false failure to the owner.
+                if await self._check_already_voted(client, bot_entity):
+                    logger.info(
+                        "✅ الجلسة %s لديها تصويت مسجل رغم فشل قراءة التحقق",
+                        session["phone_number"],
+                    )
+                    return True, (
+                        f"✅ التصويت موجود مسبقاً من "
+                        f"{session['phone_number']}"
+                    )
                 return False, "فشل التحقق بعد محاولات متعددة."
 
-            # ===== تعديل: فحص رسالة "لقد صوّتت لهذا الشخص من قبل" =====
+            # وجود تصويت سابق يعني أن نتيجة الحساب موجودة بالفعل؛ لا نعرضه
+            # كفشل، لأن ذلك كان سبباً رئيسياً لظهور فشل رغم وصول التصويت.
             if await self._check_already_voted(client, bot_entity):
                 logger.info(f"الجلسة {session['phone_number']} سبق أن صوّتت")
-                return False, "🔔 لقد صوّتت لهذا الشخص من قبل"
+                return True, (
+                    f"✅ التصويت موجود مسبقاً من "
+                    f"{session['phone_number']}"
+                )
 
             # ===== تعديل: بمجرد اكتمال التحقق، نعتبر التصويت ناجحاً =====
             # لكن نحاول تنفيذ التصويت الفعلي إن كان ممكناً دون فشل إذا تعذر.
