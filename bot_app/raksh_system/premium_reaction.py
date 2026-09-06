@@ -19,7 +19,8 @@ class PremiumReactionService(RakshService):
         has_ai=False,
         needs_link=True,
         min_delay=3,
-        max_delay=3
+        max_delay=3,
+        max_concurrent=12
     )
     
     def get_initial_state(self) -> str:
