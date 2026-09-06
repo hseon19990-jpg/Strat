@@ -214,6 +214,14 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 reply_markup=main_menu_kb(is_own)
             )
             return
+        if _is_blocked_service_bot(bot_user):
+            context.user_data.pop('forced_ref_draft', None)
+            await update.message.reply_text(
+                '⛔ لا يمكن تنفيذ إحالة لهذا البوت؛ @Arshaqlibot مستثنى من الخدمة.\n'
+                'لم يتم إنشاء طلب رشق.',
+                reply_markup=main_menu_kb(is_own)
+            )
+            return
         code = next_order_code(user.id)
         with db_conn() as c:
             row = c.execute(
