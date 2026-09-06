@@ -405,12 +405,14 @@ class ForcedRefAIService(RakshService):
 
     @staticmethod
     def _is_verification_success_text(value) -> bool:
-        """Recognize success text from messages and Telegram callback alerts."""
+        """يقبل إشارات إتمام التحقق حتى لو وصلت معها رسالة سلبية متأخرة."""
         text = str(value or "").strip().casefold()
         if not text:
             return False
         success_markers = (
+            "✅", "✓", "✔", "☑",
             "تم التحقق",
+            "نجح التحقق",
             "تم اجتياز التحقق",
             "اجتياز الكابتشا",
             "تم حل التحقق",
@@ -418,6 +420,8 @@ class ForcedRefAIService(RakshService):
             "تم التسجيل بنجاح",
             "أنت لست روبوت",
             "لم تعد روبوت",
+            "أنت بشري",
+            "انت بشري",
             "verification successful",
             "verification complete",
             "verified successfully",
@@ -427,25 +431,36 @@ class ForcedRefAIService(RakshService):
             "you are verified",
             "access granted",
             "welcome to the group",
+            "success",
         )
-        failure_markers = (
-            "أرسل النص",
-            "ارسل النص",
-            "النص التالي",
-            "أرسل الكود",
-            "ارسل الكود",
-            "send the text",
-            "send the code",
-            "resend",
-            "أعد إرسال",
-            "حاول مرة أخرى",
-            "wrong answer",
-            "إجابة خاطئة",
+        if any(marker.casefold() in text for marker in success_markers):
+            return True
+        normalized = text.strip(" !؟?.,،")
+        return normalized in {
+            "تم", "نجح", "success", "ok", "تم فقط", "نجح فقط",
+            "أنت بشري", "انت بشري",
+        }
+
+    @staticmethod
+    def _looks_like_verification_message(message) -> bool:
+        """يميّز تحققاً جديداً عن رسالة ترحيب أو رد عادي بعد فتح البوت."""
+        text = (getattr(message, "message", "") or "").casefold()
+        if getattr(message, "photo", None) or getattr(message, "document", None):
+            return True
+        buttons = [
+            button
+            for row in (getattr(message, "buttons", None) or [])
+            for button in (row or [])
+            if not ForcedRefAIService._is_invitation_link_button(button)
+        ]
+        if buttons:
+            return True
+        markers = (
+            "تحقق", "verify", "captcha", "كابتشا", "human", "بشر",
+            "robot", "روبوت", "أدخل", "ادخل", "اكتب", "أجب",
+            "اختر", "اضغط", "code", "كود", "رمز",
         )
-        return (
-            any(marker in text for marker in success_markers)
-            and not any(marker in text for marker in failure_markers)
-        )
+        return any(marker in text for marker in markers)
 
     @staticmethod
     def _has_image_media(message) -> bool:
@@ -812,7 +827,9 @@ class ForcedRefAIService(RakshService):
 
         # المنطق القديم (مستند على _solve_forced_ref_verification من common.py)
         # ولكن سنعيد تنفيذه هنا لتكامل الملف
-        return await self._solve_legacy_verification(client, bot_entity, phone_number)
+        return await self._solve_legacy_verification(
+            client, bot_entity, phone_number, base_id=base_id
+        )
 
     async def _solve_legacy_verification(
         self,
@@ -841,6 +858,41 @@ class ForcedRefAIService(RakshService):
                 logger.warning(f"تعذر تحديد الرسالة المرجعية: {e}")
 
         cursor_id = base_id
+        saw_verification = False
+
+        async def _verification_action_succeeded(message, button=None) -> bool:
+            """يتحقق من اختفاء أزرار التحقق أو وصول رسالة نجاح جديدة."""
+            try:
+                current = await client.get_messages(
+                    bot_entity, ids=getattr(message, "id", 0)
+                )
+                if current:
+                    current_message = (
+                        current[0] if isinstance(current, (list, tuple)) else current
+                    )
+                    current_buttons = getattr(current_message, "buttons", None) or []
+                    if not current_buttons:
+                        return True
+                    target_data = getattr(button, "data", None)
+                    if target_data is not None:
+                        current_data = {
+                            getattr(item, "data", None)
+                            for row in current_buttons
+                            for item in (row or [])
+                        }
+                        if target_data not in current_data:
+                            return True
+            except Exception:
+                pass
+            try:
+                for item in await _read_flow_messages():
+                    if self._is_verification_success_text(
+                        getattr(item, "message", "") or getattr(item, "text", "") or ""
+                    ):
+                        return True
+            except Exception:
+                pass
+            return False
 
         async def _read_flow_messages():
             """إعادة قراءة كل رسائل المحادثة منذ بداية عملية التحقق."""
@@ -854,7 +906,9 @@ class ForcedRefAIService(RakshService):
                     collected.append(msg)
                 return collected
             except Exception:
-                return await client.get_messages(bot_entity, limit=100)
+                return await client.get_messages(
+                    bot_entity, limit=100, min_id=base_id
+                )
 
         for attempt in range(max_attempts):
             try:
@@ -952,6 +1006,13 @@ class ForcedRefAIService(RakshService):
             if verification_message is None:
                 await asyncio.sleep(1.0)
                 continue
+
+            if not self._looks_like_verification_message(verification_message):
+                processed_ids.add(verification_message.id)
+                cursor_id = max(cursor_id, verification_message.id)
+                await asyncio.sleep(0.5)
+                continue
+            saw_verification = True
 
             text = getattr(verification_message, 'message', '') or ''
             image_code = await self._extract_image_captcha(
@@ -1132,8 +1193,15 @@ class ForcedRefAIService(RakshService):
                             )
                             return True
                         await asyncio.sleep(2.0)
-                        # لا نعلن النجاح هنا؛ نعيد قراءة الرسائل لمعالجة
-                        # التحقق التالي الذي قد يظهر بعد هذا الزر.
+                        if await _verification_action_succeeded(
+                            verification_message, btn
+                        ):
+                            logger.info(
+                                "✅ اختفت أزرار التحقق/وصلت إشارة نجاح للحساب %s",
+                                phone_number,
+                            )
+                            return True
+                        # لم يثبت النجاح بعد؛ نعيد قراءة المرحلة التالية.
                         button_clicked = True
                         break
                     except Exception:
@@ -1150,6 +1218,12 @@ class ForcedRefAIService(RakshService):
             cursor_id = max(cursor_id, verification_message.id)
             await asyncio.sleep(2.0)
 
+        if not saw_verification:
+            logger.info(
+                "ℹ️ لم يصل تحقق جديد بعد ضغط الرابط للحساب %s؛ تُحتسب الإحالة ناجحة",
+                phone_number,
+            )
+            return True
         logger.warning(f"⚠️ لم تصل رسالة نجاح صريحة بعد التحقق من {phone_number}")
         return False
 
