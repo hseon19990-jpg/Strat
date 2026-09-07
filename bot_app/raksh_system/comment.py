@@ -17,8 +17,25 @@ class CommentService(RakshService):
         needs_link=True,
         min_delay=0,          # بدون تأخير (سرعة عالية)
         max_delay=0,
-        max_concurrent=6      # 6 حسابات في نفس الوقت
+        max_concurrent=6,     # 6 حسابات في نفس الوقت
+        channel_free_limit=1,
+        channel_extra_point_price=15,
     )
+
+    def get_initial_state(self) -> str:
+        # التعليقات تحتاج قناة إجبارية حتى يعرف الحساب الوجهة التي ينضم إليها.
+        return "comment_channels"
+
+    def get_start_message(self) -> str:
+        return (
+            f"{self.config.name}\n\n"
+            f"💰 السعر الأساسي: {self.get_rate_text('points')}\n"
+            f"⭐ السعر بالنجوم: {self.get_rate_text('stars')}\n\n"
+            "📢 *أرسل قناة الاشتراك الإجباري:*\n"
+            "أرسل @username أو رابط t.me للقناة.\n"
+            "القناة الأولى مجانية، وكل قناة إضافية تكلف 15 نقطة.\n"
+            "يمكنك إرسال أكثر من قناة مفصولة بمسافة أو سطر."
+        )
 
     # ─── تعليمات الرابط ───
     def get_link_instruction(self) -> str:
@@ -36,28 +53,27 @@ class CommentService(RakshService):
     async def handle_text(self, update, context, text, user, state, is_own) -> bool:
         """معالجة النص لخدمة التعليقات"""
 
-        # 1️⃣ استقبال القنوات الإجبارية (اختياري)
-        if state == "channel":
-            if text.strip().lower() in {"تخطي", "skip", "لا", "none", "بدون"}:
-                context.user_data["raksh_channels"] = []
-            else:
-                channel_refs = _parse_channel_refs(text)
-                if not channel_refs:
-                    await update.message.reply_text(
-                        "⚠️ لم أتعرف على أي قناة.\n"
-                        "أرسل @username أو رابط t.me للقناة، ويمكنك إرسال أكثر من قناة مفصولة بمسافة أو سطر.\n"
-                        "أو اكتب 'تخطي' لعدم وجود قنوات.",
-                        reply_markup=InlineKeyboardMarkup([
-                            [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
-                        ]),
-                    )
-                    return True
-                context.user_data["raksh_channels"] = channel_refs
-
+        # 1️⃣ استقبال القنوات الإجبارية (إلزامي لهذه الخدمة)
+        if state == "comment_channels":
+            channel_refs = _parse_channel_refs(text)
+            if not channel_refs:
+                await update.message.reply_text(
+                    "⚠️ يجب إضافة قناة واحدة على الأقل.\n"
+                    "أرسل @username أو رابط t.me للقناة، ويمكنك إرسال أكثر من قناة "
+                    "مفصولة بمسافة أو سطر.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                    ]),
+                )
+                return True
+            context.user_data["raksh_channels"] = channel_refs
             context.user_data["raksh_step"] = "link"
 
             await update.message.reply_text(
-                f"✅ تم حفظ القنوات الإجبارية ({len(context.user_data['raksh_channels'])} قناة).\n\n"
+                f"✅ تم حفظ القنوات الإجبارية ({len(channel_refs)} قناة).\n"
+                f"💡 القناة الأولى مجانية؛ الإضافية: "
+                f"{max(0, len(channel_refs) - self.config.channel_free_limit)} × "
+                f"{self.config.channel_extra_point_price} نقطة.\n\n"
                 f"🔗 *أرسل رابط المنشور:*\n"
                 f"{self.get_link_instruction()}",
                 parse_mode=ParseMode.MARKDOWN,
@@ -163,14 +179,20 @@ class CommentService(RakshService):
             context.user_data["raksh_quantity"] = quantity
             context.user_data["raksh_step"] = "payment"
 
-            points_cost = self.get_total(quantity, "points", len(context.user_data.get("raksh_channels") or []))
-            stars_cost = self.get_total(quantity, "stars", len(context.user_data.get("raksh_channels") or []))
+            channel_count = len(context.user_data.get("raksh_channels") or [])
+            points_cost = self.get_total(quantity, "points", channel_count)
+            stars_cost = self.get_total(quantity, "stars", channel_count)
+            extra_channel_cost = max(
+                0, channel_count - self.config.channel_free_limit
+            ) * self.config.channel_extra_point_price
 
             await update.message.reply_text(
                 f"📋 *تفاصيل الطلب*\n\n"
                 f"🔗 الرابط: `{context.user_data['raksh_link']}`\n"
                 f"✍️ التعليق: `{context.user_data['raksh_comment']}`\n"
                 f"🔢 العدد: {quantity}\n\n"
+                f"📢 القنوات الإجبارية: {channel_count}\n"
+                f"➕ تكلفة القنوات الإضافية: {extra_channel_cost} نقطة\n\n"
                 f"💳 *اختر طريقة الدفع:*",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
