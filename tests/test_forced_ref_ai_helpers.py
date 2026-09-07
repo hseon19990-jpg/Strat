@@ -117,6 +117,11 @@ class ForcedRefAIHelperTests(unittest.TestCase):
 
     def test_success_requires_a_success_marker(self):
         self.assertTrue(self.helper._is_verification_success_text("✅ تم التحقق"))
+        self.assertTrue(self.helper._is_verification_success_text("نجح التحقق"))
+        self.assertTrue(self.helper._is_verification_success_text("صح"))
+        self.assertFalse(self.helper._is_verification_success_text("لم ينجح التحقق"))
+        self.assertFalse(self.helper._is_verification_success_text("لم يتم التحقق"))
+        self.assertFalse(self.helper._is_verification_success_text("غير صحيح، حاول مرة أخرى"))
         self.assertFalse(self.helper._is_verification_success_text("تم تغيير الأزرار"))
 
     def test_math_answer_is_not_followed_by_same_message_button_click(self):
