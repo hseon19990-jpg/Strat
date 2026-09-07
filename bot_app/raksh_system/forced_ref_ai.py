@@ -486,7 +486,32 @@ class ForcedRefAIService(RakshService):
         """Normalize button/custom-emoji labels before comparing them."""
         value = unicodedata.normalize("NFKC", str(value or "")).casefold()
         value = value.strip(" \t\r\n:：-—.,،؛!?؟")
-        return re.sub(r"[\s\u200d\ufe0e\ufe0f\u20e3]+", "", value)
+        return re.sub(
+            r"[\s\u200d\ufe0e\ufe0f\u20e3\U0001F3FB-\U0001F3FF]+",
+            "",
+            value,
+        )
+
+    @staticmethod
+    def _button_label(button) -> str:
+        """Return the visible label from Telethon's button wrappers."""
+        labels = []
+        for candidate in (button, getattr(button, "button", None)):
+            label = getattr(candidate, "text", None) if candidate else None
+            if label is not None and str(label) not in labels:
+                labels.append(str(label))
+        return " ".join(labels)
+
+    @staticmethod
+    def _normalise_math_text(value: str) -> str:
+        """Normalize Arabic-Indic digits and common Unicode operators."""
+        translation = str.maketrans(
+            "٠١٢٣٤٥٦٧٨٩−–—﹣×✕✖÷",
+            "0123456789----***/",
+        )
+        return unicodedata.normalize("NFKC", str(value or "")).translate(
+            translation
+        )
 
     @classmethod
     def _captcha_target_labels(cls, message, text: str) -> list[str]:
@@ -1034,7 +1059,51 @@ class ForcedRefAIService(RakshService):
                     return False
 
 
-            # 1. استخراج الكود
+            # 1. حل المسائل الرياضية أولاً. لا نحاول استخراج كود من رسالة
+            # حسابية، ولا نضغط أزرارها بعد إرسال الناتج.
+            math_text = self._normalise_math_text(text)
+            math_match = re.search(
+                r"(?<!\d)(\d{1,9})\s*([+\-*/])\s*(\d{1,9})"
+                r"\s*=\s*[?؟]?",
+                math_text,
+            )
+            if math_match:
+                try:
+                    a = int(math_match.group(1))
+                    op = math_match.group(2)
+                    b = int(math_match.group(3))
+                    if op == "+":
+                        result = str(a + b)
+                    elif op == "-":
+                        result = str(a - b)
+                    elif op == "*":
+                        result = str(a * b)
+                    elif b == 0:
+                        result = None
+                    else:
+                        quotient = a / b
+                        result = (
+                            str(int(quotient))
+                            if quotient.is_integer()
+                            else str(quotient)
+                        )
+                    if result is not None:
+                        await client.send_message(bot_entity, result)
+                        logger.info(
+                            "✅ تم حل المسألة: %s %s %s = %s",
+                            a,
+                            op,
+                            b,
+                            result,
+                        )
+                        processed_ids.add(verification_message.id)
+                        cursor_id = verification_message.id
+                        await asyncio.sleep(2.0)
+                        continue
+                except Exception:
+                    logger.warning("⚠️ تعذر حل المسألة الحسابية: %r", text[:160])
+
+            # 2. استخراج الكود بعد استبعاد المسألة الحسابية.
             send_text = _extract_code_from_text(text)
             if send_text:
                 try:
@@ -1047,54 +1116,10 @@ class ForcedRefAIService(RakshService):
                 except Exception:
                     return False
 
-            # 2. حل المسائل الرياضية
-            math_patterns = [
-                (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=\s*\?', 1, 2, 3),
-                (r'(\d+)\s*([+\-*/])\s*(\d+)\s*=', 1, 2, 3),
-                (r'(\d+)\s*\+\s*(\d+)\s*=', 1, 2),
-                (r'(\d+)\s*\-\s*(\d+)\s*=', 1, 2),
-                (r'(\d+)\s*\*\s*(\d+)\s*=', 1, 2),
-                (r'(\d+)\s*\/\s*(\d+)\s*=', 1, 2),
-            ]
-            math_solved = False
-            for pattern, *groups in math_patterns:
-                match = re.search(pattern, text)
-                if match:
-                    try:
-                        if len(groups) == 3:
-                            a, op, b = int(match.group(groups[0])), match.group(groups[1]), int(match.group(groups[2]))
-                        else:
-                            a, b = int(match.group(groups[0])), int(match.group(groups[1]))
-                            op = '+'
-                        if op == '+': result = str(a + b)
-                        elif op == '-': result = str(a - b)
-                        elif op == '*': result = str(a * b)
-                        elif op == '/':
-                            if b == 0:
-                                result = None
-                            else:
-                                quotient = a / b
-                                result = (
-                                    str(int(quotient))
-                                    if quotient.is_integer()
-                                    else str(quotient)
-                                )
-                        else: result = None
-                        if result is not None:
-                            await client.send_message(bot_entity, result)
-                            logger.info(f"✅ تم حل المسألة: {a} {op} {b} = {result}")
-                            processed_ids.add(verification_message.id)
-                            cursor_id = verification_message.id
-                            math_solved = True
-                            await asyncio.sleep(2.0)
-                            break
-                    except Exception:
-                        continue
-
             # Do not click a button from the old challenge after submitting
-            # the math answer.  The next Telegram message contains the actual
-            # result or the next verification stage.
-            if math_solved:
+            # an answer. The next Telegram message contains the result or the
+            # next verification stage.
+            if math_match:
                 continue
 
             # 3. الضغط على الأزرار
@@ -1120,7 +1145,7 @@ class ForcedRefAIService(RakshService):
                 }
                 button_labels = {
                     id(button): self._normalise_captcha_label(
-                        getattr(button, "text", "")
+                        self._button_label(button)
                     )
                     for button in buttons
                 }
@@ -1148,7 +1173,7 @@ class ForcedRefAIService(RakshService):
                     button for button in buttons
                     if button not in prioritized
                     and button_labels.get(id(button))
-                    and len(button_labels[id(button)]) > 1
+                    and len(button_labels[id(button)]) >= 1
                     and button_labels[id(button)] in self._normalise_captcha_label(target_tail)
                 ]
                 prioritized.extend(tail_matches)
@@ -1169,7 +1194,10 @@ class ForcedRefAIService(RakshService):
                 verify_keywords = ['تحقق', 'verify', 'اضغط هنا', 'continue', 'التالي', 'متابعة']
                 verify_buttons = [
                     b for b in buttons
-                    if any(kw in (getattr(b, 'text', '') or '').casefold() for kw in verify_keywords)
+                    if any(
+                        kw in self._button_label(b).casefold()
+                        for kw in verify_keywords
+                    )
                     and b not in prioritized
                 ]
                 prioritized.extend(verify_buttons)
