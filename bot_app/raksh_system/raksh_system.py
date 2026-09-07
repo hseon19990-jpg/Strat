@@ -1872,6 +1872,32 @@ async def _collect_raksh_account_identities(
     return identities
 
 
+async def _load_raksh_requester_identity(bot, user_id: int) -> Dict:
+    """قراءة اسم ومعرف وإيدي صاحب طلب الرشق من Telegram."""
+    identity = {
+        "name": "غير متوفر",
+        "username": "",
+        "telegram_id": user_id,
+    }
+    try:
+        user = await asyncio.wait_for(bot.get_chat(user_id), timeout=8)
+        first_name = str(getattr(user, "first_name", "") or "").strip()
+        last_name = str(getattr(user, "last_name", "") or "").strip()
+        identity["name"] = (
+            " ".join(part for part in (first_name, last_name) if part).strip()
+            or "بدون اسم"
+        )
+        identity["username"] = str(getattr(user, "username", "") or "").strip()
+        identity["telegram_id"] = getattr(user, "id", None) or user_id
+    except Exception as exc:
+        logger.warning(
+            "تعذر قراءة هوية صاحب طلب الرشق %s: %s",
+            user_id,
+            exc,
+        )
+    return identity
+
+
 async def _send_raksh_owner_result(
     bot,
     service_type: str,
@@ -1881,6 +1907,7 @@ async def _send_raksh_owner_result(
     failed_details: List[str],
     target_link: str = "",
     account_identities: Optional[Dict[str, Dict]] = None,
+    requester_identity: Optional[Dict] = None,
 ):
     """إرسال النتيجة للمالك"""
     if not OWNER_ID:
@@ -1894,6 +1921,25 @@ async def _send_raksh_owner_result(
             f"❌ الفاشل: {len(failed_phones)}",
             "",
         ]
+
+        requester_identity = requester_identity or {}
+        requester_name = requester_identity.get("name") or "غير متوفر"
+        requester_username = requester_identity.get("username")
+        requester_username_label = (
+            f"@{requester_username}" if requester_username else "بدون معرف"
+        )
+        requester_telegram_id = (
+            requester_identity.get("telegram_id") or "غير متوفر"
+        )
+        lines.extend(
+            [
+                "👨‍🎓 الطالب صاحب الطلب:",
+                f"• الاسم: {requester_name}",
+                f"• المعرف: {requester_username_label}",
+                f"• Telegram ID: {requester_telegram_id}",
+                "",
+            ]
+        )
 
         account_identities = account_identities or {}
 
@@ -2026,6 +2072,10 @@ async def _run_raksh_order(
         sessions,
         identity_phones,
     )
+    requester_identity = await _load_raksh_requester_identity(
+        context.bot,
+        user_id,
+    )
     await _send_raksh_owner_result(
         context.bot,
         order["service_type"],
@@ -2035,6 +2085,7 @@ async def _run_raksh_order(
         failed_details,
         target_link=(order.get("params") or {}).get("link", ""),
         account_identities=account_identities,
+        requester_identity=requester_identity,
     )
 
     # حساب التعويض مرة واحدة عند إنهاء الطلب.
