@@ -1046,6 +1046,18 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             )
             return
 
+        if data == "os:edit_gmail_redirect_url" and is_own:
+            cur = get_setting("gmail_redirect_url") or "غير مضبوط"
+            context.user_data["state"] = "os_await_gmail_redirect_url"
+            await q.edit_message_text(
+                "🔗 *رابط البوت الآخر لخدمة الإيميل*\n\n"
+                f"الرابط الحالي: `{cur}`\n\n"
+                "أرسل رابط البوت بصيغة `https://t.me/BotUsername`\n"
+                "أو أرسل `-` لحذف الرابط.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
         if data == "os:edit_gmail_email_prompt" and is_own:
             cur = get_setting("gmail_email_prompt") or "📧 *أرسل الإيميل*"
             context.user_data["state"] = "os_await_gmail_email_prompt"

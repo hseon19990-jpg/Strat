@@ -1433,28 +1433,53 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             return
 
         if data == "gmail_points":
-            intro_msg = get_setting("gmail_intro_message") or "للحصول على النقاط قدّم حساب جيميل لا تستخدمه."
-            gmail_reward = int(get_setting("gmail_points_reward") or "10000")
-            await q.edit_message_text(
-                f"📧 *احصل على {gmail_reward:,} نقطة*\n\n{intro_msg}",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✅ التالي", callback_data="gmail_next")],
-                    [InlineKeyboardButton("🔐 التحقق", callback_data="totp_generator")],
-                    [InlineKeyboardButton("❌ إلغاء", callback_data="collect_points")],
+            redirect_url = (get_setting("gmail_redirect_url") or "").strip()
+            text = (
+                "📧 *خدمة الإيميل*\n\n"
+                "تم نقل هذه الخدمة إلى بوت آخر.\n"
+                "اضغط الزر أدناه للانتقال إلى البوت الجديد."
+            )
+            rows = []
+            if redirect_url:
+                rows.append([
+                    InlineKeyboardButton(
+                        "🚀 الانتقال للبوت الآخر",
+                        url=redirect_url,
+                    )
                 ])
+            else:
+                text += "\n\n⚠️ رابط البوت الآخر غير متوفر حالياً."
+            rows.append([
+                InlineKeyboardButton("🔙 رجوع", callback_data="collect_points")
+            ])
+            await q.edit_message_text(
+                text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup(rows),
             )
             return
 
         if data == "gmail_next":
-            context.user_data["state"] = "await_gmail_email"
-            email_prompt = get_setting("gmail_email_prompt") or "📧 *أرسل الإيميل*\n\nأرسل عنوان البريد الإلكتروني فقط بدون أي شيء آخر:"
-            await q.edit_message_text(
-                email_prompt,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("❌ إلغاء", callback_data="collect_points")]
+            redirect_url = (get_setting("gmail_redirect_url") or "").strip()
+            text = (
+                "📧 *خدمة الإيميل*\n\n"
+                "تم نقل هذه الخدمة إلى بوت آخر.\n"
+                "اضغط الزر أدناه للانتقال إلى البوت الجديد."
+            )
+            rows = []
+            if redirect_url:
+                rows.append([
+                    InlineKeyboardButton("🚀 الانتقال للبوت الآخر", url=redirect_url)
                 ])
+            else:
+                text += "\n\n⚠️ رابط البوت الآخر غير متوفر حالياً."
+            rows.append([
+                InlineKeyboardButton("🔙 رجوع", callback_data="collect_points")
+            ])
+            await q.edit_message_text(
+                text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup(rows),
             )
             return
 

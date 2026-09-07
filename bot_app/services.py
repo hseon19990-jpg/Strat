@@ -193,7 +193,6 @@ RAKSH_MENU_DEFAULTS = [
     ("🗳 رشق أصوات", "raksh:start:votes", 1),
     ("🛡 رشق تصويت مع تحقق", "raksh:start:votes_ai", 1),
     ("✨ رشق تفاعل مميز", "raksh:start:premium_reaction", 1),
-    ("📋 طلباتي", "raksh:my_orders", 1),
     ("🔥 إدارة خدمات الرشق", "os:raksh_accounts", 1),
     ("⚙️ إدارة الأسعار", "raksh:settings", 1),
 ]
@@ -306,6 +305,7 @@ BUILTIN_DEFAULTS = {
         ("⚙️ نقاط طلب جيميل", "os:edit_gmail_reward", 2),
         ("✏️ نص رسالة الجيميل", "os:edit_gmail_msg", 2),
         ("🏷 اسم زر الإيميل", "os:edit_gmail_btn_label", 2),
+         ("🔗 رابط البوت الآخر للإيميل", "os:edit_gmail_redirect_url", 2),
         ("📨 رسالة طلب الإيميل", "os:edit_gmail_email_prompt", 2),
         ("🔑 رسالة طلب الباسورد", "os:edit_gmail_pass_prompt", 2),
         ("💬 نص طلب ملاحظة التحقق", "os:edit_gmail_verification_note_prompt", 2),

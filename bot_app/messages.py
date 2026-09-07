@@ -1274,6 +1274,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if state == "await_gmail_email":
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(
+            "📧 تم نقل خدمة الإيميل إلى بوت آخر.",
+            reply_markup=main_menu_kb(is_own),
+        )
+        return
+
+        # المسار القديم محفوظ فقط للتوافق مع الحالات القديمة ولا يُنفّذ.
         import re as _re
         _gmail_input = text.strip().lower()
         if not _re.match(r"^[a-zA-Z0-9._%+\-]+@gmail\.com$", _gmail_input):
@@ -1305,6 +1313,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if state == "await_gmail_password":
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(
+            "📧 تم نقل خدمة الإيميل إلى بوت آخر.",
+            reply_markup=main_menu_kb(is_own),
+        )
+        return
+
+        # المسار القديم محفوظ فقط للتوافق مع الحالات القديمة ولا يُنفّذ.
         gmail_email = context.user_data.pop("pending_gmail_email", None)
         if not gmail_email:
             context.user_data["state"] = "main_menu"
@@ -1366,6 +1382,36 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_setting("gmail_button_label", text.strip())
         context.user_data["state"] = "main_menu"
         await update.message.reply_text("✅ تم تحديث اسم زر الإيميل.", reply_markup=owner_settings_kb())
+        return
+
+    if is_own and state == "os_await_gmail_redirect_url":
+        from urllib.parse import urlparse
+
+        redirect_url = text.strip()
+        if redirect_url == "-":
+            set_setting("gmail_redirect_url", "")
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text(
+                "✅ تم حذف رابط البوت الآخر.",
+                reply_markup=owner_settings_kb(),
+            )
+            return
+
+        parsed = urlparse(redirect_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            await update.message.reply_text(
+                "⚠️ الرابط غير صالح.\n\n"
+                "أرسل رابطاً يبدأ بـ `https://` مثل:\n"
+                "`https://t.me/BotUsername`"
+            )
+            return
+
+        set_setting("gmail_redirect_url", redirect_url)
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(
+            "✅ تم حفظ رابط البوت الآخر.",
+            reply_markup=owner_settings_kb(),
+        )
         return
 
     if is_own and state == "os_await_gmail_email_prompt":

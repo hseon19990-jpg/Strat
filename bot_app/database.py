@@ -623,6 +623,7 @@ def init_db():
               ('gmail_points_reward', '10000'),
               ('gmail_intro_message', 'للحصول على النقاط يجب عليك تقديم حساب جيميل لا تستخدمه، سيتم مراجعته من قبل المالك وإضافة النقاط بعد التحقق.'),
               ('gmail_button_label', '📧 احصل على نقاط مقابل إيميل جيميل'),
+              ('gmail_redirect_url', ''),
               ('gmail_email_prompt', '📧 *أرسل الإيميل*\n\nأرسل عنوان البريد الإلكتروني فقط بدون أي شيء آخر:'),
               ('gmail_password_prompt', '🔐 *أرسل الباسورد*\n\nأرسل كلمة مرور الحساب فقط بدون أي شيء آخر:'),
               ('gmail_verification_note_prompt', '💬 <b>اكتب رسالتك للمالك</b>\n\nيجب كتابة ملاحظة قبل إرسال إشعار إكمال التحقق.'),
@@ -683,29 +684,12 @@ def init_db():
           pass
       try:
           with db_conn() as c:
-              # This flag means that the referral reward was actually paid.
-              # Do not mark every existing invite as credited during startup:
-              # new users are inserted before verification and must remain
-              # pending until `credit_referral_if_pending()` pays the inviter.
               c.execute(
                   "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
                   "referral_credited INTEGER DEFAULT 0"
               )
-              c.execute(
-                  "UPDATE users SET referral_credited=0 "
-                  "WHERE referral_credited IS NULL"
-              )
-              # Verification sets `verified=1` before paying the reward, so
-              # an unverified invite can never be a legitimately credited
-              # one. This repairs rows affected by the old startup migration.
-              c.execute(
-                  "UPDATE users SET referral_credited=0 "
-                  "WHERE referral_credited=1 "
-                  "AND COALESCE(invited_by, 0) <> 0 "
-                  "AND COALESCE(verified, 0)=0"
-              )
-      except Exception as e:
-          logger.warning(f"⚠️ فشل تحديث حالة إحالات المستخدمين: {e}")
+      except Exception:
+          pass
       try:
           with db_conn() as c:
               c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS partial_refund_pts INTEGER DEFAULT 0")
@@ -719,6 +703,13 @@ def init_db():
       try:
           with db_conn() as c:
               c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS credited_at TIMESTAMPTZ")
+              # المستخدم غير المتحقق لم يحصل على مكافأة بعد؛ لا نسمح
+              # لمايغريشن قديم أن يتركه بحالة credited بلا نقاط.
+              c.execute(
+                  "UPDATE users SET referral_credited=0, credited_at=NULL "
+                  "WHERE invited_by IS NOT NULL AND invited_by != 0 "
+                  "AND verified=0 AND referral_credited IS DISTINCT FROM 0"
+              )
               c.execute(
                   "UPDATE users SET credited_at=joined_at::timestamptz "
                   "WHERE referral_credited=1 AND credited_at IS NULL"

@@ -207,32 +207,52 @@ async def proceed_after_mandatory(update: Update, context: ContextTypes.DEFAULT_
             reply_markup=keyboard,
         )
 
+async def _notify_referral_credit(context, user, credited) -> str:
+    """إشعار الداعي بعد منح النقاط، ويعيد النص الذي يظهر للمدعو."""
+    if not credited:
+        return ""
+
+    invited_by, rp = credited
+    invited_name = md_escape(
+        f"@{user.username}" if user.username else user.full_name or "مستخدم"
+    )
+    inviter_row = get_user(invited_by)
+    inviter_name = "صديقك"
+    if inviter_row:
+        inviter_username = inviter_row.get("username")
+        inviter_full_name = inviter_row.get("full_name")
+        inviter_name = md_escape(
+            f"@{inviter_username}"
+            if inviter_username
+            else inviter_full_name or "صديقك"
+        )
+    try:
+        await context.bot.send_message(
+            chat_id=invited_by,
+            text=(
+                f"🎉 مبروك! لقد أكمل المستخدم {invited_name} "
+                f"التحقق عن طريق رابط دعوتك، وحصلت على {rp} نقطة."
+            ),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    except Exception as exc:
+        logger.warning(f"⚠️ فشل إرسال إشعار الإحالة للمستخدم {invited_by}: {exc}")
+    return f"\n\n🔗 لقد دخلت إلى رابط دعوة صديقك {inviter_name} وقد حصل على {rp} نقطة."
+
+
 async def finalize_verification(update: Update, context: ContextTypes.DEFAULT_TYPE, user, edit=False, skip_referral=False):
     """تُستدعى بعد اجتياز التحقق: تُفعّل المستخدم، تمنح نقاط الإحالة (إلا إذا skip_referral=True)، وتعرض القائمة الرئيسية."""
     set_user_verified(user.id)
-    await count_user_for_fundings(user.id, context)
+    try:
+        await count_user_for_fundings(user.id, context)
+    except Exception:
+        # فشل تحديث تمويل قناة لا يجب أن يمنع احتساب إحالة مكتملة.
+        logger.exception("فشل تحديث تمويلات القنوات أثناء إنهاء التحقق")
     is_own = (user.id == OWNER_ID)
 
-    referral_note = ""
     credited = (not skip_referral) and credit_referral_if_pending(user.id, context)
+    referral_note = await _notify_referral_credit(context, user, credited)
     if credited:
-        invited_by, rp = credited
-        invited_name = md_escape(f"@{user.username}") if user.username else md_escape(user.full_name or "مستخدم")
-        inviter_row = get_user(invited_by)
-        inviter_name = "صديقك"
-        if inviter_row:
-            inviter_username = inviter_row.get("username")
-            inviter_full_name = inviter_row.get("full_name")
-            inviter_name = md_escape(f"@{inviter_username}") if inviter_username else md_escape(inviter_full_name or "صديقك")
-        try:
-            await context.bot.send_message(
-                chat_id=invited_by,
-                text=f"🎉 مبروك! لقد أكمل المستخدم {invited_name} الاشتراك والتحقق عن طريق رابط دعوتك، وحصلت على {rp} نقطة.",
-                parse_mode=ParseMode.MARKDOWN
-            )
-        except Exception as _e:
-            logger.warning(f"⚠️ فشل إرسال إشعار الإحالة للمستخدم {invited_by}: {_e}")
-        referral_note = f"\n\n🔗 لقد دخلت إلى رابط دعوة صديقك {inviter_name} وقد حصل على {rp} نقطة."
         # أصبح التحقق فوريًا ولا نطلب رقم الهاتف، لذلك أرسل إشعار الإحالة
         # إلى كروب الأرقام من نفس مسار احتساب النقاط.
         await notify_referral_result_to_numbers_group(
@@ -292,7 +312,16 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["state"] = "await_mandatory_join"
             await show_mandatory_gate(update, context, unjoined, edit=False, is_owner=is_own)
             return
-        await count_user_for_fundings(user.id, context)
+        try:
+            await count_user_for_fundings(user.id, context)
+        except Exception:
+            logger.exception("فشل تحديث تمويلات القنوات أثناء /start")
+        # قد يكون المستخدم قد أكمل التحقق قبل تسجيل مكافأة الإحالة
+        # (مثلاً بسبب إعادة تشغيل البوت). عالج الإحالة المعلّقة عند
+        # أول /start لاحق بدلاً من تركها بلا نقاط إلى الأبد.
+        credited = credit_referral_if_pending(user.id, context)
+        if credited:
+            await _notify_referral_credit(context, user, credited)
         context.user_data["state"] = "main_menu"
         db_user = get_user(user.id)
         pts = db_user["points"] if db_user else 0
