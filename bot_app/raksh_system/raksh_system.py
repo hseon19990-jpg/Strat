@@ -475,7 +475,7 @@ def _set_raksh_order_status(
                     ELSE completed_at
                 END,
                 lease_until=NULL
-            WHERE id=%s
+            WHERE id=%s AND status <> 'cancelled'
             """,
             (status, last_error, status, order_id),
         )
