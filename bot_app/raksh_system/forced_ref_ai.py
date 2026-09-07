@@ -414,14 +414,48 @@ class ForcedRefAIService(RakshService):
 
     @staticmethod
     def _is_verification_success_text(value) -> bool:
-        """يقبل إشارات إتمام التحقق حتى لو وصلت معها رسالة سلبية متأخرة."""
+        """يتحقق من نجاح صريح، ولا يعتبر عبارات الفشل نجاحاً."""
         text = str(value or "").strip().casefold()
         if not text:
             return False
+
+        # يجب فحص النفي أولاً؛ فعبارات مثل «لم ينجح التحقق» تحتوي حرفياً
+        # على كلمة «نجح» ولا يجوز اعتبارها نجاحاً.
+        failure_markers = (
+            "لم ينجح",
+            "لم يتم",
+            "لم يكتمل",
+            "لم تكتمل",
+            "ما تم",
+            "لا نجاح",
+            "لا يوجد نجاح",
+            "لا يمكن",
+            "غير ناجح",
+            "غير صحيح",
+            "التحقق غير مكتمل",
+            "فشل",
+            "فاشل",
+            "خطأ في التحقق",
+            "تعذر",
+            "يتعذر",
+            "verification failed",
+            "not verified",
+            "not successful",
+            "unsuccessful",
+            "failed",
+            "failure",
+            "invalid",
+            "incorrect",
+            "wrong answer",
+            "try again",
+        )
+        if any(marker in text for marker in failure_markers):
+            return False
+
         success_markers = (
-            "✅", "✓", "✔", "☑",
             "تم التحقق",
             "نجح التحقق",
+            "نجاح التحقق",
             "تم اجتياز التحقق",
             "اجتياز الكابتشا",
             "تم حل التحقق",
@@ -440,13 +474,22 @@ class ForcedRefAIService(RakshService):
             "you are verified",
             "access granted",
             "welcome to the group",
+            "passed",
+            "correct",
+            "صح",
+            "صحيح",
+            "نجاح",
+            "نجح",
             "success",
         )
         if any(marker.casefold() in text for marker in success_markers):
             return True
         normalized = text.strip(" !؟?.,،")
         return normalized in {
-            "تم", "نجح", "success", "ok", "تم فقط", "نجح فقط",
+            "✅", "✓", "✔", "☑",
+            "تم", "نجح", "نجاح", "صح", "صحيح",
+            "success", "ok", "passed", "correct",
+            "تم فقط", "نجح فقط",
             "أنت بشري", "انت بشري",
         }
 
@@ -721,7 +764,7 @@ class ForcedRefAIService(RakshService):
         1. إذا طلب البوت مشاركة رقم الهاتف (زر KeyboardButtonRequestPhone) – نرسل الرقم ونضغط متابعة.
         2. وإلا نستخدم المنطق القديم: استخراج الكود، حل المسائل، الضغط على الأزرار العادية.
         """
-        MAX_WAIT = 12
+        MAX_INITIAL_PROBE_ATTEMPTS = 2
         # Verification bots often answer asynchronously. Poll at a stable
         # two-second interval instead of giving up after one quick read.
         CHECK_INTERVAL = 2.0
@@ -737,11 +780,15 @@ class ForcedRefAIService(RakshService):
 
         # ─── المرحلة 1: البحث عن طلب مشاركة رقم الهاتف ───
         contact_request_msg = None
-        for _ in range(MAX_WAIT):
+        initial_verification_messages = None
+        successful_probe = False
+        for probe_index in range(MAX_INITIAL_PROBE_ATTEMPTS):
             try:
                 messages = await client.get_messages(bot_entity, limit=5)
+                successful_probe = True
             except Exception:
-                await asyncio.sleep(CHECK_INTERVAL)
+                if probe_index + 1 < MAX_INITIAL_PROBE_ATTEMPTS:
+                    await asyncio.sleep(CHECK_INTERVAL)
                 continue
 
             for msg in messages:
@@ -761,7 +808,39 @@ class ForcedRefAIService(RakshService):
                     break
             if contact_request_msg:
                 break
-            await asyncio.sleep(CHECK_INTERVAL)
+
+            # ظهور صورة/زر/نص تحقق يعني أن العملية دخلت مرحلة التحقق؛
+            # نمرر الرسائل نفسها للمحلل حتى لا تضيع أول مرحلة.
+            incoming = [
+                msg for msg in messages
+                if not getattr(msg, "out", False)
+                and (not base_id or msg.id > base_id)
+            ]
+            if any(self._looks_like_verification_message(msg) for msg in incoming):
+                initial_verification_messages = messages
+                break
+
+            if probe_index + 1 < MAX_INITIAL_PROBE_ATTEMPTS:
+                await asyncio.sleep(CHECK_INTERVAL)
+
+        # لا توجد رسالة تحقق بعد ضغط Start: النجاح هنا فوري، ولا ننتظر
+        # 30 دورة بلا فائدة كما كان يحدث سابقاً.
+        if (
+            successful_probe
+            and not contact_request_msg
+            and initial_verification_messages is None
+        ):
+            logger.info(
+                "ℹ️ لم يظهر تحقق بعد ضغط Start للحساب %s؛ تُحتسب الإحالة ناجحة",
+                phone_number,
+            )
+            return True
+        if not successful_probe and not contact_request_msg:
+            logger.warning(
+                "⚠️ تعذر قراءة رد البوت بعد ضغط Start للحساب %s",
+                phone_number,
+            )
+            return False
 
         # إذا وجدنا طلب رقم → نعالجه بطريقة جديدة
         if contact_request_msg:
@@ -841,6 +920,7 @@ class ForcedRefAIService(RakshService):
                     bot_entity,
                     phone_number,
                     base_id=base_id,
+                    initial_messages=initial_verification_messages,
                 )
 
             try:
@@ -875,7 +955,11 @@ class ForcedRefAIService(RakshService):
         # المنطق القديم (مستند على _solve_forced_ref_verification من common.py)
         # ولكن سنعيد تنفيذه هنا لتكامل الملف
         return await self._solve_legacy_verification(
-            client, bot_entity, phone_number, base_id=base_id
+            client,
+            bot_entity,
+            phone_number,
+            base_id=base_id,
+            initial_messages=initial_verification_messages,
         )
 
     async def _solve_legacy_verification(
@@ -1288,6 +1372,9 @@ class ForcedRefAIService(RakshService):
                         button_clicked = True
                         break
                     except Exception:
+                        # فشل الضغط قد يكون مؤقتاً؛ أعد قراءة نفس المرحلة
+                        # بعد ثانيتين بدلاً من إسقاط الحساب مباشرة.
+                        await asyncio.sleep(2.0)
                         continue
 
             if button_clicked:
