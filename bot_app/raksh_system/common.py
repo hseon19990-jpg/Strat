@@ -987,6 +987,9 @@ class ServiceConfig:
     min_delay: int = 3
     max_delay: int = 3
     max_concurrent: int = 1
+    # خدمات القنوات يمكنها تحديد عدد القنوات المجانية وسعر الإضافية.
+    channel_free_limit: int = 5
+    channel_extra_point_price: int = RAKSH_CHANNEL_EXTRA_POINT_PRICE
 
 # ════════════════════════════════════════════════════════
 # ═══ 7. RakshService - الفئة الأساسية ═══
@@ -1033,10 +1036,13 @@ class RakshService:
         total = ((quantity + bundle_quantity - 1) // bundle_quantity) * price
         if self.config.has_channel and payment_method == "points":
             try:
-                extra_channels = max(0, int(channel_count) - RAKSH_CHANNEL_FREE_LIMIT)
+                free_limit = max(0, int(self.config.channel_free_limit))
+                extra_channels = max(0, int(channel_count) - free_limit)
             except (TypeError, ValueError):
                 extra_channels = 0
-            total += extra_channels * RAKSH_CHANNEL_EXTRA_POINT_PRICE
+            total += extra_channels * max(
+                0, int(self.config.channel_extra_point_price)
+            )
         return total
 
     def get_rate_text(self, payment_method: str) -> str:
