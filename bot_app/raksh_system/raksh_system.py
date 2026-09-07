@@ -218,6 +218,169 @@ def _load_raksh_order(order_id: int) -> Optional[Dict]:
     return order
 
 
+def _is_raksh_order_cancelled(order_id: Optional[int]) -> bool:
+    if not order_id:
+        return False
+    with db_conn() as c:
+        row = c.execute(
+            "SELECT status FROM raksh_orders WHERE id=%s",
+            (order_id,),
+        ).fetchone()
+    return bool(row and row["status"] == "cancelled")
+
+
+def _cancel_user_raksh_order(user_id: int, order_id: int) -> Dict:
+    """إلغاء طلب يملكه المستخدم وإيقاف الحسابات التي لم تكتمل."""
+    refund = 0
+    success_count = 0
+    quantity = 0
+    payment_method = "points"
+    with db_conn() as c:
+        order = c.execute(
+            "SELECT * FROM raksh_orders WHERE id=%s AND user_id=%s FOR UPDATE",
+            (order_id, user_id),
+        ).fetchone()
+        if not order:
+            return {"status": "missing"}
+        if order["status"] not in {"pending", "running"}:
+            return {"status": "finished", "order_status": order["status"]}
+
+        quantity = int(order["quantity"] or 0)
+        payment_method = order["payment_method"]
+        success_row = c.execute(
+            "SELECT COUNT(*) AS count FROM raksh_order_items WHERE order_id=%s AND status='success'",
+            (order_id,),
+        ).fetchone()
+        success_count = int(success_row["count"] or 0)
+        if payment_method == "points":
+            try:
+                refund = max(
+                    0,
+                    int(order["total_cost"] or 0)
+                    - get_raksh_total(order["service_type"], success_count, "points"),
+                )
+            except Exception:
+                refund = 0
+
+        cancel_reason = "أُلغي من المستخدم"
+        result_text = (
+            f"❌ أُلغي الطلب #{order_id}.\n"
+            f"✅ المنجز قبل الإلغاء: {success_count}/{quantity}"
+        )
+        if refund > 0:
+            result_text += f"\n💰 تمت إعادة {refund} نقطة."
+        c.execute(
+            """
+            UPDATE raksh_orders
+            SET status='cancelled', refund_points=%s, result_text=%s,
+                last_error=%s, lease_until=NULL, updated_at=NOW(), completed_at=NOW()
+            WHERE id=%s AND status IN ('pending', 'running')
+            """,
+            (refund, result_text, cancel_reason, order_id),
+        )
+        c.execute(
+            """
+            UPDATE raksh_order_items
+            SET status='cancelled', last_error=%s, updated_at=NOW()
+            WHERE order_id=%s AND status IN ('pending', 'running')
+            """,
+            (cancel_reason, order_id),
+        )
+
+    if refund > 0:
+        add_points(user_id, refund)
+    return {
+        "status": "cancelled",
+        "refund": refund,
+        "success_count": success_count,
+        "quantity": quantity,
+        "payment_method": payment_method,
+    }
+
+
+def _load_user_raksh_orders(user_id: int, statuses: tuple[str, ...], limit: int = 10):
+    if not statuses:
+        return []
+    placeholders = ", ".join("%s" for _ in statuses)
+    with db_conn() as c:
+        return c.execute(
+            f"""
+            SELECT o.*,
+                   (SELECT COUNT(*) FROM raksh_order_items i
+                    WHERE i.order_id=o.id AND i.status='success') AS success_count,
+                   (SELECT COUNT(*) FROM raksh_order_items i
+                    WHERE i.order_id=o.id AND i.status='failed') AS failed_count
+            FROM raksh_orders o
+            WHERE o.user_id=%s AND o.status IN ({placeholders})
+            ORDER BY o.created_at DESC, o.id DESC
+            LIMIT %s
+            """,
+            (user_id, *statuses, limit),
+        ).fetchall()
+
+
+def _raksh_order_date(value) -> str:
+    try:
+        return value.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return str(value or "—")[:16]
+
+
+def _raksh_order_service_name(order) -> str:
+    svc = get_raksh_service(order["service_type"])
+    return svc.label if svc else str(order["service_type"])
+
+
+def _raksh_order_summary(order, current: bool) -> str:
+    order_id = int(order["id"])
+    service_name = md_escape(_raksh_order_service_name(order))
+    quantity = int(order["quantity"] or 0)
+    success_count = int(order.get("success_count") or 0)
+    failed_count = int(order.get("failed_count") or 0)
+    payment_label = "نقطة" if order["payment_method"] == "points" else "نجمة"
+    if current:
+        state = "⏳ جاري" if order["status"] == "running" else "🕐 بانتظار التنفيذ"
+        return (
+            f"• *#{order_id}* — {service_name}\n"
+            f"  {state} | 📊 {success_count}/{quantity} | 💰 {order['total_cost']} {payment_label}\n"
+            f"  🕒 {_raksh_order_date(order.get('created_at'))}"
+        )
+    state = "✅ مكتمل" if order["status"] == "completed" else "❌ ملغى"
+    return (
+        f"• *#{order_id}* — {service_name}\n"
+        f"  {state} | ✅ المنجز: {success_count}/{quantity} | ❌ الفاشل: {failed_count}\n"
+        f"  🕒 {_raksh_order_date(order.get('created_at'))}"
+    )
+
+
+async def _render_user_raksh_orders(query, user_id: int):
+    current_orders = _load_user_raksh_orders(user_id, ("pending", "running"))
+    completed_orders = _load_user_raksh_orders(user_id, ("completed", "cancelled"))
+    lines = ["📋 *طلباتي*", ""]
+    if current_orders:
+        lines.append("⏳ *الطلبات الجارية:*\n")
+        for order in current_orders:
+            lines.append(_raksh_order_summary(order, current=True))
+            lines.append("")
+    else:
+        lines.append("⏳ *الطلبات الجارية:* لا توجد طلبات قيد التنفيذ.\n")
+    if completed_orders:
+        lines.append("✅ *الطلبات المكتملة والملغاة:*\n")
+        for order in completed_orders:
+            lines.append(_raksh_order_summary(order, current=False))
+            lines.append("")
+    else:
+        lines.append("✅ *الطلبات المكتملة:* لا توجد طلبات سابقة.")
+    rows = []
+    for order in current_orders:
+        rows.append([InlineKeyboardButton(f"❌ إلغاء الطلب #{order['id']}", callback_data=f"raksh:order:cancel:{order['id']}")])
+    rows.append([InlineKeyboardButton("🔙 رجوع لخدمات الرشق", callback_data="raksh_menu")])
+    await query.edit_message_text(
+        "\n".join(lines), parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+
+
 def _load_raksh_order_items(order_id: int) -> Dict[str, Dict]:
     with db_conn() as c:
         rows = c.execute(
@@ -232,26 +395,34 @@ def _load_raksh_order_items(order_id: int) -> Dict[str, Dict]:
     return {str(row["phone_number"]): dict(row) for row in rows}
 
 
-def _mark_raksh_order_item_started(order_id: int, phone: str) -> None:
+def _mark_raksh_order_item_started(order_id: int, phone: str) -> bool:
     with db_conn() as c:
-        c.execute(
+        row = c.execute(
             """
             UPDATE raksh_order_items
             SET status='running', attempts=attempts + 1,
                 last_error=NULL, updated_at=NOW()
-            WHERE order_id=%s AND phone_number=%s
+            WHERE order_id=%s AND phone_number=%s AND status <> 'cancelled'
+              AND EXISTS (
+                  SELECT 1 FROM raksh_orders o
+                  WHERE o.id=%s AND o.status <> 'cancelled'
+              )
+            RETURNING id
             """,
-            (order_id, phone),
-        )
+            (order_id, phone, order_id),
+        ).fetchone()
+        if not row:
+            return False
         c.execute(
             """
             UPDATE raksh_orders
             SET status='running', updated_at=NOW(),
                 lease_until=NOW() + (%s * INTERVAL '1 minute')
-            WHERE id=%s
+            WHERE id=%s AND status <> 'cancelled'
             """,
             (RAKSH_ORDER_LEASE_MINUTES, order_id),
         )
+    return True
 
 
 def _mark_raksh_order_item_result(
@@ -268,7 +439,7 @@ def _mark_raksh_order_item_result(
                 result_message=%s,
                 last_error=%s,
                 updated_at=NOW()
-            WHERE order_id=%s AND phone_number=%s
+            WHERE order_id=%s AND phone_number=%s AND status <> 'cancelled'
             """,
             (
                 "success" if ok else "failed",
@@ -283,7 +454,7 @@ def _mark_raksh_order_item_result(
             UPDATE raksh_orders
             SET updated_at=NOW(),
                 lease_until=NOW() + (%s * INTERVAL '1 minute')
-            WHERE id=%s
+            WHERE id=%s AND status <> 'cancelled'
             """,
             (RAKSH_ORDER_LEASE_MINUTES, order_id),
         )
@@ -524,6 +695,9 @@ async def _execute_raksh_sequential(
         phone = session["phone_number"]
         queued_phones.discard(phone)
 
+        if order_id and _is_raksh_order_cancelled(order_id):
+            break
+
         if attempt_count:
             delay = svc.get_delay_seconds(params.get("delay_seconds"))
             logger.info(f"⏱️ انتظار {delay} ثانية قبل الحساب {phone}")
@@ -564,9 +738,12 @@ async def _execute_raksh_sequential(
                 )
             continue
 
+        if order_id and _is_raksh_order_cancelled(order_id):
+            break
+
         async with session_lock:
-            if order_id:
-                _mark_raksh_order_item_started(order_id, phone)
+            if order_id and not _mark_raksh_order_item_started(order_id, phone):
+                break
             try:
                 channel_setup_done_before = channel_setup_done
                 channel_setup_done = True
@@ -649,6 +826,8 @@ async def _execute_raksh_parallel(
 
     async def execute_one(session, index, is_first=False):
         phone = session["phone_number"]
+        if order_id and _is_raksh_order_cancelled(order_id):
+            return False, "تم إلغاء الطلب"
         if not _reserve_raksh_execution_slot(
             user_id, service_type, phone, order_id=order_id
         ):
@@ -658,7 +837,12 @@ async def _execute_raksh_parallel(
         if not await _wait_for_raksh_session(session_lock, phone):
             return False, "تعذر تجهيز الجلسة بعد الانتظار"
 
+        if order_id and _is_raksh_order_cancelled(order_id):
+            return False, "تم إلغاء الطلب"
+
         async with session_lock:
+            if order_id and not _mark_raksh_order_item_started(order_id, phone):
+                return False, "تم إلغاء الطلب"
             try:
                 return await asyncio.wait_for(
                     svc.execute(
@@ -701,11 +885,11 @@ async def _execute_raksh_parallel(
     # Schedule the next wave every two seconds instead of waiting for the
     # slowest account in the previous wave. This is the actual "12 every 2s"
     # owner behavior; member requests never enter this function.
-    while pool and success_count < quantity:
+    while pool and success_count < quantity and not (order_id and _is_raksh_order_cancelled(order_id)):
         planned = success_count
         scheduled = []
         wave_number = 0
-        while pool and planned < quantity:
+        while pool and planned < quantity and not (order_id and _is_raksh_order_cancelled(order_id)):
             wave = []
             while pool and len(wave) < min(max_concurrent, quantity - planned):
                 session = pool.pop(0)
@@ -798,6 +982,10 @@ def raksh_menu_kb(is_owner: bool = False):
                     f"🔥 إدارة {get_raksh_accounts_label()}",
                     callback_data=action,
                 )
+            ])
+        elif action == "raksh:my_orders":
+            buttons.append([
+                InlineKeyboardButton(item["label"], callback_data=action)
             ])
         elif action == "raksh:settings" and is_owner:
             buttons.append([
@@ -1076,6 +1264,35 @@ async def _handle_raksh_callback_impl(
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=raksh_menu_kb(is_own)
         )
+        return
+
+    # ─── طلباتي ───
+    if data == "raksh:my_orders":
+        _clear_raksh_state(context)
+        await _render_user_raksh_orders(query, user.id)
+        return
+
+    if data.startswith("raksh:order:cancel:"):
+        try:
+            order_id = int(data.rsplit(":", 1)[1])
+        except (TypeError, ValueError):
+            await query.answer("⚠️ رقم الطلب غير صالح.", show_alert=True)
+            return
+        result = _cancel_user_raksh_order(user.id, order_id)
+        if result["status"] == "missing":
+            await query.answer("⚠️ الطلب غير موجود ضمن طلباتك.", show_alert=True)
+            return
+        if result["status"] == "finished":
+            await query.answer("ℹ️ انتهى هذا الطلب ولا يمكن إلغاؤه الآن.", show_alert=True)
+            await _render_user_raksh_orders(query, user.id)
+            return
+        message = f"✅ تم إلغاء الطلب #{order_id}."
+        if result["refund"] > 0:
+            message += f" تمت إعادة {result['refund']} نقطة."
+        elif result["payment_method"] == "stars":
+            message += " أُلغي الجزء المتبقي، والاسترداد التلقائي للنجوم غير متاح."
+        await query.answer(message, show_alert=True)
+        await _render_user_raksh_orders(query, user.id)
         return
     
     # ─── بدء خدمة ───
@@ -1683,6 +1900,9 @@ async def _run_raksh_order(
             logger.exception(f"توقف طلب الرشق {order_id}; سيُستأنف تلقائياً")
             raise
 
+    if _is_raksh_order_cancelled(order_id):
+        return
+
     await _send_raksh_owner_result(
         context.bot,
         order["service_type"],
@@ -1713,9 +1933,6 @@ async def _run_raksh_order(
         elif failed_refund > 0:
             refund = failed_refund
 
-        if refund > 0:
-            add_points(user_id, refund)
-
     result_text = (
         "✅ *اكتمل الطلب!*\n\n"
         f"الخدمة: {svc.config.name}\n"
@@ -1731,16 +1948,22 @@ async def _run_raksh_order(
         )
 
     with db_conn() as c:
-        c.execute(
+        completed_row = c.execute(
             """
             UPDATE raksh_orders
             SET status='completed', refund_points=%s, special_count=%s,
                 result_text=%s, last_error=NULL, lease_until=NULL,
                 updated_at=NOW(), completed_at=NOW()
-            WHERE id=%s
+            WHERE id=%s AND status <> 'cancelled'
+            RETURNING id
             """,
             (refund, special_count, result_text, order_id),
-        )
+        ).fetchone()
+
+    if not completed_row:
+        return
+    if refund > 0:
+        add_points(user_id, refund)
 
     if progress_msg:
         await progress_msg.edit_text(
