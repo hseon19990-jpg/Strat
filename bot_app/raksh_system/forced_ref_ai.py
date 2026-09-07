@@ -722,7 +722,9 @@ class ForcedRefAIService(RakshService):
         2. وإلا نستخدم المنطق القديم: استخراج الكود، حل المسائل، الضغط على الأزرار العادية.
         """
         MAX_WAIT = 12
-        CHECK_INTERVAL = 1.0
+        # Verification bots often answer asynchronously. Poll at a stable
+        # two-second interval instead of giving up after one quick read.
+        CHECK_INTERVAL = 2.0
 
         # base_id هو آخر معرف رسالة قبل ضغط رابط الإحالة. كل الرسائل القديمة
         # قبله خارج عملية التحقق ويجب ألا تؤثر على اختيار المرحلة الحالية.
@@ -888,8 +890,10 @@ class ForcedRefAIService(RakshService):
         المنطق القديم: استخراج الكود، حل المسائل، الضغط على الأزرار
         (نسخة محسنة من _solve_forced_ref_verification في common.py)
         """
-        max_attempts = 30
-        processed_ids = set()
+        # Do not use message ids as the processed key. Many verification bots
+        # edit the same Telegram message to show the next challenge, so the
+        # id stays the same while the text/buttons change.
+        processed_fingerprints = set()
 
         if not base_id:
             try:
@@ -902,8 +906,29 @@ class ForcedRefAIService(RakshService):
             except Exception as e:
                 logger.warning(f"تعذر تحديد الرسالة المرجعية: {e}")
 
-        cursor_id = base_id
         saw_verification = False
+        quiet_attempts = 0
+
+        def _message_fingerprint(message) -> str:
+            """Return a stable fingerprint that changes when a message is edited."""
+            parts = [
+                str(getattr(message, "id", "")),
+                str(getattr(message, "message", "") or ""),
+                str(getattr(message, "edit_date", "") or ""),
+                "image" if self._has_image_media(message) else "no-image",
+            ]
+            for row in getattr(message, "buttons", None) or []:
+                for button in row:
+                    parts.append(
+                        "|".join(
+                            [
+                                str(getattr(button, "text", "") or ""),
+                                str(getattr(button, "data", "") or ""),
+                                str(getattr(button, "url", "") or ""),
+                            ]
+                        )
+                    )
+            return "\x1f".join(parts)
 
         async def _verification_action_succeeded(message, button=None) -> bool:
             """يتحقق من وصول رسالة نجاح صريحة بعد الضغط."""
@@ -936,7 +961,11 @@ class ForcedRefAIService(RakshService):
                     bot_entity, limit=100, min_id=base_id
                 )
 
-        for attempt in range(max_attempts):
+        # Keep waiting after a challenge has appeared. A fixed attempt limit
+        # made slower accounts fail even though the verification bot was still
+        # processing the previous answer. The loop stops only on explicit
+        # success or a permanent session error.
+        while True:
             try:
                 if initial_messages is not None:
                     messages = initial_messages
@@ -948,36 +977,46 @@ class ForcedRefAIService(RakshService):
                     logger.error(f"⚠️ الجلسة {phone_number} تستخدم من IP مختلف - سيتم تعطيلها")
                     _mark_raksh_session_unauthorized(phone_number)
                     return False
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(2.0)
                 continue
 
             incoming_messages = [msg for msg in messages if not msg.out]
             incoming_messages.sort(key=lambda m: m.id)
 
-            new_messages = [
-                msg for msg in incoming_messages
-                if msg.id > base_id and msg.id not in processed_ids
-            ]
-            if not new_messages:
-                await asyncio.sleep(1.0)
-                continue
-
-            # النجاح لا يعتمد على اختفاء الأزرار أو مجرد إرسال إجابة.
-            for msg in reversed(new_messages):
+            # Check every current message, including messages already handled.
+            # This catches a success response delivered by editing the same
+            # message that contained the challenge.
+            for msg in reversed(incoming_messages):
+                if msg.id <= base_id:
+                    continue
                 success_text = (getattr(msg, "message", "") or "").strip().casefold()
                 if self._is_verification_success_text(success_text):
                     logger.info(f"✅ تم تأكيد التحقق من {phone_number}: {success_text[:120]}")
                     return True
 
-            # بعد كل إجابة أو زر، نعالج فقط الرسائل التي ظهرت بعدها.
-            # مع إبقاء القراءة كاملة من بداية العملية حتى لا نفقد رسالة
-            # تحقق ظهرت بين مرحلتين.
-            candidate_messages = [
-                msg for msg in new_messages
-                if msg.id > cursor_id
+            new_messages = [
+                msg for msg in incoming_messages
+                if msg.id > base_id
+                and _message_fingerprint(msg) not in processed_fingerprints
             ]
-            if not candidate_messages:
-                candidate_messages = new_messages
+            if not new_messages:
+                quiet_attempts += 1
+                # No challenge means this bot does not require verification.
+                # Once a challenge was seen, keep polling indefinitely until
+                # its success marker arrives.
+                if not saw_verification and quiet_attempts >= 30:
+                    logger.info(
+                        "ℹ️ لم يصل تحقق جديد بعد ضغط الرابط للحساب %s؛ تُحتسب الإحالة ناجحة",
+                        phone_number,
+                    )
+                    return True
+                await asyncio.sleep(2.0)
+                continue
+            quiet_attempts = 0
+
+            # النجاح لا يعتمد على اختفاء الأزرار أو مجرد إرسال إجابة.
+            # بعد كل إجابة أو زر، نعيد قراءة الرسالة نفسها إذا عدّلها البوت.
+            candidate_messages = new_messages
 
             # أعطِ رسالة الكود أولوية صريحة. بعض البوتات ترسل رسالة ترحيب
             # ثم رسالة «النص التالي» في نفس الدفعة، لذلك لا نعتمد على أول
@@ -1030,13 +1069,12 @@ class ForcedRefAIService(RakshService):
                 )
 
             if verification_message is None:
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(2.0)
                 continue
 
             if not self._looks_like_verification_message(verification_message):
-                processed_ids.add(verification_message.id)
-                cursor_id = max(cursor_id, verification_message.id)
-                await asyncio.sleep(0.5)
+                processed_fingerprints.add(_message_fingerprint(verification_message))
+                await asyncio.sleep(2.0)
                 continue
             saw_verification = True
 
@@ -1050,13 +1088,15 @@ class ForcedRefAIService(RakshService):
                 try:
                     await client.send_message(bot_entity, image_code)
                     logger.info("✅ تم إرسال حل صورة التحقق للحساب %s", phone_number)
-                    processed_ids.add(verification_message.id)
-                    cursor_id = verification_message.id
+                    processed_fingerprints.add(_message_fingerprint(verification_message))
                     await asyncio.sleep(2.0)
                     continue
                 except Exception as exc:
                     logger.warning("⚠️ تعذر إرسال حل صورة التحقق للحساب %s: %s", phone_number, exc)
-                    return False
+                    # Keep the challenge available for a retry. This is often
+                    # a temporary Telegram/network failure.
+                    await asyncio.sleep(2.0)
+                    continue
 
 
             # 1. حل المسائل الرياضية أولاً. لا نحاول استخراج كود من رسالة
@@ -1096,8 +1136,7 @@ class ForcedRefAIService(RakshService):
                             b,
                             result,
                         )
-                        processed_ids.add(verification_message.id)
-                        cursor_id = verification_message.id
+                        processed_fingerprints.add(_message_fingerprint(verification_message))
                         await asyncio.sleep(2.0)
                         continue
                 except Exception:
@@ -1109,12 +1148,12 @@ class ForcedRefAIService(RakshService):
                 try:
                     await client.send_message(bot_entity, send_text)
                     logger.info(f"✅ تم إرسال الكود: {send_text}")
-                    processed_ids.add(verification_message.id)
-                    cursor_id = verification_message.id
+                    processed_fingerprints.add(_message_fingerprint(verification_message))
                     await asyncio.sleep(2.0)
                     continue
                 except Exception:
-                    return False
+                    await asyncio.sleep(2.0)
+                    continue
 
             # Do not click a button from the old challenge after submitting
             # an answer. The next Telegram message contains the result or the
@@ -1210,10 +1249,9 @@ class ForcedRefAIService(RakshService):
                         [getattr(button, "text", "") for button in buttons],
                         sorted(target_labels),
                     )
-                    # لا نضغط أول زر عشوائياً. نعلّم الرسالة كمعالجة حتى لا
-                    # تبقى عالقة في كل دورة، ثم نعيد قراءة الرسائل التالية.
-                    processed_ids.add(verification_message.id)
-                    cursor_id = max(cursor_id, verification_message.id)
+                    # لا نضغط أول زر عشوائياً. نحفظ بصمة هذه النسخة فقط؛
+                    # إذا عدّل البوت نفس الرسالة فستُقرأ من جديد كبصمة جديدة.
+                    processed_fingerprints.add(_message_fingerprint(verification_message))
                     if invitation_buttons:
                         logger.info(
                             f"⏭️ تم تجاهل {len(invitation_buttons)} زر رابط دعوة "
@@ -1226,8 +1264,7 @@ class ForcedRefAIService(RakshService):
                     try:
                         callback_result = await btn.click()
                         logger.info(f"🖱️ تم الضغط على الزر: {getattr(btn, 'text', '')}")
-                        processed_ids.add(verification_message.id)
-                        cursor_id = verification_message.id
+                        processed_fingerprints.add(_message_fingerprint(verification_message))
                         callback_text = getattr(callback_result, "message", "")
                         if not callback_text:
                             callback_text = getattr(callback_result, "alert", "")
@@ -1258,20 +1295,10 @@ class ForcedRefAIService(RakshService):
                 # بإعادة القراءة مباشرة دون تأخير إضافي.
                 continue
 
-            # الرسالة لا تحتوي على إجابة أو زر تحقق قابل للتنفيذ. لا نعيد
-            # اختيارها في الدورة القادمة؛ ننتظر رسالة جديدة ثم نعيد القراءة.
-            processed_ids.add(verification_message.id)
-            cursor_id = max(cursor_id, verification_message.id)
+            # الرسالة لا تحتوي على إجابة أو زر تحقق قابل للتنفيذ. نحفظ
+            # بصمتها فقط، ونقرأها مجدداً إذا عدّلها البوت.
+            processed_fingerprints.add(_message_fingerprint(verification_message))
             await asyncio.sleep(2.0)
-
-        if not saw_verification:
-            logger.info(
-                "ℹ️ لم يصل تحقق جديد بعد ضغط الرابط للحساب %s؛ تُحتسب الإحالة ناجحة",
-                phone_number,
-            )
-            return True
-        logger.warning(f"⚠️ لم تصل رسالة نجاح صريحة بعد التحقق من {phone_number}")
-        return False
 
     # ─── 5. التنفيذ الرئيسي ───
 
