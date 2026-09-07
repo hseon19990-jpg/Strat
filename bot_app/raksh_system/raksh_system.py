@@ -1325,6 +1325,12 @@ async def _handle_raksh_callback_impl(
     
     # ─── تخطي القنوات ───
     if data == "raksh:skip_channels":
+        if context.user_data.get("raksh_service") == "comment":
+            await query.answer(
+                "⚠️ يجب إضافة قناة واحدة على الأقل لخدمة رشق التعليقات.",
+                show_alert=True,
+            )
+            return
         context.user_data["raksh_channels"] = []
         context.user_data["raksh_step"] = "link"
         svc = RAKSH_SERVICES.get(context.user_data.get("raksh_service"))
@@ -1436,8 +1442,9 @@ async def _handle_raksh_callback_impl(
         context.user_data["raksh_payment_method"] = method
         context.user_data["raksh_step"] = "payment_confirm"
         
+        channel_count = len(context.user_data.get("raksh_channels") or [])
         if method == "stars":
-            total = svc.get_total(quantity, "stars")
+            total = svc.get_total(quantity, "stars", channel_count)
             await query.edit_message_text(
                 f"⭐ *الدفع بالنجوم*\n\n"
                 f"الخدمة: {svc.config.name}\n"
@@ -1448,7 +1455,7 @@ async def _handle_raksh_callback_impl(
                 reply_markup=raksh_confirm_kb(service_type, quantity, total, "stars")
             )
         else:
-            total = svc.get_total(quantity, "points")
+            total = svc.get_total(quantity, "points", channel_count)
             db_user = get_user(user.id)
             points = db_user["points"] if db_user else 0
             await query.edit_message_text(
@@ -1489,7 +1496,13 @@ async def _handle_raksh_callback_impl(
             )
             return
         
-        total_cost = get_raksh_total(service_type, quantity, payment_method)
+        channel_count = len(context.user_data.get("raksh_channels") or [])
+        svc = RAKSH_SERVICES.get(service_type)
+        total_cost = (
+            svc.get_total(quantity, payment_method, channel_count)
+            if svc
+            else get_raksh_total(service_type, quantity, payment_method)
+        )
         if button_total != total_cost:
             logger.info(f"تحديث سعر الرشق: {service_type} {quantity}")
         
