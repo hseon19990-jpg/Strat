@@ -28,6 +28,9 @@ _CAPTCHA_OCR = None
 class ForcedRefAIService(RakshService):
     """خدمة إحالة بوت إجباري مع تحقق شامل - كل شيء في مكان واحد"""
 
+    START_RETRY_LIMIT = 3
+    RETRY_DELAY_SECONDS = 2.0
+
     service_type = "forced_ref_ai"
     label = "🤖 إحالة بوت إجباري مع تحقق"
     config = ServiceConfig(
@@ -452,24 +455,42 @@ class ForcedRefAIService(RakshService):
 
     @staticmethod
     def _looks_like_verification_message(message) -> bool:
-        """يميّز تحققاً جديداً عن رسالة ترحيب أو رد عادي بعد فتح البوت."""
+        """تمييز رسالة تحقق فعلية عن رسالة ترحيب عادية بعد فتح البوت."""
         text = (getattr(message, "message", "") or "").casefold()
         if getattr(message, "photo", None) or getattr(message, "document", None):
             return True
+
         buttons = [
             button
             for row in (getattr(message, "buttons", None) or [])
             for button in (row or [])
             if not ForcedRefAIService._is_invitation_link_button(button)
         ]
-        if buttons:
-            return True
-        markers = (
-            "تحقق", "verify", "captcha", "كابتشا", "human", "بشر",
-            "robot", "روبوت", "أدخل", "ادخل", "اكتب", "أجب",
-            "اختر", "اضغط", "code", "كود", "رمز",
+        button_text = " ".join(
+            ForcedRefAIService._button_label(button).casefold()
+            for button in buttons
         )
-        return any(marker in text for marker in markers)
+        challenge_markers = (
+            "تحقق", "تحقّق", "verify", "verification", "captcha", "كابتشا",
+            "human", "بشر", "robot", "روبوت", "أدخل", "ادخل", "اكتب",
+            "أجب", "اختر", "اضغط", "انقر", "رمز", "كود", "code",
+            "answer", "enter", "select", "choose", "click", "tap",
+            "wrong", "خطأ", "غير صحيح", "حاول مرة أخرى", "try again",
+        )
+        if any(marker in text for marker in challenge_markers):
+            return True
+        if any(marker in button_text for marker in challenge_markers):
+            return True
+        # Captcha buttons may be emoji/custom-emoji with no textual label;
+        # require an explicit instruction before treating a welcome keyboard
+        # as a verification challenge.
+        if buttons and re.search(
+            r"(?:الرمز|العلامة|symbol|emoji|icon)\s*[:：-]?",
+            text,
+            flags=re.IGNORECASE,
+        ):
+            return True
+        return False
 
     @staticmethod
     def _has_image_media(message) -> bool:
@@ -715,6 +736,7 @@ class ForcedRefAIService(RakshService):
         bot_entity,
         phone_number: str,
         base_id: int = 0,
+        status: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
         حل التحقق بذكاء:
@@ -723,6 +745,8 @@ class ForcedRefAIService(RakshService):
         """
         MAX_WAIT = 12
         CHECK_INTERVAL = 1.0
+        if status is not None:
+            status["saw_verification"] = False
 
         # base_id هو آخر معرف رسالة قبل ضغط رابط الإحالة. كل الرسائل القديمة
         # قبله خارج عملية التحقق ويجب ألا تؤثر على اختيار المرحلة الحالية.
@@ -763,6 +787,8 @@ class ForcedRefAIService(RakshService):
 
         # إذا وجدنا طلب رقم → نعالجه بطريقة جديدة
         if contact_request_msg:
+            if status is not None:
+                status["saw_verification"] = True
             logger.info(f"📱 تم اكتشاف طلب رقم هاتف من {phone_number}")
 
             # إرسال جهة الاتصال
@@ -839,6 +865,7 @@ class ForcedRefAIService(RakshService):
                     bot_entity,
                     phone_number,
                     base_id=base_id,
+                    status=status,
                 )
 
             try:
@@ -862,6 +889,7 @@ class ForcedRefAIService(RakshService):
                     phone_number,
                     base_id=base_id,
                     initial_messages=followup_messages,
+                    status=status,
                 )
             except Exception as e:
                 logger.warning(f"⚠️ تعذر قراءة المرحلة الثانية للتحقق: {e}")
@@ -873,7 +901,7 @@ class ForcedRefAIService(RakshService):
         # المنطق القديم (مستند على _solve_forced_ref_verification من common.py)
         # ولكن سنعيد تنفيذه هنا لتكامل الملف
         return await self._solve_legacy_verification(
-            client, bot_entity, phone_number, base_id=base_id
+            client, bot_entity, phone_number, base_id=base_id, status=status
         )
 
     async def _solve_legacy_verification(
@@ -883,6 +911,7 @@ class ForcedRefAIService(RakshService):
         phone_number: str,
         base_id: int = 0,
         initial_messages: Optional[List] = None,
+        status: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
         المنطق القديم: استخراج الكود، حل المسائل، الضغط على الأزرار
@@ -890,6 +919,8 @@ class ForcedRefAIService(RakshService):
         """
         max_attempts = 30
         processed_ids = set()
+        if status is not None:
+            status["saw_verification"] = False
 
         if not base_id:
             try:
@@ -966,6 +997,9 @@ class ForcedRefAIService(RakshService):
             for msg in reversed(new_messages):
                 success_text = (getattr(msg, "message", "") or "").strip().casefold()
                 if self._is_verification_success_text(success_text):
+                    if status is not None:
+                        status["saw_verification"] = True
+                        status["success"] = True
                     logger.info(f"✅ تم تأكيد التحقق من {phone_number}: {success_text[:120]}")
                     return True
 
@@ -992,6 +1026,16 @@ class ForcedRefAIService(RakshService):
                 "send the code",
                 "retype",
                 "type",
+                "أدخل الكود",
+                "ادخل الكود",
+                "أدخل الإجابة",
+                "ادخل الاجابة",
+                "الجواب",
+                "الإجابة",
+                "answer",
+                "enter",
+                "write",
+                "input",
             )
             verification_message = next(
                 (
@@ -1019,7 +1063,7 @@ class ForcedRefAIService(RakshService):
                     msg_text = getattr(msg, 'message', '') or ''
                     if msg_text.strip().startswith("/"):
                         continue
-                    if any(kw in msg_text for kw in ["أرسل", "التالي", "بالضبط", "اكتب", "retype", "type", "اضغط", "اختر", "انقر"]):
+                    if any(kw in msg_text.casefold() for kw in ["أرسل", "التالي", "بالضبط", "اكتب", "أدخل", "ادخل", "الإجابة", "الجواب", "retype", "type", "enter", "answer", "اضغط", "اختر", "انقر", "حدد", "حاول مرة أخرى", "try again"]):
                         verification_message = msg
                         break
 
@@ -1039,6 +1083,8 @@ class ForcedRefAIService(RakshService):
                 await asyncio.sleep(0.5)
                 continue
             saw_verification = True
+            if status is not None:
+                status["saw_verification"] = True
 
             text = getattr(verification_message, 'message', '') or ''
             image_code = await self._extract_image_captcha(
@@ -1246,6 +1292,8 @@ class ForcedRefAIService(RakshService):
                                 "✅ اختفت أزرار التحقق/وصلت إشارة نجاح للحساب %s",
                                 phone_number,
                             )
+                            if status is not None:
+                                status["success"] = True
                             return True
                         # لم يثبت النجاح بعد؛ نعيد قراءة المرحلة التالية.
                         button_clicked = True
@@ -1316,19 +1364,29 @@ class ForcedRefAIService(RakshService):
             except Exception as e:
                 logger.warning(f"تعذر تحديد نقطة بداية رابط الإحالة: {e}")
 
-            # بدء البوت
+            # بدء البوت. إذا لم يظهر أي تحقق، نعيد /start ثلاث مرات
+            # كحد أقصى، مع فاصل ثانيتين بين المحاولات.
             try:
                 latest_messages = await client.get_messages(bot_entity, limit=1)
                 activation_base_id = latest_messages[0].id if latest_messages else 0
             except Exception:
                 activation_base_id = 0
 
-            await client(StartBotRequest(
-                bot=bot_entity,
-                peer=bot_entity,
-                start_param=start_param or ""
-            ))
-            await asyncio.sleep(2.0)
+            async def _send_start(start_attempt: int) -> None:
+                await client(StartBotRequest(
+                    bot=bot_entity,
+                    peer=bot_entity,
+                    start_param=start_param or ""
+                ))
+                logger.info(
+                    "🚀 تم إرسال /start لمحاولة %s/%s للحساب %s",
+                    start_attempt,
+                    self.START_RETRY_LIMIT,
+                    session.get("phone_number"),
+                )
+                await asyncio.sleep(self.RETRY_DELAY_SECONDS)
+
+            await _send_start(1)
 
             if await _raksh_has_duplicate_response(
                 client, bot_entity, after_id=activation_base_id
@@ -1338,32 +1396,53 @@ class ForcedRefAIService(RakshService):
                     f"بعد فتحه للحساب {session['phone_number']}"
                 )
 
-            # فتح البوت هو معيار نجاح الإحالة. نستمر بمحاولة حل التحقق
-            # بالكامل، لكن نتيجة CAPTCHA لا تجعل العملية فاشلة؛ فقد تم
-            # تنفيذ StartBotRequest بنجاح بالفعل.
-            try:
+            # إذا ظهر تحقق، نعيد قراءة المراحل وحلها حتى تصل رسالة
+            # النجاح المعتمدة. إذا لم يظهر تحقق، نعيد /start ثلاث مرات فقط.
+            start_attempt = 1
+            while True:
+                verification_status = {}
                 verification_success = await self._solve_verification(
                     client,
                     bot_entity,
                     session.get("phone_number"),
                     base_id=verification_base_id,
+                    status=verification_status,
                 )
-                if verification_success:
-                    logger.info(
-                        f"✅ اكتمل التحقق بعد فتح البوت للحساب "
-                        f"{session['phone_number']}"
-                    )
-                else:
+
+                if verification_status.get("saw_verification"):
+                    if verification_success:
+                        logger.info(
+                            "✅ اكتمل التحقق بعد فتح البوت للحساب %s",
+                            session.get("phone_number"),
+                        )
+                        break
                     logger.warning(
-                        f"⚠️ لم يكتمل التحقق للحساب "
-                        f"{session['phone_number']}؛ لن تُحتسب الإحالة ناجحة"
+                        "⚠️ لم يكتمل التحقق للحساب %s؛ ستعاد المحاولة بعد ثانيتين",
+                        session.get("phone_number"),
                     )
-                    return False, "❌ لم يكتمل تحقق البوت."
-            except Exception as verification_error:
-                logger.warning(
-                    f"⚠️ تعذر إكمال التحقق بعد فتح البوت: {verification_error}"
-                )
-                return False, "❌ تعذر إكمال تحقق البوت."
+                    await asyncio.sleep(self.RETRY_DELAY_SECONDS)
+                    continue
+
+                if start_attempt >= self.START_RETRY_LIMIT:
+                    logger.info(
+                        "ℹ️ لم يظهر تحقق بعد %s محاولات /start؛ تُحتسب الإحالة ناجحة للحساب %s",
+                        self.START_RETRY_LIMIT,
+                        session.get("phone_number"),
+                    )
+                    break
+
+                start_attempt += 1
+                await asyncio.sleep(self.RETRY_DELAY_SECONDS)
+                try:
+                    await _send_start(start_attempt)
+                except Exception as retry_error:
+                    logger.warning(
+                        "⚠️ فشلت محاولة /start رقم %s للحساب %s: %s",
+                        start_attempt,
+                        session.get("phone_number"),
+                        retry_error,
+                    )
+                    await asyncio.sleep(self.RETRY_DELAY_SECONDS)
 
             return True, f"✅ تمت الإحالة من {session['phone_number']}"
         except Exception as e:
