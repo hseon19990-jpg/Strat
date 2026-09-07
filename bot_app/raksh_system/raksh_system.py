@@ -1794,6 +1794,84 @@ async def _send_raksh_order_to_group(bot, user_id: int, quantity: int, payment_m
     except Exception:
         logger.exception("فشل إرسال إشعار الطلب")
 
+
+async def _load_raksh_account_identity(session: Dict) -> Optional[Dict]:
+    """قراءة اسم ومعرف وإيدي حساب الرشق بدون حفظ بيانات حساسة."""
+    session_string = session.get("session_string")
+    if not session_string:
+        return None
+
+    client = TelegramClient(
+        StringSession(session_string),
+        int(TELEGRAM_API_ID),
+        TELEGRAM_API_HASH,
+    )
+    try:
+        await asyncio.wait_for(client.connect(), timeout=12)
+        me = await asyncio.wait_for(client.get_me(), timeout=8)
+        if not me:
+            return None
+        first_name = str(getattr(me, "first_name", "") or "").strip()
+        last_name = str(getattr(me, "last_name", "") or "").strip()
+        name = " ".join(part for part in (first_name, last_name) if part).strip()
+        return {
+            "name": name or "بدون اسم",
+            "username": str(getattr(me, "username", "") or "").strip(),
+            "telegram_id": getattr(me, "id", None),
+        }
+    except Exception as exc:
+        logger.warning(
+            "تعذر قراءة هوية حساب الرشق %s: %s",
+            session.get("phone_number"),
+            exc,
+        )
+        return None
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+
+async def _collect_raksh_account_identities(
+    sessions: List[Dict],
+    phones: List[str],
+) -> Dict[str, Dict]:
+    """جمع هويات الحسابات الظاهرة في إشعار المالك بحد أقصى متوازٍ آمن."""
+    wanted = {str(phone) for phone in phones if phone}
+    session_by_phone = {
+        str(session.get("phone_number")): session
+        for session in sessions
+        if session.get("phone_number")
+    }
+    candidates = [
+        session_by_phone[phone]
+        for phone in wanted
+        if phone in session_by_phone
+    ]
+    if not candidates:
+        return {}
+
+    semaphore = asyncio.Semaphore(5)
+
+    async def load_one(session: Dict):
+        async with semaphore:
+            return str(session["phone_number"]), await _load_raksh_account_identity(session)
+
+    results = await asyncio.gather(
+        *(load_one(session) for session in candidates),
+        return_exceptions=True,
+    )
+    identities = {}
+    for result in results:
+        if isinstance(result, Exception):
+            continue
+        phone, identity = result
+        if identity:
+            identities[phone] = identity
+    return identities
+
+
 async def _send_raksh_owner_result(
     bot,
     service_type: str,
@@ -1801,6 +1879,8 @@ async def _send_raksh_owner_result(
     success_phones: List[str],
     failed_phones: List[str],
     failed_details: List[str],
+    target_link: str = "",
+    account_identities: Optional[Dict[str, Dict]] = None,
 ):
     """إرسال النتيجة للمالك"""
     if not OWNER_ID:
@@ -1808,15 +1888,32 @@ async def _send_raksh_owner_result(
     try:
         lines = [
             f"📊 نتيجة {_raksh_order_label(service_type)}",
+            f"🔗 الرابط المستهدف: {target_link or 'غير متوفر'}",
             f"📦 المطلوب: {quantity}",
             f"✅ الناجح: {len(success_phones)}",
             f"❌ الفاشل: {len(failed_phones)}",
             "",
         ]
+
+        account_identities = account_identities or {}
+
+        def account_label(phone: str) -> str:
+            identity = account_identities.get(str(phone)) or {}
+            name = identity.get("name") or "بدون اسم"
+            username = identity.get("username")
+            username_label = f"@{username}" if username else "بدون معرف"
+            telegram_id = identity.get("telegram_id") or "غير متوفر"
+            return (
+                f"👤 {name} | {username_label} | "
+                f"🆔 {telegram_id} | 📱 {phone}"
+            )
         
         if success_phones:
             lines.append("✅ الناجحين:")
-            lines.extend(f"• {p}" for p in success_phones[:20])
+            lines.extend(
+                f"• {account_label(phone)}"
+                for phone in success_phones[:20]
+            )
             if len(success_phones) > 20:
                 lines.append(f"... و{len(success_phones)-20} أخرى")
         
@@ -1825,7 +1922,7 @@ async def _send_raksh_owner_result(
             lines.append("❌ الفاشلين:")
             for idx, phone in enumerate(failed_phones[:10]):
                 detail = failed_details[idx] if idx < len(failed_details) else "فشل"
-                lines.append(f"• {phone} — {detail[:50]}")
+                lines.append(f"• {account_label(phone)} — {detail[:50]}")
             if len(failed_phones) > 10:
                 lines.append(f"... و{len(failed_phones)-10} أخرى")
         
@@ -1924,6 +2021,11 @@ async def _run_raksh_order(
     if _is_raksh_order_cancelled(order_id):
         return
 
+    identity_phones = success_phones[:20] + failed_phones[:10]
+    account_identities = await _collect_raksh_account_identities(
+        sessions,
+        identity_phones,
+    )
     await _send_raksh_owner_result(
         context.bot,
         order["service_type"],
@@ -1931,6 +2033,8 @@ async def _run_raksh_order(
         success_phones,
         failed_phones,
         failed_details,
+        target_link=(order.get("params") or {}).get("link", ""),
+        account_identities=account_identities,
     )
 
     # حساب التعويض مرة واحدة عند إنهاء الطلب.
