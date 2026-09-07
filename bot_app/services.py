@@ -193,6 +193,7 @@ RAKSH_MENU_DEFAULTS = [
     ("🗳 رشق أصوات", "raksh:start:votes", 1),
     ("🛡 رشق تصويت مع تحقق", "raksh:start:votes_ai", 1),
     ("✨ رشق تفاعل مميز", "raksh:start:premium_reaction", 1),
+    ("📋 طلباتي", "raksh:my_orders", 1),
     ("🔥 إدارة خدمات الرشق", "os:raksh_accounts", 1),
     ("⚙️ إدارة الأسعار", "raksh:settings", 1),
 ]
