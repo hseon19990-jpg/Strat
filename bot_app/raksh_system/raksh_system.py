@@ -1859,7 +1859,15 @@ async def _run_raksh_order(
         for phone in saved_failed_phones
     ]
     sessions = svc.get_sessions(is_owner=(user_id == OWNER_ID))
-    if not sessions and len(saved_success_phones) < quantity:
+    # إذا انتهت كل الجلسات بعد تسجيل فشل نهائي، لا نترك الطلب عالقاً
+    # pending إلى الأبد؛ ننتقل إلى الإنهاء وحساب تعويض كل الحسابات الناقصة.
+    # أما إذا لم تبدأ أي جلسة بعد، فنبقي الطلب pending حتى تتوفر جلسات.
+    no_more_sessions_after_failures = (
+        not sessions
+        and len(saved_success_phones) < quantity
+        and bool(saved_failed_phones)
+    )
+    if not sessions and len(saved_success_phones) < quantity and not no_more_sessions_after_failures:
         _set_raksh_order_status(order_id, "pending", "لا توجد حسابات متاحة مؤقتاً")
         logger.warning(f"⏳ لا توجد جلسات لطلب الرشق {order_id}; سيعاد فحصه لاحقاً")
         return
@@ -1878,7 +1886,7 @@ async def _run_raksh_order(
         except Exception:
             pass
 
-    if len(saved_success_phones) >= quantity:
+    if len(saved_success_phones) >= quantity or no_more_sessions_after_failures:
         success_count = len(saved_success_phones)
         success_phones = saved_success_phones
         success_details = saved_success_details
