@@ -24,6 +24,8 @@ def _load_helper_methods():
         "_is_invitation_link_button",
         "_is_verification_success_text",
         "_normalise_captcha_label",
+        "_normalise_math_text",
+        "_button_label",
         "_captcha_target_labels",
     }
     namespace = {"re": re, "unicodedata": unicodedata}
@@ -119,9 +121,17 @@ class ForcedRefAIHelperTests(unittest.TestCase):
 
     def test_math_answer_is_not_followed_by_same_message_button_click(self):
         source = SOURCE_PATH.read_text(encoding="utf-8")
-        self.assertIn("math_solved = True", source)
-        self.assertIn("if math_solved:", source)
-        self.assertIn("if math_solved:\n                continue", source)
+        self.assertEqual(
+            self.helper._normalise_math_text("٥ ﹣ ١١ = ؟"),
+            "5 - 11 = ؟",
+        )
+        self.assertIn("math_match = re.search", source)
+        self.assertIn("if math_match:\n                continue", source)
+
+    def test_button_label_reads_telethon_wrapper_and_raw_button(self):
+        button = FakeButton("🐙")
+        button.button = FakeButton("🐙")
+        self.assertEqual(self.helper._button_label(button), "🐙")
 
 
 if __name__ == "__main__":
