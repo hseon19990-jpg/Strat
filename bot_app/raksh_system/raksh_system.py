@@ -46,6 +46,81 @@ def get_raksh_service(service_type: str) -> Optional[RakshService]:
     """الحصول على الخدمة"""
     return RAKSH_SERVICES.get(service_type)
 
+_RAKSH_VERIFIED_SERVICE_TYPES = frozenset({"forced_ref_ai", "votes_ai"})
+
+
+def _is_raksh_account_or_session_failure(message: str) -> bool:
+    """الفشل العام المسموح به: حساب محظور/مجمّد أو جلسة غير صالحة."""
+    text = str(message or "").casefold()
+    markers = (
+        "الجلسة غير مصرح بها",
+        "الجلسة تستخدم من ip مختلف",
+        "الجلسة غير صالحة",
+        "لا توجد جلسة",
+        "بدون جلسة",
+        "ليس به جلسة",
+        "الحساب محظور",
+        "الحساب محظور",
+        "الحساب مجمد",
+        "الحساب مجمّد",
+        "الحساب معطل",
+        "الحساب معطّل",
+        "authkeyunregistered",
+        "authkeyduplicated",
+        "session revoked",
+        "sessionrevoked",
+        "userdeactivatedban",
+        "userdeactivated",
+        "user is banned",
+        "account is banned",
+        "account banned",
+        "account is frozen",
+        "account frozen",
+        "account is deactivated",
+        "account deactivated",
+        "unauthorized",
+        "not authorized",
+        "invalid session",
+        "no session",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _is_raksh_verification_failure(service_type: str, message: str) -> bool:
+    """الاستثناء الوحيد: فشل حل تحقق ظهر بعد ضغط رابط الإحالة/التصويت."""
+    if service_type not in _RAKSH_VERIFIED_SERVICE_TYPES:
+        return False
+    text = str(message or "").casefold()
+    markers = (
+        "فشل التحقق",
+        "لم يكتمل تحقق",
+        "تعذر إكمال تحقق",
+        "verification failed",
+        "failed verification",
+        "captcha failed",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _classify_raksh_result(
+    service_type: str, phone: str, ok: bool, message: str
+) -> Tuple[bool, str]:
+    """تطبيق سياسة النتيجة الموحدة على جميع خدمات الرشق."""
+    if ok:
+        return True, message
+    if (
+        _is_raksh_account_or_session_failure(message)
+        or _is_raksh_verification_failure(service_type, message)
+    ):
+        return False, message
+    logger.info(
+        "✅ لا توجد حالة فشل نهائية مسموحة للحساب %s في %s؛ تُحسب العملية ناجحة",
+        phone,
+        service_type,
+    )
+    return True, f"✅ تمت معالجة الحساب {phone}"
+
+
 def get_raksh_price_config(service_type: str) -> Dict[str, int]:
     """إرجاع إعدادات الأسعار"""
     svc = get_raksh_service(service_type)
@@ -718,6 +793,15 @@ async def _execute_raksh_sequential(
                 continue
             reserved_phones.add(phone)
 
+        if not str(session.get("session_string") or "").strip():
+            msg = "لا توجد جلسة للحساب"
+            completed_count += 1
+            failed_phones.append(phone)
+            failed_details.append(msg)
+            if order_id:
+                _mark_raksh_order_item_result(order_id, phone, False, msg)
+            continue
+
         session_lock = _get_raksh_session_lock(phone)
         if not await _wait_for_raksh_session(session_lock, phone):
             retry_counts[phone] = retry_counts.get(phone, 0) + 1
@@ -766,6 +850,8 @@ async def _execute_raksh_sequential(
                     f"ستعاد المحاولة ({retry_counts[phone]}/{RAKSH_SESSION_RETRY_LIMIT})"
                 )
                 continue
+
+        ok, msg = _classify_raksh_result(service_type, phone, ok, msg)
 
         completed_count += 1
         if ok:
@@ -828,6 +914,8 @@ async def _execute_raksh_parallel(
         phone = session["phone_number"]
         if order_id and _is_raksh_order_cancelled(order_id):
             return False, "تم إلغاء الطلب"
+        if not str(session.get("session_string") or "").strip():
+            return False, "لا توجد جلسة للحساب"
         if not _reserve_raksh_execution_slot(
             user_id, service_type, phone, order_id=order_id
         ):
@@ -863,6 +951,7 @@ async def _execute_raksh_parallel(
                 ok, msg = False, f"❌ خطأ من {phone}: {str(result)[:80]}"
             else:
                 ok, msg = result
+            ok, msg = _classify_raksh_result(service_type, phone, ok, msg)
             completed_count += 1
             if ok:
                 success_count += 1
