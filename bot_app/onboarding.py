@@ -627,10 +627,13 @@ async def cmd_addpoints(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if len(args) == 1:
-        context.user_data.pop("edit_svc_id", None)
-        context.user_data["points_target_id"] = target_id
-        context.user_data["points_mode"] = "give"
-        context.user_data["state"] = "os_await_points_amount"
+        begin_owner_flow(
+            context,
+            "points",
+            "os_await_points_amount",
+            points_target_id=target_id,
+            points_mode="give",
+        )
         await update.message.reply_text(
             f"👤 المستخدم: {target.get('full_name') or target_id}\n"
             f"🆔 المعرف: `{target_id}`\n"
@@ -639,6 +642,9 @@ async def cmd_addpoints(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
+
+    # لا تترك مسار سعر/خدمة قديمًا فعالاً بعد تنفيذ الأمر المباشر.
+    reset_owner_flow(context)
 
     try:
         pts = int(args[1])

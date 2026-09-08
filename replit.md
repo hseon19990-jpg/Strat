@@ -1,45 +1,47 @@
-# [Project name]
+# Strat Telegram Bot
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+هذا المستودع يشغّل بوت Telegram فقط لإدارة النقاط وخدمات الرشق والعمليات المرتبطة بها.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- `python bot.py` — تشغيل نقطة الدخول الأساسية للبوت.
+- `python -m compileall -q bot.py bot_app` — فحص الصياغة قبل النشر.
+- `python -m unittest discover -s tests -v` — تشغيل الاختبارات الخفيفة.
+- Required env: `BOT_TOKEN`, `OWNER_ID`, `DATABASE_URL` and the configured panel/API variables.
 
 ## Stack
 
-- pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- Python Telegram bot with `python-telegram-bot` and PostgreSQL.
+- The canonical source is the root `bot.py` and `bot_app/` package.
+- Nested `bot_repo/`, `bot-source/`, `strat-repo/`, and `strat-work/` directories are archived copies and are not deployment entrypoints.
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `bot.py` — نقطة تشغيل البوت وإعادة التشغيل.
+- `bot_app/application.py` — تسجيل أوامر ومعالجات Telegram.
+- `bot_app/callback_groups_*.py` — أزرار القوائم، بما فيها لوحة المالك.
+- `bot_app/messages.py` — استقبال إدخالات النص وحالات العمليات.
+- `bot_app/shared.py` — الإعدادات المشتركة وعزل حالات عمليات المالك.
+- `bot_app/services.py` — إعدادات القوائم والخدمات.
+- `tests/` — اختبارات وحدات مستقلة عن Telegram وقاعدة البيانات.
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- عملية المالك تُعزل عبر `owner_flow` مع حالات مستقلة؛ لا تُستخدم حالة سعر عامة لعمليات النقاط أو الأكواد.
+- تغيير السعر أو إضافة خدمة يبقى محصوراً بالمالك عبر فحوص `is_own`.
+- PostgreSQL هو مصدر البيانات الدائم، بينما `context.user_data` يحتفظ بخطوات المحادثة المؤقتة فقط.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+- إدارة المستخدمين والنقاط والأكواد الترويجية وأكواد شراء الأرقام.
+- إنشاء وتعديل خدمات الرشق وربطها بمواقع SMM.
+- تحويل النقاط، الاستبدال، الإحالات، والتحقق وإدارة الحسابات.
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+- المستودع المطلوب للعمل هو تطبيق البوت نفسه؛ عدّل المصدر الجذري `bot_app/` ولا تعدّل النسخ المؤرشفة.
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
-
-## Pointers
-
-- See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
+- لا تضف منطقاً جديداً إلى `bot.py`؛ ضع الميزة في الوحدة المناسبة داخل `bot_app/`.
+- بعد تغيير حالات المحادثة، شغّل فحص الصياغة واختبارات `unittest`.

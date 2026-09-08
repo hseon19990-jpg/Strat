@@ -262,6 +262,34 @@ _OWN_BOT_USERNAME: str = ""          # يُضبط عند الإقلاع — يُ
 JUSTANOTHERPANEL_API_URL = "https://justanotherpanel.com/api/v2"
 SMMFOLLOWS_API_URL       = "https://smmfollows.com/api/v2"
 
+# حالات الإدخال الخاصة بلوحة المالك يجب ألا تتشارك بياناتها. بدون هذا
+# التنظيف، يمكن أن تبقى قيمة مثل edit_svc_id أو حالة سعر قديمة عندما يبدأ
+# المالك عملية نقاط/أكواد جديدة من رسالة أو زر آخر.
+_OWNER_FLOW_PREFIXES = (
+    "new_svc_",
+    "ns_",
+    "edit_svc_",
+    "points_",
+    "new_promo_",
+    "new_num_code",
+)
+
+def reset_owner_flow(context, state: str = "main_menu") -> None:
+    """يمسح بيانات الإدخال المؤقتة للمالك ويبدأ حالة محايدة."""
+    user_data = getattr(context, "user_data", None)
+    if not isinstance(user_data, dict):
+        return
+    for key in list(user_data):
+        if key == "owner_flow" or key.startswith(_OWNER_FLOW_PREFIXES):
+            user_data.pop(key, None)
+    user_data["state"] = state
+
+def begin_owner_flow(context, flow: str, state: str, **values) -> None:
+    """يبدأ عملية مالك معزولة عن أي عملية سابقة."""
+    reset_owner_flow(context, state=state)
+    context.user_data["owner_flow"] = flow
+    context.user_data.update(values)
+
 # ────────────────────────────────────────────────────────────
 # ────────────────────────────────────────────────────────────
 PANEL_MAP = {

@@ -185,7 +185,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             return
 
         if data == "os:create_promo" and is_own:
-            context.user_data["state"] = "os_await_promo_code_text"
+            begin_owner_flow(context, "promo_code", "os_await_promo_code_text")
             await q.edit_message_text(
                 "🎟 *إنشاء كود ترويجي جديد*\n\nأرسل الكود المراد إنشاؤه (أحرف وأرقام فقط):",
                 parse_mode=ParseMode.MARKDOWN
@@ -304,6 +304,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             return
 
         if data == "os:manage_points" and is_own:
+            reset_owner_flow(context)
             await q.edit_message_text(
                 "💰 *منح / خصم نقاط*\n\nاختر العملية:",
                 parse_mode=ParseMode.MARKDOWN,
@@ -316,12 +317,12 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             return
 
         if data == "os:give_points" and is_own:
-            # افصل عملية النقاط عن أي حالة سابقة لتعديل خدمة/سعر.
-            context.user_data.pop("edit_svc_id", None)
-            context.user_data.pop("new_svc_id", None)
-            context.user_data.pop("points_target_id", None)
-            context.user_data["state"]       = "os_await_points_target"
-            context.user_data["points_mode"] = "give"
+            begin_owner_flow(
+                context,
+                "points",
+                "os_await_points_target",
+                points_mode="give",
+            )
             await q.edit_message_text(
                 "➕ *منح نقاط*\n\nأرسل ID المستخدم أو @يوزرنيم:",
                 parse_mode=ParseMode.MARKDOWN,
@@ -330,12 +331,12 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             return
 
         if data == "os:deduct_points" and is_own:
-            # افصل عملية النقاط عن أي حالة سابقة لتعديل خدمة/سعر.
-            context.user_data.pop("edit_svc_id", None)
-            context.user_data.pop("new_svc_id", None)
-            context.user_data.pop("points_target_id", None)
-            context.user_data["state"]       = "os_await_points_target"
-            context.user_data["points_mode"] = "deduct"
+            begin_owner_flow(
+                context,
+                "points",
+                "os_await_points_target",
+                points_mode="deduct",
+            )
             await q.edit_message_text(
                 "➖ *خصم نقاط*\n\nأرسل ID المستخدم أو @يوزرنيم:",
                 parse_mode=ParseMode.MARKDOWN,
@@ -395,6 +396,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             return
 
         if data == "os:manage_num_codes" and is_own:
+            reset_owner_flow(context)
             with db_conn() as c:
                 ncodes = c.execute(
                     "SELECT code, max_uses, used_count, active FROM number_purchase_codes ORDER BY created_at DESC LIMIT 20"
@@ -419,7 +421,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             return
 
         if data == "os:create_num_code" and is_own:
-            context.user_data["state"] = "os_await_num_code_text"
+            begin_owner_flow(context, "number_code", "os_await_num_code_text")
             await q.edit_message_text(
                 "🎟 *إنشاء كود شراء رقم جديد*\n\nأرسل الكود المطلوب (حروف وأرقام فقط):",
                 parse_mode=ParseMode.MARKDOWN

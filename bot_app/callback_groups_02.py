@@ -202,8 +202,9 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             return
 
         if data == "owner_settings" and is_own:
-            if context.user_data.get("state", "").startswith("await_mb_"):
-                context.user_data["state"] = "main_menu"
+            was_button_manager_flow = context.user_data.get("state", "").startswith("await_mb_")
+            reset_owner_flow(context)
+            if was_button_manager_flow:
                 for k in ("mb_menu", "mb_type", "mb_label"):
                     context.user_data.pop(k, None)
             await q.edit_message_text("⚙️ *إعدادات المالك:*", parse_mode=ParseMode.MARKDOWN,
@@ -679,6 +680,7 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             return
 
         if data == "os:add_service" and is_own:
+            begin_owner_flow(context, "service_create", "main_menu")
             plat_rows = [[InlineKeyboardButton(lbl, callback_data=f"os_plat:{PLATFORM_MENU_MAP[val]}")] for lbl, val in SERVICE_PLATFORMS]
             plat_rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
             await q.edit_message_text(
@@ -808,10 +810,13 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=kb
             )
-            context.user_data["state"] = "os_await_price"
+            context.user_data["state"] = "os_await_service_price"
             return
 
         if data.startswith("os_use_price:") and is_own:
+            if context.user_data.get("owner_flow") != "service_create":
+                await q.answer("⚠️ انتهت جلسة إضافة الخدمة. ابدأ العملية من جديد.", show_alert=True)
+                return
             price    = float(data.split(":")[1])
             context.user_data["state"] = "main_menu"
             cat      = context.user_data.get("new_svc_cat", "followers")
@@ -975,6 +980,7 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             return
 
         if data == "os:new_services" and is_own:
+            reset_owner_flow(context)
             context.user_data.pop("ns_move_ids", None)
             text, rows = _render_staging_services()
             await q.edit_message_text(
@@ -985,6 +991,7 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             return
 
         if data == "os:ns_add" and is_own:
+            begin_owner_flow(context, "service_create", "main_menu")
             panel_rows = [
                 [InlineKeyboardButton(f"{pinfo['name']}", callback_data=f"os:ns_panel:{pid}")]
                 for pid, pinfo in PANEL_MAP.items() if pinfo["key"]
@@ -999,8 +1006,7 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
 
         if data.startswith("os:ns_panel:") and is_own:
             panel = int(data.split(":")[2])
-            context.user_data["ns_panel"] = panel
-            context.user_data["state"] = "ns_await_api_id"
+            begin_owner_flow(context, "service_create", "ns_await_api_id", ns_panel=panel)
             site_name = PANEL_MAP.get(panel, PANEL_MAP[1])["name"]
             await q.edit_message_text(
                 f"🌐 الموقع: *{site_name}*\n\nأرسل *رقم الخدمة* في هذا الموقع:",
@@ -1032,10 +1038,13 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                 f"✅ الحد الأعلى: {mx}\n\n💰 *السعر المقترح: {suggested} نقطة/1000 وحدة*\n\nاضغط أو أرسل رقماً مختلفاً:",
                 parse_mode=ParseMode.MARKDOWN, reply_markup=kb
             )
-            context.user_data["state"] = "ns_await_price"
+            context.user_data["state"] = "ns_await_service_price"
             return
 
         if data.startswith("os:ns_use_price:") and is_own:
+            if context.user_data.get("owner_flow") != "service_create":
+                await q.answer("⚠️ انتهت جلسة إضافة الخدمة. ابدأ العملية من جديد.", show_alert=True)
+                return
             price = float(data.split(":")[2])
             name    = context.user_data.get("ns_name", "")
             panel   = context.user_data.get("ns_panel", 1)
@@ -1512,15 +1521,15 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
 
         if data.startswith("os_edit_field:") and is_own:
             _, sid, field = data.split(":")
-            context.user_data["edit_svc_id"] = int(sid)
             prompts = {
                 "name":  ("✏️ أرسل *الاسم الجديد بالعربية* للخدمة:", "os_edit_await_name"),
                 "min":   ("📉 أرسل *الحد الأدنى* الجديد:", "os_edit_await_min"),
                 "max":   ("📈 أرسل *الحد الأعلى* الجديد:", "os_edit_await_max"),
-                "price": ("💰 أرسل *السعر* الجديد (نقطة/1000 وحدة):", "os_edit_await_price"),
+                "price": ("💰 أرسل *السعر* الجديد (نقطة/1000 وحدة):", "os_edit_await_service_price"),
                 "desc":  ("📝 أرسل *الوصف الجديد* للخدمة (أو أرسل `-` لحذف الوصف):", "os_edit_await_desc"),
             }
             if field == "source":
+                begin_owner_flow(context, "service_edit", "main_menu", edit_svc_id=int(sid))
                 rows = [
                     [InlineKeyboardButton(f"1️⃣ {PANEL_MAP[1]['name']}", callback_data=f"os_edit_panel:{sid}:1")],
                     [InlineKeyboardButton(f"2️⃣ {PANEL_MAP[2]['name']}", callback_data=f"os_edit_panel:{sid}:2")],
@@ -1533,15 +1542,19 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                 )
                 return
             msg, state_name = prompts[field]
-            context.user_data["state"] = state_name
+            begin_owner_flow(context, "service_edit", state_name, edit_svc_id=int(sid))
             await q.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN)
             return
 
         if data.startswith("os_edit_panel:") and is_own:
             _, sid, panel = data.split(":")
-            context.user_data["edit_svc_id"] = int(sid)
-            context.user_data["edit_svc_panel"] = int(panel)
-            context.user_data["state"] = "os_edit_await_apiid"
+            begin_owner_flow(
+                context,
+                "service_edit",
+                "os_edit_await_apiid",
+                edit_svc_id=int(sid),
+                edit_svc_panel=int(panel),
+            )
             site_name = PANEL_MAP.get(int(panel), PANEL_MAP[1])["name"]
             await q.edit_message_text(
                 f"🌐 الموقع: {site_name}\n\nأرسل *رقم الخدمة الجديد* في هذا الموقع:",

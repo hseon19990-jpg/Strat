@@ -1033,7 +1033,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
-    if is_own and state == "os_await_num_code_text":
+    if is_own and state == "os_await_num_code_text" and context.user_data.get("owner_flow") == "number_code":
         nc = text.strip().upper()
         if len(nc) < 3:
             await update.message.reply_text("⚠️ الكود يجب أن يكون 3 أحرف على الأقل.")
@@ -1051,7 +1051,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if is_own and state == "os_await_num_code_uses":
+    if is_own and state == "os_await_num_code_uses" and context.user_data.get("owner_flow") == "number_code":
         try:
             uses = int(text)
         except ValueError:
@@ -2027,10 +2027,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=kb
         )
-        context.user_data["state"] = "os_await_price"
+        context.user_data["state"] = "os_await_service_price"
         return
 
-    if is_own and state == "os_await_price":
+    if (
+        is_own
+        and state == "os_await_service_price"
+        and context.user_data.get("owner_flow") == "service_create"
+    ):
         try:
             price = float(text)
         except ValueError:
@@ -2114,10 +2118,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💰 *السعر المقترح: {suggested} نقطة/1000 وحدة*\n\nاضغط الزر أو أرسل رقماً مختلفاً:",
             parse_mode=ParseMode.MARKDOWN, reply_markup=kb
         )
-        context.user_data["state"] = "ns_await_price"
+        context.user_data["state"] = "ns_await_service_price"
         return
 
-    if is_own and state == "ns_await_price":
+    if (
+        is_own
+        and state == "ns_await_service_price"
+        and context.user_data.get("owner_flow") == "service_create"
+    ):
         try:
             price = float(text)
         except ValueError:
@@ -3622,7 +3630,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
-    if is_own and state == "os_await_promo_code_text":
+    if is_own and state == "os_await_promo_code_text" and context.user_data.get("owner_flow") == "promo_code":
         code = text.strip().upper()
         if len(code) < 3:
             await update.message.reply_text("⚠️ الكود يجب أن يكون 3 أحرف على الأقل.")
@@ -3638,7 +3646,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                         parse_mode=ParseMode.MARKDOWN)
         return
 
-    if is_own and state == "os_await_promo_uses":
+    if is_own and state == "os_await_promo_uses" and context.user_data.get("owner_flow") == "promo_code":
         try:
             uses = int(text)
         except ValueError:
@@ -3652,7 +3660,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ الحد الأقصى: {uses} مستخدم\n\nكم عدد النقاط لكل مستخدم؟")
         return
 
-    if is_own and state == "os_await_promo_points":
+    if is_own and state == "os_await_promo_points" and context.user_data.get("owner_flow") == "promo_code":
         try:
             pts = int(text)
         except ValueError:
@@ -3924,9 +3932,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
         return
 
-    if is_own and state == "os_await_points_target":
-        # لا تسمح لحالة قديمة من تعديل الخدمة بأن تتداخل مع عملية النقاط.
-        context.user_data.pop("edit_svc_id", None)
+    if (
+        is_own
+        and state == "os_await_points_target"
+        and context.user_data.get("owner_flow") == "points"
+    ):
         try:
             target = lookup_user_by_id_or_username(text)
         except Exception:
@@ -3958,8 +3968,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if is_own and state == "os_await_points_amount":
-        context.user_data.pop("edit_svc_id", None)
+    if (
+        is_own
+        and state == "os_await_points_amount"
+        and context.user_data.get("owner_flow") == "points"
+    ):
         try:
             amount = int(text.strip())
             if amount <= 0:
@@ -4067,7 +4080,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ تم تحديث الحد الأعلى إلى: {mx}", reply_markup=owner_settings_kb())
         return
 
-    if is_own and state == "os_edit_await_price":
+    if (
+        is_own
+        and state == "os_edit_await_service_price"
+        and context.user_data.get("owner_flow") == "service_edit"
+    ):
         try:
             price = float(text)
         except ValueError:
