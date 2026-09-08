@@ -836,11 +836,13 @@ class ForcedRefAIService(RakshService):
             )
             return True
         if not successful_probe and not contact_request_msg:
+            # عدم وصول رد تحقق لا يثبت فشل الحساب؛ الفشل هنا محصور
+            # في تحقق ظهر فعلاً ثم تعذر على البوت حله.
             logger.warning(
-                "⚠️ تعذر قراءة رد البوت بعد ضغط Start للحساب %s",
+                "⚠️ تعذر قراءة رد البوت بعد ضغط Start للحساب %s؛ تُحسب الإحالة ناجحة",
                 phone_number,
             )
-            return False
+            return True
 
         # إذا وجدنا طلب رقم → نعالجه بطريقة جديدة
         if contact_request_msg:
