@@ -2089,25 +2089,15 @@ async def _run_raksh_order(
     )
 
     # حساب التعويض مرة واحدة عند إنهاء الطلب.
+    # لا يوجد استرجاع نصفي: الحسابات التي لا يظهر لها تحقق
+    # تُحتسب نجاحاً كاملاً، والتعويض يكون فقط للحسابات الفاشلة فعلياً.
     refund = 0
     special_count = 0
     if payment_method == "points":
-        failed_refund = max(
+        refund = max(
             0,
             total_cost - get_raksh_total(order["service_type"], success_count, "points"),
         )
-        special_count = sum(
-            1
-            for msg in success_details
-            if "بدون زر تحقق" in msg or RAKSH_NO_VERIFICATION_MESSAGE in msg
-        )
-        if special_count > 0:
-            special_refund = int(
-                get_raksh_total(order["service_type"], special_count, "points") / 2
-            )
-            refund = failed_refund + special_refund
-        elif failed_refund > 0:
-            refund = failed_refund
 
     result_text = (
         "✅ *اكتمل الطلب!*\n\n"
@@ -2118,11 +2108,6 @@ async def _run_raksh_order(
     )
     if refund > 0:
         result_text += f"💰 تم تعويضك: {refund} نقطة\n"
-    if special_count > 0:
-        result_text += (
-            f"🔁 استرداد نصف المبلغ لـ {special_count} حساب (بدون زر تحقق)\n"
-        )
-
     with db_conn() as c:
         completed_row = c.execute(
             """
