@@ -1617,19 +1617,10 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             return
 
         if data == "daily_gift_collect":
-            today = str(date.today())
-            with db_conn() as c:
-                row = c.execute("SELECT last_claim FROM daily_gifts WHERE user_id=%s", (user.id,)).fetchone()
-                if row and row["last_claim"] == today:
-                    await q.answer("⏰ لقد استلمت هديتك اليومية بالفعل! عد غداً.", show_alert=True)
-                    return
-                gift = int(get_setting("daily_gift_points") or "50")
-                c.execute(
-                    "INSERT INTO daily_gifts (user_id, last_claim) VALUES (%s, %s) "
-                    "ON CONFLICT (user_id) DO UPDATE SET last_claim=EXCLUDED.last_claim",
-                    (user.id, today)
-                )
-                c.execute("UPDATE users SET points=points+%s WHERE user_id=%s", (gift, user.id))
+            gift, claimed = claim_daily_gift(user.id)
+            if not claimed:
+                await q.answer("⏰ لقد استلمت هديتك اليومية بالفعل! عد غداً.", show_alert=True)
+                return
             credited = credit_referral_if_pending(user.id, context)
             referral_note = await _notify_referral_credit(context, user, credited)
             if credited:
