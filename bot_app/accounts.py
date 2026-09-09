@@ -378,6 +378,54 @@ async def check_spam_status_detailed(client: TelegramClient) -> dict:
         return {"restricted": None, "until": None, "raw": None,
                 "display": "⚠️ تعذر الفحص حالياً، حاول لاحقاً"}
 
+async def find_unrestricted_message_accounts(max_accounts: int = 20) -> tuple[list[dict], int, int]:
+    """يفحص الحسابات المعروضة للبيع عبر SpamBot ويعيد غير المقيّدة من إرسال الرسائل.
+
+    لا يغيّر هذا الفحص أي تصنيف في المخزون؛ الحسابات تبقى قابلة للبيع والرشق.
+    يُحدّ عدد الفحوصات في الضغطة الواحدة حتى لا يرسل البوت عدداً كبيراً من
+    الطلبات إلى SpamBot دفعة واحدة.
+    """
+    candidates = [
+        row for row in list_stock_numbers("listed")
+        if row.get("session_string")
+    ]
+    total = len(candidates)
+    unrestricted = []
+    checked = 0
+
+    for row in candidates[:max_accounts]:
+        client = TelegramClient(
+            StringSession(row["session_string"]),
+            int(TELEGRAM_API_ID),
+            TELEGRAM_API_HASH,
+        )
+        try:
+            await asyncio.wait_for(client.connect(), timeout=15)
+            authorized = await asyncio.wait_for(
+                client.is_user_authorized(),
+                timeout=8,
+            )
+            if not authorized:
+                continue
+            detail = await asyncio.wait_for(
+                check_spam_status_detailed(client),
+                timeout=25,
+            )
+            checked += 1
+            if detail.get("restricted") is False:
+                unrestricted.append(row)
+        except Exception as exc:
+            logger.warning(
+                f"تعذر فحص قيد الإرسال للحساب {row.get('phone_number')}: {exc}"
+            )
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+
+    return unrestricted, checked, total
+
 async def get_device_count(client: TelegramClient) -> int:
     """يُرجع عدد الأجهزة/الجلسات النشطة المسجّلة دخول على هذا الحساب."""
     try:
@@ -609,7 +657,7 @@ def list_stock_numbers(filter_type: str = "all"):
             "AND twofa_password IS NOT NULL AND twofa_password != ''"
         )
     else:
-        sql = "SELECT id, phone_number, session_string, sessions_reset, force_listed, twofa_password, last_authorized, frozen_at, added_at FROM number_stock WHERE assigned_to IS NULL AND deleted_at IS NULL AND ever_sold IS NOT TRUE AND raksh_only IS NOT TRUE"
+        sql = "SELECT id, phone_number, session_string, sessions_reset, force_listed, twofa_password, can_send_code, last_authorized, frozen_at, added_at FROM number_stock WHERE assigned_to IS NULL AND deleted_at IS NULL AND ever_sold IS NOT TRUE AND raksh_only IS NOT TRUE"
         if filter_type == "listed":
             sql += f" AND {_sellable_filter_sql()}"
         elif filter_type == "pending":

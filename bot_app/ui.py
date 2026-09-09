@@ -549,6 +549,12 @@ def account_info_kb() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton("🌍 جعل الستوريات عامة", callback_data="os:make_stories_public"),
         ],
+        [
+            InlineKeyboardButton(
+                "📨 حسابات غير مقيّدة من إرسال الرسائل",
+                callback_data="os:send_ready_accounts",
+            ),
+        ],
         [InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")],
     ])
 

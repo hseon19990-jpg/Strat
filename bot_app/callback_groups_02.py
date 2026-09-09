@@ -227,6 +227,64 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             )
             return
 
+        if data == "os:send_ready_accounts" and is_own:
+            # فحص حي عبر SpamBot: المقصود هنا قيد إرسال الرسائل،
+            # وليس قدرة الحساب على إرسال كود تسجيل الدخول.
+            await q.edit_message_text(
+                "⏳ *جاري فحص الحسابات عبر SpamBot...*\n"
+                "لن يتم تغيير حالة البيع أو الرشق لأي حساب.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            (
+                _send_ready_rows,
+                _send_ready_checked,
+                _send_ready_total_candidates,
+            ) = await find_unrestricted_message_accounts()
+            _send_ready_total = len(_send_ready_rows)
+            if not _send_ready_rows:
+                await q.edit_message_text(
+                    "📨 *الحسابات غير المقيّدة من إرسال الرسائل*\n\n"
+                    f"🔍 تم فحص {_send_ready_checked} من أصل "
+                    f"{_send_ready_total_candidates} حساباً.\n"
+                    "لا توجد حسابات سليمة حالياً حسب رد SpamBot.\n\n"
+                    "ℹ️ الفحص لم يغيّر تصنيف البيع أو الرشق.",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
+                    ]),
+                )
+                return
+
+            _send_ready_buttons = []
+            for _send_ready_row in _send_ready_rows[:40]:
+                _send_ready_buttons.append([
+                    InlineKeyboardButton(
+                        f"👁 فتح {str(_send_ready_row['phone_number'])[-8:]}",
+                        callback_data=f"os:number_info:{_send_ready_row['id']}",
+                    )
+                ])
+            if _send_ready_total > 40:
+                _send_ready_note = f"\n\n_(يُعرض أول 40 من أصل {_send_ready_total} حساباً)_"
+            else:
+                _send_ready_note = ""
+            await q.edit_message_text(
+                "📨 *الحسابات غير المقيّدة من إرسال الرسائل*\n\n"
+                f"📦 العدد: *{_send_ready_total}* حساب\n"
+                f"🔍 تم فحص {_send_ready_checked} من أصل "
+                f"{_send_ready_total_candidates} حساباً عبر SpamBot.\n"
+                "✅ هذه الحسابات غير مقيّدة من إرسال الرسائل للكروبات والحسابات الخاصة.\n"
+                "🛒 مستوفية لشروط العرض للبيع.\n"
+                "🔥 تبقى متاحة للرشق أيضاً.\n"
+                "👁 فتح الحساب يعرض معلوماته فقط ولا يغيّر حالته."
+                f"{_send_ready_note}",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup(
+                    _send_ready_buttons
+                    + [[InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")]]
+                ),
+            )
+            return
+
         if data == "os:account_names" and is_own:
             name_count = _account_name_count()
             context.user_data["state"] = "os_await_account_names"
