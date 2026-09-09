@@ -647,13 +647,6 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 qty  = context.user_data.get("smm_qty", 0)
                 cost = context.user_data.get("smm_cost", 0)
                 link = context.user_data.get("smm_link", "")
-                _db_u_chk = get_user(user.id)
-                if _db_u_chk and _db_u_chk.get("referral_points_blocked"):
-                    await q.edit_message_text(
-                        "🔒 *حسابك موقوف مؤقتاً عن استخدام النقاط.*\n\n"
-                        "تم رصد نشاط مشبوه في إحالاتك. تواصل مع المالك لرفع التقييد.",
-                        parse_mode=ParseMode.MARKDOWN, reply_markup=main_menu_kb(is_own))
-                    return
                 if not deduct_points(user.id, cost):
                     await q.edit_message_text("❌ نقاطك غير كافية.", reply_markup=main_menu_kb(is_own))
                     context.user_data["state"] = "main_menu"
