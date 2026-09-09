@@ -13,6 +13,23 @@ import asyncio
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
+def claim_daily_gift(user_id: int) -> tuple[int, bool]:
+    """يمنح الهدية اليومية مرة واحدة فقط في اليوم بشكل آمن ضد الضغطات المتزامنة."""
+    today = str(date.today())
+    gift = int(get_setting("daily_gift_points") or "50")
+    with db_conn() as c:
+        claimed = c.execute(
+            "INSERT INTO daily_gifts (user_id, last_claim) VALUES (%s, %s) "
+            "ON CONFLICT (user_id) DO UPDATE SET last_claim=EXCLUDED.last_claim "
+            "WHERE daily_gifts.last_claim IS DISTINCT FROM EXCLUDED.last_claim "
+            "RETURNING user_id",
+            (user_id, today),
+        ).fetchone()
+        if not claimed:
+            return gift, False
+        c.execute("UPDATE users SET points=points+%s WHERE user_id=%s", (gift, user_id))
+    return gift, True
+
 def _normalize_desc(desc: str) -> str:
     """يُطبّع الاختصارات الشائعة في أوصاف خدمات SMM إلى العربية.
     K → ألف  |  /D → /يوم  |  /H → /ساعة  |  /W → /أسبوع  |  /M → /شهر
