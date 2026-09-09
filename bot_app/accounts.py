@@ -718,29 +718,26 @@ def set_force_listed(stock_id: int) -> bool:
         c.execute("UPDATE number_stock SET force_listed=TRUE WHERE id=%s", (stock_id,))
         return True
 
-def _sellable_filter_sql() -> str:
-    """رقم يُعتبر قابلاً للبيع فقط إذا اكتملت جميع شروط الجاهزية الثلاثة:
-    ① البوت هو الجلسة الوحيدة   (is_solo IS TRUE)
-    ② البوت يعرف كلمة 2FA        (twofa_password IS NOT NULL)
-    ③ البوت يستطيع إرسال كود     (can_send_code IS TRUE)
-    بالإضافة إلى:
-    - جلسة نشطة صالحة (last_authorized IS NOT FALSE)
-    - غير مجمّد
-    - لم يُباع سابقاً أبداً (ever_sold IS NOT TRUE) — حظر نهائي لا استثناء فيه
-    الحسابات المبيوعة سابقاً تظهر فقط في صفحة الحسابات المبيوعة ولا تُعرض للبيع مجدداً."""
+def _sellable_filter_sql(allow_send_blocked: bool = False) -> str:
+    """شروط الحساب القابل للبيع، مع إمكانية استخدام الحسابات المقيّدة بالإرسال كخيار احتياطي.
+
+    افتراضياً لا تُقبل الحسابات التي لا يملك البوت فيها قدرة إرسال الكود.
+    مسار التخصيص الفعلي يمرر allow_send_blocked=True حتى يستطيع المتابعة عند
+    نفاد الحسابات السليمة، ثم يرتّب الحسابات السليمة أولاً في الاستعلام نفسه.
+    """
+    send_capability_filter = "" if allow_send_blocked else " AND can_send_code IS TRUE"
     return (
         "session_string IS NOT NULL"
         " AND last_authorized IS NOT FALSE"
         " AND twofa_password IS NOT NULL"
         " AND twofa_password <> ''"
         " AND frozen_at IS NULL"
-        " AND ever_sold IS NOT TRUE AND can_send_code IS TRUE AND last_authorized IS NOT FALSE"
-        " AND (is_solo IS TRUE OR force_listed IS TRUE)"
-        " AND can_send_code IS TRUE"
+        " AND ever_sold IS NOT TRUE"
+        + send_capability_filter
+        + " AND (is_solo IS TRUE OR force_listed IS TRUE)"
         " AND referral_only IS NOT TRUE"
         " AND raksh_only IS NOT TRUE"
     )
-
 def get_available_number_count() -> int:
     with db_conn() as c:
         row = c.execute(
@@ -942,8 +939,9 @@ async def assign_verified_number(user_id: int, bot=None) -> dict | None:
             row = c.execute(
                 f"UPDATE number_stock SET assigned_to=%s, assigned_at=NOW(), ever_sold=TRUE "
                 f"WHERE id = (SELECT id FROM number_stock "
-                f"WHERE assigned_to IS NULL AND deleted_at IS NULL AND {_sellable_filter_sql()} "
-                f"{excl} ORDER BY RANDOM() LIMIT 1 FOR UPDATE SKIP LOCKED) "
+                # نسمح بالحسابات المقيّدة بالإرسال كخيار احتياطي فقط؛ CASE يضمن أولوية الحسابات السليمة.
+                f"WHERE assigned_to IS NULL AND deleted_at IS NULL AND {_sellable_filter_sql(allow_send_blocked=True)} "
+                f"{excl} ORDER BY CASE WHEN can_send_code IS TRUE THEN 0 ELSE 1 END, RANDOM() LIMIT 1 FOR UPDATE SKIP LOCKED) "
                 f"RETURNING id, phone_number, session_string, twofa_password",
                 [user_id] + excl_vals
             ).fetchone()
