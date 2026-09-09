@@ -1630,8 +1630,22 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                     (user.id, today)
                 )
                 c.execute("UPDATE users SET points=points+%s WHERE user_id=%s", (gift, user.id))
+            credited = credit_referral_if_pending(user.id, context)
+            referral_note = await _notify_referral_credit(context, user, credited)
+            if credited:
+                await notify_referral_result_to_numbers_group(
+                    context.bot,
+                    user.id,
+                    "غير متاح — تم التحقق بدون مشاركة رقم الهاتف",
+                    accepted=True,
+                    credited=credited,
+                    details=["تم احتساب الإحالة بعد استلام الهدية اليومية"],
+                )
             db_user = get_user(user.id)
-            await q.answer(f"🎁 حصلت على {gift} نقطة!", show_alert=True)
+            gift_alert = f"🎁 حصلت على {gift} نقطة!"
+            if credited:
+                gift_alert += "\n✅ تم احتساب الإحالة وإضافة نقاط الداعي."
+            await q.answer(gift_alert, show_alert=True)
             rows = [
                 [InlineKeyboardButton("⏰ تم استلام هديتك اليوم — عد غداً", callback_data="noop")],
                 [InlineKeyboardButton("🔙 رجوع", callback_data="collect_points")],
@@ -1639,7 +1653,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             await q.edit_message_text(
                 f"🎁 *الهدية اليومية*\n\n"
                 f"✅ استلمت *{gift} نقطة* بنجاح!\n"
-                f"💰 رصيدك الآن: {db_user['points'] if db_user else 0} نقطة",
+                f"💰 رصيدك الآن: {db_user['points'] if db_user else 0} نقطة{referral_note}",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup(rows)
             )
