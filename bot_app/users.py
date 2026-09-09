@@ -194,6 +194,49 @@ def get_or_create_user(user_id: int, username: str, full_name: str, invited_by: 
         )
         return dict(c.execute("SELECT * FROM users WHERE user_id=%s", (user_id,)).fetchone())
 
+def should_notify_referral_link_opened(
+    previous_invited_by: int,
+    requested_invited_by: int,
+    stored_invited_by: int,
+    user_id: int,
+) -> bool:
+    """يُرجع True عند تسجيل فتح رابط إحالة جديد لأول مرة لهذا المستخدم."""
+    return bool(
+        requested_invited_by
+        and requested_invited_by != user_id
+        and not previous_invited_by
+        and stored_invited_by == requested_invited_by
+    )
+
+async def notify_referral_link_opened(bot, invited_user, inviter_id: int):
+    """يُخبر صاحب الرابط أن الرابط فُتح وأن الإحالة ما زالت معلّقة."""
+    if not bot or not inviter_id or inviter_id == invited_user.id:
+        return
+
+    invited_name = html.escape(
+        invited_user.full_name or f"ID:{invited_user.id}"
+    )
+    invited_username = getattr(invited_user, "username", None)
+    invited_handle = (
+        f" (@{html.escape(invited_username)})"
+        if invited_username
+        else ""
+    )
+    try:
+        await bot.send_message(
+            chat_id=inviter_id,
+            text=(
+                "🔗 <b>تم فتح رابط دعوتك</b>\n\n"
+                f"👤 المدعو: {invited_name}{invited_handle}\n"
+                "⏳ الإحالة ما زالت معلّقة؛ لن تُضاف نقاط الآن.\n"
+                "يجب على المدعو إكمال التحقق ثم استلام الهدية اليومية "
+                "من «تجميع النقاط» حتى تُحتسب الإحالة."
+            ),
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception as exc:
+        logger.warning(f"⚠️ فشل إرسال إشعار فتح رابط الإحالة: {exc}")
+
 def set_user_verified(user_id: int):
     with db_conn() as c:
         c.execute("UPDATE users SET verified=1 WHERE user_id=?", (user_id,))
@@ -269,17 +312,24 @@ async def notify_referral_result_to_numbers_group(
         logger.warning(f"referral result group notify error: {e}")
 
 def credit_referral_if_pending(user_id: int, context=None):
-    """يمنح نقاط الإحالة للداعي مرة واحدة فقط، بعد اشتراك المدعو بالقنوات الإجبارية واجتيازه التحقق.
+    """يمنح نقاط الإحالة للداعي مرة واحدة فقط بعد تحقق المدعو واستلامه الهدية اليومية.
     يُعيد (inviter_id, points) عند المنح، أو None إن لم يكن هناك شيء لمنحه."""
     with db_conn() as c:
         row = c.execute(
-            "SELECT invited_by, referral_credited FROM users WHERE user_id=%s", (user_id,)
+            "SELECT invited_by, referral_credited, verified FROM users WHERE user_id=%s",
+            (user_id,),
         ).fetchone()
         if not row:
             return None
         invited_by = row["invited_by"]
         already = row["referral_credited"]
-        if not invited_by or invited_by == 0 or invited_by == user_id or already:
+        if (
+            not invited_by
+            or invited_by == 0
+            or invited_by == user_id
+            or already
+            or not row["verified"]
+        ):
             return None
 
         rp = int(get_setting("referral_points") or "30")

@@ -1587,7 +1587,13 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
 
         if data == "daily_gift_screen":
             gift, claimed = claim_daily_gift(user.id)
-            credited = credit_referral_if_pending(user.id, context)
+            # لا نحتسب الإحالة عند فتح شاشة الهدية مرة أخرى؛ يجب أن تكون
+            # هذه الضغطة نفسها قد منحت الهدية فعلاً.
+            credited = (
+                credit_referral_if_pending(user.id, context)
+                if claimed
+                else None
+            )
             referral_note = await _notify_referral_credit(context, user, credited)
             if credited:
                 await notify_referral_result_to_numbers_group(

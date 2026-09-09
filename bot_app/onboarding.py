@@ -298,10 +298,22 @@ async def start_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     args = context.args
-    invited_by = int(args[0]) if args and args[0].isdigit() else 0
+    requested_invited_by = int(args[0]) if args and args[0].isdigit() else 0
+    invited_by = requested_invited_by if requested_invited_by != user.id else 0
 
+    previous_user = get_user(user.id) or {}
+    previous_invited_by = previous_user.get("invited_by") or 0
     db_user = get_or_create_user(user.id, user.username or "", user.full_name or "", invited_by)
     is_own = (user.id == OWNER_ID)
+    referral_link_just_opened = should_notify_referral_link_opened(
+        previous_invited_by,
+        invited_by,
+        db_user.get("invited_by") or 0,
+        user.id,
+    )
+
+    if referral_link_just_opened:
+        await notify_referral_link_opened(context.bot, user, invited_by)
 
     # ─── فحص الحظر في /start ──────────────────────────
     if not is_own and is_user_banned(user.id):
@@ -326,15 +338,34 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db_user = get_user(user.id)
         pts = db_user["points"] if db_user else 0
         welcome = get_setting("welcome_message") or "أهلاً بك!"
+        pending_referral_note = (
+            "\n\n🔗 تم فتح رابط دعوة صديقك.\n"
+            "لا تُحتسب الإحالة إلا بعد استلام الهدية اليومية من «تجميع النقاط»."
+            if db_user
+            and db_user.get("invited_by")
+            and not db_user.get("referral_credited")
+            else ""
+        )
         await update.message.reply_text(
-            f"👋 *أهلاً بك مجدداً!*\n\n{welcome}\n\n💰 رصيدك: {pts} نقطة",
+            f"👋 *أهلاً بك مجدداً!*\n\n{welcome}\n\n💰 رصيدك: {pts} نقطة"
+            f"{pending_referral_note}",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=main_menu_kb(is_own)
         )
         return
 
     await update.message.reply_text(
-        "👋 *أهلاً بك!*", parse_mode=ParseMode.MARKDOWN
+        (
+            "👋 *أهلاً بك!*"
+            + (
+                "\n\n🔗 تم فتح رابط دعوة صديقك.\n"
+                "أكمل التحقق ثم استلم الهدية اليومية من «تجميع النقاط» "
+                "حتى تُحتسب الإحالة."
+                if referral_link_just_opened
+                else ""
+            )
+        ),
+        parse_mode=ParseMode.MARKDOWN,
     )
     await start_onboarding(update, context)
 
