@@ -265,7 +265,8 @@ async def finalize_verification(update: Update, context: ContextTypes.DEFAULT_TY
         and not db_user.get("referral_credited")
     )
     pending_referral_note = (
-        "\n\n🎁 لإكمال إحالة صديقك: افتح «تجميع النقاط» ثم «الهدية اليومية» واستلم الهدية."
+        "\n\n📌 ملاحظة: يجب استلام الهدية اليومية حتى تُحتسب الإحالة كاملة.\n"
+        "المسار: تجميع النقاط ← الهدية اليومية."
         if has_pending_referral
         else ""
     )
