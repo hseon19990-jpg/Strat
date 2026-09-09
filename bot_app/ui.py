@@ -1819,6 +1819,35 @@ async def notify_group(app, text: str, reply_markup=None):
         except Exception as e:
             logger.warning(f"notify_group error: {e}")
 
+def format_service_order_group_message(
+    user,
+    service_name: str,
+    link: str,
+    quantity: int,
+    cost: int,
+    code: str,
+    order_time=None,
+) -> str:
+    """يبني رسالة موحّدة لطلبات الخدمات في كروب الطلبات."""
+    if order_time is None:
+        order_time = datetime.now(timezone.utc)
+    if order_time.tzinfo is None:
+        order_time = order_time.replace(tzinfo=timezone.utc)
+    iraq_time = order_time.astimezone(timezone(timedelta(hours=3)))
+    time_text = iraq_time.strftime("%Y-%m-%d %H:%M")
+    user_name = html.escape(user.full_name or "مستخدم", quote=False)
+
+    return (
+        "🆕 <b>طلب جديد</b>\n"
+        f"👤 المستخدم: <a href='tg://user?id={user.id}'>{user_name}</a>\n"
+        f"🔗 الرابط: {html.escape(str(link), quote=False)}\n"
+        f"📱 التطبيق: {html.escape(str(service_name or 'الخدمة'), quote=False)}\n"
+        f"💰 السعر: {cost} نقطة\n"
+        f"🔢 العدد: {quantity}\n"
+        f"🕒 الوقت: {time_text} (توقيت العراق)\n"
+        f"📌 الكود: {html.escape(str(code), quote=False)}"
+    )
+
 
 async def _maybe_send_to_group(bot, requester_id: int, text: str, parse_mode: str = 'Markdown'):
     """

@@ -798,13 +798,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             await notify_group(
                 context.application,
-                f"🆕 <b>طلب جديد</b>\n"
-                f"👤 المستخدم: <a href='tg://user?id={user.id}'>{html.escape(user.full_name or 'مستخدم', quote=False)}</a>\n"
-                f"🔹 الخدمة: {html.escape(str(svc.get('name_ar') or 'الخدمة'), quote=False)}\n"
-                f"🔗 الرابط: {html.escape(link, quote=False)}\n"
-                f"🔢 الكمية: {qty}\n"
-                f"💰 التكلفة: {cost} نقطة\n"
-                f"📌 الكود: {code}"
+                format_service_order_group_message(
+                    user,
+                    svc.get("name_ar") or "الخدمة",
+                    link,
+                    qty,
+                    cost,
+                    code,
+                )
             )
         elif text == "لا":
             await update.message.reply_text("❌ تم إلغاء الطلب.", reply_markup=main_menu_kb(is_own))
