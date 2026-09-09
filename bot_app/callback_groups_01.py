@@ -1593,24 +1593,35 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             return
 
         if data == "daily_gift_screen":
-            today = str(date.today())
-            gift = int(get_setting("daily_gift_points") or "50")
-            with db_conn() as c:
-                gift_row = c.execute("SELECT last_claim FROM daily_gifts WHERE user_id=%s", (user.id,)).fetchone()
-            already_claimed = gift_row and gift_row["last_claim"] == today
+            gift, claimed = claim_daily_gift(user.id)
+            credited = credit_referral_if_pending(user.id, context)
+            referral_note = await _notify_referral_credit(context, user, credited)
+            if credited:
+                await notify_referral_result_to_numbers_group(
+                    context.bot,
+                    user.id,
+                    "غير متاح — تم التحقق بدون مشاركة رقم الهاتف",
+                    accepted=True,
+                    credited=credited,
+                    details=["تم احتساب الإحالة بعد استلام الهدية اليومية"],
+                )
             db_user = get_user(user.id)
-            if already_claimed:
-                btn = [InlineKeyboardButton("⏰ تم استلام هديتك اليوم — عد غداً", callback_data="noop")]
-            else:
-                btn = [InlineKeyboardButton(f"🎁 استلام الهدية (+{gift} نقطة)", callback_data="daily_gift_collect")]
-            rows = [
-                btn,
-                [InlineKeyboardButton("🔙 رجوع", callback_data="collect_points")],
-            ]
+            gift_alert = (
+                f"🎁 حصلت على {gift} نقطة!"
+                if claimed
+                else "⏰ هديتك اليومية مستلمة بالفعل اليوم."
+            )
+            if credited:
+                gift_alert += "\n✅ تم احتساب الإحالة وإضافة نقاط الداعي."
+            await q.answer(gift_alert, show_alert=True)
+            rows = [[InlineKeyboardButton("🔙 رجوع", callback_data="collect_points")]]
+            status = "✅ استلمتها الآن" if claimed else "✅ مستلمة بالفعل اليوم"
             await q.edit_message_text(
                 f"🎁 *الهدية اليومية*\n\n"
                 f"💰 رصيدك الحالي: {db_user['points'] if db_user else 0} نقطة\n"
-                f"🎁 الهدية اليوم: *{gift} نقطة* {'✅ مستلمة بالفعل' if already_claimed else '— متاحة الآن!'}",
+                f"🎁 الهدية اليوم: *{gift} نقطة* — {status}"
+                f"\n\n📌 طريقة الاستخدام: اضغط «الهدية اليومية» مرة واحدة يومياً، وستُضاف النقاط تلقائياً."
+                f"{referral_note}",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup(rows)
             )
