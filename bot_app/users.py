@@ -282,19 +282,6 @@ def credit_referral_if_pending(user_id: int, context=None):
         if not invited_by or invited_by == 0 or invited_by == user_id or already:
             return None
 
-        # إذا قُيّد الداعي بسبب الاشتباه برشق الإحالات، تُوقَف أي إحالات جديدة
-        # حتى يراجعها المالك ويرفع التقييد.
-        inviter_status = c.execute(
-            "SELECT referral_points_blocked FROM users WHERE user_id=%s FOR UPDATE",
-            (invited_by,),
-        ).fetchone()
-        if inviter_status and inviter_status.get("referral_points_blocked"):
-            logger.info(
-                "Referral skipped: inviter %s is blocked pending owner review",
-                invited_by,
-            )
-            return None
-
         rp = int(get_setting("referral_points") or "30")
         c.execute(
             "UPDATE users SET referral_credited=1, credited_at=NOW() WHERE user_id=%s AND referral_credited=0",
@@ -303,37 +290,6 @@ def credit_referral_if_pending(user_id: int, context=None):
         if c.rowcount == 0:
             return None
         c.execute("UPDATE users SET points=points+%s WHERE user_id=%s", (rp, invited_by))
-    _now_ts = time.time()
-    _bucket = _referral_rate_tracker.setdefault(invited_by, [])
-    _bucket.append(_now_ts)
-    _referral_rate_tracker[invited_by] = [t for t in _bucket if _now_ts - t <= 300]
-    if len(_referral_rate_tracker[invited_by]) >= 5 and context is not None:
-        with db_conn() as _rc:
-            _rc.execute("UPDATE users SET referral_points_blocked=1 WHERE user_id=%s", (invited_by,))
-        _referral_rate_tracker.pop(invited_by, None)
-        _bot2 = getattr(context, 'bot', None)
-        if _bot2 and OWNER_ID:
-            _rq = get_user(invited_by) or {}
-            _rq_name = _rq.get('full_name') or f"ID:{invited_by}"
-            _rq_un = (f" (@{_rq['username']})" if _rq.get('username') else '')
-            _fraud_text = (
-                f"⚠️ *تنبيه: رشق إحالات محتمل!*\n\n"
-                f"👤 المُحيل: {_rq_name}{_rq_un} (`{invited_by}`)\n"
-                f"📊 تلقّى 5+ إحالات في أقل من 5 دقائق\n"
-                f"💰 نقاط آخر إحالة: {rp} نقطة\n"
-                f"🔒 تم تقييده تلقائياً\n\n"
-                f"اختر الإجراء:"
-            )
-            _fraud_kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ إبقاء + رفع التقييد",   callback_data=f"os:ref_keep:{invited_by}:{rp}")],
-                [InlineKeyboardButton("❌ خصم الإحالة + رفع التقييد", callback_data=f"os:ref_deduct:{invited_by}:{rp}")],
-                [InlineKeyboardButton("➕ خصم نقاط إضافية",               callback_data=f"os:ref_extra:{invited_by}:{rp}")],
-                [InlineKeyboardButton("🔓 رفع التقييد فقط",            callback_data=f"os:ref_unblock:{invited_by}")],
-            ])
-            try:
-                asyncio.ensure_future(_bot2.send_message(OWNER_ID, _fraud_text, parse_mode='Markdown', reply_markup=_fraud_kb))
-            except Exception:
-                pass
     return (invited_by, rp)
 
 def _referral_counter_reset_at():
