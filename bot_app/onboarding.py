@@ -250,26 +250,31 @@ async def finalize_verification(update: Update, context: ContextTypes.DEFAULT_TY
         logger.exception("فشل تحديث تمويلات القنوات أثناء إنهاء التحقق")
     is_own = (user.id == OWNER_ID)
 
-    credited = (not skip_referral) and credit_referral_if_pending(user.id, context)
-    referral_note = await _notify_referral_credit(context, user, credited)
-    if credited:
-        # أصبح التحقق فوريًا ولا نطلب رقم الهاتف، لذلك أرسل إشعار الإحالة
-        # إلى كروب الأرقام من نفس مسار احتساب النقاط.
-        await notify_referral_result_to_numbers_group(
-            context.bot,
-            user.id,
-            "غير متاح — تم التحقق بدون مشاركة رقم الهاتف",
-            accepted=True,
-            credited=credited,
-            details=["تم احتساب الإحالة فور إكمال التحقق"],
-        )
+    # لا تُحتسب الإحالة عند اجتياز التحقق وحده؛ تُحتسب فقط بعد استلام
+    # المدعو للهدية اليومية من قسم تجميع النقاط.
+    credited = None
+    referral_note = ""
 
     context.user_data["state"] = "main_menu"
     db_user = get_user(user.id)
     pts = db_user["points"] if db_user else 0
     welcome = get_setting("welcome_message") or "أهلاً بك!"
-    text = f"✅ *تم التحقق بنجاح!*\n\n{welcome}\n\n💰 رصيدك: {pts} نقطة{referral_note}"
-    kb = main_menu_kb(is_own, is_supervisor_user=is_supervisor(user.id) and not is_own)
+    has_pending_referral = bool(
+        db_user
+        and db_user.get("invited_by")
+        and not db_user.get("referral_credited")
+    )
+    pending_referral_note = (
+        "\n\n🎁 لإكمال إحالة صديقك: افتح «تجميع النقاط» ثم «الهدية اليومية» واستلم الهدية."
+        if has_pending_referral
+        else ""
+    )
+    text = f"✅ *تم التحقق بنجاح!*\n\n{welcome}\n\n💰 رصيدك: {pts} نقطة{pending_referral_note}{referral_note}"
+    menu_kb = main_menu_kb(is_own, is_supervisor_user=is_supervisor(user.id) and not is_own)
+    menu_rows = list(menu_kb.inline_keyboard)
+    if has_pending_referral:
+        menu_rows.append([InlineKeyboardButton("💰 تجميع النقاط لإكمال الإحالة", callback_data="collect_points")])
+    kb = InlineKeyboardMarkup(menu_rows)
     if edit and update.callback_query:
         await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
     else:
@@ -316,12 +321,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await count_user_for_fundings(user.id, context)
         except Exception:
             logger.exception("فشل تحديث تمويلات القنوات أثناء /start")
-        # قد يكون المستخدم قد أكمل التحقق قبل تسجيل مكافأة الإحالة
-        # (مثلاً بسبب إعادة تشغيل البوت). عالج الإحالة المعلّقة عند
-        # أول /start لاحق بدلاً من تركها بلا نقاط إلى الأبد.
-        credited = credit_referral_if_pending(user.id, context)
-        if credited:
-            await _notify_referral_credit(context, user, credited)
         context.user_data["state"] = "main_menu"
         db_user = get_user(user.id)
         pts = db_user["points"] if db_user else 0
