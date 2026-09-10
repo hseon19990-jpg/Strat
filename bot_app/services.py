@@ -186,6 +186,7 @@ def normalize_legendary_menu_item(item):
 
 RAKSH_MENU_DEFAULTS = [
     ("✉️ إرسال رسالة", "raksh:send_message", 1),
+    ("📋 طلباتي", "raksh:my_orders", 1),
     ("📱 مشاهدة ستوري وتفاعل", "raksh:start:story", 1),
     ("🔑 إحالة بوت إجباري", "raksh:start:forced_ref", 1),
     ("🤖 إحالة بوت إجباري مع تحقق", "raksh:start:forced_ref_ai", 1),
@@ -448,6 +449,20 @@ def seed_menu_items(menu: str):
                     )
                     next_order += 1
 
+    if menu == "raksh_menu":
+        with db_conn() as c:
+            rows = c.execute(
+                "SELECT id, action_value FROM menu_items WHERE menu=? ORDER BY sort_order, id",
+                (menu,),
+            ).fetchall()
+            ordered = _raksh_menu_order_with_message_before_orders(rows)
+            if [row["id"] for row in ordered] != [row["id"] for row in rows]:
+                for sort_order, row in enumerate(ordered):
+                    c.execute(
+                        "UPDATE menu_items SET sort_order=? WHERE id=? AND menu=?",
+                        (sort_order, row["id"], menu),
+                    )
+
     if menu == "main":
         # Keep the two main service entry points together in the first row,
         # including existing databases whose old rows were full-width.
@@ -475,6 +490,28 @@ def seed_menu_items(menu: str):
                     "WHERE id=? AND menu='main'",
                     (first_order + 1, by_value["raksh_menu"]["id"]),
                 )
+
+def _raksh_menu_order_with_message_before_orders(items):
+    """Keep the message action immediately above My Orders in every database."""
+    ordered = list(items)
+    message_index = next(
+        (i for i, item in enumerate(ordered) if item["action_value"] == "raksh:send_message"),
+        -1,
+    )
+    orders_index = next(
+        (i for i, item in enumerate(ordered) if item["action_value"] == "raksh:my_orders"),
+        -1,
+    )
+    if message_index < 0 or orders_index < 0 or message_index == orders_index - 1:
+        return ordered
+
+    message_item = ordered.pop(message_index)
+    orders_index = next(
+        i for i, item in enumerate(ordered) if item["action_value"] == "raksh:my_orders"
+    )
+    ordered.insert(orders_index, message_item)
+    return ordered
+
 
 def get_menu_items(menu: str, only_enabled: bool = True):
     seed_menu_items(menu)
