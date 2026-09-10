@@ -686,9 +686,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 await notify_group(
                     context.application,
                     format_service_order_group_message(
-                        user,
                         svc.get("name_ar") or "الخدمة",
-                        link,
                         qty,
                         cost,
                         code,

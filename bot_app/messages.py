@@ -799,9 +799,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await notify_group(
                 context.application,
                 format_service_order_group_message(
-                    user,
                     svc.get("name_ar") or "الخدمة",
-                    link,
                     qty,
                     cost,
                     code,

@@ -1826,9 +1826,7 @@ async def notify_group(app, text: str, reply_markup=None):
             logger.warning(f"notify_group error: {e}")
 
 def format_service_order_group_message(
-    user,
     service_name: str,
-    link: str,
     quantity: int,
     cost: int,
     code: str,
@@ -1841,12 +1839,9 @@ def format_service_order_group_message(
         order_time = order_time.replace(tzinfo=timezone.utc)
     iraq_time = order_time.astimezone(timezone(timedelta(hours=3)))
     time_text = iraq_time.strftime("%Y-%m-%d %H:%M")
-    user_name = html.escape(user.full_name or "مستخدم", quote=False)
 
     return (
         "🆕 <b>طلب جديد</b>\n"
-        f"👤 المستخدم: <a href='tg://user?id={user.id}'>{user_name}</a>\n"
-        f"🔗 الرابط: {html.escape(str(link), quote=False)}\n"
         f"📱 التطبيق: {html.escape(str(service_name or 'الخدمة'), quote=False)}\n"
         f"💰 السعر: {cost} نقطة\n"
         f"🔢 العدد: {quantity}\n"

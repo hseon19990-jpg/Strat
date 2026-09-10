@@ -34,14 +34,8 @@ class ServiceOrderNotificationTests(unittest.TestCase):
     def test_group_message_uses_requested_labels_and_order(self):
         formatter = _load_formatter()
 
-        class User:
-            id = 17
-            full_name = "محمد <اختبار>"
-
         message = formatter(
-            User(),
             "مشاهدة منشور تيليجرام",
-            "https://t.me/example/42",
             150,
             150,
             "1-11469-2195",
@@ -60,8 +54,8 @@ class ServiceOrderNotificationTests(unittest.TestCase):
         self.assertIn("مشاهدة منشور تيليجرام", message)
         self.assertIn("150 نقطة", message)
         self.assertIn("2026-09-09 12:00 (توقيت العراق)", message)
-        self.assertIn("محمد &lt;اختبار&gt;", message)
-        self.assertIn("الرابط: https://t.me/example/42", message)
+        self.assertNotIn("المستخدم:", message)
+        self.assertNotIn("الرابط:", message)
 
 
 if __name__ == "__main__":
