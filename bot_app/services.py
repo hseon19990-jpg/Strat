@@ -185,6 +185,7 @@ def normalize_legendary_menu_item(item):
     return normalized
 
 RAKSH_MENU_DEFAULTS = [
+    ("✉️ إرسال رسالة", "raksh:send_message", 1),
     ("📱 مشاهدة ستوري وتفاعل", "raksh:start:story", 1),
     ("🔑 إحالة بوت إجباري", "raksh:start:forced_ref", 1),
     ("🤖 إحالة بوت إجباري مع تحقق", "raksh:start:forced_ref_ai", 1),

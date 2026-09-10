@@ -9,6 +9,13 @@ from .poll import PollService
 from .votes import VotesService
 from .votes_ai import VotesAIService
 from .premium_reaction import PremiumReactionService
+from .message import (
+    message_confirmation_keyboard,
+    message_confirmation_text,
+    message_identity_keyboard,
+    normalize_message_recipient,
+    send_raksh_message,
+)
 from ..services import get_menu_items
 import json
 
@@ -1065,6 +1072,10 @@ def raksh_menu_kb(is_owner: bool = False):
                 ])
             else:
                 buttons.append([service_button])
+        elif action == "raksh:send_message":
+            buttons.append([
+                InlineKeyboardButton(item["label"], callback_data=action)
+            ])
         elif action == "os:raksh_accounts" and is_owner:
             buttons.append([
                 InlineKeyboardButton(
@@ -1352,6 +1363,89 @@ async def _handle_raksh_callback_impl(
             f"📊 الحسابات المتاحة: *{get_available_sessions_count(is_owner=is_own)}*",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=raksh_menu_kb(is_own)
+        )
+        return
+
+    # ─── خدمة إرسال رسالة ───
+    if data == "raksh:send_message":
+        _clear_raksh_state(context)
+        context.user_data["raksh_service"] = "send_message"
+        context.user_data["raksh_step"] = "message_text"
+        await query.edit_message_text(
+            "✉️ *إرسال رسالة*\n\n"
+            "أرسل نص الرسالة التي تريد إرسالها.\n"
+            "الحد الأقصى 2000 حرف.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ إلغاء", callback_data="raksh:message:cancel")]
+            ]),
+        )
+        return
+
+    if data == "raksh:message:cancel":
+        _clear_raksh_state(context)
+        await query.edit_message_text(
+            "🔥 *خدمات الرشق*\n\n"
+            "تم إلغاء إرسال الرسالة.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=raksh_menu_kb(is_own),
+        )
+        return
+
+    if data.startswith("raksh:message:identity:"):
+        if context.user_data.get("raksh_service") != "send_message":
+            await query.answer("⚠️ انتهت جلسة إرسال الرسالة.", show_alert=True)
+            return
+        identity_type = data.rsplit(":", 1)[-1]
+        if identity_type not in {"anonymous", "self", "fake"}:
+            await query.answer("⚠️ نوع الهوية غير صالح.", show_alert=True)
+            return
+        message_data = context.user_data.setdefault("raksh_message_data", {})
+        if identity_type == "fake":
+            message_data["identity_type"] = "fake"
+            context.user_data["raksh_step"] = "message_fake_name"
+            await query.edit_message_text(
+                "🎭 أرسل الاسم المزيف الذي سيظهر داخل نص الرسالة:",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("❌ إلغاء", callback_data="raksh:message:cancel")]
+                ]),
+            )
+            return
+        message_data["identity_type"] = identity_type
+        message_data["identity_name"] = (
+            user.full_name if identity_type == "self" else ""
+        )
+        context.user_data["raksh_step"] = "message_confirm"
+        await query.edit_message_text(
+            message_confirmation_text(message_data),
+            reply_markup=message_confirmation_keyboard(),
+        )
+        return
+
+    if data == "raksh:message:send":
+        if context.user_data.get("raksh_service") != "send_message":
+            await query.answer("⚠️ انتهت جلسة إرسال الرسالة.", show_alert=True)
+            return
+        message_data = context.user_data.get("raksh_message_data") or {}
+        if (
+            not message_data.get("message")
+            or not message_data.get("recipient")
+            or not message_data.get("identity_type")
+        ):
+            await query.answer("⚠️ بيانات الرسالة غير مكتملة.", show_alert=True)
+            return
+        await query.edit_message_text("⏳ جاري البحث عن حساب قادر على المراسلة...")
+        ok, result = await send_raksh_message(
+            message_data["recipient"],
+            message_data["message"],
+            message_data["identity_type"],
+            message_data.get("identity_name") or "",
+            is_owner=is_own,
+        )
+        _clear_raksh_state(context)
+        await query.edit_message_text(
+            ("✅ " if ok else "❌ ") + result,
+            reply_markup=raksh_menu_kb(is_own),
         )
         return
 
@@ -1685,6 +1779,70 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     service_type = context.user_data.get("raksh_service")
     
     if not state:
+        return False
+
+    if service_type == "send_message":
+        message_data = context.user_data.setdefault("raksh_message_data", {})
+        if text.strip().lower() in {"/cancel", "إلغاء", "الغاء"}:
+            _clear_raksh_state(context)
+            await update.message.reply_text(
+                "❌ تم إلغاء إرسال الرسالة.",
+                reply_markup=raksh_menu_kb(user.id == OWNER_ID),
+            )
+            return True
+
+        if state == "message_text":
+            if not text.strip() or len(text) > 2000:
+                await update.message.reply_text("⚠️ أرسل رسالة بين 1 و2000 حرف.")
+                return True
+            message_data["message"] = text.strip()
+            context.user_data["raksh_step"] = "message_recipient"
+            await update.message.reply_text(
+                "👤 أرسل يوزر الشخص المراد مراسلته.\n"
+                "مثال: `@username` أو `t.me/username`",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("❌ إلغاء", callback_data="raksh:message:cancel")]
+                ]),
+            )
+            return True
+
+        if state == "message_recipient":
+            recipient = normalize_message_recipient(text)
+            if not recipient:
+                await update.message.reply_text(
+                    "⚠️ أرسل يوزراً صحيحاً مثل `@username`.",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+                return True
+            message_data["recipient"] = recipient
+            context.user_data["raksh_step"] = "message_identity"
+            await update.message.reply_text(
+                "اختر هوية الرسالة:",
+                reply_markup=message_identity_keyboard(),
+            )
+            return True
+
+        if state == "message_fake_name":
+            fake_name = text.strip()
+            if not fake_name or len(fake_name) > 64:
+                await update.message.reply_text("⚠️ أرسل اسماً بين 1 و64 حرفاً.")
+                return True
+            message_data["identity_name"] = fake_name
+            context.user_data["raksh_step"] = "message_confirm"
+            await update.message.reply_text(
+                message_confirmation_text(message_data),
+                reply_markup=message_confirmation_keyboard(),
+            )
+            return True
+
+        if state == "message_confirm":
+            await update.message.reply_text(
+                "⚠️ اضغط زر تأكيد الإرسال أو أرسل /cancel.",
+                reply_markup=message_confirmation_keyboard(),
+            )
+            return True
+
         return False
     
     # ─── تعديل الأسعار (للمالك) ───

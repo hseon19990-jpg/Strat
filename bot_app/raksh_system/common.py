@@ -209,6 +209,7 @@ def _clear_raksh_state(context: ContextTypes.DEFAULT_TYPE) -> None:
         "raksh_payment_method",
         "raksh_price_edit_service",
         "raksh_temp_data",
+        "raksh_message_data",
     ]
     for key in keys_to_clear:
         context.user_data.pop(key, None)
