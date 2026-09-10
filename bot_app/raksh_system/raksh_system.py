@@ -10,6 +10,7 @@ from .votes import VotesService
 from .votes_ai import VotesAIService
 from .premium_reaction import PremiumReactionService
 from .message import (
+    MessageService,
     message_confirmation_keyboard,
     message_confirmation_text,
     message_identity_keyboard,
@@ -39,6 +40,7 @@ RAKSH_SERVICES: Dict[str, RakshService] = {
     VotesService.service_type: VotesService(),
     VotesAIService.service_type: VotesAIService(),
     PremiumReactionService.service_type: PremiumReactionService(),
+    MessageService.service_type: MessageService(),
 }
 
 RAKSH_SERVICE_LABELS = {
@@ -116,7 +118,8 @@ def _classify_raksh_result(
     if ok:
         return True, message
     if (
-        _is_raksh_account_or_session_failure(message)
+        service_type == "send_message"
+        or _is_raksh_account_or_session_failure(message)
         or _is_raksh_verification_failure(service_type, message)
     ):
         return False, message
@@ -1073,9 +1076,23 @@ def raksh_menu_kb(is_owner: bool = False):
             else:
                 buttons.append([service_button])
         elif action == "raksh:send_message":
-            buttons.append([
-                InlineKeyboardButton(item["label"], callback_data=action)
-            ])
+            svc = RAKSH_SERVICES.get("send_message")
+            if not svc or (not is_owner and not svc.is_enabled()):
+                continue
+            service_button = InlineKeyboardButton(
+                svc.config.name, callback_data=action
+            )
+            if is_owner:
+                enabled = svc.is_enabled()
+                buttons.append([
+                    service_button,
+                    InlineKeyboardButton(
+                        "✅ مفعلة" if enabled else "🚫 مخفية",
+                        callback_data="raksh:toggle:send_message",
+                    ),
+                ])
+            else:
+                buttons.append([service_button])
         elif action == "os:raksh_accounts" and is_owner:
             buttons.append([
                 InlineKeyboardButton(
@@ -1368,11 +1385,17 @@ async def _handle_raksh_callback_impl(
 
     # ─── خدمة إرسال رسالة ───
     if data == "raksh:send_message":
+        svc = RAKSH_SERVICES.get("send_message")
+        if not svc or (not is_own and not svc.is_enabled()):
+            await query.answer("⚠️ هذه الخدمة مخفية حالياً.", show_alert=True)
+            return
         _clear_raksh_state(context)
         context.user_data["raksh_service"] = "send_message"
         context.user_data["raksh_step"] = "message_text"
         await query.edit_message_text(
             "✉️ *إرسال رسالة*\n\n"
+            f"💰 السعر: {svc.get_rate_text('points')}\n"
+            f"⭐ السعر: {svc.get_rate_text('stars')}\n\n"
             "أرسل نص الرسالة التي تريد إرسالها.\n"
             "الحد الأقصى 2000 حرف.",
             parse_mode=ParseMode.MARKDOWN,
@@ -1434,18 +1457,20 @@ async def _handle_raksh_callback_impl(
         ):
             await query.answer("⚠️ بيانات الرسالة غير مكتملة.", show_alert=True)
             return
-        await query.edit_message_text("⏳ جاري البحث عن حساب قادر على المراسلة...")
-        ok, result = await send_raksh_message(
-            message_data["recipient"],
-            message_data["message"],
-            message_data["identity_type"],
-            message_data.get("identity_name") or "",
-            is_owner=is_own,
-        )
-        _clear_raksh_state(context)
+        svc = RAKSH_SERVICES.get("send_message")
+        if not svc or (not is_own and not svc.is_enabled()):
+            await query.answer("⚠️ هذه الخدمة مخفية حالياً.", show_alert=True)
+            return
+        points_cost = svc.get_total(1, "points")
+        stars_cost = svc.get_total(1, "stars")
+        context.user_data["raksh_step"] = "payment_method"
         await query.edit_message_text(
-            ("✅ " if ok else "❌ ") + result,
-            reply_markup=raksh_menu_kb(is_own),
+            "📨 *تأكيد خدمة إرسال الرسالة*\n\n"
+            f"💰 التكلفة: *{points_cost} نقطة*\n"
+            f"⭐ التكلفة: *{stars_cost} نجمة*\n\n"
+            "اختر طريقة الدفع للمتابعة:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=raksh_payment_kb("send_message", 1, points_cost, stars_cost),
         )
         return
 
