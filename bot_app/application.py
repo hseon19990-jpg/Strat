@@ -28,7 +28,7 @@ class ResilientExtBot(ExtBot):
         return self._bot_user.username if self._bot_user is not None else ""
 
     async def initialize(self) -> None:
-        if self._initialized:
+        if getattr(self, "_initialized", False):
             return
         if self.rate_limiter:
             await self.rate_limiter.initialize()
@@ -46,10 +46,6 @@ class ResilientUpdater(Updater):
             await asyncio.wait_for(
                 self.bot.delete_webhook(
                     drop_pending_updates=True,
-                    read_timeout=8,
-                    write_timeout=8,
-                    connect_timeout=8,
-                    pool_timeout=8,
                 ),
                 timeout=10,
             )
