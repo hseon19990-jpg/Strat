@@ -165,6 +165,9 @@ def main_menu_kb(is_owner=False, is_supervisor_user=False):
             if item["action_value"] != "legendary_services"
         ]
     rows = build_kb_rows(menu_items)
+    if is_owner:
+        rows.append([InlineKeyboardButton("🧩 تعديل أزرار الواجهة", callback_data="mb_menu:main")])
+        rows.append([InlineKeyboardButton("⚙️ إعدادات المالك", callback_data="owner_settings")])
     if is_supervisor_user:
         rows.append([InlineKeyboardButton("🛡 لوحة المشرف", callback_data="sv:panel")])
     return InlineKeyboardMarkup(rows)
