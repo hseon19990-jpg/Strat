@@ -482,10 +482,6 @@ def main():
         # retries failures from getMe(), which happens before polling starts.
         timeout=45,
         bootstrap_retries=-1,
-        read_timeout=45,
-        write_timeout=45,
-        connect_timeout=45,
-        pool_timeout=45,
         allowed_updates=["message", "callback_query", "pre_checkout_query", "successful_payment", "chat_member", "my_chat_member"],
     )
 
