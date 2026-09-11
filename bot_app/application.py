@@ -116,16 +116,7 @@ async def cmd_set_button_emoji(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     custom_emoji_id = custom_emoji_ids[0]
-    from .users import get_setting, set_setting
-    try:
-        mapping = json.loads(get_setting(BUTTON_CUSTOM_EMOJI_SETTING_KEY) or "{}")
-        if not isinstance(mapping, dict):
-            mapping = {}
-    except (TypeError, ValueError):
-        mapping = {}
-    mapping[action_value] = custom_emoji_id
-    set_setting(BUTTON_CUSTOM_EMOJI_SETTING_KEY, json.dumps(mapping, ensure_ascii=False))
-    _shared.set_button_custom_emoji(action_value, custom_emoji_id)
+    _shared.save_button_custom_emoji(action_value, custom_emoji_id)
     await update.effective_message.reply_text(
         f"✅ تم ربط الأيقونة المميزة بالزر: {action_value}\n"
         "أعد فتح القائمة لرؤيتها."
