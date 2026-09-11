@@ -90,6 +90,48 @@ from .raksh_system import (
     recover_raksh_orders_on_startup,
 )
 
+async def cmd_set_button_emoji(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """يحفظ Custom Emoji مدفوعاً كأيقونة لزر معيّن."""
+    user = update.effective_user
+    if not user or user.id != OWNER_ID:
+        await update.effective_message.reply_text("⛔ هذا الأمر للمالك فقط.")
+        return
+
+    action_value = (context.args[0] if context.args else "").strip()
+    entities = update.effective_message.entities or []
+    custom_emoji_ids = [
+        str(getattr(entity, "custom_emoji_id", ""))
+        for entity in entities
+        if getattr(entity, "type", "") == "custom_emoji"
+        and str(getattr(entity, "custom_emoji_id", "")).isdigit()
+    ]
+    if not action_value or not custom_emoji_ids:
+        await update.effective_message.reply_text(
+            "🎨 الاستخدام:\n"
+            "أرسل الأمر ثم اسم الزر وبعده Premium Custom Emoji في نفس الرسالة.\n\n"
+            "مثال: /setbuttonemoji services_menu ⭐\n"
+            "الأسماء الشائعة: services_menu, collect_points, charge_points, "
+            "my_info, my_numbers, referral, main_menu"
+        )
+        return
+
+    custom_emoji_id = custom_emoji_ids[0]
+    from .users import get_setting, set_setting
+    try:
+        mapping = json.loads(get_setting(BUTTON_CUSTOM_EMOJI_SETTING_KEY) or "{}")
+        if not isinstance(mapping, dict):
+            mapping = {}
+    except (TypeError, ValueError):
+        mapping = {}
+    mapping[action_value] = custom_emoji_id
+    set_setting(BUTTON_CUSTOM_EMOJI_SETTING_KEY, json.dumps(mapping, ensure_ascii=False))
+    _shared.set_button_custom_emoji(action_value, custom_emoji_id)
+    await update.effective_message.reply_text(
+        f"✅ تم ربط الأيقونة المميزة بالزر: {action_value}\n"
+        "أعد فتح القائمة لرؤيتها."
+    )
+
+
 def main():
     # ── إنشاء event loop جديد في كل تشغيل لتفادي RuntimeError: Event loop is closed ──
     import asyncio as _asyncio
@@ -111,6 +153,11 @@ def main():
 
     start_health_server()
     init_db()
+    try:
+        from .users import get_setting
+        _shared.load_button_custom_emoji_ids(get_setting(_shared.BUTTON_CUSTOM_EMOJI_SETTING_KEY))
+    except Exception as exc:
+        logger.warning(f"⚠️ تعذّر تحميل أيقونات الأزرار المميزة: {exc}")
     recovered_raksh_orders = recover_raksh_orders_on_startup()
     if recovered_raksh_orders:
         logger.info(f"🔁 تم تجهيز {recovered_raksh_orders} طلب رشق للاستئناف بعد إعادة النشر")
@@ -149,6 +196,7 @@ def main():
     )
 
     app.add_handler(CommandHandler("start",     cmd_start))
+    app.add_handler(CommandHandler("setbuttonemoji", cmd_set_button_emoji))
     app.add_handler(CommandHandler("admin",     cmd_admin))
     app.add_handler(CommandHandler("addpoints", cmd_addpoints))
     app.add_handler(CommandHandler("grant_ref", cmd_grant_ref))
