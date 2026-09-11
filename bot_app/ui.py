@@ -43,7 +43,31 @@ def supervisor_panel_kb():
         [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
     ])
 
+_OWNER_MAIN_MENU_LAYOUT = [
+    [("👑 خدماتنا الملكية 👠", "legendary_services"), ("🐸 عروض حصرية وموثوقة 👑", "services_menu")],
+    [("🏰 تحويل قناتك بدقة", "fund_channel")],
+    [("🎁 استبدل نقاطك بهدايا فاخرة 💍", "exchange_points")],
+    [("🧸 شارك الفرحة مع رابط دعوة 🦋", "referral"), ("💳 شحن نقاط", "charge_points")],
+    [("👑 تعبئة نقاط سرية وآمنة", "collect_points"), ("🎼 تحويل نقاط سلس ومريح", "transfer_points")],
+    [("⭐ ادخل كود المميز واحصل على المزيد", "use_promo"), ("🐱 بياناتي الشخصية الآمنة", "my_info")],
+    [("🏆 متصدرات الدعوات اليوم", "top_ref_today"), ("👑 الأكثر دعوات اليوم", "referral_contest_view")],
+    [("☎️ أرقامي الذهبية للتواصل", "my_numbers"), ("📞 التواصل مع الدعم", "contact_support")],
+    [("✉️ احصل على نقاط مقابل بريدك الإلكتروني", "gmail_points")],
+]
+
+def _owner_main_menu_kb():
+    rows = [
+        [InlineKeyboardButton(label, callback_data=action) for label, action in row]
+        for row in _OWNER_MAIN_MENU_LAYOUT
+    ]
+    rows.append([InlineKeyboardButton("🧩 تعديل أزرار الواجهة", callback_data="mb_menu:main")])
+    rows.append([InlineKeyboardButton("⚙️ إعدادات المالك", callback_data="owner_settings")])
+    return InlineKeyboardMarkup(rows)
+
 def main_menu_kb(is_owner=False, is_supervisor_user=False):
+    # الواجهة المزخرفة في الصورة للمالك فقط؛ الأعضاء يحتفظون بالقائمة الحالية.
+    if is_owner:
+        return _owner_main_menu_kb()
     menu_items = get_menu_items("main")
     # تغيير نص زر خدمات الرشق فقط، دون تغيير محتوى قسم الخدمات.
     for index, item in enumerate(menu_items):
@@ -51,17 +75,14 @@ def main_menu_kb(is_owner=False, is_supervisor_user=False):
             normalized = dict(item)
             normalized["label"] = "خدمات"
             menu_items[index] = normalized
-    if not is_owner and not is_legendary_services_visible():
+    if not is_legendary_services_visible():
         menu_items = [
             item for item in menu_items
             if item["action_value"] != "legendary_services"
         ]
     rows = build_kb_rows(menu_items)
-    if is_supervisor_user and not is_owner:
+    if is_supervisor_user:
         rows.append([InlineKeyboardButton("🛡 لوحة المشرف", callback_data="sv:panel")])
-    if is_owner:
-        rows.append([InlineKeyboardButton("🧩 إضافة/إزالة خيار", callback_data="mb_menu:main")])
-        rows.append([InlineKeyboardButton("⚙️ إعدادات المالك", callback_data="owner_settings")])
     return InlineKeyboardMarkup(rows)
 
 def _render_service_list():
