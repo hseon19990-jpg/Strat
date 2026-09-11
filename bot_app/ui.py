@@ -151,9 +151,7 @@ async def handle_owner_webapp_data(update, context):
     await handle_callback(synthetic_update, context)
 
 def main_menu_kb(is_owner=False, is_supervisor_user=False):
-    # الواجهة المزخرفة في الصورة للمالك فقط؛ الأعضاء يحتفظون بالقائمة الحالية.
-    if is_owner:
-        return _owner_main_menu_kb()
+    # المالك والأعضاء يستخدمون قائمة main نفسها وبنفس الأسماء والترتيب.
     menu_items = get_menu_items("main")
     # تغيير نص زر خدمات الرشق فقط، دون تغيير محتوى قسم الخدمات.
     for index, item in enumerate(menu_items):
