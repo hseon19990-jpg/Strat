@@ -60,13 +60,39 @@ def load_button_custom_emoji_ids(raw: str = "") -> None:
 
 
 def set_button_custom_emoji(action_value: str, custom_emoji_id: str) -> None:
-    """تحديث أيقونة زر في الذاكرة فور حفظها."""
     if action_value and str(custom_emoji_id).isdigit():
         BUTTON_CUSTOM_EMOJI_IDS[str(action_value).strip()] = str(custom_emoji_id).strip()
 
 
-def _button_custom_emoji_id(callback_data: str = "") -> str | None:
-    value = str(callback_data or "")
+def extract_custom_emoji_ids(message) -> list[str]:
+    """استخراج IDs من Premium Custom Emoji المرسل مع الرسالة."""
+    entities = getattr(message, "entities", None) or []
+    return [
+        str(getattr(entity, "custom_emoji_id", ""))
+        for entity in entities
+        if getattr(entity, "type", "") == "custom_emoji"
+        and str(getattr(entity, "custom_emoji_id", "")).isdigit()
+    ]
+
+
+def strip_custom_emoji_entities(text: str, message) -> str:
+    """إزالة Custom Emoji من الاسم مع إبقاء النص الذي كتبه المالك."""
+    entities = getattr(message, "entities", None) or []
+    spans = [
+        (int(getattr(entity, "offset", 0)), int(getattr(entity, "length", 0)))
+        for entity in entities
+        if getattr(entity, "type", "") == "custom_emoji"
+    ]
+    if not spans:
+        return text.strip()
+    raw = text.encode("utf-16-le")
+    for offset, length in sorted(spans, reverse=True):
+        raw = raw[:offset * 2] + raw[(offset + length) * 2:]
+    return raw.decode("utf-16-le", errors="ignore").strip()
+
+
+def _button_custom_emoji_id(callback_data: str = "", url: str = "") -> str | None:
+    value = str(callback_data or url or "")
     for action_value, custom_emoji_id in sorted(
         BUTTON_CUSTOM_EMOJI_IDS.items(), key=lambda item: len(item[0]), reverse=True
     ):
@@ -101,10 +127,13 @@ def InlineKeyboardButton(*args, **kwargs):
     if kwargs.get("style") is None:
         kwargs["style"] = _button_style(str(text), str(callback_data))
     if kwargs.get("icon_custom_emoji_id") is None:
-        custom_emoji_id = _button_custom_emoji_id(str(callback_data))
+        custom_emoji_id = _button_custom_emoji_id(
+            str(callback_data), str(kwargs.get("url", ""))
+        )
         if custom_emoji_id:
             kwargs["icon_custom_emoji_id"] = custom_emoji_id
     return _RAW_INLINE_KEYBOARD_BUTTON(*args, **kwargs)
+
 
 
 from telethon import TelegramClient, events, functions
