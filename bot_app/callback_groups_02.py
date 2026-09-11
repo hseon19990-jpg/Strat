@@ -669,7 +669,7 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                 return
             with db_conn() as c:
                 item = c.execute(
-                    "SELECT label FROM menu_items WHERE id=? AND menu=?",
+                    "SELECT label, action_value FROM menu_items WHERE id=? AND menu=?",
                     (mid, menu),
                 ).fetchone()
             if not item:
@@ -677,6 +677,7 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                 return
             context.user_data["mb_rename_menu"] = menu
             context.user_data["mb_rename_id"] = mid
+            context.user_data["mb_rename_action_value"] = item["action_value"]
             context.user_data["state"] = "await_mb_rename"
             await q.edit_message_text(
                 f"✏️ الاسم الحالي: *{item['label']}*\n\n"
@@ -732,6 +733,9 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                     "INSERT INTO menu_items (menu,label,action_type,action_value,width,sort_order,enabled) VALUES (?,?,?,?,?,?,1)",
                     (menu, label, "goto", target, 2, max_order + 1)
                 )
+            custom_emoji_id = context.user_data.pop("mb_label_custom_emoji_id", None)
+            if custom_emoji_id:
+                _shared.save_button_custom_emoji(target, custom_emoji_id)
             context.user_data["state"] = "main_menu"
             await q.edit_message_text(f"✅ تمت إضافة الزر '{label}'.",
                                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع للإدارة", callback_data=f"mb_menu:{menu}")]]))
