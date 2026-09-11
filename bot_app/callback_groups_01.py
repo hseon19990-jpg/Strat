@@ -259,10 +259,12 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 context.user_data["state"] = "main_menu"
                 db_user = get_user(user.id)
                 pts = db_user["points"] if db_user else 0
-                await q.edit_message_text(
+                await show_owner_main_menu(
+                    update,
+                    context,
                     f"🏠 *القائمة الرئيسية*\n💰 رصيدك: {pts} نقطة",
-                    parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=main_menu_kb(True)
+                    main_menu_kb(True),
+                    edit=True,
                 )
             else:
                 await proceed_after_mandatory(update, context, edit=True)
@@ -272,11 +274,16 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             context.user_data["state"] = "main_menu"
             db_user = get_user(user.id)
             pts = db_user["points"] if db_user else 0
-            await q.edit_message_text(
-                f"🏠 *القائمة الرئيسية*\n💰 رصيدك: {pts} نقطة",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=main_menu_kb(is_own, is_supervisor_user=is_supervisor_cb)
-            )
+            menu_text = f"🏠 *القائمة الرئيسية*\n💰 رصيدك: {pts} نقطة"
+            menu_kb = main_menu_kb(is_own, is_supervisor_user=is_supervisor_cb)
+            if is_own:
+                await show_owner_main_menu(update, context, menu_text, menu_kb, edit=True)
+            else:
+                await q.edit_message_text(
+                    menu_text,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=menu_kb,
+                )
             return
 
         if data in {"services_menu", "services", "service_menu"}:

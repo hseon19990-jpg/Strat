@@ -5,8 +5,60 @@ handlers can continue to call each other while the code stays separated by
 domain.
 """
 
+from pathlib import Path
+
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
+
+OWNER_MAIN_MENU_IMAGE = Path(__file__).resolve().parent / "assets" / "owner_main_menu.png"
+
+def _owner_main_menu_has_image():
+    """Return whether the owner menu artwork is bundled with the bot."""
+    return OWNER_MAIN_MENU_IMAGE.is_file()
+
+async def show_owner_main_menu(update, context, text, reply_markup, edit=False):
+    """Show the owner menu as the supplied artwork with clickable buttons.
+
+    Telegram cannot place ordinary images inside InlineKeyboardButton objects.
+    The artwork therefore carries the exact visual layout while the existing
+    callback keyboard remains underneath it and keeps every action clickable.
+    """
+    if not _owner_main_menu_has_image():
+        if edit and update.callback_query:
+            return await update.callback_query.edit_message_text(
+                text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup
+            )
+        return await update.message.reply_text(
+            text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup
+        )
+
+    query = getattr(update, "callback_query", None)
+    if query:
+        message = query.message
+        if getattr(message, "photo", None):
+            return await query.edit_message_caption(
+                caption=text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup
+            )
+        try:
+            await message.delete()
+        except Exception:
+            # The old text message may already be gone or may not be
+            # deletable; sending the new menu is still safe.
+            pass
+        return await context.bot.send_photo(
+            chat_id=message.chat_id,
+            photo=str(OWNER_MAIN_MENU_IMAGE),
+            caption=text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=reply_markup,
+        )
+
+    return await update.message.reply_photo(
+        photo=str(OWNER_MAIN_MENU_IMAGE),
+        caption=text,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=reply_markup,
+    )
 
 def generate_math():
     a, b = random.randint(1, 9), random.randint(1, 9)
