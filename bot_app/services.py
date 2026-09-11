@@ -380,25 +380,8 @@ def seed_menu_items(menu: str):
                 f"({','.join('?' for _ in old_cats)})",
                 old_cats
             )
-        # لا نفرض موضع زر خدمات الرشق هنا؛ ترتيب المالك محفوظ في sort_order.
-        _main_icon_migration = {
-            "services_menu": ("🛍 خدمات", "🐺 خدمات", 1),
-            "fund_channel": ("📺 تمويل قناتك حقيقي", "🦇 تمويل قناتك حقيقي", 1),
-            "referral": ("🔗 رابط دعوة", "👻 رابط دعوة", 1),
-            "charge_points": ("💎 شحن نقاط", "👍 شحن نقاط", 2),
-            "collect_points": ("💰 تجميع نقاط", "⭐ تجميع نقاط", 2),
-            "exchange_points": ("🏆 استبدال نقاط بجوائز", "🎁 استبدال نقاط بجوائز", 2),
-            "transfer_points": ("↔️ تحويل النقاط", "🎙 تحويل النقاط", 2),
-            "my_info": ("ℹ️ معلوماتي", "⭐ معلوماتي", 2),
-            "top_ref_today": ("🏆 الأكثر دعوةً اليوم", "🎁 الأكثر دعوةً اليوم", 2),
-            "contact_support": ("🛎 تواصل مع الدعم", "✅ تواصل مع الدعم", 2),
-        }
-        with db_conn() as c:
-            for action_value, (old_label, new_label, new_width) in _main_icon_migration.items():
-                c.execute(
-                    "UPDATE menu_items SET label=?, width=? WHERE menu='main' AND action_value=? AND label=?",
-                    (new_label, new_width, action_value, old_label)
-                )
+        # لا نعيد تسمية أزرار القائمة الرئيسية تلقائياً هنا.
+        # الاسم والإيموجي المدفوع اللذان يحددهما المالك يجب أن يبقيا محفوظين.
     if menu == "services_menu":
         with db_conn() as c:
             old_cats = tuple(f"cat:{k}" for k in SERVICES_MENU_CATEGORIES)
