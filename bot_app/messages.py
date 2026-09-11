@@ -613,7 +613,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("mb_rename_action_value", None)
         if updated and action_value:
             custom_emoji_id = custom_emoji_ids[0] if custom_emoji_ids else ""
-            _shared.set_button_custom_emoji(action_value, custom_emoji_id)
+            _shared.save_button_custom_emoji(action_value, custom_emoji_id)
         context.user_data["state"] = "main_menu"
         if not updated:
             await update.message.reply_text(
@@ -644,7 +644,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         custom_emoji_id = context.user_data.pop("mb_label_custom_emoji_id", None)
         if custom_emoji_id:
-            _shared.set_button_custom_emoji(text, custom_emoji_id)
+            _shared.save_button_custom_emoji(text, custom_emoji_id)
         if save_as_owner_contact:
             set_setting("owner_contact", text)
         context.user_data["state"] = "main_menu"
@@ -663,7 +663,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ).fetchone()
         custom_emoji_id = context.user_data.pop("mb_label_custom_emoji_id", None)
         if custom_emoji_id and new_item:
-            _shared.set_button_custom_emoji(f"mi_text:{new_item['id']}", custom_emoji_id)
+            _shared.save_button_custom_emoji(f"mi_text:{new_item['id']}", custom_emoji_id)
         context.user_data["state"] = "main_menu"
         await update.message.reply_text(f"✅ تمت إضافة الزر '{label}'.",
                                          reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع للإدارة", callback_data=f"mb_menu:{menu}")]]))
