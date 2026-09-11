@@ -35,6 +35,41 @@ from telegram.ext import (
 from telegram.constants import ParseMode
 from telegram.error import NetworkError, TimedOut, RetryAfter, Conflict
 
+
+# ────────────────────────────────────────────────────────────
+# ألوان أزرار تيليجرام — تعمل مع Bot API / PTB 22.7 وما بعده.
+# نستخدم نفس InlineKeyboardButton في كل الوحدات حتى تتوحّد الألوان.
+# ────────────────────────────────────────────────────────────
+_RAW_INLINE_KEYBOARD_BUTTON = InlineKeyboardButton
+
+
+def _button_style(text: str = "", callback_data: str = "") -> str:
+    """يعيد لون الزر حسب وظيفته مع إبقاء منطق callback كما هو."""
+    value = f"{text} {callback_data}".lower()
+    danger_words = (
+        "حذف", "إلغاء", "الغاء", "خروج", "مسح", "رفض", "تعطيل",
+        "delete", "cancel", "logout", "remove", "disable", "danger",
+    )
+    success_words = (
+        "تأكيد", "نعم", "تفعيل", "حفظ", "إرسال", "شراء", "شحن",
+        "تجميع", "استبدال", "تطبيق", "موافقة", "success", "confirm",
+        "enable", "save", "submit", "buy", "collect", "activate",
+    )
+    if any(word in value for word in danger_words):
+        return "danger"
+    if any(word in value for word in success_words):
+        return "success"
+    return "primary"
+
+
+def InlineKeyboardButton(*args, **kwargs):
+    """منشئ مركزي يضيف style للأزرار دون المساس ببياناتها أو وظائفها."""
+    if kwargs.get("style") is None:
+        text = kwargs.get("text", args[0] if args else "")
+        callback_data = kwargs.get("callback_data", "")
+        kwargs["style"] = _button_style(str(text), str(callback_data))
+    return _RAW_INLINE_KEYBOARD_BUTTON(*args, **kwargs)
+
 from telethon import TelegramClient, events, functions
 from telethon.sessions import StringSession
 from telethon.tl.types import (
