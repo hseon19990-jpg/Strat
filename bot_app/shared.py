@@ -41,6 +41,38 @@ from telegram.error import NetworkError, TimedOut, RetryAfter, Conflict
 # نستخدم نفس InlineKeyboardButton في كل الوحدات حتى تتوحّد الألوان.
 # ────────────────────────────────────────────────────────────
 _RAW_INLINE_KEYBOARD_BUTTON = InlineKeyboardButton
+BUTTON_CUSTOM_EMOJI_IDS = {}
+BUTTON_CUSTOM_EMOJI_SETTING_KEY = "button_custom_emoji_ids"
+
+
+def load_button_custom_emoji_ids(raw: str = "") -> None:
+    """تحميل خريطة أيقونات الأزرار من إعدادات قاعدة البيانات."""
+    global BUTTON_CUSTOM_EMOJI_IDS
+    try:
+        data = json.loads(raw or "{}")
+        BUTTON_CUSTOM_EMOJI_IDS = {
+            str(key).strip(): str(value).strip()
+            for key, value in data.items()
+            if str(key).strip() and str(value).strip().isdigit()
+        }
+    except (TypeError, ValueError, AttributeError):
+        BUTTON_CUSTOM_EMOJI_IDS = {}
+
+
+def set_button_custom_emoji(action_value: str, custom_emoji_id: str) -> None:
+    """تحديث أيقونة زر في الذاكرة فور حفظها."""
+    if action_value and str(custom_emoji_id).isdigit():
+        BUTTON_CUSTOM_EMOJI_IDS[str(action_value).strip()] = str(custom_emoji_id).strip()
+
+
+def _button_custom_emoji_id(callback_data: str = "") -> str | None:
+    value = str(callback_data or "")
+    for action_value, custom_emoji_id in sorted(
+        BUTTON_CUSTOM_EMOJI_IDS.items(), key=lambda item: len(item[0]), reverse=True
+    ):
+        if value == action_value or value.startswith(f"{action_value}:"):
+            return custom_emoji_id
+    return None
 
 
 def _button_style(text: str = "", callback_data: str = "") -> str:
@@ -63,12 +95,17 @@ def _button_style(text: str = "", callback_data: str = "") -> str:
 
 
 def InlineKeyboardButton(*args, **kwargs):
-    """منشئ مركزي يضيف style للأزرار دون المساس ببياناتها أو وظائفها."""
+    """منشئ مركزي يضيف اللون وأيقونة Premium عند إعدادها."""
+    text = kwargs.get("text", args[0] if args else "")
+    callback_data = kwargs.get("callback_data", "")
     if kwargs.get("style") is None:
-        text = kwargs.get("text", args[0] if args else "")
-        callback_data = kwargs.get("callback_data", "")
         kwargs["style"] = _button_style(str(text), str(callback_data))
+    if kwargs.get("icon_custom_emoji_id") is None:
+        custom_emoji_id = _button_custom_emoji_id(str(callback_data))
+        if custom_emoji_id:
+            kwargs["icon_custom_emoji_id"] = custom_emoji_id
     return _RAW_INLINE_KEYBOARD_BUTTON(*args, **kwargs)
+
 
 from telethon import TelegramClient, events, functions
 from telethon.sessions import StringSession
