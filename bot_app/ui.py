@@ -56,13 +56,26 @@ _OWNER_MAIN_MENU_LAYOUT = [
 ]
 
 def owner_webapp_url():
-    """Return the HTTPS URL used by Telegram to open the owner Web App."""
-    configured = os.getenv("OWNER_WEBAPP_URL", "").strip().rstrip("/")
-    if configured:
-        return configured
-    railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip().rstrip("/")
-    if railway_domain:
-        return f"https://{railway_domain}/owner-app"
+    """Return a public HTTPS URL that Telegram can use for the owner Web App."""
+    # Telegram Web Apps require HTTPS. Support explicit configuration first,
+    # then the public deployment variables used by Railway and Replit.
+    candidates = [
+        os.getenv("OWNER_WEBAPP_URL", ""),
+        os.getenv("PUBLIC_URL", ""),
+        os.getenv("APP_URL", ""),
+        os.getenv("RAILWAY_PUBLIC_DOMAIN", ""),
+        os.getenv("REPLIT_DEPLOYMENT_URL", ""),
+        os.getenv("REPLIT_DEV_DOMAIN", ""),
+        os.getenv("REPLIT_DOMAINS", "").split(",")[0],
+    ]
+    for raw_value in candidates:
+        value = str(raw_value or "").strip().rstrip("/")
+        if not value:
+            continue
+        if not value.startswith(("https://", "http://")):
+            value = f"https://{value}"
+        if value.startswith("https://"):
+            return value if value.endswith("/owner-app") else f"{value}/owner-app"
     return ""
 
 def _owner_main_menu_kb():
