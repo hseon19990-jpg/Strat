@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#f6ebe8" />
+    <title>واجهة المالك</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+      :root {
+        --ink: #43252d;
+        --muted: #9a7478;
+        --line: #d7b7b3;
+        --card: rgba(255, 252, 249, 0.84);
+        --card-strong: rgba(255, 248, 246, 0.96);
+        --shadow: 0 5px 0 rgba(128, 83, 82, 0.15), 0 12px 24px rgba(122, 79, 79, 0.1);
+        --gold: #c49a3a;
+      }
+
+      * { box-sizing: border-box; }
+      html, body { margin: 0; min-height: 100%; }
+      body {
+        color: var(--ink);
+        background:
+          radial-gradient(circle at 14% 12%, rgba(255,255,255,.92) 0 2px, transparent 3px),
+          radial-gradient(circle at 82% 25%, rgba(255,255,255,.65) 0 2px, transparent 3px),
+          linear-gradient(135deg, #f8eeeb 0%, #f3e3e0 45%, #fbf4f1 100%);
+        background-size: 74px 74px, 112px 112px, auto;
+        font-family: Tahoma, Arial, sans-serif;
+        padding: max(14px, env(safe-area-inset-top)) 10px max(18px, env(safe-area-inset-bottom));
+      }
+
+      .shell { width: min(100%, 620px); margin: 0 auto; }
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin: 0 4px 10px;
+        padding: 7px 12px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .topbar strong { color: var(--ink); font-size: 15px; }
+      .badge {
+        border: 1px solid rgba(196, 154, 58, .4);
+        border-radius: 999px;
+        padding: 4px 9px;
+        color: #896c2b;
+        background: rgba(255, 248, 224, .72);
+        font-size: 11px;
+      }
+
+      .menu {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 9px;
+      }
+      .menu-button {
+        min-height: 58px;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 11px 10px;
+        color: var(--ink);
+        background:
+          linear-gradient(180deg, rgba(255,255,255,.72), rgba(255,244,242,.7)),
+          var(--card);
+        box-shadow: var(--shadow), inset 0 1px 0 rgba(255,255,255,.9);
+        font: inherit;
+        font-size: clamp(14px, 3.5vw, 19px);
+        font-weight: 700;
+        line-height: 1.35;
+        cursor: pointer;
+        transition: transform .16s ease, filter .16s ease, box-shadow .16s ease;
+      }
+      .menu-button:active {
+        transform: translateY(3px);
+        filter: brightness(.97);
+        box-shadow: 0 2px 0 rgba(128, 83, 82, 0.15), inset 0 1px 0 rgba(255,255,255,.8);
+      }
+      .menu-button.full { grid-column: 1 / -1; }
+      .menu-button .icon { margin-inline-start: 5px; }
+      .menu-button .label { display: inline; }
+      .section-label {
+        grid-column: 1 / -1;
+        margin: 4px 8px -2px;
+        color: var(--muted);
+        font-size: 10px;
+        letter-spacing: .12em;
+        text-align: center;
+      }
+      .footer {
+        margin: 15px 8px 0;
+        color: #a67f82;
+        font-size: 10px;
+        text-align: center;
+      }
+      @media (max-width: 390px) {
+        .menu { gap: 7px; }
+        .menu-button { min-height: 52px; border-radius: 15px; padding: 9px 6px; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <div class="topbar">
+        <strong>👑 واجهة المالك</strong>
+        <span class="badge">خاصة وآمنة</span>
+      </div>
+      <section class="menu" aria-label="قائمة المالك">
+        <button class="menu-button" data-action="legendary_services">👠 <span class="label">خدماتنا الملكية</span> 👑</button>
+        <button class="menu-button" data-action="services_menu">🐸 <span class="label">عروض حصرية وموثوقة</span> 👑</button>
+        <button class="menu-button full" data-action="fund_channel">🏰 <span class="label">تحويل قناتك بدقة</span></button>
+        <button class="menu-button full" data-action="exchange_points">🎁 <span class="label">استبدل نقاطك بهدايا فاخرة</span> 💍</button>
+        <button class="menu-button" data-action="referral">🧸 <span class="label">شارك الفرحة مع رابط دعوة</span> 🦋</button>
+        <button class="menu-button" data-action="charge_points">💳 <span class="label">شحن نقاط</span></button>
+        <button class="menu-button" data-action="collect_points">👑 <span class="label">تعبئة نقاط سرية وآمنة</span></button>
+        <button class="menu-button" data-action="transfer_points">🎼 <span class="label">تحويل نقاط سلس ومريح</span></button>
+        <button class="menu-button" data-action="use_promo">⭐ <span class="label">ادخل كود المميز واحصل على المزيد</span></button>
+        <button class="menu-button" data-action="my_info">🐱 <span class="label">بياناتي الشخصية الآمنة</span></button>
+        <button class="menu-button" data-action="top_ref_today">🏆 <span class="label">متصدرات الدعوات اليوم</span></button>
+        <button class="menu-button" data-action="referral_contest_view">👑 <span class="label">الأكثر دعوات اليوم</span></button>
+        <button class="menu-button" data-action="my_numbers">☎️ <span class="label">أرقامي الذهبية للتواصل</span></button>
+        <button class="menu-button" data-action="contact_support">📞 <span class="label">التواصل مع الدعم</span></button>
+        <button class="menu-button full" data-action="gmail_points">✉️ <span class="label">احصل على نقاط مقابل بريدك الإلكتروني</span></button>
+        <button class="menu-button full" data-action="mb_menu:main">🧩 <span class="label">تعديل أزرار الواجهة</span></button>
+        <button class="menu-button full" data-action="owner_settings">⚙️ <span class="label">إعدادات المالك</span></button>
+      </section>
+      <p class="footer">Strat · مساحة المالك فقط</p>
+    </main>
+    <script>
+      const tg = window.Telegram && window.Telegram.WebApp;
+      if (tg) {
+        tg.ready();
+        tg.expand();
+        if (tg.setHeaderColor) tg.setHeaderColor("#f6ebe8");
+        if (tg.setBackgroundColor) tg.setBackgroundColor("#f6ebe8");
+      }
+      document.querySelectorAll("[data-action]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const action = button.dataset.action;
+          if (tg && tg.sendData) {
+            tg.sendData(action);
+            window.setTimeout(() => tg.close(), 80);
+          }
+        });
+      });
+    </script>
+  </body>
+</html>

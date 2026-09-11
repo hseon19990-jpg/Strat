@@ -23,7 +23,7 @@ import subprocess
 import traceback
 from datetime import date, datetime, timedelta, timezone
 from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup,
+    Update, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo,
     LabeledPrice, BotCommand, BotCommandScopeChat,
     KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
 )
@@ -296,7 +296,26 @@ class HealthHandler(BaseHTTPRequestHandler):
         # Railway uses this endpoint as a liveness probe. Keep it independent
         # from Telegram so a temporary Telegram outage does not make Railway
         # terminate an otherwise healthy process.
-        if self.path not in {"/", "/health", "/healthz"}:
+        route = self.path.split("?", 1)[0]
+        if route == "/owner-app":
+            webapp_path = os.path.join(
+                os.path.dirname(__file__), "assets", "owner_webapp.html"
+            )
+            try:
+                with open(webapp_path, "rb") as webapp_file:
+                    body = webapp_file.read()
+            except OSError:
+                self.send_response(404)
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if route not in {"/", "/health", "/healthz"}:
             self.send_response(404)
             self.end_headers()
             return
@@ -309,7 +328,8 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_HEAD(self):
-        if self.path not in {"/", "/health", "/healthz"}:
+        route = self.path.split("?", 1)[0]
+        if route not in {"/", "/health", "/healthz"}:
             self.send_response(404)
             self.end_headers()
             return

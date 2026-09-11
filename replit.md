@@ -8,6 +8,8 @@
 - `python -m compileall -q bot.py bot_app` — فحص الصياغة قبل النشر.
 - `python -m unittest discover -s tests -v` — تشغيل الاختبارات الخفيفة.
 - Required env: `BOT_TOKEN`, `OWNER_ID`, `DATABASE_URL` and the configured panel/API variables.
+- Optional env: `OWNER_WEBAPP_URL` can point to the HTTPS owner Web App URL. When
+  omitted, the bot uses Railway's `RAILWAY_PUBLIC_DOMAIN` automatically.
 
 ## Stack
 

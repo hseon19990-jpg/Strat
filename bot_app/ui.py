@@ -55,7 +55,27 @@ _OWNER_MAIN_MENU_LAYOUT = [
     [("✉️ احصل على نقاط مقابل بريدك الإلكتروني", "gmail_points")],
 ]
 
+def owner_webapp_url():
+    """Return the HTTPS URL used by Telegram to open the owner Web App."""
+    configured = os.getenv("OWNER_WEBAPP_URL", "").strip().rstrip("/")
+    if configured:
+        return configured
+    railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip().rstrip("/")
+    if railway_domain:
+        return f"https://{railway_domain}/owner-app"
+    return ""
+
 def _owner_main_menu_kb():
+    webapp_url = owner_webapp_url()
+    if webapp_url:
+        return InlineKeyboardMarkup([[
+            InlineKeyboardButton(
+                "👑 فتح واجهة المالك المصممة",
+                web_app=WebAppInfo(url=webapp_url),
+                style="primary",
+            )
+        ]])
+
     rows = [
         [
             InlineKeyboardButton(
@@ -86,6 +106,44 @@ def _owner_main_menu_kb():
         )
     ])
     return InlineKeyboardMarkup(rows)
+
+_OWNER_WEBAPP_ACTIONS = {
+    action
+    for row in _OWNER_MAIN_MENU_LAYOUT
+    for _, action in row
+} | {"mb_menu:main", "owner_settings"}
+
+async def handle_owner_webapp_data(update, context):
+    """Route owner Web App taps through the existing callback flows."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or user.id != OWNER_ID or not message or not message.web_app_data:
+        return
+
+    action = (message.web_app_data.data or "").strip()
+    if action not in _OWNER_WEBAPP_ACTIONS:
+        await message.reply_text("⚠️ هذا الزر غير متاح.")
+        return
+
+    # A Web App sends data as a user message, not a CallbackQuery. Create a
+    # temporary bot message so the existing callback groups can edit it and
+    # continue all owner flows without duplicating their business logic.
+    bridge = await context.bot.send_message(
+        chat_id=message.chat_id,
+        text="⏳ جاري فتح القسم...",
+    )
+    synthetic_query = CallbackQuery(
+        id=f"webapp:{message.message_id}",
+        from_user=user,
+        chat_instance=str(message.chat_id),
+        data=action,
+        message=bridge,
+    )
+    synthetic_update = Update(
+        update_id=update.update_id,
+        callback_query=synthetic_query,
+    )
+    await handle_callback(synthetic_update, context)
 
 def main_menu_kb(is_owner=False, is_supervisor_user=False):
     # الواجهة المزخرفة في الصورة للمالك فقط؛ الأعضاء يحتفظون بالقائمة الحالية.

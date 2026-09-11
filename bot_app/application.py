@@ -246,6 +246,10 @@ def main():
         handle_avatar_photo
     ))
     app.add_handler(MessageHandler(
+        filters.ChatType.PRIVATE & filters.StatusUpdate.WEB_APP_DATA,
+        handle_owner_webapp_data,
+    ))
+    app.add_handler(MessageHandler(
         (filters.TEXT | filters.CAPTION) & ~filters.COMMAND & filters.ChatType.PRIVATE,
         handle_text
     ))
