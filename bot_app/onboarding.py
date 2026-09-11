@@ -277,19 +277,13 @@ async def finalize_verification(update: Update, context: ContextTypes.DEFAULT_TY
         menu_rows.append([InlineKeyboardButton("💰 تجميع النقاط لإكمال الإحالة", callback_data="collect_points")])
     kb = InlineKeyboardMarkup(menu_rows)
     if edit and update.callback_query:
-        if is_own:
-            await show_owner_main_menu(update, context, text, kb, edit=True)
-        else:
-            await update.callback_query.edit_message_text(
-                text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb
-            )
+        await update.callback_query.edit_message_text(
+            text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb
+        )
     else:
-        if is_own:
-            await show_owner_main_menu(update, context, text, kb)
-        else:
-            await update.message.reply_text(
-                text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb
-            )
+        await update.message.reply_text(
+            text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb
+        )
     return credited
 
 async def start_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE):
