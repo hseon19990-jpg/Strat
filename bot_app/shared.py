@@ -60,8 +60,36 @@ def load_button_custom_emoji_ids(raw: str = "") -> None:
 
 
 def set_button_custom_emoji(action_value: str, custom_emoji_id: str) -> None:
-    if action_value and str(custom_emoji_id).isdigit():
-        BUTTON_CUSTOM_EMOJI_IDS[str(action_value).strip()] = str(custom_emoji_id).strip()
+    """تحديث أيقونة زر في الذاكرة فقط."""
+    key = str(action_value or "").strip()
+    value = str(custom_emoji_id or "").strip()
+    if key and value.isdigit():
+        BUTTON_CUSTOM_EMOJI_IDS[key] = value
+
+
+def save_button_custom_emoji(action_value: str, custom_emoji_id: str = "") -> None:
+    """تحديث أيقونة الزر وحفظها في settings حتى تبقى بعد إعادة التشغيل."""
+    key = str(action_value or "").strip()
+    value = str(custom_emoji_id or "").strip()
+    if not key or (value and not value.isdigit()):
+        return
+    if value:
+        set_button_custom_emoji(key, value)
+    else:
+        BUTTON_CUSTOM_EMOJI_IDS.pop(key, None)
+    try:
+        from .users import get_setting, set_setting
+        raw = get_setting(BUTTON_CUSTOM_EMOJI_SETTING_KEY) or "{}"
+        mapping = json.loads(raw)
+        if not isinstance(mapping, dict):
+            mapping = {}
+        if value:
+            mapping[key] = value
+        else:
+            mapping.pop(key, None)
+        set_setting(BUTTON_CUSTOM_EMOJI_SETTING_KEY, json.dumps(mapping, ensure_ascii=False))
+    except Exception as exc:
+        logger.warning(f"⚠️ تعذّر حفظ أيقونة الزر {key}: {exc}")
 
 
 def extract_custom_emoji_ids(message) -> list[str]:
