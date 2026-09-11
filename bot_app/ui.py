@@ -79,16 +79,8 @@ def owner_webapp_url():
     return ""
 
 def _owner_main_menu_kb():
-    webapp_url = owner_webapp_url()
-    if webapp_url:
-        return InlineKeyboardMarkup([[
-            InlineKeyboardButton(
-                "👑 فتح واجهة المالك المصممة",
-                web_app=WebAppInfo(url=webapp_url),
-                style="primary",
-            )
-        ]])
-
+    # المالك يستخدم نفس أزرار Telegram الأصلية مثل الأعضاء.
+    # لا نفتح Mini App هنا حتى تبقى خلفية وشكل المحادثة موحّدين.
     rows = [
         [
             InlineKeyboardButton(
