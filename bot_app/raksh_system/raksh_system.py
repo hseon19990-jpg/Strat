@@ -2096,18 +2096,54 @@ async def raksh_successful_payment(update: Update, context: ContextTypes.DEFAULT
 # ═══ 16. تنفيذ الطلب ═══
 # ════════════════════════════════════════════════════════
 
-async def _send_raksh_order_to_group(bot, user_id: int, quantity: int, payment_method: str, service_type: str):
-    """إرسال إشعار الطلب إلى المجموعة"""
+async def _send_raksh_order_to_group(
+    bot,
+    user_id: int,
+    quantity: int,
+    payment_method: str,
+    service_type: str,
+    params: Optional[Dict] = None,
+):
+    """إرسال إشعار الطلب إلى المجموعة مع تفاصيل الرسالة عند طلب خدمة المراسلة."""
     if not ADMIN_GROUP_ID:
         return
     try:
-        await bot.send_message(
-            ADMIN_GROUP_ID,
-            f"📋 طلب {_raksh_order_label(service_type)}\n"
-            f"👤 المستخدم: {user_id}\n"
-            f"📦 العدد: {quantity}\n"
+        notification_lines = [
+            f"📋 طلب {_raksh_order_label(service_type)}",
+            f"👤 المستخدم: {user_id}",
+            f"📦 العدد: {quantity}",
             f"💳 طريقة الدفع: {payment_method}",
-        )
+        ]
+        if service_type == "send_message":
+            message_params = params or {}
+            recipient = str(
+                message_params.get("message_recipient")
+                or message_params.get("recipient")
+                or "غير محدد"
+            ).strip()
+            message_text = str(
+                message_params.get("message_text")
+                or message_params.get("message")
+                or ""
+            ).strip()
+            identity_type = message_params.get("message_identity_type") or message_params.get("identity_type") or "anonymous"
+            identity_name = str(
+                message_params.get("message_identity_name")
+                or message_params.get("identity_name")
+                or ""
+            ).strip()
+            identity_label = {
+                "anonymous": "شخص مجهول",
+                "self": "هوية المستخدم",
+                "fake": f"هوية مزيفة: {identity_name or 'غير محددة'}",
+            }.get(identity_type, identity_name or "غير محددة")
+            notification_lines.extend([
+                f"👤 المستلم: {recipient}",
+                f"🕵️ هوية الرسالة: {identity_label}",
+                "📝 محتوى الرسالة:",
+                message_text or "(فارغ)",
+            ])
+        await bot.send_message(ADMIN_GROUP_ID, "\n".join(notification_lines))
     except Exception:
         logger.exception("فشل إرسال إشعار الطلب")
 
@@ -2508,6 +2544,7 @@ async def _start_raksh_execution(
         quantity,
         payment_method,
         service_type,
+        params,
     )
 
     if not _claim_raksh_order(order_id):
