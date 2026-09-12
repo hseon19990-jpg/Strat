@@ -649,6 +649,51 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 qty  = context.user_data.get("smm_qty", 0)
                 cost = context.user_data.get("smm_cost", 0)
                 link = context.user_data.get("smm_link", "")
+                panel = svc.get("panel", 1)
+
+                # افحص رصيد مزود الرشق قبل خصم نقاط المستخدم.
+                balance_response = await asyncio.to_thread(smm_request, "balance", panel=panel)
+                provider_balance = provider_rate = required_balance = None
+                try:
+                    provider_balance = float(
+                        str(balance_response.get("balance", "")).replace(",", "").strip()
+                    )
+                    provider_info = await asyncio.to_thread(
+                        smm_service_info, svc["api_service_id"], panel=panel
+                    )
+                    provider_rate = float(provider_info.get("rate", 0) or 0)
+                    required_balance = (provider_rate * qty) / 1000
+                except (AttributeError, TypeError, ValueError, KeyError):
+                    # إذا تعذر تفسير رد الرصيد، يستمر مسار API القديم بالتعويض عند الرفض.
+                    pass
+
+                if (
+                    provider_balance is not None
+                    and provider_rate is not None
+                    and provider_rate > 0
+                    and required_balance is not None
+                    and provider_balance < required_balance
+                ):
+                    currency = str(balance_response.get("currency") or "USD")
+                    warning = (
+                        "⚠️ رصيد موقع الرشق غير كافٍ لتنفيذ طلب جديد\n"
+                        f"الخدمة: {svc.get('name_ar') or 'غير معروفة'}\n"
+                        f"الرصيد الحالي: {provider_balance:.4f} {currency}\n"
+                        f"المطلوب تقريباً: {required_balance:.4f} {currency}\n"
+                        f"المستخدم: {user.id}"
+                    )
+                    try:
+                        await notify_group(context.application, warning)
+                    except Exception as notify_error:
+                        logger.warning(f"تعذر إرسال تنبيه نقص رصيد المزود: {notify_error}")
+                    await q.edit_message_text(
+                        "⚠️ لا يمكن تنفيذ الطلب حالياً لأن رصيد موقع الرشق غير كافٍ.\n"
+                        "لم يتم خصم أي نقاط من رصيدك.",
+                        reply_markup=main_menu_kb(is_own),
+                    )
+                    context.user_data["state"] = "main_menu"
+                    return
+
                 if not deduct_points(user.id, cost):
                     await q.edit_message_text("❌ نقاطك غير كافية.", reply_markup=main_menu_kb(is_own))
                     context.user_data["state"] = "main_menu"
