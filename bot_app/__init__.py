@@ -16,6 +16,7 @@ _SECTION_NAMES = (
     "accounts",
     "referrals",
     "security",
+    "buyback",
     "services",
     "legendary_comment",
     "ui",
