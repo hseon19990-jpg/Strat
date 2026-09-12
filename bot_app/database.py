@@ -537,6 +537,27 @@ def init_db():
               created_at  TIMESTAMPTZ DEFAULT NOW()
           )""")
           c.execute("""
+          CREATE TABLE IF NOT EXISTS account_buyback_offers (
+              id               SERIAL PRIMARY KEY,
+              seller_user_id   BIGINT NOT NULL,
+              phone_number     TEXT NOT NULL,
+              account_username TEXT DEFAULT '',
+              session_string   TEXT,
+              quoted_price     INTEGER DEFAULT 0,
+              status           TEXT DEFAULT 'awaiting_seller_confirm',
+              accepted_at     TIMESTAMPTZ,
+              next_check_at   TIMESTAMPTZ,
+              last_checked_at TIMESTAMPTZ,
+              paid_at         TIMESTAMPTZ,
+              rejection_reason TEXT DEFAULT '',
+              created_at      TIMESTAMPTZ DEFAULT NOW(),
+              updated_at      TIMESTAMPTZ DEFAULT NOW()
+          )""")
+          c.execute("""
+          CREATE INDEX IF NOT EXISTS account_buyback_status_idx
+          ON account_buyback_offers (status, next_check_at)
+          """)
+          c.execute("""
           CREATE TABLE IF NOT EXISTS menu_items (
               id           SERIAL PRIMARY KEY,
               menu         TEXT,
@@ -585,6 +606,8 @@ def init_db():
               ('phone_verification_enabled', '1'),
               ('maintenance_mode', '0'),
               ('number_exchange_enabled', '0'),
+              ('buyback_visible', '0'),
+              ('buyback_price', '0'),
               ('legendary_services_visible', '1'),
               ('legendary_owner_phones', '8801709839107'),
               ('exchange_success_msg', ''),
