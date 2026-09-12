@@ -511,6 +511,8 @@ def main():
         logger.info("🔁 تم تفعيل فحص البيع المكرر وتعويض المتضررين (كل 6 ساعات)")
         app.job_queue.run_repeating(check_twofa_reset_job, interval=3600, first=60)
         logger.info("🔐 تم تفعيل فحص إكمال إعادة تعيين 2FA (كل ساعة)")
+        app.job_queue.run_repeating(process_buyback_quarantine_job, interval=300, first=60)
+        logger.info("💰 تم تفعيل فحوص حجر بيع الحسابات (كل 5 دقائق)")
         app.job_queue.run_repeating(_account_fixup_job, interval=30, first=15)
         logger.info("🔧 تم تفعيل حلقة الإصلاح التلقائي للحسابات (كل 30 ثانية)")
 

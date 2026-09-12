@@ -155,6 +155,19 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+    if state.startswith("buyback_"):
+        try:
+            if await handle_buyback_text(update, context, text):
+                return
+        except Exception as exc:
+            logger.exception("فشل معالجة بيع الحساب للمستخدم %s: %s", user.id, exc)
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text(
+                "⚠️ حدث خطأ أثناء معالجة طلب بيع الحساب. لم يتم حفظ الكود أو كلمة المرور.",
+                reply_markup=main_menu_kb(is_own),
+            )
+            return
+
     # ─── الخدمات الأسطورية تستخدم نفس مسار استقبال الرسائل لكل أنواعها ───
     if await legendary_handle_text(update, context, text):
         return

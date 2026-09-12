@@ -108,6 +108,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as _gate_err:
             logger.warning(f"⚠️ خطأ في فحص القنوات الإجبارية (callback) للمستخدم {user.id}: {_gate_err}")
 
+    if data.startswith("buyback:"):
+        if await handle_buyback_callback(update, context, q, data, user, is_own):
+            return
+
     # ── العضو يُبلغ المالك بعد إكمال تحقق حساب الجيميل ──
     for _callback_group in (
         _handle_callback_group_01,

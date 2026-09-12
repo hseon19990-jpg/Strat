@@ -16,6 +16,10 @@ BUYBACK_ACTIVE_STATUSES = (
     "ready_for_payment",
 )
 
+# Login clients live only for the short code/2FA hand-off flow.  Keep this
+# process-local and never persist the raw login code or 2FA password.
+_pending_buyback_logins = {}
+
 
 def is_buyback_visible() -> bool:
     return str(get_setting(BUYBACK_VISIBLE_KEY) or "0") == "1"

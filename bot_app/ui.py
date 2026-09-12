@@ -164,6 +164,11 @@ def main_menu_kb(is_owner=False, is_supervisor_user=False):
             item for item in menu_items
             if item["action_value"] != "legendary_services"
         ]
+    if not is_owner and not is_buyback_visible():
+        menu_items = [
+            item for item in menu_items
+            if item["action_value"] != "buyback:start"
+        ]
     rows = build_kb_rows(menu_items)
     if is_owner:
         rows.append([InlineKeyboardButton("🧩 تعديل أزرار الواجهة", callback_data="mb_menu:main")])
@@ -597,6 +602,14 @@ def owner_settings_kb():
                 )
     # Add legendary settings button
     rows.append([InlineKeyboardButton("👑 إعدادات الخدمات الأسطورية", callback_data="legendary:settings")])
+    _buyback_on = is_buyback_visible()
+    rows.append([
+        InlineKeyboardButton(
+            f"💰 بيع حسابات تيليجرام ({'ظاهر للأعضاء ✅' if _buyback_on else 'مخفي عن الأعضاء ❌'})",
+            callback_data="os:toggle_buyback_visible",
+        ),
+        InlineKeyboardButton("📋 طلبات البيع", callback_data="buyback:owner:list"),
+    ])
     rows.append([InlineKeyboardButton("🛡 إضافة مشرف", callback_data="os:add_supervisor"),
                   InlineKeyboardButton("📋 إدارة المشرفين", callback_data="os:list_supervisors")])
     rows.append([InlineKeyboardButton("👁 حسابات المشرفين", callback_data="os:sv_accounts")])

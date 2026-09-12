@@ -203,6 +203,7 @@ BUILTIN_DEFAULTS = {
 "main": [
         ("🐺 خدمات", "services_menu", 2),
          ("🛍 خدمات الرشق", "raksh_menu", 2),
+        ("💰 بيع حساب تيليجرام", "buyback:start", 2),
         ("👑 خدمات تيليجرام أسطورية", "legendary_services", 1),
         ("🦇 تمويل قناتك حقيقي", "fund_channel", 1),
         ("👻 رابط دعوة", "referral", 1),

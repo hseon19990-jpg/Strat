@@ -369,6 +369,18 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             )
             return
 
+        if data == "os:toggle_buyback_visible" and is_own:
+            new_val = "0" if is_buyback_visible() else "1"
+            set_buyback_visible(new_val == "1")
+            status = "ظاهر للأعضاء ✅" if new_val == "1" else "مخفي عن الأعضاء ❌"
+            await q.edit_message_text(
+                f"💰 *زر بيع حسابات تيليجرام الآن: {status}*\n\n"
+                f"{'سيظهر زر بيع الحساب في القائمة الرئيسية للأعضاء.' if new_val == '1' else 'سيختفي الزر من قائمة الأعضاء، مع بقاء الطلبات والفحوصات الحالية دون توقف.'}",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=owner_settings_kb(),
+            )
+            return
+
         if data == "os:toggle_captcha" and is_own:
             current = int(get_setting("captcha_enabled") or "0")
             new_val = "0" if current else "1"
