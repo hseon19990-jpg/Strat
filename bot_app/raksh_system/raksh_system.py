@@ -1051,9 +1051,38 @@ def _set_raksh_service_enabled(service_type: str, enabled: bool) -> None:
     if svc:
         svc.set_enabled(enabled)
 
+def get_raksh_points_spent() -> Dict[str, int]:
+    """إجمالي النقاط المصروفة على كل خدمة رشق من جميع الأعضاء."""
+    spent = {service_type: 0 for service_type in RAKSH_SERVICES}
+    try:
+        with db_conn() as c:
+            rows = c.execute(
+                """
+                SELECT service_type,
+                       COALESCE(
+                           SUM(GREATEST(total_cost - COALESCE(refund_points, 0), 0)),
+                           0
+                       ) AS spent_points
+                FROM raksh_orders
+                WHERE payment_method = 'points'
+                  AND status IN ('pending', 'running', 'completed', 'cancelled')
+                GROUP BY service_type
+                """
+            ).fetchall()
+        for row in rows:
+            service_type = row["service_type"]
+            if service_type in spent:
+                spent[service_type] = max(0, int(row["spent_points"] or 0))
+    except Exception:
+        # لا تمنع مشكلة إحصائية مؤقتة ظهور قائمة الخدمات.
+        logger.exception("تعذر حساب إجمالي النقاط المصروفة على خدمات الرشق")
+    return spent
+
 def raksh_menu_kb(is_owner: bool = False):
     """قائمة خدمات الرشق القابلة للترتيب من إدارة الأزرار."""
     buttons = []
+    spent_by_service = get_raksh_points_spent()
+    total_spent = sum(spent_by_service.values())
     for item in get_menu_items("raksh_menu"):
         action = item["action_value"]
         if action.startswith("raksh:start:"):
@@ -1062,7 +1091,8 @@ def raksh_menu_kb(is_owner: bool = False):
             if not svc or (not is_owner and not svc.is_enabled()):
                 continue
             service_button = InlineKeyboardButton(
-                svc.config.name, callback_data=action
+                f"{svc.config.name} — 💰 {spent_by_service.get(key, 0):,}",
+                callback_data=action,
             )
             if is_owner:
                 enabled = svc.is_enabled()
@@ -1080,7 +1110,8 @@ def raksh_menu_kb(is_owner: bool = False):
             if not svc or (not is_owner and not svc.is_enabled()):
                 continue
             service_button = InlineKeyboardButton(
-                svc.config.name, callback_data=action
+                f"{svc.config.name} — 💰 {spent_by_service.get('send_message', 0):,}",
+                callback_data=action,
             )
             if is_owner:
                 enabled = svc.is_enabled()
@@ -1111,6 +1142,12 @@ def raksh_menu_kb(is_owner: bool = False):
                     callback_data=action,
                 )
             ])
+    buttons.append([
+        InlineKeyboardButton(
+            f"📊 إجمالي النقاط المصروفة: {total_spent:,}",
+            callback_data="raksh:spent_stats",
+        )
+    ])
     buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")])
     return InlineKeyboardMarkup(buttons)
 
@@ -1299,6 +1336,13 @@ async def _handle_raksh_callback_impl(
     
     await query.answer("⏳ جارٍ تجهيز الطلب...")
     
+    if data == "raksh:spent_stats":
+        await query.answer(
+            f"📊 إجمالي النقاط المصروفة: {sum(get_raksh_points_spent().values()):,}",
+            show_alert=True,
+        )
+        return
+
     # ─── تفعيل/إخفاء خدمة ───
     if data.startswith("raksh:toggle:"):
         if not is_own:
