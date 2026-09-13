@@ -313,7 +313,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_buyback_price(new_price)
         context.user_data["state"] = "main_menu"
         await update.message.reply_text(
-            f"✅ تم تحديث سعر شراء الحساب إلى *{format_buyback_price(new_price)}*.\n"
+            f"✅ تم تحديث سعر الحساب السليم إلى *{format_buyback_price(new_price)}*.\n"
             "سيُطبّق السعر على طلبات البيع الجديدة فقط.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=owner_settings_kb(),
