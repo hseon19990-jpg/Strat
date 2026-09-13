@@ -688,6 +688,12 @@ def account_info_kb() -> InlineKeyboardMarkup:
                 callback_data="os:send_ready_accounts",
             ),
         ],
+        [
+            InlineKeyboardButton(
+                "📁 تصدير أرقام غير مقيّدة",
+                callback_data="os:export_ready_numbers",
+            ),
+        ],
         [InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")],
     ])
 
