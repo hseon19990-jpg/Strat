@@ -77,5 +77,20 @@ class BuybackQuarantineTests(unittest.TestCase):
         self.assertIn("('buyback_price', '7000')", database_source)
 
 
+    def test_price_is_selected_after_final_spambot_check(self):
+        source = BUYBACK.read_text(encoding="utf-8")
+        database_source = (ROOT / "bot_app" / "database.py").read_text(encoding="utf-8")
+
+        self.assertIn('"restricted": bool(restricted)', source)
+        self.assertIn(
+            'final_price = _buyback_price(restricted=bool(result.get("restricted")))',
+            source,
+        )
+        self.assertIn("quoted_price=%s", source)
+        self.assertIn("('buyback_restricted_price', '4000')", database_source)
+        self.assertIn("DEFAULT_BUYBACK_PRICE = 7000", source)
+        self.assertIn("DEFAULT_BUYBACK_RESTRICTED_PRICE = 4000", source)
+
+
 if __name__ == "__main__":
     unittest.main()
