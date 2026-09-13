@@ -29,20 +29,21 @@ class SendReadyAccountsTests(unittest.TestCase):
         self.assertIn("os:number_info:", block)
         self.assertIn("لن يتم تغيير حالة البيع أو الرشق", block)
 
-    def test_export_sends_only_authorized_phone_numbers_as_documents(self):
+    def test_export_uses_encrypted_session_documents(self):
         ui_source = UI.read_text(encoding="utf-8")
         callback_source = CALLBACKS.read_text(encoding="utf-8")
 
-        self.assertIn('callback_data="os:export_ready_numbers"', ui_source)
-        start = callback_source.index('if data == "os:export_ready_numbers" and is_own:')
+        self.assertIn('callback_data="os:export_ready_sessions"', ui_source)
+        start = callback_source.index('if data == "os:export_ready_sessions" and is_own:')
         end = callback_source.index('if data == "os:account_names" and is_own:', start)
         block = callback_source[start:end]
 
-        self.assertIn("find_unrestricted_message_accounts()", block)
+        self.assertIn("SESSION_EXPORT_KEY", block)
+        self.assertIn("Fernet", block)
+        self.assertIn("session_string", block)
         self.assertIn("send_document", block)
-        self.assertIn("InputFile", block)
-        self.assertIn("phone_number", block)
-        self.assertNotIn("session_string", block)
+        self.assertIn(".session.enc", block)
+        self.assertNotIn("document=_export_session", block)
 
 
 if __name__ == "__main__":
