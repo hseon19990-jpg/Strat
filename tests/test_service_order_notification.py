@@ -57,6 +57,32 @@ class ServiceOrderNotificationTests(unittest.TestCase):
         self.assertNotIn("المستخدم:", message)
         self.assertNotIn("الرابط:", message)
 
+    def test_message_service_group_notification_is_private(self):
+        source = (ROOT / "bot_app" / "raksh_system" / "raksh_system.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            'if service_type == "send_message":',
+            source,
+        )
+        function_source = source[source.index("async def _send_raksh_order_to_group"):]
+        private_branch = function_source.split(
+            'if service_type == "send_message":',
+            1,
+        )[1].split(
+            "        notification_lines = [",
+            1,
+        )[0]
+
+        self.assertIn("تم طلب رسالة", private_branch)
+        self.assertIn("total_cost", private_branch)
+        self.assertIn("الوقت", private_branch)
+        self.assertNotIn("message_text", private_branch)
+        self.assertNotIn("message_recipient", private_branch)
+        self.assertNotIn("identity_name", private_branch)
+        self.assertNotIn("user_id", private_branch)
+
 
 if __name__ == "__main__":
     unittest.main()
