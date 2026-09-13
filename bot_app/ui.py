@@ -612,7 +612,7 @@ def owner_settings_kb():
     ])
     rows.append([
         InlineKeyboardButton(
-            f"💵 سعر شراء الحساب: {format_buyback_price(_buyback_price())}",
+            f"💵 سعر الحساب السليم: {format_buyback_price(_buyback_price())}",
             callback_data="os:edit_buyback_price",
         ),
     ])
