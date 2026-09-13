@@ -309,13 +309,18 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                 )
                 return
 
-            _export_secret = str(os.environ.get("SESSION_EXPORT_KEY") or "").strip()
-            if not _export_secret:
+            try:
+                _export_secret = str(get_setting("session_export_key") or "").strip()
+                if not _export_secret:
+                    _export_secret = str(os.environ.get("SESSION_EXPORT_KEY") or "").strip()
+                    if not _export_secret:
+                        import secrets as _export_secrets
+                        _export_secret = _export_secrets.token_urlsafe(48)
+                    set_setting("session_export_key", _export_secret)
+            except Exception as _key_error:
+                logger.warning(f"⚠️ تعذر تجهيز مفتاح تصدير الجلسات: {_key_error}")
                 await q.edit_message_text(
-                    "⚠️ *لم يتم إعداد مفتاح التشفير.*\n\n"
-                    "أضف المتغير السري SESSION_EXPORT_KEY إلى بيئة التشغيل، "
-                    "ثم أعد المحاولة. لا ترسل المفتاح داخل تيليجرام.",
-                    parse_mode=ParseMode.MARKDOWN,
+                    "⚠️ تعذر تجهيز مفتاح التشفير من قاعدة البيانات. حاول لاحقاً.",
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
                     ]),
