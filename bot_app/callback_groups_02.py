@@ -285,6 +285,74 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             )
             return
 
+        if data == "os:export_ready_numbers" and is_own:
+            await q.edit_message_text(
+                "⏳ *جاري فحص الحسابات قبل تجهيز الملفات...*\n"
+                "لن يتم تغيير حالة البيع أو الرشق لأي حساب.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            (
+                _export_rows,
+                _export_checked,
+                _export_total_candidates,
+            ) = await find_unrestricted_message_accounts()
+            if not _export_rows:
+                await q.edit_message_text(
+                    "📁 *تصدير أرقام غير مقيّدة*\n\n"
+                    f"🔍 تم فحص {_export_checked} من أصل "
+                    f"{_export_total_candidates} حساباً عبر SpamBot.\n"
+                    "لا توجد أرقام غير مقيّدة حالياً حسب نتيجة الفحص.",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
+                    ]),
+                )
+                return
+
+            import io as _export_io
+            from telegram import InputFile as _ExportInputFile
+
+            _exported = 0
+            _failed = 0
+            for _export_row in _export_rows:
+                _export_phone = str(_export_row.get("phone_number") or "").strip()
+                if not _export_phone:
+                    _failed += 1
+                    continue
+                _export_digits = re.sub(r"[^0-9]", "", _export_phone)
+                if not _export_digits:
+                    _failed += 1
+                    continue
+                _export_name = f"number_{_export_digits}.txt"
+                _export_buffer = _export_io.BytesIO((_export_phone + "\n").encode("utf-8"))
+                _export_buffer.name = _export_name
+                try:
+                    await context.bot.send_document(
+                        chat_id=user.id,
+                        document=_ExportInputFile(_export_buffer, filename=_export_name),
+                        caption=f"📱 رقم {_exported + 1} من {len(_export_rows)}",
+                    )
+                    _exported += 1
+                    await asyncio.sleep(0.15)
+                except Exception as _export_error:
+                    _failed += 1
+                    logger.warning(f"⚠️ تعذر إرسال ملف الرقم {_export_phone}: {_export_error}")
+                finally:
+                    _export_buffer.close()
+
+            await context.bot.send_message(
+                chat_id=user.id,
+                text=(
+                    "✅ *اكتمل تصدير الأرقام*\n\n"
+                    f"📄 تم إرسال {_exported} ملفاً، ملف مستقل لكل رقم.\n"
+                    f"⚠️ تعذر إرسال {_failed} ملفاً." if _failed else
+                    "✅ *اكتمل تصدير الأرقام*\n\n"
+                    f"📄 تم إرسال {_exported} ملفاً، ملف مستقل لكل رقم."
+                ),
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
         if data == "os:account_names" and is_own:
             name_count = _account_name_count()
             context.user_data["state"] = "os_await_account_names"
