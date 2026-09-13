@@ -45,11 +45,20 @@ def _buyback_price(restricted: bool = False) -> int:
 
 
 def set_buyback_price(points: int) -> int:
-    """يحفظ سعر شراء الحساب بالنقاط ويعيد القيمة التي تم اعتمادها."""
+    """يحفظ سعر شراء الحساب السليم بالنقاط."""
     amount = int(points)
     if amount <= 0:
         raise ValueError("يجب أن يكون السعر أكبر من صفر")
     set_setting(BUYBACK_PRICE_KEY, str(amount))
+    return amount
+
+
+def set_buyback_restricted_price(points: int) -> int:
+    """يحفظ سعر شراء الحساب المقيّد بالإرسال بالنقاط."""
+    amount = int(points)
+    if amount <= 0:
+        raise ValueError("يجب أن يكون السعر أكبر من صفر")
+    set_setting(BUYBACK_RESTRICTED_PRICE_KEY, str(amount))
     return amount
 
 
