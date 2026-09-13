@@ -287,7 +287,7 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
 
         if data == "os:export_ready_sessions" and is_own:
             await q.edit_message_text(
-                "⏳ *جاري فحص الحسابات وتجهيز الجلسات المشفّرة...*\n"
+                "⏳ *جاري فحص الحسابات وتجهيز ملف ZIP مشفّر...*\n"
                 "لن يتم تغيير حالة البيع أو الرشق لأي حساب.",
                 parse_mode=ParseMode.MARKDOWN,
             )
@@ -331,6 +331,7 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                 import base64 as _export_base64
                 import hashlib as _export_hashlib
                 import io as _export_io
+                import zipfile as _export_zipfile
                 from telegram import InputFile as _ExportInputFile
                 from cryptography.fernet import Fernet as _ExportFernet
                 _export_key = _export_base64.urlsafe_b64encode(
@@ -346,56 +347,91 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                 )
                 return
 
-            _exported = 0
-            _failed = 0
-            for _export_row in _export_rows:
-                _export_phone = str(_export_row.get("phone_number") or "").strip()
-                _export_session = str(_export_row.get("session_string") or "").strip()
-                if not _export_phone or not _export_session:
-                    _failed += 1
-                    continue
-                _export_digits = re.sub(r"[^0-9]", "", _export_phone)
-                if not _export_digits:
-                    _failed += 1
-                    continue
-                _export_payload = json.dumps(
-                    {
-                        "phone_number": _export_phone,
-                        "session_string": _export_session,
-                    },
-                    ensure_ascii=False,
-                ).encode("utf-8")
-                _export_token = _export_fernet.encrypt(_export_payload)
-                _export_name = f"session_{_export_digits}.session.enc"
-                _export_buffer = _export_io.BytesIO(_export_token)
-                _export_buffer.name = _export_name
-                try:
-                    await context.bot.send_document(
-                        chat_id=user.id,
-                        document=_ExportInputFile(_export_buffer, filename=_export_name),
-                        caption=(
-                            f"🔐 جلسة مشفّرة {_exported + 1} من {len(_export_rows)}\n"
-                            "لا يمكن فتحها دون SESSION_EXPORT_KEY."
-                        ),
-                    )
-                    _exported += 1
-                    await asyncio.sleep(0.15)
-                except Exception as _export_error:
-                    _failed += 1
-                    logger.warning(f"⚠️ تعذر إرسال جلسة مشفّرة للرقم {_export_phone}: {_export_error}")
-                finally:
-                    _export_buffer.close()
+            _export_zip_buffer = _export_io.BytesIO()
+            _export_manifest = []
+            _export_failed = 0
+            with _export_zipfile.ZipFile(
+                _export_zip_buffer, "w", compression=_export_zipfile.ZIP_DEFLATED
+            ) as _export_archive:
+                for _export_row in _export_rows:
+                    _export_phone = str(_export_row.get("phone_number") or "").strip()
+                    _export_session = str(_export_row.get("session_string") or "").strip()
+                    if not _export_phone or not _export_session:
+                        _export_failed += 1
+                        continue
+                    _export_digits = re.sub(r"[^0-9]", "", _export_phone)
+                    if not _export_digits:
+                        _export_failed += 1
+                        continue
+                    _export_payload = json.dumps(
+                        {
+                            "phone_number": _export_phone,
+                            "session_string": _export_session,
+                        },
+                        ensure_ascii=False,
+                    ).encode("utf-8")
+                    _export_token = _export_fernet.encrypt(_export_payload)
+                    _export_name = f"session_{_export_digits}.session.enc"
+                    try:
+                        _export_archive.writestr(_export_name, _export_token)
+                        _export_manifest.append(
+                            {"phone_number": _export_phone, "file": _export_name, "encrypted": True}
+                        )
+                    except Exception as _zip_error:
+                        _export_failed += 1
+                        logger.warning(f"⚠️ تعذر إضافة جلسة الرقم {_export_phone} إلى ZIP: {_zip_error}")
 
-            await context.bot.send_message(
-                chat_id=user.id,
-                text=(
-                    "✅ *اكتمل تصدير الجلسات المشفّرة*\n\n"
-                    f"📄 تم إرسال {_exported} ملفاً مشفّراً."
-                    + (f"\n⚠️ تعذر إرسال {_failed} ملفاً." if _failed else "")
-                    + "\n🔑 استخدم نفس SESSION_EXPORT_KEY في أداة الاستيراد."
-                ),
-                parse_mode=ParseMode.MARKDOWN,
-            )
+                _export_archive.writestr(
+                    "README.txt",
+                    (
+                        "هذا الأرشيف يحتوي جلسات مشفّرة فقط.\n"
+                        "لا تحذف ملفات session_*.session.enc.\n"
+                        "يجب أن يستخدم برنامج الاستيراد نفس مفتاح التشفير المخزن في قاعدة البيانات.\n"
+                    ).encode("utf-8"),
+                )
+                _export_archive.writestr(
+                    "manifest.json",
+                    json.dumps(_export_manifest, ensure_ascii=False, indent=2).encode("utf-8"),
+                )
+
+            if not _export_manifest:
+                _export_zip_buffer.close()
+                await q.edit_message_text(
+                    "⚠️ تعذر تجهيز أي جلسة صالحة داخل الملف.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
+                    ]),
+                )
+                return
+
+            _export_zip_buffer.seek(0)
+            _export_name = f"encrypted_sessions_{int(time.time())}.zip"
+            try:
+                await context.bot.send_document(
+                    chat_id=user.id,
+                    document=_ExportInputFile(_export_zip_buffer, filename=_export_name),
+                    caption=(
+                        f"🔐 ملف واحد يحتوي {len(_export_manifest)} جلسة مشفّرة.\n"
+                        "فك الضغط، ثم استخدم نفس مفتاح التشفير في برنامج الاستيراد."
+                    ),
+                )
+                await context.bot.send_message(
+                    chat_id=user.id,
+                    text=(
+                        f"✅ تم إرسال ملف ZIP واحد يحتوي {len(_export_manifest)} جلسة."
+                        + (f"\n⚠️ تعذر إضافة {_export_failed} جلسة." if _export_failed else "")
+                    ),
+                )
+            except Exception as _export_error:
+                logger.warning(f"⚠️ تعذر إرسال ملف جلسات ZIP: {_export_error}")
+                await q.edit_message_text(
+                    "⚠️ حدث خطأ أثناء إرسال ملف الجلسات. حاول مجدداً.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
+                    ]),
+                )
+            finally:
+                _export_zip_buffer.close()
             return
 
         if data == "os:account_names" and is_own:
