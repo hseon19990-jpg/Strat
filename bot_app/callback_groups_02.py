@@ -285,9 +285,9 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             )
             return
 
-        if data == "os:export_ready_numbers" and is_own:
+        if data == "os:export_ready_sessions" and is_own:
             await q.edit_message_text(
-                "⏳ *جاري فحص الحسابات قبل تجهيز الملفات...*\n"
+                "⏳ *جاري فحص الحسابات وتجهيز الجلسات المشفّرة...*\n"
                 "لن يتم تغيير حالة البيع أو الرشق لأي حساب.",
                 parse_mode=ParseMode.MARKDOWN,
             )
@@ -298,10 +298,10 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             ) = await find_unrestricted_message_accounts()
             if not _export_rows:
                 await q.edit_message_text(
-                    "📁 *تصدير أرقام غير مقيّدة*\n\n"
+                    "🔐 *تصدير الجلسات المشفّرة*\n\n"
                     f"🔍 تم فحص {_export_checked} من أصل "
                     f"{_export_total_candidates} حساباً عبر SpamBot.\n"
-                    "لا توجد أرقام غير مقيّدة حالياً حسب نتيجة الفحص.",
+                    "لا توجد جلسات لحسابات غير مقيّدة حالياً.",
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
@@ -309,45 +309,84 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                 )
                 return
 
-            import io as _export_io
-            from telegram import InputFile as _ExportInputFile
+            _export_secret = str(os.environ.get("SESSION_EXPORT_KEY") or "").strip()
+            if not _export_secret:
+                await q.edit_message_text(
+                    "⚠️ *لم يتم إعداد مفتاح التشفير.*\n\n"
+                    "أضف المتغير السري SESSION_EXPORT_KEY إلى بيئة التشغيل، "
+                    "ثم أعد المحاولة. لا ترسل المفتاح داخل تيليجرام.",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
+                    ]),
+                )
+                return
+
+            try:
+                import base64 as _export_base64
+                import hashlib as _export_hashlib
+                import io as _export_io
+                from cryptography.fernet import Fernet as _ExportFernet
+                _export_key = _export_base64.urlsafe_b64encode(
+                    _export_hashlib.sha256(_export_secret.encode("utf-8")).digest()
+                )
+                _export_fernet = _ExportFernet(_export_key)
+            except ImportError:
+                await q.edit_message_text(
+                    "⚠️ مكتبة التشفير غير مثبتة. أعد نشر البوت بعد تحديث المتطلبات.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
+                    ]),
+                )
+                return
 
             _exported = 0
             _failed = 0
             for _export_row in _export_rows:
                 _export_phone = str(_export_row.get("phone_number") or "").strip()
-                if not _export_phone:
+                _export_session = str(_export_row.get("session_string") or "").strip()
+                if not _export_phone or not _export_session:
                     _failed += 1
                     continue
                 _export_digits = re.sub(r"[^0-9]", "", _export_phone)
                 if not _export_digits:
                     _failed += 1
                     continue
-                _export_name = f"number_{_export_digits}.txt"
-                _export_buffer = _export_io.BytesIO((_export_phone + "\n").encode("utf-8"))
+                _export_payload = json.dumps(
+                    {
+                        "phone_number": _export_phone,
+                        "session_string": _export_session,
+                    },
+                    ensure_ascii=False,
+                ).encode("utf-8")
+                _export_token = _export_fernet.encrypt(_export_payload)
+                _export_name = f"session_{_export_digits}.session.enc"
+                _export_buffer = _export_io.BytesIO(_export_token)
                 _export_buffer.name = _export_name
                 try:
                     await context.bot.send_document(
                         chat_id=user.id,
                         document=_ExportInputFile(_export_buffer, filename=_export_name),
-                        caption=f"📱 رقم {_exported + 1} من {len(_export_rows)}",
+                        caption=(
+                            f"🔐 جلسة مشفّرة {_exported + 1} من {len(_export_rows)}\n"
+                            "لا يمكن فتحها دون SESSION_EXPORT_KEY."
+                        ),
                     )
                     _exported += 1
                     await asyncio.sleep(0.15)
                 except Exception as _export_error:
                     _failed += 1
-                    logger.warning(f"⚠️ تعذر إرسال ملف الرقم {_export_phone}: {_export_error}")
+                    logger.warning(f"⚠️ تعذر إرسال جلسة مشفّرة للرقم {_export_phone}: {_export_error}")
                 finally:
                     _export_buffer.close()
 
             await context.bot.send_message(
                 chat_id=user.id,
                 text=(
-                    "✅ *اكتمل تصدير الأرقام*\n\n"
-                    f"📄 تم إرسال {_exported} ملفاً، ملف مستقل لكل رقم.\n"
-                    f"⚠️ تعذر إرسال {_failed} ملفاً." if _failed else
-                    "✅ *اكتمل تصدير الأرقام*\n\n"
-                    f"📄 تم إرسال {_exported} ملفاً، ملف مستقل لكل رقم."
+                    "✅ *اكتمل تصدير الجلسات المشفّرة*\n\n"
+                    f"📄 تم إرسال {_exported} ملفاً مشفّراً."
+                    + (f"\n⚠️ تعذر إرسال {_failed} ملفاً." if _failed else "")
+                    + "\n🔑 استخدم نفس SESSION_EXPORT_KEY في أداة الاستيراد."
                 ),
                 parse_mode=ParseMode.MARKDOWN,
             )
