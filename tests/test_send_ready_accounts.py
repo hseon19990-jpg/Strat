@@ -29,6 +29,21 @@ class SendReadyAccountsTests(unittest.TestCase):
         self.assertIn("os:number_info:", block)
         self.assertIn("لن يتم تغيير حالة البيع أو الرشق", block)
 
+    def test_export_sends_only_authorized_phone_numbers_as_documents(self):
+        ui_source = UI.read_text(encoding="utf-8")
+        callback_source = CALLBACKS.read_text(encoding="utf-8")
+
+        self.assertIn('callback_data="os:export_ready_numbers"', ui_source)
+        start = callback_source.index('if data == "os:export_ready_numbers" and is_own:')
+        end = callback_source.index('if data == "os:account_names" and is_own:', start)
+        block = callback_source[start:end]
+
+        self.assertIn("find_unrestricted_message_accounts()", block)
+        self.assertIn("send_document", block)
+        self.assertIn("InputFile", block)
+        self.assertIn("phone_number", block)
+        self.assertNotIn("session_string", block)
+
 
 if __name__ == "__main__":
     unittest.main()
