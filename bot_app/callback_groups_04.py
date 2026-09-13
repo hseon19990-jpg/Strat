@@ -394,6 +394,18 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             )
             return
 
+        if data == "os:edit_buyback_restricted_price" and is_own:
+            context.user_data["state"] = "os_await_buyback_restricted_price"
+            await q.edit_message_text(
+                "💵 *تغيير سعر الحساب المقيّد بالإرسال*\n\n"
+                f"السعر الحالي: *{format_buyback_price(_buyback_price(restricted=True))}*\n\n"
+                "أرسل السعر الجديد بالنقاط، مثال: `4000`",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 إلغاء", callback_data="owner_settings"),
+                ]]),
+            )
+            return
         if data == "os:toggle_captcha" and is_own:
             current = int(get_setting("captcha_enabled") or "0")
             new_val = "0" if current else "1"
