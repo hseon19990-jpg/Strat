@@ -10,7 +10,9 @@ from .accounts import check_spam_status_detailed
 
 BUYBACK_VISIBLE_KEY = "buyback_visible"
 BUYBACK_PRICE_KEY = "buyback_price"
+BUYBACK_RESTRICTED_PRICE_KEY = "buyback_restricted_price"
 DEFAULT_BUYBACK_PRICE = 7000
+DEFAULT_BUYBACK_RESTRICTED_PRICE = 4000
 BUYBACK_ACTIVE_STATUSES = (
     "awaiting_seller_confirm",
     "quarantine_24h",
@@ -32,12 +34,14 @@ def set_buyback_visible(enabled: bool) -> bool:
     return bool(enabled)
 
 
-def _buyback_price() -> int:
+def _buyback_price(restricted: bool = False) -> int:
+    key = BUYBACK_RESTRICTED_PRICE_KEY if restricted else BUYBACK_PRICE_KEY
+    default = DEFAULT_BUYBACK_RESTRICTED_PRICE if restricted else DEFAULT_BUYBACK_PRICE
     try:
-        amount = int(get_setting(BUYBACK_PRICE_KEY) or DEFAULT_BUYBACK_PRICE)
-        return amount if amount > 0 else DEFAULT_BUYBACK_PRICE
+        amount = int(get_setting(key) or default)
+        return amount if amount > 0 else default
     except (TypeError, ValueError):
-        return DEFAULT_BUYBACK_PRICE
+        return default
 
 
 def set_buyback_price(points: int) -> int:
@@ -153,25 +157,25 @@ async def _finish_buyback_login(update, context, user_id: int) -> bool:
 
         session_string = client.session.save()
         username = getattr(me, "username", "") or ""
-        price = _buyback_price()
         with db_conn() as c:
             row = c.execute(
                 "INSERT INTO account_buyback_offers "
                 "(seller_user_id,phone_number,account_username,session_string,quoted_price,status) "
-                "VALUES (%s,%s,%s,%s,%s,'awaiting_seller_confirm') RETURNING id",
-                (user_id, phone, username, session_string, price),
+                "VALUES (%s,%s,%s,%s,0,'awaiting_seller_confirm') RETURNING id",
+                (user_id, phone, username, session_string),
             ).fetchone()
         offer_id = int(row["id"])
         context.user_data["buyback_offer_id"] = offer_id
         context.user_data["state"] = "buyback_await_confirm"
-        price_text = format_buyback_price(price)
         await update.message.reply_text(
             "🔎 تم الدخول إلى الحساب بنجاح.\n\n"
             f"📱 الرقم: {_mask_buyback_phone(phone)}\n"
             f"👤 المعرف: @{username if username else 'بدون معرف'}\n"
-            f"💵 السعر المبدئي: {price_text}\n\n"
+            f"💵 السعر النهائي يُحدد بعد فحص 48 ساعة: "
+            f"{format_buyback_price(_buyback_price(restricted=True))} إذا كان مقيّداً، "
+            f"أو {format_buyback_price(_buyback_price())} إذا كان سليماً.\n\n"
             "عند التأكيد سيتم تسجيل الحساب باسم البوت، وإلغاء الجلسات الأخرى، "
-        "ثم يبقى تحت الفحص 48 ساعة قبل تحويل النقاط. إذا كنت موافقاً اضغط تأكيد البيع.",
+            "ثم يبقى تحت الفحص 48 ساعة قبل تحديد المبلغ النهائي. إذا كنت موافقاً اضغط تأكيد البيع.",
             reply_markup=_buyback_confirm_markup(offer_id),
         )
         return True
@@ -352,13 +356,7 @@ async def _inspect_buyback_session(session_string: str) -> dict:
             check_spam_status_detailed(client), timeout=40
         )
         restricted = spam_detail.get("restricted")
-        if restricted is True:
-            return {
-                "state": "reject",
-                "reason": spam_detail.get("display") or "الحساب مقيّد في SpamBot",
-                "extra_session_removed": extra_session_removed,
-            }
-        if restricted is not False:
+        if restricted not in (True, False):
             return {
                 "state": "retry",
                 "reason": "تعذر التأكد من حالة الحساب عبر SpamBot مؤقتاً",
@@ -367,6 +365,7 @@ async def _inspect_buyback_session(session_string: str) -> dict:
         return {
             "state": "ok",
             "reason": "",
+            "restricted": bool(restricted),
             "extra_session_removed": extra_session_removed,
         }
     except Exception as exc:
@@ -402,7 +401,11 @@ async def _notify_buyback_owner(context, offer_id: int, ready: bool = False) -> 
         ).fetchone()
     if not row:
         return
-    price = format_buyback_price(row["quoted_price"])
+    price = (
+        format_buyback_price(row["quoted_price"])
+        if row["quoted_price"]
+        else "يُحدد بعد فحص 48 ساعة"
+    )
     text = (
         "💰 <b>طلب بيع حساب تيليجرام</b>\n\n"
         f"📌 الطلب: <code>#{offer_id}</code>\n"
@@ -544,7 +547,9 @@ def render_buyback_owner_list():
     lines = ["💰 <b>طلبات بيع الحسابات</b>", ""]
     rows_kb = []
     for row in rows:
-        price = f"{int(row['quoted_price'] or 0):,}" if int(row["quoted_price"] or 0) else "غير محدد"
+        price = (
+            f"{int(row['quoted_price']):,}" if row["quoted_price"] else "بعد فحص 48 ساعة"
+        )
         lines.append(f"#{row['id']} — {_mask_buyback_phone(row['phone_number'])} — {row['status']} — {price}")
         if row["status"] == "ready_for_payment":
             rows_kb.append([InlineKeyboardButton(f"💵 دفع #{row['id']}", callback_data=f"buyback:owner:paid:{row['id']}"), InlineKeyboardButton(f"🚫 رفض #{row['id']}", callback_data=f"buyback:owner:reject:{row['id']}")])
@@ -657,7 +662,19 @@ async def process_buyback_quarantine_job(context) -> None:
                 c.execute("UPDATE account_buyback_offers SET status='quarantine_48h', next_check_at=NOW()+INTERVAL '24 hours', last_checked_at=NOW(), updated_at=NOW() WHERE id=%s", (row["id"],))
             await _notify_buyback_user(context, row["seller_user_id"], f"✅ نجح فحص 24 ساعة لطلب البيع #{row['id']}. سيستمر الحجز حتى الفحص النهائي.")
         else:
+            final_price = _buyback_price(restricted=bool(result.get("restricted")))
             with db_conn() as c:
-                c.execute("UPDATE account_buyback_offers SET status='ready_for_payment', next_check_at=NULL, last_checked_at=NOW(), updated_at=NOW() WHERE id=%s", (row["id"],))
-            await _notify_buyback_user(context, row["seller_user_id"], f"✅ نجح الفحص النهائي لطلب البيع #{row['id']}. سيؤكد المالك دفع المبلغ الآن.")
+                c.execute(
+                    "UPDATE account_buyback_offers "
+                    "SET status='ready_for_payment', quoted_price=%s, next_check_at=NULL, "
+                    "last_checked_at=NOW(), updated_at=NOW() WHERE id=%s",
+                    (final_price, row["id"]),
+                )
+            await _notify_buyback_user(
+                context,
+                row["seller_user_id"],
+                f"✅ نجح الفحص النهائي لطلب البيع #{row['id']}. "
+                f"السعر النهائي: {format_buyback_price(final_price)}. "
+                "سيؤكد المالك دفع المبلغ الآن.",
+            )
             await _notify_buyback_owner(context, row["id"], ready=True)
