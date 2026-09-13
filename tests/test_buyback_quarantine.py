@@ -16,7 +16,7 @@ def _load_price_formatter():
         if isinstance(item, ast.FunctionDef)
         and item.name == "format_buyback_price"
     )
-    namespace = {}
+    namespace = {"DEFAULT_BUYBACK_PRICE": 7000}
     exec(
         compile(ast.Module(body=[node], type_ignores=[]), str(BUYBACK), "exec"),
         namespace,
@@ -27,10 +27,10 @@ def _load_price_formatter():
 class BuybackQuarantineTests(unittest.TestCase):
     def test_price_formatting_is_stable_for_valid_and_missing_values(self):
         format_price = _load_price_formatter()
-        self.assertEqual(format_price(7000), "7,000 دينار")
-        self.assertEqual(format_price("4000"), "4,000 دينار")
-        self.assertEqual(format_price(0), "يحدده المالك بعد الفحص")
-        self.assertEqual(format_price("not-a-price"), "يحدده المالك بعد الفحص")
+        self.assertEqual(format_price(7000), "7,000 نقطة")
+        self.assertEqual(format_price("4000"), "4,000 نقطة")
+        self.assertEqual(format_price(0), "7,000 نقطة")
+        self.assertEqual(format_price("not-a-price"), "7,000 نقطة")
 
     def test_security_loop_checks_sessions_and_spambot_every_cycle(self):
         source = BUYBACK.read_text(encoding="utf-8")
@@ -39,6 +39,7 @@ class BuybackQuarantineTests(unittest.TestCase):
         self.assertIn("ORDER BY COALESCE(last_checked_at,created_at), id LIMIT 50", source)
         self.assertIn("state == \"retry\"", source)
         self.assertIn("state == \"reject\"", source)
+        self.assertIn("set_buyback_price", source)
 
         app_source = APPLICATION.read_text(encoding="utf-8")
         self.assertIn(
@@ -60,6 +61,20 @@ class BuybackQuarantineTests(unittest.TestCase):
         confirm_block = source[confirm_start:confirm_end]
         self.assertNotIn("INSERT INTO number_stock", confirm_block)
         self.assertIn("status='quarantine_24h'", confirm_block)
+
+    def test_owner_can_change_the_point_price_for_new_offers(self):
+        ui_source = (ROOT / "bot_app" / "ui.py").read_text(encoding="utf-8")
+        callback_source = (
+            ROOT / "bot_app" / "callback_groups_04.py"
+        ).read_text(encoding="utf-8")
+        message_source = (ROOT / "bot_app" / "messages.py").read_text(encoding="utf-8")
+        database_source = (ROOT / "bot_app" / "database.py").read_text(encoding="utf-8")
+
+        self.assertIn('callback_data="os:edit_buyback_price"', ui_source)
+        self.assertIn('data == "os:edit_buyback_price" and is_own', callback_source)
+        self.assertIn('state == "os_await_buyback_price" and is_own', message_source)
+        self.assertIn('set_buyback_price(new_price)', message_source)
+        self.assertIn("('buyback_price', '7000')", database_source)
 
 
 if __name__ == "__main__":
