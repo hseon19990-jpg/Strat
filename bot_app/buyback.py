@@ -6,6 +6,7 @@ It deliberately requires the owner to confirm the final payout manually.
 
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
+from .accounts import check_spam_status_detailed
 
 BUYBACK_VISIBLE_KEY = "buyback_visible"
 BUYBACK_PRICE_KEY = "buyback_price"
@@ -35,6 +36,15 @@ def _buyback_price() -> int:
         return max(0, int(get_setting(BUYBACK_PRICE_KEY) or "0"))
     except (TypeError, ValueError):
         return 0
+
+
+def format_buyback_price(price: int | str | None) -> str:
+    """يعرض السعر الموحد في رسائل البائع والمالك."""
+    try:
+        amount = max(0, int(price or 0))
+    except (TypeError, ValueError):
+        amount = 0
+    return f"{amount:,} دينار" if amount else "يحدده المالك بعد الفحص"
 
 
 def _mask_buyback_phone(phone: str) -> str:
@@ -141,7 +151,7 @@ async def _finish_buyback_login(update, context, user_id: int) -> bool:
         offer_id = int(row["id"])
         context.user_data["buyback_offer_id"] = offer_id
         context.user_data["state"] = "buyback_await_confirm"
-        price_text = f"{price:,} دينار" if price > 0 else "يحدده المالك بعد الفحص"
+        price_text = format_buyback_price(price)
         await update.message.reply_text(
             "🔎 تم الدخول إلى الحساب بنجاح.\n\n"
             f"📱 الرقم: {_mask_buyback_phone(phone)}\n"
@@ -278,24 +288,88 @@ async def _revoke_buyback_sessions(session_string: str) -> tuple[bool, str]:
         await _disconnect_buyback_client(client)
 
 
-async def _verify_buyback_session(session_string: str) -> tuple[bool, str]:
+async def _inspect_buyback_session(session_string: str) -> dict:
+    """يفحص جلسة طلب البيع ويؤمّنها أثناء فترة الحجز.
+
+    فشل الشبكة لا يلغي الطلب، بل يعيد الفحص في الدورة التالية. أما فقدان
+    الجلسة أو ثبوت تقييد SpamBot فيُعامل كفشل نهائي. عند ظهور جلسة إضافية
+    يحاول البوت طردها فوراً ثم يعيد قراءة التفويضات قبل اعتماد الفحص.
+    """
     client = TelegramClient(StringSession(session_string), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+    extra_session_removed = False
     try:
         await asyncio.wait_for(client.connect(), timeout=20)
         if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
-            return False, "الجلسة لم تعد مصرحاً بها"
+            return {
+                "state": "reject",
+                "reason": "الجلسة لم تعد مصرحاً بها",
+                "extra_session_removed": False,
+            }
         me = await asyncio.wait_for(client.get_me(), timeout=15)
         if not me:
-            return False, "تعذر قراءة الحساب"
+            return {
+                "state": "reject",
+                "reason": "تعذر قراءة الحساب",
+                "extra_session_removed": False,
+            }
         auths = await asyncio.wait_for(client(GetAuthorizationsRequest()), timeout=20)
         sessions = getattr(auths, "authorizations", []) or []
         if len(sessions) > 1:
-            return False, "ظهر دخول آخر إلى الحساب خلال فترة الحجز"
-        return True, ""
+            try:
+                await asyncio.wait_for(client(ResetAuthorizationsRequest()), timeout=30)
+                extra_session_removed = True
+                auths = await asyncio.wait_for(
+                    client(GetAuthorizationsRequest()), timeout=20
+                )
+                sessions = getattr(auths, "authorizations", []) or []
+            except Exception as exc:
+                return {
+                    "state": "retry",
+                    "reason": f"ظهر دخول آخر وتعذر طرده مؤقتاً: {str(exc)[:140]}",
+                    "extra_session_removed": False,
+                }
+            if len(sessions) > 1:
+                return {
+                    "state": "retry",
+                    "reason": "ظهر دخول آخر وما زالت الجلسة الإضافية موجودة",
+                    "extra_session_removed": extra_session_removed,
+                }
+
+        spam_detail = await asyncio.wait_for(
+            check_spam_status_detailed(client), timeout=40
+        )
+        restricted = spam_detail.get("restricted")
+        if restricted is True:
+            return {
+                "state": "reject",
+                "reason": spam_detail.get("display") or "الحساب مقيّد في SpamBot",
+                "extra_session_removed": extra_session_removed,
+            }
+        if restricted is not False:
+            return {
+                "state": "retry",
+                "reason": "تعذر التأكد من حالة الحساب عبر SpamBot مؤقتاً",
+                "extra_session_removed": extra_session_removed,
+            }
+        return {
+            "state": "ok",
+            "reason": "",
+            "extra_session_removed": extra_session_removed,
+        }
     except Exception as exc:
-        return False, str(exc)[:180]
+        return {
+            "state": "retry",
+            "reason": str(exc)[:180],
+            "extra_session_removed": extra_session_removed,
+        }
     finally:
         await _disconnect_buyback_client(client)
+
+
+async def _verify_buyback_session(session_string: str) -> tuple[bool, str]:
+    """واجهة توافقية للفحص النهائي القديم."""
+    result = await _inspect_buyback_session(session_string)
+    return result["state"] == "ok", result["reason"]
 
 
 async def _notify_buyback_user(context, user_id: int, text: str) -> None:
@@ -315,7 +389,7 @@ async def _notify_buyback_owner(context, offer_id: int, ready: bool = False) -> 
         ).fetchone()
     if not row:
         return
-    price = f"{int(row['quoted_price'] or 0):,} دينار" if int(row["quoted_price"] or 0) else "غير محدد"
+    price = format_buyback_price(row["quoted_price"])
     text = (
         "💰 <b>طلب بيع حساب تيليجرام</b>\n\n"
         f"📌 الطلب: <code>#{offer_id}</code>\n"
@@ -504,20 +578,67 @@ def reject_buyback_offer(offer_id: int, reason: str = "") -> int | None:
 
 
 async def process_buyback_quarantine_job(context) -> None:
+    """حلقة الحماية والفحص الدوري لطلبات بيع الحسابات.
+
+    تُستدعى كل خمس دقائق. لذلك لا ننتظر موعد فحص 24/48 ساعة كي نكتشف
+    دخولاً جديداً أو قيداً مستجداً في SpamBot.
+    """
     with db_conn() as c:
         rows = c.execute(
-            "SELECT id,seller_user_id,session_string,status FROM account_buyback_offers "
-            "WHERE status IN ('quarantine_24h','quarantine_48h') AND next_check_at IS NOT NULL AND next_check_at<=NOW() "
-            "ORDER BY id LIMIT 20"
+            "SELECT id,seller_user_id,session_string,status,next_check_at "
+            "FROM account_buyback_offers "
+            "WHERE status IN ('quarantine_24h','quarantine_48h') "
+            "ORDER BY COALESCE(last_checked_at,created_at), id LIMIT 50"
         ).fetchall()
     for row in rows:
-        ok, reason = await _verify_buyback_session(row["session_string"])
-        if not ok:
-            reject_buyback_offer(row["id"], reason)
-            await _notify_buyback_user(context, row["seller_user_id"], f"🚫 لم ينجح فحص طلب بيع الحساب #{row['id']}، وتم إلغاء الطلب.")
+        result = await _inspect_buyback_session(row["session_string"])
+        state = result["state"]
+        reason = result["reason"]
+        now_due = row["next_check_at"] is not None and row["next_check_at"] <= datetime.now(timezone.utc)
+
+        if state == "reject":
+            seller_id = reject_buyback_offer(row["id"], reason)
+            if seller_id:
+                await _notify_buyback_user(
+                    context,
+                    seller_id,
+                    f"🚫 لم ينجح فحص طلب بيع الحساب #{row['id']}، وتم إلغاء الطلب.",
+                )
             if OWNER_ID:
-                await context.bot.send_message(OWNER_ID, f"🚫 فشل فحص طلب بيع الحساب #{row['id']}: {html.escape(reason)}", parse_mode=ParseMode.HTML)
+                await context.bot.send_message(
+                    OWNER_ID,
+                    f"🚫 فشل فحص طلب بيع الحساب #{row['id']}: {html.escape(reason)}",
+                    parse_mode=ParseMode.HTML,
+                )
             continue
+
+        if state == "retry":
+            logger.info(
+                "⏳ فحص طلب بيع الحساب #%s مؤجل: %s",
+                row["id"],
+                reason,
+            )
+            continue
+
+        if result["extra_session_removed"]:
+            security_note = (
+                f"🔒 رصدت حلقة الحماية دخولاً إضافياً أثناء حجز الطلب #{row['id']} "
+                "وطردته تلقائياً."
+            )
+            await _notify_buyback_user(context, row["seller_user_id"], security_note)
+            if OWNER_ID:
+                await context.bot.send_message(OWNER_ID, security_note)
+
+        with db_conn() as c:
+            c.execute(
+                "UPDATE account_buyback_offers SET last_checked_at=NOW(), updated_at=NOW() "
+                "WHERE id=%s AND status IN ('quarantine_24h','quarantine_48h')",
+                (row["id"],),
+            )
+
+        if not now_due:
+            continue
+
         if row["status"] == "quarantine_24h":
             with db_conn() as c:
                 c.execute("UPDATE account_buyback_offers SET status='quarantine_48h', next_check_at=NOW()+INTERVAL '24 hours', last_checked_at=NOW(), updated_at=NOW() WHERE id=%s", (row["id"],))
