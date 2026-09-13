@@ -384,7 +384,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
         if data == "os:edit_buyback_price" and is_own:
             context.user_data["state"] = "os_await_buyback_price"
             await q.edit_message_text(
-                "💵 *تغيير سعر شراء حساب تيليجرام*\n\n"
+                "💵 *تغيير سعر الحساب السليم*\n\n"
                 f"السعر الحالي: *{format_buyback_price(_buyback_price())}*\n\n"
                 "أرسل السعر الجديد بالنقاط، مثال: `7000`",
                 parse_mode=ParseMode.MARKDOWN,
