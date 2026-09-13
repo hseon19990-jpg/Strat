@@ -616,6 +616,12 @@ def owner_settings_kb():
             callback_data="os:edit_buyback_price",
         ),
     ])
+    rows.append([
+        InlineKeyboardButton(
+            f"💵 سعر الحساب المقيّد: {format_buyback_price(_buyback_price(restricted=True))}",
+            callback_data="os:edit_buyback_restricted_price",
+        ),
+    ])
     rows.append([InlineKeyboardButton("🛡 إضافة مشرف", callback_data="os:add_supervisor"),
                   InlineKeyboardButton("📋 إدارة المشرفين", callback_data="os:list_supervisors")])
     rows.append([InlineKeyboardButton("👁 حسابات المشرفين", callback_data="os:sv_accounts")])
