@@ -38,7 +38,10 @@ class SendReadyAccountsTests(unittest.TestCase):
         end = callback_source.index('if data == "os:account_names" and is_own:', start)
         block = callback_source[start:end]
 
-        self.assertIn("SESSION_EXPORT_KEY", block)
+        self.assertIn("session_export_key", block)
+        self.assertIn("get_setting", block)
+        self.assertIn("set_setting", block)
+        self.assertIn("token_urlsafe", block)
         self.assertIn("Fernet", block)
         self.assertIn("session_string", block)
         self.assertIn("send_document", block)
