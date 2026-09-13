@@ -46,6 +46,9 @@ class SendReadyAccountsTests(unittest.TestCase):
         self.assertIn("session_string", block)
         self.assertIn("send_document", block)
         self.assertIn(".session.enc", block)
+        self.assertIn("ZipFile", block)
+        self.assertIn("writestr", block)
+        self.assertIn(".zip", block)
         self.assertNotIn("document=_export_session", block)
 
 
