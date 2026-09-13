@@ -326,6 +326,7 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                 import base64 as _export_base64
                 import hashlib as _export_hashlib
                 import io as _export_io
+                from telegram import InputFile as _ExportInputFile
                 from cryptography.fernet import Fernet as _ExportFernet
                 _export_key = _export_base64.urlsafe_b64encode(
                     _export_hashlib.sha256(_export_secret.encode("utf-8")).digest()
