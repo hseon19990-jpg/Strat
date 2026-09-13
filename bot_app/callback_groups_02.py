@@ -287,7 +287,7 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
 
         if data == "os:export_ready_sessions" and is_own:
             await q.edit_message_text(
-                "⏳ *جاري فحص الحسابات وتجهيز ملف ZIP مشفّر...*\n"
+                "⏳ *جاري فحص الحسابات وتجهيز ملف ZIP...*\n"
                 "لن يتم تغيير حالة البيع أو الرشق لأي حساب.",
                 parse_mode=ParseMode.MARKDOWN,
             )
@@ -298,7 +298,7 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             ) = await find_unrestricted_message_accounts()
             if not _export_rows:
                 await q.edit_message_text(
-                    "🔐 *تصدير الجلسات المشفّرة*\n\n"
+                    "📦 *تصدير جلسات الحسابات*\n\n"
                     f"🔍 تم فحص {_export_checked} من أصل "
                     f"{_export_total_candidates} حساباً عبر SpamBot.\n"
                     "لا توجد جلسات لحسابات غير مقيّدة حالياً.",
@@ -310,37 +310,12 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                 return
 
             try:
-                _export_secret = str(get_setting("session_export_key") or "").strip()
-                if not _export_secret:
-                    _export_secret = str(os.environ.get("SESSION_EXPORT_KEY") or "").strip()
-                    if not _export_secret:
-                        import secrets as _export_secrets
-                        _export_secret = _export_secrets.token_urlsafe(48)
-                    set_setting("session_export_key", _export_secret)
-            except Exception as _key_error:
-                logger.warning(f"⚠️ تعذر تجهيز مفتاح تصدير الجلسات: {_key_error}")
-                await q.edit_message_text(
-                    "⚠️ تعذر تجهيز مفتاح التشفير من قاعدة البيانات. حاول لاحقاً.",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
-                    ]),
-                )
-                return
-
-            try:
-                import base64 as _export_base64
-                import hashlib as _export_hashlib
                 import io as _export_io
                 import zipfile as _export_zipfile
                 from telegram import InputFile as _ExportInputFile
-                from cryptography.fernet import Fernet as _ExportFernet
-                _export_key = _export_base64.urlsafe_b64encode(
-                    _export_hashlib.sha256(_export_secret.encode("utf-8")).digest()
-                )
-                _export_fernet = _ExportFernet(_export_key)
             except ImportError:
                 await q.edit_message_text(
-                    "⚠️ مكتبة التشفير غير مثبتة. أعد نشر البوت بعد تحديث المتطلبات.",
+                    "⚠️ تعذر تجهيز ملف الجلسات. أعد نشر البوت بعد تحديث المتطلبات.",
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
                     ]),
@@ -370,12 +345,11 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                         },
                         ensure_ascii=False,
                     ).encode("utf-8")
-                    _export_token = _export_fernet.encrypt(_export_payload)
-                    _export_name = f"session_{_export_digits}.session.enc"
+                    _export_name = f"session_{_export_digits}.json"
                     try:
-                        _export_archive.writestr(_export_name, _export_token)
+                        _export_archive.writestr(_export_name, _export_payload)
                         _export_manifest.append(
-                            {"phone_number": _export_phone, "file": _export_name, "encrypted": True}
+                            {"phone_number": _export_phone, "file": _export_name, "encrypted": False}
                         )
                     except Exception as _zip_error:
                         _export_failed += 1
@@ -384,9 +358,9 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                 _export_archive.writestr(
                     "README.txt",
                     (
-                        "هذا الأرشيف يحتوي جلسات مشفّرة فقط.\n"
-                        "لا تحذف ملفات session_*.session.enc.\n"
-                        "يجب أن يستخدم برنامج الاستيراد نفس مفتاح التشفير المخزن في قاعدة البيانات.\n"
+                        "هذا الأرشيف يحتوي ملفات JSON للجلسات بدون تشفير.\n"
+                        "كل ملف يحتوي phone_number و session_string.\n"
+                        "احفظ الأرشيف في مكان آمن ولا تشاركه مع أي شخص.\n"
                     ).encode("utf-8"),
                 )
                 _export_archive.writestr(
@@ -405,14 +379,14 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                 return
 
             _export_zip_buffer.seek(0)
-            _export_name = f"encrypted_sessions_{int(time.time())}.zip"
+            _export_name = f"sessions_{int(time.time())}.zip"
             try:
                 await context.bot.send_document(
                     chat_id=user.id,
                     document=_ExportInputFile(_export_zip_buffer, filename=_export_name),
                     caption=(
-                        f"🔐 ملف واحد يحتوي {len(_export_manifest)} جلسة مشفّرة.\n"
-                        "فك الضغط، ثم استخدم نفس مفتاح التشفير في برنامج الاستيراد."
+                        f"📦 ملف واحد يحتوي {len(_export_manifest)} جلسة بصيغة JSON.\n"
+                        "يمكن استيراده مباشرةً عبر معالج ZIP."
                     ),
                 )
                 await context.bot.send_message(
