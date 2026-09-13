@@ -3,10 +3,12 @@ import datetime
 import html
 import unittest
 from pathlib import Path
+from typing import Dict, Optional
 
 
 ROOT = Path(__file__).parents[1]
 UI = ROOT / "bot_app" / "ui.py"
+RAKSH = ROOT / "bot_app" / "raksh_system" / "raksh_system.py"
 
 
 def _load_formatter():
@@ -58,9 +60,7 @@ class ServiceOrderNotificationTests(unittest.TestCase):
         self.assertNotIn("الرابط:", message)
 
     def test_message_service_group_notification_is_private(self):
-        source = (ROOT / "bot_app" / "raksh_system" / "raksh_system.py").read_text(
-            encoding="utf-8"
-        )
+        source = RAKSH.read_text(encoding="utf-8")
 
         self.assertIn(
             'if service_type == "send_message":',
@@ -82,6 +82,38 @@ class ServiceOrderNotificationTests(unittest.TestCase):
         self.assertNotIn("message_recipient", private_branch)
         self.assertNotIn("identity_name", private_branch)
         self.assertNotIn("user_id", private_branch)
+
+    def test_owner_notification_contains_message_details(self):
+        tree = ast.parse(RAKSH.read_text(encoding="utf-8"))
+        node = next(
+            item
+            for item in tree.body
+            if isinstance(item, ast.FunctionDef)
+            and item.name == "format_message_order_owner_notification"
+        )
+        namespace = {"Dict": Dict, "Optional": Optional}
+        exec(
+            compile(ast.Module(body=[node], type_ignores=[]), str(RAKSH), "exec"),
+            namespace,
+        )
+
+        message = namespace["format_message_order_owner_notification"](
+            42,
+            "points",
+            100,
+            {
+                "message_recipient": "@target",
+                "message_text": "النص السري",
+                "message_identity_type": "fake",
+                "message_identity_name": "صديق مجهول",
+            },
+        )
+
+        self.assertIn("المرسل: صديق مجهول", message)
+        self.assertIn("المستلم: @target", message)
+        self.assertIn("صاحب الطلب: 42", message)
+        self.assertIn("النص السري", message)
+        self.assertIn("100 نقطة", message)
 
 
 if __name__ == "__main__":
