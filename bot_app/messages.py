@@ -296,6 +296,30 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if state == "os_await_buyback_price" and is_own:
+        raw_price = (text or "").strip().replace(",", "").replace(".", "")
+        try:
+            new_price = int(raw_price)
+            if new_price <= 0 or new_price > 2_000_000_000:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text(
+                "⚠️ أرسل رقماً صحيحاً أكبر من صفر، مثال: 7000",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 إلغاء", callback_data="owner_settings"),
+                ]]),
+            )
+            return
+        set_buyback_price(new_price)
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(
+            f"✅ تم تحديث سعر شراء الحساب إلى *{format_buyback_price(new_price)}*.\n"
+            "سيُطبّق السعر على طلبات البيع الجديدة فقط.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=owner_settings_kb(),
+        )
+        return
+
     # ─── معالجة البايو ──────────────────────────────────────────────
     if state == "os_await_account_bios" and is_own:
         context.user_data["state"] = "main_menu"
