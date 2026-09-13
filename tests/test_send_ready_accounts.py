@@ -29,7 +29,7 @@ class SendReadyAccountsTests(unittest.TestCase):
         self.assertIn("os:number_info:", block)
         self.assertIn("لن يتم تغيير حالة البيع أو الرشق", block)
 
-    def test_export_uses_encrypted_session_documents(self):
+    def test_export_uses_plain_json_session_documents(self):
         ui_source = UI.read_text(encoding="utf-8")
         callback_source = CALLBACKS.read_text(encoding="utf-8")
 
@@ -38,17 +38,16 @@ class SendReadyAccountsTests(unittest.TestCase):
         end = callback_source.index('if data == "os:account_names" and is_own:', start)
         block = callback_source[start:end]
 
-        self.assertIn("session_export_key", block)
-        self.assertIn("get_setting", block)
-        self.assertIn("set_setting", block)
-        self.assertIn("token_urlsafe", block)
-        self.assertIn("Fernet", block)
+        self.assertNotIn("session_export_key", block)
+        self.assertNotIn("Fernet", block)
         self.assertIn("session_string", block)
         self.assertIn("send_document", block)
-        self.assertIn(".session.enc", block)
+        self.assertIn(".json", block)
+        self.assertIn('"encrypted": False', block)
         self.assertIn("ZipFile", block)
         self.assertIn("writestr", block)
         self.assertIn(".zip", block)
+        self.assertNotIn(".session.enc", block)
         self.assertNotIn("document=_export_session", block)
 
 
