@@ -2135,6 +2135,80 @@ async def _send_raksh_order_to_group(
         logger.exception("فشل إرسال إشعار الطلب")
 
 
+def format_message_order_owner_notification(
+    user_id: int,
+    payment_method: str,
+    total_cost: int,
+    params: Optional[Dict] = None,
+) -> str:
+    """يبني تفاصيل طلب الرسالة التي تُرسل للمالك في الخاص فقط."""
+    message_params = params or {}
+    recipient = str(
+        message_params.get("message_recipient")
+        or message_params.get("recipient")
+        or "غير محدد"
+    ).strip()
+    message_text = str(
+        message_params.get("message_text")
+        or message_params.get("message")
+        or ""
+    ).strip()
+    identity_type = (
+        message_params.get("message_identity_type")
+        or message_params.get("identity_type")
+        or "anonymous"
+    )
+    identity_name = str(
+        message_params.get("message_identity_name")
+        or message_params.get("identity_name")
+        or ""
+    ).strip()
+    sender_label = {
+        "anonymous": "شخص مجهول",
+        "self": identity_name or "المستخدم",
+        "fake": identity_name or "هوية مزيفة",
+    }.get(identity_type, identity_name or "غير محدد")
+    payment_label = "نقطة" if payment_method == "points" else "نجمة"
+
+    return (
+        "📨 تفاصيل طلب إرسال رسالة\n\n"
+        f"📤 المرسل: {sender_label}\n"
+        f"🆔 صاحب الطلب: {user_id}\n"
+        f"📥 المستلم: {recipient}\n"
+        f"💰 السعر: {int(total_cost or 0):,} {payment_label}\n\n"
+        "📝 نص الرسالة:\n"
+        f"{message_text or '(فارغ)'}"
+    )
+
+
+async def _send_raksh_message_order_to_owner(
+    bot,
+    user_id: int,
+    payment_method: str,
+    total_cost: int,
+    service_type: str,
+    params: Optional[Dict] = None,
+):
+    """إرسال تفاصيل خدمة الرسائل للمالك فقط، وليس إلى كروب الطلبات."""
+    if not OWNER_ID or service_type != "send_message":
+        return
+    # عند طلب المالك بنفسه، تكون التفاصيل ظاهرة له مسبقاً في شاشة التأكيد.
+    if user_id == OWNER_ID:
+        return
+    try:
+        await bot.send_message(
+            OWNER_ID,
+            format_message_order_owner_notification(
+                user_id,
+                payment_method,
+                total_cost,
+                params,
+            ),
+        )
+    except Exception:
+        logger.exception("فشل إرسال تفاصيل طلب الرسالة للمالك")
+
+
 async def _load_raksh_account_identity(session: Dict) -> Optional[Dict]:
     """قراءة اسم ومعرف وإيدي حساب الرشق بدون حفظ بيانات حساسة."""
     session_string = session.get("session_string")
@@ -2532,6 +2606,14 @@ async def _start_raksh_execution(
         payment_method,
         service_type,
         total_cost,
+        params,
+    )
+    await _send_raksh_message_order_to_owner(
+        context.bot,
+        user.id,
+        payment_method,
+        total_cost,
+        service_type,
         params,
     )
 
