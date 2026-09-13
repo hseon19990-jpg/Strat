@@ -690,8 +690,8 @@ def account_info_kb() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(
-                "📁 تصدير أرقام غير مقيّدة",
-                callback_data="os:export_ready_numbers",
+                "🔐 تصدير جلسات مشفّرة",
+                callback_data="os:export_ready_sessions",
             ),
         ],
         [InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")],
