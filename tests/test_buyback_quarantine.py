@@ -75,6 +75,10 @@ class BuybackQuarantineTests(unittest.TestCase):
         self.assertIn('state == "os_await_buyback_price" and is_own', message_source)
         self.assertIn('set_buyback_price(new_price)', message_source)
         self.assertIn("('buyback_price', '7000')", database_source)
+        self.assertIn('callback_data="os:edit_buyback_restricted_price"', ui_source)
+        self.assertIn('data == "os:edit_buyback_restricted_price" and is_own', callback_source)
+        self.assertIn('set_buyback_restricted_price(new_price)', message_source)
+        self.assertIn("('buyback_restricted_price', '4000')", database_source)
 
 
     def test_price_is_selected_after_final_spambot_check(self):
