@@ -690,7 +690,7 @@ def account_info_kb() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(
-                "🔐 تصدير جلسات مشفّرة",
+                "📦 تصدير جلسات الحسابات",
                 callback_data="os:export_ready_sessions",
             ),
         ],
