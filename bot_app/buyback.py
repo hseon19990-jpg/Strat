@@ -10,6 +10,7 @@ from .accounts import check_spam_status_detailed
 
 BUYBACK_VISIBLE_KEY = "buyback_visible"
 BUYBACK_PRICE_KEY = "buyback_price"
+DEFAULT_BUYBACK_PRICE = 7000
 BUYBACK_ACTIVE_STATUSES = (
     "awaiting_seller_confirm",
     "quarantine_24h",
@@ -33,18 +34,30 @@ def set_buyback_visible(enabled: bool) -> bool:
 
 def _buyback_price() -> int:
     try:
-        return max(0, int(get_setting(BUYBACK_PRICE_KEY) or "0"))
+        amount = int(get_setting(BUYBACK_PRICE_KEY) or DEFAULT_BUYBACK_PRICE)
+        return amount if amount > 0 else DEFAULT_BUYBACK_PRICE
     except (TypeError, ValueError):
-        return 0
+        return DEFAULT_BUYBACK_PRICE
+
+
+def set_buyback_price(points: int) -> int:
+    """يحفظ سعر شراء الحساب بالنقاط ويعيد القيمة التي تم اعتمادها."""
+    amount = int(points)
+    if amount <= 0:
+        raise ValueError("يجب أن يكون السعر أكبر من صفر")
+    set_setting(BUYBACK_PRICE_KEY, str(amount))
+    return amount
 
 
 def format_buyback_price(price: int | str | None) -> str:
     """يعرض السعر الموحد في رسائل البائع والمالك."""
     try:
-        amount = max(0, int(price or 0))
+        amount = int(price or DEFAULT_BUYBACK_PRICE)
     except (TypeError, ValueError):
-        amount = 0
-    return f"{amount:,} دينار" if amount else "يحدده المالك بعد الفحص"
+        amount = DEFAULT_BUYBACK_PRICE
+    if amount <= 0:
+        amount = DEFAULT_BUYBACK_PRICE
+    return f"{amount:,} نقطة"
 
 
 def _mask_buyback_phone(phone: str) -> str:
@@ -158,7 +171,7 @@ async def _finish_buyback_login(update, context, user_id: int) -> bool:
             f"👤 المعرف: @{username if username else 'بدون معرف'}\n"
             f"💵 السعر المبدئي: {price_text}\n\n"
             "عند التأكيد سيتم تسجيل الحساب باسم البوت، وإلغاء الجلسات الأخرى، "
-            "ثم يبقى تحت الفحص 48 ساعة قبل الدفع. إذا كنت موافقاً اضغط تأكيد البيع.",
+        "ثم يبقى تحت الفحص 48 ساعة قبل تحويل النقاط. إذا كنت موافقاً اضغط تأكيد البيع.",
             reply_markup=_buyback_confirm_markup(offer_id),
         )
         return True
@@ -532,7 +545,7 @@ def render_buyback_owner_list():
     rows_kb = []
     for row in rows:
         price = f"{int(row['quoted_price'] or 0):,}" if int(row["quoted_price"] or 0) else "غير محدد"
-        lines.append(f"#{row['id']} — {_mask_buyback_phone(row['phone_number'])} — {row['status']} — {price} دينار")
+        lines.append(f"#{row['id']} — {_mask_buyback_phone(row['phone_number'])} — {row['status']} — {price}")
         if row["status"] == "ready_for_payment":
             rows_kb.append([InlineKeyboardButton(f"💵 دفع #{row['id']}", callback_data=f"buyback:owner:paid:{row['id']}"), InlineKeyboardButton(f"🚫 رفض #{row['id']}", callback_data=f"buyback:owner:reject:{row['id']}")])
         else:
