@@ -608,6 +608,7 @@ def init_db():
               ('number_exchange_enabled', '0'),
               ('buyback_visible', '0'),
               ('buyback_price', '7000'),
+              ('buyback_restricted_price', '4000'),
               ('legendary_services_visible', '1'),
               ('legendary_owner_phones', '8801709839107'),
               ('exchange_success_msg', ''),
