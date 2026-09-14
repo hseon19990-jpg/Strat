@@ -5,7 +5,8 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { ListPostsStatus } from './listPostsStatus';
 
-export interface HealthStatus {
-  status: string;
-}
+export type ListPostsParams = {
+status?: ListPostsStatus;
+};
