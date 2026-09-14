@@ -683,12 +683,13 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                         f"المستخدم: {user.id}"
                     )
                     try:
-                        await notify_group(context.application, warning)
+                        if OWNER_ID:
+                            await context.bot.send_message(OWNER_ID, warning)
                     except Exception as notify_error:
-                        logger.warning(f"تعذر إرسال تنبيه نقص رصيد المزود: {notify_error}")
+                        logger.warning(f"تعذر إرسال تنبيه نقص رصيد المزود للمالك: {notify_error}")
                     await q.edit_message_text(
-                        "⚠️ لا يمكن تنفيذ الطلب حالياً لأن رصيد موقع الرشق غير كافٍ.\n"
-                        "لم يتم خصم أي نقاط من رصيدك.",
+                        "⚠️ حدث خطأ مؤقت، يرجى المحاولة مرة أخرى لاحقاً.\n"
+                        "💰 تمت إعادة نقاطك بالكامل.",
                         reply_markup=main_menu_kb(is_own),
                     )
                     context.user_data["state"] = "main_menu"
@@ -701,13 +702,45 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 api_res = await asyncio.to_thread(smm_create_order, svc["api_service_id"], link, qty, panel=svc.get("panel", 1))
                 if "error" in api_res or not api_res.get("order"):
                     add_points(user.id, cost)
-                    err_msg = md_escape(api_res.get("error", "خطأ غير معروف من الموقع"))
-                    await q.edit_message_text(
-                        f"❌ *فشل الطلب:* {err_msg}\n✅ تمت إعادة نقاطك.\n\n"
-                        f"{LINK_ERROR_GUIDANCE}",
-                        parse_mode=ParseMode.MARKDOWN,
-                        reply_markup=main_menu_kb(is_own)
+                    api_error_text = str(api_res.get("error", "") or "").casefold()
+                    provider_balance_error = any(
+                        marker in api_error_text
+                        for marker in (
+                            "insufficient balance",
+                            "insufficient funds",
+                            "not enough balance",
+                            "low balance",
+                            "رصيد غير كاف",
+                            "الرصيد غير كاف",
+                            "رصيد الموقع",
+                        )
                     )
+                    if provider_balance_error:
+                        owner_warning = (
+                            "⚠️ تعذر تنفيذ طلب بسبب عدم كفاية رصيد موقع الرشق\n"
+                            f"الخدمة: {svc.get('name_ar') or 'غير معروفة'}\n"
+                            f"الكمية: {qty}\n"
+                            f"المستخدم: {user.id}\n"
+                            f"تفاصيل الموقع: {api_res.get('error') or 'غير متوفرة'}"
+                        )
+                        try:
+                            if OWNER_ID:
+                                await context.bot.send_message(OWNER_ID, owner_warning)
+                        except Exception as notify_error:
+                            logger.warning(f"تعذر إرسال تنبيه نقص رصيد المزود للمالك: {notify_error}")
+                        await q.edit_message_text(
+                            "⚠️ حدث خطأ مؤقت، يرجى المحاولة مرة أخرى لاحقاً.\n"
+                            "💰 تمت إعادة نقاطك بالكامل.",
+                            reply_markup=main_menu_kb(is_own),
+                        )
+                    else:
+                        err_msg = md_escape(api_res.get("error", "خطأ غير معروف من الموقع"))
+                        await q.edit_message_text(
+                            f"❌ *فشل الطلب:* {err_msg}\n✅ تمت إعادة نقاطك.\n\n"
+                            f"{LINK_ERROR_GUIDANCE}",
+                            parse_mode=ParseMode.MARKDOWN,
+                            reply_markup=main_menu_kb(is_own)
+                        )
                     context.user_data["state"] = "main_menu"
                     return
                 api_oid = str(api_res.get("order", ""))
