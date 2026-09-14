@@ -7,6 +7,138 @@ while the sentinel lets the dispatcher continue to the next group.
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
+async def export_ready_sessions(context, user_id, edit_message, requested_count=None):
+    """فحص الحسابات غير المقيّدة وتصدير العدد المطلوب من جلساتها."""
+    await edit_message(
+        "⏳ *جاري فحص الحسابات وتجهيز ملف ZIP...*\n"
+        "لن يتم تغيير حالة البيع أو الرشق لأي حساب.",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+    (
+        _export_rows,
+        _export_checked,
+        _export_total_candidates,
+    ) = await find_unrestricted_message_accounts()
+    _available_count = len(_export_rows)
+    if requested_count is not None:
+        _export_rows = _export_rows[:requested_count]
+
+    if not _export_rows:
+        await edit_message(
+            "📦 *تصدير جلسات الحسابات*\n\n"
+            f"🔍 تم فحص {_export_checked} من أصل "
+            f"{_export_total_candidates} حساباً عبر SpamBot.\n"
+            "لا توجد جلسات لحسابات غير مقيّدة حالياً.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
+            ]),
+        )
+        return
+
+    try:
+        import io as _export_io
+        import zipfile as _export_zipfile
+        from telegram import InputFile as _ExportInputFile
+    except ImportError:
+        await edit_message(
+            "⚠️ تعذر تجهيز ملف الجلسات. أعد نشر البوت بعد تحديث المتطلبات.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
+            ]),
+        )
+        return
+
+    _export_zip_buffer = _export_io.BytesIO()
+    _export_manifest = []
+    _export_failed = 0
+    with _export_zipfile.ZipFile(
+        _export_zip_buffer, "w", compression=_export_zipfile.ZIP_DEFLATED
+    ) as _export_archive:
+        for _export_row in _export_rows:
+            _export_phone = str(_export_row.get("phone_number") or "").strip()
+            _export_session = str(_export_row.get("session_string") or "").strip()
+            if not _export_phone or not _export_session:
+                _export_failed += 1
+                continue
+            _export_digits = re.sub(r"[^0-9]", "", _export_phone)
+            if not _export_digits:
+                _export_failed += 1
+                continue
+            _export_payload = json.dumps(
+                {
+                    "phone_number": _export_phone,
+                    "session_string": _export_session,
+                },
+                ensure_ascii=False,
+            ).encode("utf-8")
+            _export_name = f"session_{_export_digits}.json"
+            try:
+                _export_archive.writestr(_export_name, _export_payload)
+                _export_manifest.append(
+                    {"phone_number": _export_phone, "file": _export_name, "encrypted": False}
+                )
+            except Exception as _zip_error:
+                _export_failed += 1
+                logger.warning(f"⚠️ تعذر إضافة جلسة الرقم {_export_phone} إلى ZIP: {_zip_error}")
+
+        _export_archive.writestr(
+            "README.txt",
+            (
+                "هذا الأرشيف يحتوي ملفات JSON للجلسات بدون تشفير.\n"
+                "كل ملف يحتوي phone_number و session_string.\n"
+                "احفظ الأرشيف في مكان آمن ولا تشاركه مع أي شخص.\n"
+            ).encode("utf-8"),
+        )
+        _export_archive.writestr(
+            "manifest.json",
+            json.dumps(_export_manifest, ensure_ascii=False, indent=2).encode("utf-8"),
+        )
+
+    if not _export_manifest:
+        _export_zip_buffer.close()
+        await edit_message(
+            "⚠️ تعذر تجهيز أي جلسة صالحة داخل الملف.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
+            ]),
+        )
+        return
+
+    _export_zip_buffer.seek(0)
+    _export_name = f"sessions_{int(time.time())}.zip"
+    try:
+        await context.bot.send_document(
+            chat_id=user_id,
+            document=_ExportInputFile(_export_zip_buffer, filename=_export_name),
+            caption=(
+                f"📦 ملف واحد يحتوي {len(_export_manifest)} جلسة بصيغة JSON.\n"
+                + (
+                    f"المطلوب: {requested_count} | المتاح: {_available_count}.\n"
+                    if requested_count is not None and requested_count > _available_count
+                    else ""
+                )
+                + "يمكن استيراده مباشرةً عبر معالج ZIP."
+            ),
+        )
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=(
+                f"✅ تم إرسال ملف ZIP واحد يحتوي {len(_export_manifest)} جلسة."
+                + (f"\n⚠️ تعذر إضافة {_export_failed} جلسة." if _export_failed else "")
+            ),
+        )
+    except Exception as _export_error:
+        logger.warning(f"⚠️ تعذر إرسال ملف جلسات ZIP: {_export_error}")
+        await edit_message(
+            "⚠️ حدث خطأ أثناء إرسال ملف الجلسات. حاول مجدداً.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
+            ]),
+        )
+    finally:
+        _export_zip_buffer.close()
+
 async def _handle_callback_group_02(update, context, q, data, user, is_own, is_supervisor_cb, _gmail_verification_done):
     if True:
         if data.startswith("my_numbers:kicked:"):
@@ -286,126 +418,16 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             return
 
         if data == "os:export_ready_sessions" and is_own:
+            context.user_data["state"] = "os_await_export_count"
             await q.edit_message_text(
-                "⏳ *جاري فحص الحسابات وتجهيز ملف ZIP...*\n"
-                "لن يتم تغيير حالة البيع أو الرشق لأي حساب.",
+                "📦 *تصدير جلسات الحسابات*\n\n"
+                "كم حساباً تريد استخراج جلسته؟\n"
+                "أرسل العدد كرقم صحيح، مثال: `10`",
                 parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
+                ]),
             )
-            (
-                _export_rows,
-                _export_checked,
-                _export_total_candidates,
-            ) = await find_unrestricted_message_accounts()
-            if not _export_rows:
-                await q.edit_message_text(
-                    "📦 *تصدير جلسات الحسابات*\n\n"
-                    f"🔍 تم فحص {_export_checked} من أصل "
-                    f"{_export_total_candidates} حساباً عبر SpamBot.\n"
-                    "لا توجد جلسات لحسابات غير مقيّدة حالياً.",
-                    parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
-                    ]),
-                )
-                return
-
-            try:
-                import io as _export_io
-                import zipfile as _export_zipfile
-                from telegram import InputFile as _ExportInputFile
-            except ImportError:
-                await q.edit_message_text(
-                    "⚠️ تعذر تجهيز ملف الجلسات. أعد نشر البوت بعد تحديث المتطلبات.",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
-                    ]),
-                )
-                return
-
-            _export_zip_buffer = _export_io.BytesIO()
-            _export_manifest = []
-            _export_failed = 0
-            with _export_zipfile.ZipFile(
-                _export_zip_buffer, "w", compression=_export_zipfile.ZIP_DEFLATED
-            ) as _export_archive:
-                for _export_row in _export_rows:
-                    _export_phone = str(_export_row.get("phone_number") or "").strip()
-                    _export_session = str(_export_row.get("session_string") or "").strip()
-                    if not _export_phone or not _export_session:
-                        _export_failed += 1
-                        continue
-                    _export_digits = re.sub(r"[^0-9]", "", _export_phone)
-                    if not _export_digits:
-                        _export_failed += 1
-                        continue
-                    _export_payload = json.dumps(
-                        {
-                            "phone_number": _export_phone,
-                            "session_string": _export_session,
-                        },
-                        ensure_ascii=False,
-                    ).encode("utf-8")
-                    _export_name = f"session_{_export_digits}.json"
-                    try:
-                        _export_archive.writestr(_export_name, _export_payload)
-                        _export_manifest.append(
-                            {"phone_number": _export_phone, "file": _export_name, "encrypted": False}
-                        )
-                    except Exception as _zip_error:
-                        _export_failed += 1
-                        logger.warning(f"⚠️ تعذر إضافة جلسة الرقم {_export_phone} إلى ZIP: {_zip_error}")
-
-                _export_archive.writestr(
-                    "README.txt",
-                    (
-                        "هذا الأرشيف يحتوي ملفات JSON للجلسات بدون تشفير.\n"
-                        "كل ملف يحتوي phone_number و session_string.\n"
-                        "احفظ الأرشيف في مكان آمن ولا تشاركه مع أي شخص.\n"
-                    ).encode("utf-8"),
-                )
-                _export_archive.writestr(
-                    "manifest.json",
-                    json.dumps(_export_manifest, ensure_ascii=False, indent=2).encode("utf-8"),
-                )
-
-            if not _export_manifest:
-                _export_zip_buffer.close()
-                await q.edit_message_text(
-                    "⚠️ تعذر تجهيز أي جلسة صالحة داخل الملف.",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
-                    ]),
-                )
-                return
-
-            _export_zip_buffer.seek(0)
-            _export_name = f"sessions_{int(time.time())}.zip"
-            try:
-                await context.bot.send_document(
-                    chat_id=user.id,
-                    document=_ExportInputFile(_export_zip_buffer, filename=_export_name),
-                    caption=(
-                        f"📦 ملف واحد يحتوي {len(_export_manifest)} جلسة بصيغة JSON.\n"
-                        "يمكن استيراده مباشرةً عبر معالج ZIP."
-                    ),
-                )
-                await context.bot.send_message(
-                    chat_id=user.id,
-                    text=(
-                        f"✅ تم إرسال ملف ZIP واحد يحتوي {len(_export_manifest)} جلسة."
-                        + (f"\n⚠️ تعذر إضافة {_export_failed} جلسة." if _export_failed else "")
-                    ),
-                )
-            except Exception as _export_error:
-                logger.warning(f"⚠️ تعذر إرسال ملف جلسات ZIP: {_export_error}")
-                await q.edit_message_text(
-                    "⚠️ حدث خطأ أثناء إرسال ملف الجلسات. حاول مجدداً.",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
-                    ]),
-                )
-            finally:
-                _export_zip_buffer.close()
             return
 
         if data == "os:account_names" and is_own:
