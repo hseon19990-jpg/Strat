@@ -190,6 +190,35 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if state == "os_await_export_count" and is_own:
+        _normalized_count = (text or "").translate(str.maketrans(
+            "٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹",
+            "01234567890123456789",
+        ))
+        try:
+            _export_count = int(_normalized_count.replace(",", "").replace("٬", "").strip())
+            if _export_count <= 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text(
+                "⚠️ أرسل عدداً صحيحاً أكبر من صفر، مثال: `10`.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        context.user_data["state"] = "main_menu"
+        _export_progress = await update.message.reply_text(
+            f"⏳ سيتم تجهيز جلسات {_export_count:,} حساب..."
+        )
+        from .callback_groups_02 import export_ready_sessions
+        await export_ready_sessions(
+            context,
+            user.id,
+            _export_progress.edit_text,
+            requested_count=_export_count,
+        )
+        return
+
     if state in ("thank_owner_ar", "thank_owner_en") and not is_own:
         if not text:
             await update.message.reply_text("⚠️ أرسل رسالة نصية.")
@@ -5708,4 +5737,3 @@ async def handle_unsupported_message(update: Update, context: ContextTypes.DEFAU
             return
 
     await update.message.reply_text("🏠 القائمة الرئيسية:", reply_markup=main_menu_kb(is_own))
-
