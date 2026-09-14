@@ -10,6 +10,7 @@ from .poll import PollService
 from .votes import VotesService
 from .votes_ai import VotesAIService
 from .premium_reaction import PremiumReactionService
+from .all_posts_reactions import AllPostsReactionsService
 from .message import (
     MessageService,
     message_confirmation_keyboard,
@@ -41,6 +42,7 @@ RAKSH_SERVICES: Dict[str, RakshService] = {
     VotesService.service_type: VotesService(),
     VotesAIService.service_type: VotesAIService(),
     PremiumReactionService.service_type: PremiumReactionService(),
+    AllPostsReactionsService.service_type: AllPostsReactionsService(),
     MessageService.service_type: MessageService(),
 }
 
