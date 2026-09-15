@@ -529,6 +529,10 @@ class AllPostsReactionsService(RakshService):
                             phone_number,
                         )
                     except Exception as exc:
+                        if is_raksh_frozen_account_error(exc):
+                            _mark_raksh_session_unauthorized(phone_number)
+                            stop_event.set()
+                            return
                         logger.warning(
                             "فشل التفاعل المباشر على %s/%s من الحساب %s: %s",
                             channel_ref,
@@ -566,6 +570,9 @@ class AllPostsReactionsService(RakshService):
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                if is_raksh_frozen_account_error(exc):
+                    _mark_raksh_session_unauthorized(phone_number)
+                    return
                 logger.warning(
                     "انقطع مستمع التفاعل المباشر للحساب %s؛ ستعاد المحاولة: %s",
                     phone_number,
@@ -703,6 +710,8 @@ class AllPostsReactionsService(RakshService):
                     ))
                     success_count += 1
                 except Exception as exc:
+                    if is_raksh_frozen_account_error(exc):
+                        raise
                     logger.warning(
                         "فشل تفاعل الخدمة المستمرة على %s/%s: %s",
                         channel_ref,

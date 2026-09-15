@@ -85,6 +85,9 @@ def is_raksh_frozen_account_error(error: object) -> bool:
         "phonenumberbannederror",
         "account is frozen",
         "account frozen",
+        "frozen accounts",
+        "not available for frozen accounts",
+        "method that is not available for frozen accounts",
         "account is deactivated",
         "account deactivated",
         "الحساب مجمد",
@@ -830,6 +833,23 @@ def _is_already_joined_error(error: Exception) -> bool:
         "AlreadyParticipantError",
     }
 
+async def _is_raksh_entity_in_dialogs(client, entity) -> Optional[bool]:
+    """اعرف إن كان الحساب عضواً قبل استدعاء JoinChannelRequest."""
+    target_id = getattr(entity, "id", None)
+    if target_id is None:
+        return None
+    try:
+        dialogs = await asyncio.wait_for(client.get_dialogs(), timeout=25)
+        return any(
+            getattr(getattr(dialog, "entity", None), "id", None) == target_id
+            for dialog in dialogs
+        )
+    except Exception as exc:
+        # إذا تعذر فحص المحادثات نترك الاستدعاء الأصلي يحاول؛
+        # أخطاء الحساب المجمد ستصعد إلى المصنف وتعطل الجلسة تلقائياً.
+        logger.debug("تعذر فحص عضوية القناة قبل الانضمام: %s", exc)
+        return None
+
 async def _join_channel_and_schedule_leave(
     client,
     channel_ref: str,
@@ -859,13 +879,26 @@ async def _join_channel_and_schedule_leave(
                 entity = getattr(invite_info, "chat", None)
         else:
             entity = await client.get_entity(normalized_ref)
-            try:
-                await client(JoinChannelRequest(entity))
-            except Exception as join_error:
-                if not _is_already_joined_error(join_error):
-                    raise
-                logger.info(f"الحساب عضو مسبقاً في القناة {normalized_ref}; سيتم إعادة ضبط المؤقت")
+            is_member = await _is_raksh_entity_in_dialogs(client, entity)
+            if is_member is True:
+                logger.info(
+                    f"الحساب عضو مسبقاً في القناة {normalized_ref}; "
+                    "تم تجاوز JoinChannelRequest"
+                )
+            else:
+                try:
+                    await client(JoinChannelRequest(entity))
+                except Exception as join_error:
+                    if not _is_already_joined_error(join_error):
+                        raise
+                    logger.info(
+                        f"الحساب عضو مسبقاً في القناة {normalized_ref}; "
+                        "سيتم إعادة ضبط المؤقت"
+                    )
     except Exception as error:
+        if is_raksh_frozen_account_error(error):
+            # لا نخفي خطأ الحساب المجمد؛ المستدعي سيعطله من pool الرشق.
+            raise
         if not _is_already_joined_error(error):
             logger.warning(f"تعذر الانضمام للقناة {normalized_ref}: {error}")
             return False
