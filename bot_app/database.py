@@ -258,6 +258,65 @@ def init_db():
                updated_at    TIMESTAMPTZ DEFAULT NOW(),
                UNIQUE(order_id, phone_number)
            )""")
+          # ترقية قواعد البيانات القديمة التي أنشأت جداول الرشق قبل إضافة
+          # الاستئناف. CREATE TABLE IF NOT EXISTS لا يضيف الأعمدة إلى جدول
+          # موجود، لذلك يجب تنفيذ هذه الترقية قبل إنشاء فهارس الاستئناف.
+          c.execute(
+              "ALTER TABLE raksh_orders ADD COLUMN IF NOT EXISTS "
+              "params JSONB NOT NULL DEFAULT '{}'::jsonb"
+          )
+          c.execute(
+              "ALTER TABLE raksh_orders ADD COLUMN IF NOT EXISTS "
+              "status TEXT NOT NULL DEFAULT 'pending'"
+          )
+          c.execute(
+              "ALTER TABLE raksh_orders ADD COLUMN IF NOT EXISTS "
+              "lease_until TIMESTAMPTZ"
+          )
+          c.execute(
+              "ALTER TABLE raksh_orders ADD COLUMN IF NOT EXISTS "
+              "last_error TEXT"
+          )
+          c.execute(
+              "ALTER TABLE raksh_orders ADD COLUMN IF NOT EXISTS "
+              "refund_points INTEGER NOT NULL DEFAULT 0"
+          )
+          c.execute(
+              "ALTER TABLE raksh_orders ADD COLUMN IF NOT EXISTS "
+              "special_count INTEGER NOT NULL DEFAULT 0"
+          )
+          c.execute(
+              "ALTER TABLE raksh_orders ADD COLUMN IF NOT EXISTS "
+              "result_text TEXT"
+          )
+          c.execute(
+              "ALTER TABLE raksh_orders ADD COLUMN IF NOT EXISTS "
+              "updated_at TIMESTAMPTZ DEFAULT NOW()"
+          )
+          c.execute(
+              "ALTER TABLE raksh_orders ADD COLUMN IF NOT EXISTS "
+              "completed_at TIMESTAMPTZ"
+          )
+          c.execute(
+              "ALTER TABLE raksh_order_items ADD COLUMN IF NOT EXISTS "
+              "status TEXT NOT NULL DEFAULT 'pending'"
+          )
+          c.execute(
+              "ALTER TABLE raksh_order_items ADD COLUMN IF NOT EXISTS "
+              "attempts INTEGER NOT NULL DEFAULT 0"
+          )
+          c.execute(
+              "ALTER TABLE raksh_order_items ADD COLUMN IF NOT EXISTS "
+              "result_message TEXT"
+          )
+          c.execute(
+              "ALTER TABLE raksh_order_items ADD COLUMN IF NOT EXISTS "
+              "last_error TEXT"
+          )
+          c.execute(
+              "ALTER TABLE raksh_order_items ADD COLUMN IF NOT EXISTS "
+              "updated_at TIMESTAMPTZ DEFAULT NOW()"
+          )
           c.execute("""
            CREATE INDEX IF NOT EXISTS raksh_order_items_status_idx
            ON raksh_order_items (order_id, status, position)
