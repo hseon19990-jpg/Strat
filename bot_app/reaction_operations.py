@@ -89,13 +89,15 @@ def _claim_queued_posts() -> None:
     with db_conn() as cur:
         cur.execute(
             """
-            SELECT p.id, p.target_reactions, p.telegram_url, c.duration_days
+            SELECT p.id, p.target_reactions, p.completed_reactions,
+                   p.telegram_url, p.status, c.duration_days
             FROM posts p
             JOIN campaigns c ON c.id = p.campaign_id
-            WHERE p.status = 'queued'
+            WHERE p.status IN ('queued', 'processing')
               AND c.status = 'active'
               AND CURRENT_DATE BETWEEN c.start_date AND c.end_date
               AND COALESCE(p.telegram_url, '') <> ''
+              AND COALESCE(p.completed_reactions, 0) < p.target_reactions
             ORDER BY p.published_at ASC
             FOR UPDATE SKIP LOCKED
             """
@@ -119,6 +121,24 @@ def _claim_queued_posts() -> None:
 
             cur.execute(
                 """
+                SELECT COUNT(*) AS waiting
+                FROM reaction_post_accounts
+                WHERE post_id = %s AND status IN ('pending', 'working')
+                """,
+                (post["id"],),
+            )
+            waiting = int((cur.fetchone() or {}).get("waiting") or 0)
+            required = max(
+                0,
+                int(post["target_reactions"] or 0)
+                - int(post["completed_reactions"] or 0)
+                - waiting,
+            )
+            if required == 0:
+                continue
+
+            cur.execute(
+                """
                 SELECT ns.id, ns.phone_number
                 FROM number_stock ns
                 WHERE ns.session_string IS NOT NULL
@@ -137,7 +157,7 @@ def _claim_queued_posts() -> None:
                 LIMIT %s
                 FOR UPDATE OF ns SKIP LOCKED
                 """,
-                (post["target_reactions"],),
+                (required,),
             )
             accounts = cur.fetchall()
             if not accounts:
@@ -148,7 +168,12 @@ def _claim_queued_posts() -> None:
                     """
                     INSERT INTO reaction_post_accounts (post_id, stock_id, account_handle)
                     VALUES (%s, %s, %s)
-                    ON CONFLICT (post_id, stock_id) DO NOTHING
+                    ON CONFLICT (post_id, stock_id) DO UPDATE
+                    SET status = 'pending',
+                        attempts = 0,
+                        last_error = '',
+                        updated_at = NOW()
+                    WHERE reaction_post_accounts.status = 'failed'
                     """,
                     (post["id"], account["id"], account["phone_number"] or ""),
                 )
