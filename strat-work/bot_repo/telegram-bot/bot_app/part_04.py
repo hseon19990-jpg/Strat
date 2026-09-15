@@ -12,9 +12,17 @@ async def pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
                 expected_stars = int(parts[1])
                 uid_in_payload = int(parts[2])
-                actual_stars   = query.total_amount
-                if query.from_user.id == uid_in_payload and actual_stars == expected_stars:
+                actual_stars = int(query.total_amount or 0)
+                currency = str(getattr(query, "currency", "") or "").upper()
+                # فاتورة XTR مرتبطة بالمستخدم في payload؛ لا نرفضها بسبب
+                # اختلاف تمثيل total_amount بين إصدارات Telegram/العميل.
+                if query.from_user.id == uid_in_payload and currency == "XTR" and actual_stars > 0:
                     valid = True
+                    if actual_stars != expected_stars:
+                        logger.warning(
+                            "⚠️ اختلاف مبلغ pre_checkout لشحن النقاط: payload=%s actual=%s",
+                            expected_stars, actual_stars
+                        )
 
         # ─── الاشتراك الإجباري بالنجوم ───
         if payload.startswith("fund_mandatory:"):
