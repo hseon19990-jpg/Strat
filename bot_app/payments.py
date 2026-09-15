@@ -90,7 +90,7 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
         add_points(user.id, pts)
         with db_conn() as c:
             c.execute(
-                "INSERT INTO star_transactions (user_id,stars,points_given,telegram_payment_id) VALUES (?,?,?,?)",
+                "INSERT INTO star_transactions (user_id,stars,points_given,telegram_payment_id) VALUES (%s,%s,%s,%s)",
                 (user.id, stars, pts, payment.telegram_payment_charge_id)
             )
         db_user = get_user(user.id)
