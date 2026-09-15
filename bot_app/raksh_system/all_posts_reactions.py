@@ -2,6 +2,7 @@
 
 from .common import *
 from telethon.tl.functions.messages import SendReactionRequest as SendMessageReactionRequest
+from telethon.tl.types import ReactionCustomEmoji, ReactionEmoji
 
 
 class AllPostsReactionsService(RakshService):
@@ -219,6 +220,41 @@ class AllPostsReactionsService(RakshService):
         params["post_limit"] = self.MAX_POSTS_PER_CYCLE
         return params
 
+    async def _get_allowed_reactions(self, client, entity) -> list:
+        """جلب التفاعلات المسموحة فعلياً في القناة."""
+        fallback = [
+            ReactionEmoji(emoticon=emoji)
+            for emoji in RAKSH_REACTIONS.values()
+        ]
+        try:
+            full_channel = await asyncio.wait_for(
+                client(functions.channels.GetFullChannelRequest(channel=entity)),
+                timeout=10,
+            )
+            full_chat = getattr(full_channel, "full_chat", None)
+            available = getattr(full_chat, "available_reactions", None)
+            if available is None:
+                return fallback
+
+            if available.__class__.__name__ == "ChatReactionsAll":
+                return fallback
+
+            configured = getattr(available, "reactions", None) or []
+            reactions = []
+            for item in configured:
+                reaction = getattr(item, "reaction", None) or item
+                if isinstance(reaction, ReactionEmoji):
+                    reactions.append(reaction)
+                elif isinstance(reaction, ReactionCustomEmoji):
+                    reactions.append(reaction)
+            return reactions
+        except Exception as exc:
+            logger.warning(
+                "تعذر جلب التفاعلات المسموحة للقناة؛ سيتم استخدام التفاعلات العامة: %s",
+                exc,
+            )
+            return fallback
+
     async def execute(self, session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
         """تنفيذ دورة تفاعل على أحدث منشورات القناة."""
         client = TelegramClient(
@@ -252,6 +288,13 @@ class AllPostsReactionsService(RakshService):
             except Exception as exc:
                 return False, f"تعذر الوصول إلى القناة: {exc}"
 
+            allowed_reactions = await self._get_allowed_reactions(client, entity)
+            if not allowed_reactions:
+                return True, (
+                    f"✅ انضم الحساب {session.get('phone_number', '')} إلى القناة، "
+                    "لكن القناة لا تسمح حالياً بتفاعلات عادية"
+                )
+
             try:
                 post_limit = int(params.get("post_limit") or self.MAX_POSTS_PER_CYCLE)
             except (TypeError, ValueError):
@@ -264,12 +307,12 @@ class AllPostsReactionsService(RakshService):
                 if not getattr(message, "id", None):
                     continue
                 attempted_count += 1
-                reaction = random.choice(list(RAKSH_REACTIONS.values()))
+                reaction = random.choice(allowed_reactions)
                 try:
                     await client(SendMessageReactionRequest(
                         peer=entity,
                         msg_id=message.id,
-                        reaction=[ReactionEmoji(emoticon=reaction)],
+                        reaction=[reaction],
                     ))
                     success_count += 1
                 except Exception as exc:
