@@ -790,8 +790,11 @@ def _is_already_joined_error(error: Exception) -> bool:
     }
 
 async def _join_channel_and_schedule_leave(
-    client, channel_ref: str, phone_number: Optional[str] = None
-) -> bool:
+    client,
+    channel_ref: str,
+    phone_number: Optional[str] = None,
+    return_entity: bool = False,
+) -> Any:
     """ينضم للقناة ويسجل مهلة مغادرة دائمة قابلة لإعادة الضبط."""
     normalized_ref = _normalize_raksh_channel_ref(channel_ref)
     if not normalized_ref:
@@ -801,8 +804,18 @@ async def _join_channel_and_schedule_leave(
     try:
         if normalized_ref.startswith("invite:"):
             invite_hash = normalized_ref[7:]
-            updates = await client(ImportChatInviteRequest(invite_hash))
-            entity = next(iter(getattr(updates, "chats", None) or []), None)
+            try:
+                updates = await client(ImportChatInviteRequest(invite_hash))
+                entity = next(iter(getattr(updates, "chats", None) or []), None)
+            except Exception as invite_error:
+                if not _is_already_joined_error(invite_error):
+                    raise
+                # ImportChatInviteRequest لا يعيد القناة عندما يكون الحساب
+                # عضوًا مسبقًا؛ CheckChatInviteRequest يعيد الكيان في هذه الحالة.
+                invite_info = await client(
+                    functions.messages.CheckChatInviteRequest(invite_hash)
+                )
+                entity = getattr(invite_info, "chat", None)
         else:
             entity = await client.get_entity(normalized_ref)
             try:
@@ -844,7 +857,7 @@ async def _join_channel_and_schedule_leave(
         f"✅ تم حفظ عضوية {normalized_ref} للحساب {phone_number}; "
         f"المغادرة بعد {leave_hours} ساعة (قابلة لإعادة الضبط)"
     )
-    return True
+    return entity if return_entity else True
 
 async def cleanup_expired_raksh_channel_memberships(context=None) -> None:
     """يخرج الحسابات من القنوات التي انتهت مهلة عضويتها."""
