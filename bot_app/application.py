@@ -505,8 +505,21 @@ def main():
         app.job_queue.run_repeating(run_referral_tasks_job, interval=3600, first=120)
         app.job_queue.run_repeating(run_reaction_ops_job, interval=30, first=45)
         logger.info("⚡ تم تفعيل تنفيذ حملات تفاعلات Telegram كل 30 ثانية")
-        app.job_queue.run_repeating(resume_raksh_orders_job, interval=60, first=20)
-        logger.info("🔁 تم تفعيل استئناف طلبات الرشق المحفوظة كل دقيقة")
+        # طلبات التفاعل المستمر تستخدم مستمعي Telegram المباشرين؛ تحتاج
+        # استئنافاً واحداً بعد الإقلاع فقط، لا قراءة قاعدة البيانات كل دقيقة.
+        app.job_queue.run_once(
+            resume_raksh_orders_job,
+            when=20,
+            data={"all_posts_only": True},
+        )
+        logger.info("🔔 تم تفعيل استئناف التفاعل المستمر مرة واحدة بعد الإقلاع")
+        app.job_queue.run_repeating(
+            resume_raksh_orders_job,
+            interval=60,
+            first=20,
+            data={"exclude_all_posts": True},
+        )
+        logger.info("🔁 تم تفعيل استئناف خدمات الرشق غير المستمرة كل دقيقة")
         app.job_queue.run_repeating(cleanup_expired_raksh_channel_memberships, interval=300, first=60)
         logger.info("👋 تم تفعيل إخراج حسابات الرشق بعد انتهاء مهلة القنوات (كل 5 دقائق)")
         logger.info("🤝 تم تفعيل مهام الإحالة التلقائية (كل ساعة)")
