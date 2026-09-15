@@ -56,24 +56,92 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     if payload.startswith("charge_stars:"):
         parts = payload.split(":")
+        if len(parts) != 3 or not parts[1].isdigit() or not parts[2].isdigit():
+            logger.error("❌ payload شحن نجوم غير صالح: %s", payload)
+            await update.message.reply_text("⚠️ تعذّر التحقق من عملية الشحن. تواصل مع الدعم.")
+            return
+
         stars = int(parts[1])
-        rate  = int(get_setting("star_to_points") or "250")
-        pts   = stars * rate
-        add_points(user.id, pts)
-        with db_conn() as c:
-            c.execute(
-                "INSERT INTO star_transactions (user_id,stars,points_given,telegram_payment_id) VALUES (?,?,?,?)",
-                (user.id, stars, pts, payment.telegram_payment_charge_id)
+        payload_user_id = int(parts[2])
+        if stars <= 0 or payload_user_id != user.id:
+            logger.error(
+                "❌ محاولة شحن نجوم غير صالحة: user=%s payload_user=%s stars=%s",
+                user.id, payload_user_id, stars
             )
-        db_user = get_user(user.id)
-        await update.message.reply_text(
-            f"✅ *تم الشحن بنجاح!*\n\n"
-            f"⭐ النجوم: {stars}\n"
-            f"✨ النقاط المضافة: {pts}\n"
-            f"💰 رصيدك الآن: {db_user['points']} نقطة",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=main_menu_kb(is_own)
-        )
+            await update.message.reply_text("⚠️ بيانات عملية الشحن غير صحيحة. تواصل مع الدعم.")
+            return
+
+        rate = int(get_setting("star_to_points") or "250")
+        if rate <= 0:
+            logger.error("❌ قيمة star_to_points غير صالحة: %s", rate)
+            await update.message.reply_text("⚠️ تعذّر إكمال الشحن حالياً. حاول لاحقاً.")
+            return
+        pts = stars * rate
+
+        # Telegram قد يعيد إرسال successful_payment بعد إعادة تشغيل البوت.
+        # نقفل صف المستخدم ونسجل الدفع داخل نفس المعاملة حتى لا تُضاف النقاط مرتين.
+        charge_id = (payment.telegram_payment_charge_id or "").strip()
+        if not charge_id:
+            # احتياط نادر: نضمن idempotency على مستوى رسالة Telegram نفسها.
+            charge_id = f"message:{user.id}:{update.message.message_id}"
+
+        already_credited = False
+        with db_conn() as c:
+            db_user = c.execute(
+                "SELECT points FROM users WHERE user_id=%s FOR UPDATE",
+                (user.id,)
+            ).fetchone()
+            if not db_user:
+                logger.error("❌ مستخدم الدفع غير موجود في قاعدة البيانات: %s", user.id)
+                await update.message.reply_text("⚠️ تعذّر العثور على حسابك. تواصل مع الدعم.")
+                return
+
+            existing = c.execute(
+                "SELECT points_given FROM star_transactions "
+                "WHERE telegram_payment_id=%s LIMIT 1",
+                (charge_id,)
+            ).fetchone()
+            if existing:
+                already_credited = True
+                current_points = int(db_user["points"] or 0)
+            else:
+                updated = c.execute(
+                    "UPDATE users SET points=points+%s WHERE user_id=%s",
+                    (pts, user.id)
+                ).rowcount
+                if updated != 1:
+                    raise RuntimeError(f"فشل تحديث رصيد المستخدم {user.id}")
+                c.execute(
+                    "INSERT INTO star_transactions "
+                    "(user_id,stars,points_given,telegram_payment_id) VALUES (%s,%s,%s,%s)",
+                    (user.id, stars, pts, charge_id)
+                )
+                current_points = int(db_user["points"] or 0) + pts
+
+        if already_credited:
+            await update.message.reply_text(
+                f"✅ تمت معالجة هذه الدفعة مسبقاً.
+
+"
+                f"⭐ النجوم: {stars}
+"
+                f"💰 رصيدك الحالي: {current_points} نقطة",
+                reply_markup=main_menu_kb(is_own)
+            )
+        else:
+            await update.message.reply_text(
+                f"✅ *تم الشحن بنجاح!*
+
+"
+                f"⭐ النجوم: {stars}
+"
+                f"✨ النقاط المضافة: {pts}
+"
+                f"💰 رصيدك الآن: {current_points} نقطة",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=main_menu_kb(is_own)
+            )
+
 
     # ─── إحالة بوت إجبارية بالنجوم ───
     # payload: forced_ref_stars:{user_id}:{qty}:{total_stars}:{use_ai}:{cost_pts_channels}
