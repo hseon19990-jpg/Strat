@@ -280,9 +280,15 @@ class AllPostsReactionsService(RakshService):
                     )
 
             if not attempted_count:
-                return False, "لم يتم العثور على منشورات في القناة"
+                return True, (
+                    f"✅ انضم الحساب {session.get('phone_number', '')} إلى القناة؛ "
+                    "لا توجد منشورات حالياً للتفاعل معها"
+                )
             if not success_count:
-                return False, "تعذر تنفيذ التفاعل على المنشورات"
+                return True, (
+                    f"✅ انضم الحساب {session.get('phone_number', '')} إلى القناة، "
+                    "لكن تعذر تنفيذ التفاعل على المنشورات الحالية"
+                )
             return True, (
                 f"✅ تمت معالجة {success_count} من {attempted_count} منشوراً "
                 f"من الحساب {session.get('phone_number', '')}"
