@@ -936,7 +936,7 @@ def lookup_user_by_id_or_username(text: str) -> dict | None:
 
 def add_points(user_id: int, pts: int):
     with db_conn() as c:
-        c.execute("UPDATE users SET points=points+? WHERE user_id=?", (pts, user_id))
+        c.execute("UPDATE users SET points=points+%s WHERE user_id=%s", (pts, user_id))
 
 def deduct_points(user_id: int, pts: int) -> bool:
     """خصم نقاط بشكل ذري باستخدام UPDATE مشروط — آمن للاستخدام المتزامن.
@@ -967,7 +967,7 @@ def deduct_points_clamped(user_id: int, pts: int) -> int:
 
 def get_user(user_id: int) -> dict | None:
     with db_conn() as c:
-        row = c.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
+        row = c.execute("SELECT * FROM users WHERE user_id=%s", (user_id,)).fetchone()
         return dict(row) if row else None
 
 def next_order_code(user_id: int) -> str:
