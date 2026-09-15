@@ -511,15 +511,15 @@ def main():
         app.job_queue.run_repeating(
             resume_raksh_orders_job,
             interval=60,
-            first=20,
+            first=5,
             data={"all_posts_only": True},
         )
         logger.info("🔔 تم تفعيل استئناف التفاعل المستمر بعد الإقلاع وكل دقيقة")
         app.job_queue.run_repeating(
             resume_raksh_orders_job,
             interval=60,
-            first=20,
-            data={"exclude_all_posts": True},
+            first=5,
+            data={"all_posts_only": False},
         )
         logger.info("🔁 تم تفعيل استئناف خدمات الرشق غير المستمرة كل دقيقة")
         app.job_queue.run_repeating(cleanup_expired_raksh_channel_memberships, interval=300, first=60)

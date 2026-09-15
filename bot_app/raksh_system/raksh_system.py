@@ -3060,6 +3060,7 @@ async def resume_raksh_orders_job(context) -> None:
                 """
             ).fetchall()
 
+        count = 0
         for row in rows:
             order_id = int(row["id"])
             if order_id in _ACTIVE_RAKSH_ORDER_IDS:
@@ -3074,10 +3075,14 @@ async def resume_raksh_orders_job(context) -> None:
                     f"({order['service_type']}, المستخدم {order['user_id']})"
                 )
                 await _run_raksh_order(context, order_id)
+                count += 1
             except Exception:
                 logger.exception(f"فشل استئناف طلب الرشق {order_id}; ستعاد المحاولة لاحقاً")
             finally:
                 _ACTIVE_RAKSH_ORDER_IDS.discard(order_id)
+
+        if count:
+            logger.info(f"🔄 تم استيقاظ {count} عملية رشق")
     except Exception:
         logger.exception("فشل فحص طلبات الرشق القابلة للاستئناف")
 
