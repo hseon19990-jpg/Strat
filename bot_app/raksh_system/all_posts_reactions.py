@@ -12,6 +12,69 @@ from telethon.tl.types import ReactionCustomEmoji, ReactionEmoji
 _LIVE_MONITORS = {}
 
 
+async def _leave_non_interaction_channel_if_needed(
+    client,
+    phone_number: Optional[str],
+    interaction_entity,
+) -> None:
+    """يفرغ قناة غير مستخدمة للتفاعل عند بلوغ الحساب 500 قناة."""
+    try:
+        dialogs = await asyncio.wait_for(client.get_dialogs(), timeout=25)
+        channel_dialogs = [
+            dialog
+            for dialog in dialogs
+            if getattr(dialog, "is_channel", False)
+            and getattr(getattr(dialog, "entity", None), "id", None) is not None
+        ]
+        if len(channel_dialogs) < 500:
+            return
+
+        excluded_ids = {
+            getattr(interaction_entity, "id", None),
+        }
+        if phone_number:
+            with db_conn() as c:
+                rows = c.execute(
+                    """
+                    SELECT telegram_channel_id
+                    FROM raksh_channel_memberships
+                    WHERE phone_number=%s AND leave_at > NOW()
+                    """,
+                    (str(phone_number).strip(),),
+                ).fetchall()
+            excluded_ids.update(
+                row["telegram_channel_id"]
+                for row in rows
+                if row["telegram_channel_id"] is not None
+            )
+
+        candidates = [
+            dialog
+            for dialog in channel_dialogs
+            if getattr(dialog.entity, "id", None) not in excluded_ids
+        ]
+        if not candidates:
+            logger.warning(
+                "الحساب %s بلغ 500 قناة لكن لا توجد قناة آمنة للمغادرة",
+                phone_number,
+            )
+            return
+
+        selected = random.choice(candidates)
+        await client(LeaveChannelRequest(selected.entity))
+        logger.info(
+            "👋 الحساب %s بلغ حد 500 قناة؛ غادر قناة غير مستخدمة للتفاعل",
+            phone_number,
+        )
+    except Exception as exc:
+        # لا نوقف التفاعل إذا تعذر تنظيف قناة قديمة.
+        logger.warning(
+            "تعذر إخلاء قناة قديمة للحساب %s عند بلوغ حد 500: %s",
+            phone_number,
+            exc,
+        )
+
+
 class AllPostsReactionsService(RakshService):
     """تفاعل مستمر على كل منشورات القناة بعدد حسابات يحدده المستخدم."""
 
@@ -528,11 +591,18 @@ class AllPostsReactionsService(RakshService):
             int(TELEGRAM_API_ID),
             TELEGRAM_API_HASH,
         )
-        await asyncio.wait_for(client.connect(), timeout=15)
         try:
+            try:
+                await asyncio.wait_for(client.connect(), timeout=15)
+            except Exception as exc:
+                if is_raksh_frozen_account_error(exc):
+                    _mark_raksh_session_unauthorized(session.get("phone_number"))
+                    return False, RAKSH_FROZEN_ACCOUNT_MARKER
+                raise
+
             if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
                 _mark_raksh_session_unauthorized(session.get("phone_number"))
-                return False, "الجلسة غير مصرح بها"
+                return False, RAKSH_FROZEN_ACCOUNT_MARKER
 
             channel_ref = self._parse_channel_target(params.get("link"))
             if not channel_ref:
@@ -552,6 +622,12 @@ class AllPostsReactionsService(RakshService):
             )
             if not entity:
                 return False, "تعذر انضمام الحساب إلى القناة"
+
+            await _leave_non_interaction_channel_if_needed(
+                client,
+                phone_number,
+                entity,
+            )
 
             # لا نستخدم تاريخ الطلب أو أحدث منشور كمرجع. المرجع هو اللحظة
             # التي اكتمل فيها انضمام هذا الحساب في هذا الطلب تحديداً.
@@ -620,6 +696,9 @@ class AllPostsReactionsService(RakshService):
                 f"من الحساب {session.get('phone_number', '')}"
             )
         except Exception as exc:
+            if is_raksh_frozen_account_error(exc):
+                _mark_raksh_session_unauthorized(session.get("phone_number"))
+                return False, RAKSH_FROZEN_ACCOUNT_MARKER
             return False, f"❌ فشل تنفيذ دورة التفاعلات: {exc}"
         finally:
             await client.disconnect()
