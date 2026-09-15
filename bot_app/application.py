@@ -91,6 +91,24 @@ from .raksh_system import (
     recover_raksh_orders_on_startup,
 )
 
+async def pre_checkout_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """يوجّه استعلام الدفع إلى معالجه حسب نوع الفاتورة."""
+    payload = update.pre_checkout_query.invoice_payload or ""
+    if payload.startswith("raksh_stars:"):
+        await raksh_pre_checkout(update, context)
+    else:
+        await pre_checkout(update, context)
+
+
+async def successful_payment_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """يوجّه إشعار الدفع الناجح إلى معالجه حسب نوع الفاتورة."""
+    payload = update.message.successful_payment.invoice_payload or ""
+    if payload.startswith("raksh_stars:"):
+        await raksh_successful_payment(update, context)
+    else:
+        await successful_payment(update, context)
+
+
 async def cmd_set_button_emoji(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """يحفظ Custom Emoji مدفوعاً كأيقونة لزر معيّن."""
     user = update.effective_user
@@ -223,8 +241,8 @@ def main():
             pattern=r"^(?:raksh_menu|raksh_cancel|raksh(?:_|:))",
         )
     )
-    app.add_handler(PreCheckoutQueryHandler(raksh_pre_checkout))
-    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, raksh_successful_payment))
+    app.add_handler(PreCheckoutQueryHandler(pre_checkout_router))
+    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_router))
     # ════════════════════════════════════════════════════════════
     
     # ════════════════════════════════════════════════════════════
@@ -255,8 +273,7 @@ def main():
         handle_text
     ))
     app.add_handler(CallbackQueryHandler(handle_callback))
-    app.add_handler(PreCheckoutQueryHandler(pre_checkout))
-    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
+
     app.add_handler(MessageHandler(
         filters.ChatType.PRIVATE & filters.Document.MimeType("application/json"),
         handle_json_file
