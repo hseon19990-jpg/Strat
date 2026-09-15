@@ -25,6 +25,9 @@ import json
 
 OWNER_FAST_BATCH_SIZE = 12
 OWNER_FAST_BATCH_INTERVAL_SECONDS = 2
+# all_posts_reactions: launch at most three account operations per second.
+ALL_POSTS_REACTIONS_BATCH_SIZE = 3
+ALL_POSTS_REACTIONS_BATCH_INTERVAL_SECONDS = 1.0
 RAKSH_ACCOUNT_EXECUTION_TIMEOUT_SECONDS = 180
 
 _ACTIVE_RAKSH_ORDER_IDS = set()
@@ -679,8 +682,19 @@ async def execute_raksh_service(
     
     # get_sessions جهز ترتيب الأولوية للمالك والعشوائية للأعضاء.
     shuffled = sessions.copy()
+
+    # التفاعل مع جميع المنشورات يحتاج استجابة سريعة عند وصول منشور جديد.
+    # نطلق 3 حسابات كل ثانية لجميع المستخدمين بدلاً من المسار التسلسلي
+    # الذي كان يضيف 3 ثوانٍ بين كل حساب وآخر.
+    if service_type == "all_posts_reactions":
+        return await _execute_raksh_parallel(
+            svc, shuffled, params, user_id, quantity,
+            progress_callback, service_type,
+            ALL_POSTS_REACTIONS_BATCH_SIZE,
+            ALL_POSTS_REACTIONS_BATCH_INTERVAL_SECONDS,
+            order_id,
+        )
     # المالك فقط يعمل على دفعات من 12 حساباً مع فاصل ثانيتين بين الدفعات.
-    # الأعضاء يبقون على المسار التسلسلي والفاصل الحالي بدون تغيير.
     if user_id == OWNER_ID:
         if service_type == "votes_ai":
             async with _RAKSH_VOTE_FLOW_LOCK:
@@ -699,8 +713,8 @@ async def execute_raksh_service(
             order_id,
         )
 
-    # الأعضاء: كل خدمات الرشق تمر عبر طابور تسلسلي واحد حتى يبقى الفاصل
-    # الحالي كما هو، ولا تتنافس جلستان على نفس الموارد.
+    # الأعضاء: الخدمات الأخرى تمر عبر طابور تسلسلي واحد حتى يبقى
+    # الفاصل الحالي كما هو، ولا تتنافس جلستان على نفس الموارد.
     if service_type == "votes_ai":
         async with _RAKSH_VOTE_FLOW_LOCK:
             return await _execute_raksh_sequential(
