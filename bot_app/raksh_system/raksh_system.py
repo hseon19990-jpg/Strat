@@ -2614,6 +2614,9 @@ async def _run_all_posts_reactions_order(context, order: Dict, progress_msg=None
         if created_at
         else datetime.now(timezone.utc) + timedelta(days=duration_days)
     )
+    # مدة عضوية القناة يجب أن تغطي مدة الطلب، لا مهلة التنظيف العامة
+    # (72 ساعة). يحفظ هذا الموعد كي تستخدمه دورة التنفيذ والمستمع المباشر.
+    params["_raksh_expires_at"] = expires_at.isoformat()
 
     async def finish_order() -> None:
         result_text = (
