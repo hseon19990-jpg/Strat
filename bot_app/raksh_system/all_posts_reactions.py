@@ -464,7 +464,11 @@ class AllPostsReactionsService(RakshService):
         if not channel_ref:
             return
 
+        # Keep failed deliveries out of the processed set so a temporary
+        # Telegram/network error can be retried by the polling fallback.
         processed_message_ids = set()
+        retry_messages = {}
+        processing_message_ids = set()
         last_seen_message_id = 0
 
         while not stop_event.is_set():
@@ -510,16 +514,23 @@ class AllPostsReactionsService(RakshService):
                     if not getattr(message, "id", None):
                         return
                     message_id = int(message.id)
-                    if message_id in processed_message_ids:
+                    if (
+                        message_id in processed_message_ids
+                        or message_id in processing_message_ids
+                    ):
                         return
-                    processed_message_ids.add(message_id)
                     last_seen_message_id = max(last_seen_message_id, message_id)
                     message_date = self._as_utc(getattr(message, "date", None))
                     if message_date is None or message_date <= cutoff:
+                        processed_message_ids.add(message_id)
+                        retry_messages.pop(message_id, None)
                         return
+                    processing_message_ids.add(message_id)
                     reaction = random.choice(allowed_reactions)
                     try:
                         async with session_lock:
+                            if not client.is_connected():
+                                await asyncio.wait_for(client.connect(), timeout=15)
                             await client(
                                 SendMessageReactionRequest(
                                     peer=entity,
@@ -533,11 +544,16 @@ class AllPostsReactionsService(RakshService):
                             message.id,
                             phone_number,
                         )
+                        processed_message_ids.add(message_id)
+                        retry_messages.pop(message_id, None)
                     except Exception as exc:
                         if is_raksh_frozen_account_error(exc):
                             _mark_raksh_session_unauthorized(phone_number)
                             stop_event.set()
                             return
+                        # Do not lose this post: the next poll will retry it
+                        # even when Telegram delivered the update only once.
+                        retry_messages[message_id] = message
                         logger.warning(
                             "فشل التفاعل المباشر على %s/%s من الحساب %s: %s",
                             channel_ref,
@@ -545,13 +561,23 @@ class AllPostsReactionsService(RakshService):
                             phone_number,
                             exc,
                         )
+                    finally:
+                        processing_message_ids.discard(message_id)
 
                 async def on_new_message(event):
                     await process_message(event.message)
 
                 async def poll_new_messages():
                     """تعويض أي تحديث مباشر لم يصل من Telegram."""
+                    # Retry failed sends before asking Telegram for a newer
+                    # range. This matters after a short disconnect or flood
+                    # wait: last_seen_message_id may already be past the post.
+                    for message in list(retry_messages.values()):
+                        await process_message(message)
+
                     async with session_lock:
+                        if not client.is_connected():
+                            await asyncio.wait_for(client.connect(), timeout=15)
                         messages = await client.get_messages(
                             entity,
                             limit=50,
@@ -570,7 +596,7 @@ class AllPostsReactionsService(RakshService):
                 )
                 while not stop_event.is_set():
                     try:
-                        await asyncio.wait_for(stop_event.wait(), timeout=15)
+                        await asyncio.wait_for(stop_event.wait(), timeout=5)
                     except asyncio.TimeoutError:
                         await poll_new_messages()
             except asyncio.CancelledError:
