@@ -120,28 +120,20 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         if already_credited:
             await update.message.reply_text(
-                f"✅ تمت معالجة هذه الدفعة مسبقاً.
-
-"
-                f"⭐ النجوم: {stars}
-"
+                f"✅ تمت معالجة هذه الدفعة مسبقاً.\n\n"
+                f"⭐ النجوم: {stars}\n"
                 f"💰 رصيدك الحالي: {current_points} نقطة",
                 reply_markup=main_menu_kb(is_own)
             )
         else:
             await update.message.reply_text(
-                f"✅ *تم الشحن بنجاح!*
-
-"
-                f"⭐ النجوم: {stars}
-"
-                f"✨ النقاط المضافة: {pts}
-"
+                f"✅ *تم الشحن بنجاح!*\n\n"
+                f"⭐ النجوم: {stars}\n"
+                f"✨ النقاط المضافة: {pts}\n"
                 f"💰 رصيدك الآن: {current_points} نقطة",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=main_menu_kb(is_own)
             )
-
 
     # ─── إحالة بوت إجبارية بالنجوم ───
     # payload: forced_ref_stars:{user_id}:{qty}:{total_stars}:{use_ai}:{cost_pts_channels}
