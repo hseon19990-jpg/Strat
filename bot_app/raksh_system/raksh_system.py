@@ -2497,6 +2497,13 @@ async def _run_all_posts_reactions_order(context, order: Dict, progress_msg=None
         return
 
     svc = get_raksh_service("all_posts_reactions")
+    if svc and svc.is_live_monitoring(order_id):
+        _set_raksh_order_status(
+            order_id,
+            "pending",
+            "مستمع مباشر نشط؛ تتم معالجة المنشورات فور نشرها",
+        )
+        return
     sessions = svc.get_sessions(is_owner=(user_id == OWNER_ID)) if svc else []
     if not sessions:
         _set_raksh_order_status(order_id, "pending", "لا توجد حسابات متاحة مؤقتاً")
@@ -2574,6 +2581,23 @@ async def _run_all_posts_reactions_order(context, order: Dict, progress_msg=None
     if datetime.now(timezone.utc) >= expires_at:
         await finish_order()
         return
+
+    if svc and success_count >= quantity:
+        successful_phones = {str(phone) for phone in success_phones}
+        live_sessions = [
+            session
+            for session in sessions
+            if str(session.get("phone_number")) in successful_phones
+        ]
+        monitor_params = dict(params)
+        monitor_params["_raksh_order_id"] = order_id
+        await svc.start_live_monitor(
+            order_id=order_id,
+            sessions=live_sessions,
+            params=monitor_params,
+            expires_at=expires_at,
+            on_finished=finish_order,
+        )
 
     _set_raksh_order_status(
         order_id,
