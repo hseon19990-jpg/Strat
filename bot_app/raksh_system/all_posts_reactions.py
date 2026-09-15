@@ -109,7 +109,7 @@ class AllPostsReactionsService(RakshService):
             max_qty = self.get_request_limit(user.id)
             if max_qty < 1:
                 await update.message.reply_text(
-                    "⚠️ لا توجد حسابات متاحة حالياً.",
+                    "⚠️ لا تتوفر إمكانية تنفيذ حالياً.",
                     reply_markup=cancel_keyboard,
                 )
                 return True
@@ -136,7 +136,7 @@ class AllPostsReactionsService(RakshService):
             max_qty = self.get_request_limit(user.id)
             if max_qty < 1:
                 await update.message.reply_text(
-                    "⚠️ لا توجد حسابات متاحة حالياً.",
+                    "⚠️ لا تتوفر إمكانية تنفيذ حالياً.",
                     reply_markup=cancel_keyboard,
                 )
                 return True
