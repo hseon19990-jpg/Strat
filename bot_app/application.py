@@ -505,14 +505,16 @@ def main():
         app.job_queue.run_repeating(run_referral_tasks_job, interval=3600, first=120)
         app.job_queue.run_repeating(run_reaction_ops_job, interval=30, first=45)
         logger.info("⚡ تم تفعيل تنفيذ حملات تفاعلات Telegram كل 30 ثانية")
-        # طلبات التفاعل المستمر تستخدم مستمعي Telegram المباشرين؛ تحتاج
-        # استئنافاً واحداً بعد الإقلاع فقط، لا قراءة قاعدة البيانات كل دقيقة.
-        app.job_queue.run_once(
+        # طلبات التفاعل المستمر تحتاج استئنافاً دورياً بعد إعادة نشر Railway.
+        # قد يتزامن الإقلاع مع تأخر قاعدة البيانات أو Telegram؛ المحاولة
+        # الدورية تضمن إعادة تشغيل الطلب إذا فشلت محاولة الإقلاع الأولى.
+        app.job_queue.run_repeating(
             resume_raksh_orders_job,
-            when=20,
+            interval=60,
+            first=20,
             data={"all_posts_only": True},
         )
-        logger.info("🔔 تم تفعيل استئناف التفاعل المستمر مرة واحدة بعد الإقلاع")
+        logger.info("🔔 تم تفعيل استئناف التفاعل المستمر بعد الإقلاع وكل دقيقة")
         app.job_queue.run_repeating(
             resume_raksh_orders_job,
             interval=60,
