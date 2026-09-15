@@ -2444,6 +2444,9 @@ async def _run_all_posts_reactions_order(context, order: Dict, progress_msg=None
     user_id = int(order["user_id"])
     quantity = int(order["quantity"] or 0)
     params = dict(order.get("params") or {})
+    # يستخدمه التنفيذ لحفظ نقطة بداية كل حساب فور اكتمال انضمامه. لا يبقى
+    # هذا المفتاح في params المحفوظة للمستخدم.
+    params["_raksh_order_id"] = order_id
     try:
         duration_days = max(1, int(params.get("duration_days") or 1))
     except (TypeError, ValueError):
@@ -2531,6 +2534,8 @@ async def _run_all_posts_reactions_order(context, order: Dict, progress_msg=None
         _set_raksh_order_status(order_id, "pending", str(exc))
         logger.exception("توقفت دورة التفاعلات للطلب %s؛ ستعاد المحاولة", order_id)
         return
+    finally:
+        params.pop("_raksh_order_id", None)
 
     if _is_raksh_order_cancelled(order_id):
         return
