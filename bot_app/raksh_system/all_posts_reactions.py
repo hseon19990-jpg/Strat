@@ -76,10 +76,14 @@ async def _leave_non_interaction_channel_if_needed(
 
 
 class AllPostsReactionsService(RakshService):
-    """تفاعل مستمر على كل منشورات القناة بعدد حسابات يحدده المستخدم."""
+    """رشق تفاعلات مستمر على كل منشورات القناة، بدون رشق مشاهدات."""
 
     service_type = "all_posts_reactions"
-    label = "✨ تفاعل على جميع البوستات"
+    label = "💬 رشق تفاعلات لكل البوستات"
+    # This service deliberately sends reactions only.  Do not add a view
+    # request here: fetching a message is only used to obtain its ID before
+    # SendMessageReactionRequest.
+    reaction_only = True
     MAX_DURATION_DAYS = 30
     MAX_POSTS_PER_CYCLE = 100
     POST_CUTOFFS_PARAM = "post_reaction_cutoffs"
@@ -164,7 +168,8 @@ class AllPostsReactionsService(RakshService):
             "📌 العدد الذي سترسله = عدد الحسابات على كل منشور.\n"
             "مثال: 5 حسابات تعني أن كل منشور سيتفاعل عليه 5 حسابات.\n"
             "سيتم ضم نفس عدد الحسابات إلى القناة قبل بدء التفاعل.\n"
-            "ويستمر ذلك مع المنشورات الجديدة حتى انتهاء المدة.\n\n"
+            "ويستمر ذلك مع المنشورات الجديدة حتى انتهاء المدة.\n"
+            "✅ هذه الخدمة تفاعلات فقط، ولا تنفذ مشاهدات أو رشق مشاهدات.\n\n"
             "🔗 *أرسل رابط القناة:*\n"
             f"{self.get_link_instruction()}"
         )
