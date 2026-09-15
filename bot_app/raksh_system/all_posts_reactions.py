@@ -464,6 +464,9 @@ class AllPostsReactionsService(RakshService):
         if not channel_ref:
             return
 
+        processed_message_ids = set()
+        last_seen_message_id = 0
+
         while not stop_event.is_set():
             client = TelegramClient(
                 StringSession(session["session_string"]),
@@ -498,10 +501,15 @@ class AllPostsReactionsService(RakshService):
                         pass
                     continue
 
-                async def on_new_message(event):
-                    message = event.message
+                async def process_message(message):
+                    nonlocal last_seen_message_id
                     if not getattr(message, "id", None):
                         return
+                    message_id = int(message.id)
+                    if message_id in processed_message_ids:
+                        return
+                    processed_message_ids.add(message_id)
+                    last_seen_message_id = max(last_seen_message_id, message_id)
                     message_date = self._as_utc(getattr(message, "date", None))
                     if message_date is None or message_date <= cutoff:
                         return
@@ -529,11 +537,32 @@ class AllPostsReactionsService(RakshService):
                             exc,
                         )
 
+                async def on_new_message(event):
+                    await process_message(event.message)
+
+                async def poll_new_messages():
+                    """تعويض أي تحديث مباشر لم يصل من Telegram."""
+                    messages = await client.get_messages(
+                        entity,
+                        limit=50,
+                        **(
+                            {"min_id": last_seen_message_id}
+                            if last_seen_message_id
+                            else {}
+                        ),
+                    )
+                    for message in reversed(list(messages or [])):
+                        await process_message(message)
+
                 client.add_event_handler(
                     on_new_message,
                     events.NewMessage(chats=entity),
                 )
-                await stop_event.wait()
+                while not stop_event.is_set():
+                    try:
+                        await asyncio.wait_for(stop_event.wait(), timeout=5)
+                    except asyncio.TimeoutError:
+                        await poll_new_messages()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
