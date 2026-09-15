@@ -5,7 +5,10 @@ from ..database import db_conn
 from datetime import datetime, timezone
 import json
 from telethon import events
-from telethon.tl.functions.messages import SendReactionRequest as SendMessageReactionRequest
+from telethon.tl.functions.messages import (
+    GetMessagesViewsRequest,
+    SendReactionRequest as SendMessageReactionRequest,
+)
 from telethon.tl.types import ReactionCustomEmoji, ReactionEmoji
 
 
@@ -76,14 +79,12 @@ async def _leave_non_interaction_channel_if_needed(
 
 
 class AllPostsReactionsService(RakshService):
-    """رشق تفاعلات مستمر على كل منشورات القناة، بدون رشق مشاهدات."""
+    """رشق تفاعلات ومشاهدات مستمر على كل منشورات القناة."""
 
     service_type = "all_posts_reactions"
-    label = "💬 رشق تفاعلات لكل البوستات"
-    # This service deliberately sends reactions only.  Do not add a view
-    # request here: fetching a message is only used to obtain its ID before
-    # SendMessageReactionRequest.
-    reaction_only = True
+    label = "💬👁 رشق تفاعلات ومشاهدات لكل البوستات"
+    # Each new post receives one view attempt and one reaction attempt per account.
+    reaction_only = False
     MAX_DURATION_DAYS = 30
     MAX_POSTS_PER_CYCLE = 100
     POST_CUTOFFS_PARAM = "post_reaction_cutoffs"
@@ -169,7 +170,7 @@ class AllPostsReactionsService(RakshService):
             "مثال: 5 حسابات تعني أن كل منشور سيتفاعل عليه 5 حسابات.\n"
             "سيتم ضم نفس عدد الحسابات إلى القناة قبل بدء التفاعل.\n"
             "ويستمر ذلك مع المنشورات الجديدة حتى انتهاء المدة.\n"
-            "✅ هذه الخدمة تفاعلات فقط، ولا تنفذ مشاهدات أو رشق مشاهدات.\n\n"
+            "✅ كل حساب يسجل مشاهدة ويرسل تفاعلاً على المنشورات الجديدة.\n\n"
             "🔗 *أرسل رابط القناة:*\n"
             f"{self.get_link_instruction()}"
         )
@@ -476,6 +477,8 @@ class AllPostsReactionsService(RakshService):
         # Keep failed deliveries out of the processed set so a temporary
         # Telegram/network error can be retried by the polling fallback.
         processed_message_ids = set()
+        viewed_message_ids = set()
+        reacted_message_ids = set()
         retry_messages = {}
         processing_message_ids = set()
         last_seen_message_id = 0
@@ -513,13 +516,6 @@ class AllPostsReactionsService(RakshService):
                         self._save_post_cutoff(params, phone_number, cutoff)
 
                     allowed_reactions = await self._get_allowed_reactions(client, entity)
-                if not allowed_reactions:
-                    try:
-                        await asyncio.wait_for(stop_event.wait(), timeout=30)
-                    except asyncio.TimeoutError:
-                        pass
-                    continue
-
                 async def process_message(message):
                     nonlocal last_seen_message_id
                     if not getattr(message, "id", None):
@@ -537,36 +533,52 @@ class AllPostsReactionsService(RakshService):
                         retry_messages.pop(message_id, None)
                         return
                     processing_message_ids.add(message_id)
-                    reaction = random.choice(allowed_reactions)
+                    view_done = message_id in viewed_message_ids
+                    reaction_done = not allowed_reactions or message_id in reacted_message_ids
                     try:
                         async with session_lock:
                             if not client.is_connected():
                                 await asyncio.wait_for(client.connect(), timeout=15)
-                            await client(
-                                SendMessageReactionRequest(
-                                    peer=entity,
-                                    msg_id=message.id,
-                                    reaction=[reaction],
+                            if not view_done:
+                                await client(
+                                    GetMessagesViewsRequest(
+                                        peer=entity,
+                                        id=[message.id],
+                                        increment=True,
+                                    )
                                 )
-                            )
-                        logger.info(
-                            "✅ تفاعل مباشر على %s/%s من الحساب %s",
-                            channel_ref,
-                            message.id,
-                            phone_number,
-                        )
-                        processed_message_ids.add(message_id)
-                        retry_messages.pop(message_id, None)
+                                viewed_message_ids.add(message_id)
+                                view_done = True
+                                logger.info(
+                                    "👁 مشاهدة على %s/%s من الحساب %s",
+                                    channel_ref,
+                                    message.id,
+                                    phone_number,
+                                )
+                            if allowed_reactions and not reaction_done:
+                                reaction = random.choice(allowed_reactions)
+                                await client(
+                                    SendMessageReactionRequest(
+                                        peer=entity,
+                                        msg_id=message.id,
+                                        reaction=[reaction],
+                                    )
+                                )
+                                reacted_message_ids.add(message_id)
+                                reaction_done = True
+                                logger.info(
+                                    "✅ تفاعل مباشر على %s/%s من الحساب %s",
+                                    channel_ref,
+                                    message.id,
+                                    phone_number,
+                                )
                     except Exception as exc:
                         if is_raksh_frozen_account_error(exc):
                             _mark_raksh_session_unauthorized(phone_number)
                             stop_event.set()
                             return
-                        # Do not lose this post: the next poll will retry it
-                        # even when Telegram delivered the update only once.
-                        retry_messages[message_id] = message
                         logger.warning(
-                            "فشل التفاعل المباشر على %s/%s من الحساب %s: %s",
+                            "فشل المشاهدة/التفاعل المباشر على %s/%s من الحساب %s: %s",
                             channel_ref,
                             message.id,
                             phone_number,
@@ -574,6 +586,14 @@ class AllPostsReactionsService(RakshService):
                         )
                     finally:
                         processing_message_ids.discard(message_id)
+
+                    if view_done and reaction_done:
+                        processed_message_ids.add(message_id)
+                        retry_messages.pop(message_id, None)
+                    else:
+                        # إذا نجحت المشاهدة وفشل التفاعل أو العكس، تعاد المحاولة
+                        # للجزء الفاشل فقط دون تكرار الجزء الناجح.
+                        retry_messages[message_id] = message
 
                 async def on_new_message(event):
                     await process_message(event.message)
@@ -736,12 +756,6 @@ class AllPostsReactionsService(RakshService):
                 self._save_post_cutoff(params, phone_number, post_cutoff)
 
             allowed_reactions = await self._get_allowed_reactions(client, entity)
-            if not allowed_reactions:
-                return True, (
-                    f"✅ انضم الحساب {session.get('phone_number', '')} إلى القناة، "
-                    "لكن القناة لا تسمح حالياً بتفاعلات عادية"
-                )
-
             try:
                 post_limit = int(params.get("post_limit") or self.MAX_POSTS_PER_CYCLE)
             except (TypeError, ValueError):
@@ -749,6 +763,8 @@ class AllPostsReactionsService(RakshService):
             post_limit = max(1, min(post_limit, self.MAX_POSTS_PER_CYCLE))
 
             success_count = 0
+            view_success_count = 0
+            reaction_success_count = 0
             attempted_count = 0
             async for message in client.iter_messages(entity, limit=post_limit):
                 if not getattr(message, "id", None):
@@ -763,37 +779,66 @@ class AllPostsReactionsService(RakshService):
                     # بعد أول منشور وصل قبل نقطة الانضمام.
                     break
                 attempted_count += 1
-                reaction = random.choice(allowed_reactions)
+                view_ok = False
+                reaction_ok = not allowed_reactions
                 try:
-                    await client(SendMessageReactionRequest(
-                        peer=entity,
-                        msg_id=message.id,
-                        reaction=[reaction],
-                    ))
-                    success_count += 1
+                    await client(
+                        GetMessagesViewsRequest(
+                            peer=entity,
+                            id=[message.id],
+                            increment=True,
+                        )
+                    )
+                    view_success_count += 1
+                    view_ok = True
                 except Exception as exc:
                     if is_raksh_frozen_account_error(exc):
                         raise
                     logger.warning(
-                        "فشل تفاعل الخدمة المستمرة على %s/%s: %s",
+                        "فشل تسجيل مشاهدة الخدمة المستمرة على %s/%s: %s",
                         channel_ref,
                         message.id,
                         exc,
                     )
+
+                if allowed_reactions:
+                    reaction = random.choice(allowed_reactions)
+                    try:
+                        await client(SendMessageReactionRequest(
+                            peer=entity,
+                            msg_id=message.id,
+                            reaction=[reaction],
+                        ))
+                        reaction_success_count += 1
+                        reaction_ok = True
+                    except Exception as exc:
+                        if is_raksh_frozen_account_error(exc):
+                            raise
+                        logger.warning(
+                            "فشل تفاعل الخدمة المستمرة على %s/%s: %s",
+                            channel_ref,
+                            message.id,
+                            exc,
+                        )
+
+                if view_ok and reaction_ok:
+                    success_count += 1
 
             if not attempted_count:
                 return True, (
                     f"✅ انضم الحساب {session.get('phone_number', '')} إلى القناة؛ "
                     "لا توجد منشورات حالياً للتفاعل معها"
                 )
-            if not success_count:
+            if not view_success_count and not reaction_success_count:
                 return True, (
                     f"✅ انضم الحساب {session.get('phone_number', '')} إلى القناة، "
-                    "لكن تعذر تنفيذ التفاعل على المنشورات الحالية"
+                    "لكن تعذر تسجيل المشاهدات والتفاعلات على المنشورات الحالية"
                 )
             return True, (
                 f"✅ تمت معالجة {success_count} من {attempted_count} منشوراً "
-                f"من الحساب {session.get('phone_number', '')}"
+                f"من الحساب {session.get('phone_number', '')}
+"
+                f"👁 مشاهدات: {view_success_count} | 💬 تفاعلات: {reaction_success_count}"
             )
         except Exception as exc:
             if is_raksh_frozen_account_error(exc):
