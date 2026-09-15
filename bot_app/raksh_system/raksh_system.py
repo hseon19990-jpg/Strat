@@ -651,6 +651,48 @@ def _set_raksh_order_status(
         )
 
 
+def _requeue_raksh_order_after_failure(
+    order_id: Optional[int],
+    error: object,
+) -> None:
+    """إعادة الطلب للطابور إذا توقفت مهمة التنفيذ قبل الإنهاء.
+
+    حالة كل حساب محفوظة بشكل مستقل في PostgreSQL. لذلك نعيد فقط الحسابات
+    التي كانت قيد التنفيذ إلى ``pending`` ونترك الحسابات التي اكتملت كما هي؛
+    عند المحاولة التالية سيبدأ الطلب من آخر نقطة محفوظة بدل إعادة الحساب
+    من الصفر.
+    """
+    if not order_id:
+        return
+    error_text = str(error or "خطأ غير معروف أثناء تنفيذ طلب الرشق")[:1000]
+    try:
+        with db_conn() as c:
+            c.execute(
+                """
+                UPDATE raksh_order_items
+                SET status='pending', last_error=%s, updated_at=NOW()
+                WHERE order_id=%s AND status='running'
+                """,
+                (error_text, order_id),
+            )
+            c.execute(
+                """
+                UPDATE raksh_orders
+                SET status='pending', last_error=%s,
+                    lease_until=NULL, updated_at=NOW()
+                WHERE id=%s AND status IN ('pending', 'running')
+                """,
+                (error_text, order_id),
+            )
+    except Exception:
+        # لا نخفي الخطأ الأصلي إذا كانت قاعدة البيانات نفسها غير متاحة
+        # لحظة الانهيار؛ سيعيد فحص الإقلاع الطلب عندما تعود القاعدة.
+        logger.exception(
+            "تعذر إعادة طلب الرشق %s إلى الطابور بعد توقف التنفيذ",
+            order_id,
+        )
+
+
 def _claim_raksh_order(order_id: int) -> Optional[Dict]:
     """حجز طلب للاستئناف ومنع تشغيله مرتين بعد إعادة النشر."""
     with db_conn() as c:
@@ -3023,9 +3065,11 @@ async def _start_raksh_execution(
         _ACTIVE_RAKSH_ORDER_IDS.add(order_id)
         try:
             await _run_raksh_order(context, order_id, progress_msg)
-        except Exception:
-            # _run_raksh_order يحفظ الطلب كـ pending قبل إعادة الاستثناء،
-            # وسيعيده job الاستئناف تلقائياً. لا نعيد خطأً إلى callback.
+        except Exception as exc:
+            # بعض الأخطاء قد تقع بعد مرحلة التنفيذ وقبل تحديث الحالة النهائية.
+            # لا نترك الطلب running حتى انتهاء lease؛ نعيده فوراً للطابور مع
+            # إبقاء الحسابات الناجحة محفوظة في قاعدة البيانات.
+            _requeue_raksh_order_after_failure(order_id, exc)
             logger.exception(
                 "فشل تنفيذ طلب الرشق في الخلفية order_id=%s",
                 order_id,
@@ -3077,7 +3121,8 @@ async def resume_raksh_orders_job(context) -> None:
                     f"({order['service_type']}, المستخدم {order['user_id']})"
                 )
                 await _run_raksh_order(context, order_id)
-            except Exception:
+            except Exception as exc:
+                _requeue_raksh_order_after_failure(order_id, exc)
                 logger.exception(f"فشل استئناف طلب الرشق {order_id}; ستعاد المحاولة لاحقاً")
             finally:
                 _ACTIVE_RAKSH_ORDER_IDS.discard(order_id)
