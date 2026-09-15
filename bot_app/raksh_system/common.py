@@ -39,6 +39,17 @@ from enum import Enum
 
 RAKSH_PAID_REACTION = "__raksh_paid_reaction__"
 RAKSH_PAID_REACTION_LABEL = "⭐ تفاعل مدفوع"
+RAKSH_POINTS_PER_STAR = 250
+
+def points_to_stars(points: int) -> int:
+    """تحويل إجمالي النقاط إلى نجوم مع التقريب للأعلى."""
+    try:
+        total = max(0, int(points or 0))
+    except (TypeError, ValueError):
+        total = 0
+    if total <= 0:
+        return 0
+    return (total + RAKSH_POINTS_PER_STAR - 1) // RAKSH_POINTS_PER_STAR
 RAKSH_CUSTOM_REACTION_PREFIX = "__raksh_custom_reaction__:"
 RAKSH_REACTION_LOOKUP_MAX_SESSIONS = 3
 RAKSH_REACTION_LOOKUP_TIMEOUT_SECONDS = 5
