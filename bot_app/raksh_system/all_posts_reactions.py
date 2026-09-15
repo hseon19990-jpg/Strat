@@ -24,7 +24,7 @@ class AllPostsReactionsService(RakshService):
 
     config = ServiceConfig(
         name=label,
-        price_points=1,
+        price_points=30,
         points_quantity=1,
         price_stars=1,
         stars_quantity=1,
@@ -95,7 +95,7 @@ class AllPostsReactionsService(RakshService):
         return (
             f"{self.config.name}\n\n"
             f"💰 السعر الأساسي: {self.get_rate_text('points')} لكل حساب/يوم\n"
-            f"⭐ السعر الأساسي: {self.get_rate_text('stars')} لكل حساب/يوم\n\n"
+            f"⭐ الدفع بالنجوم: كل {RAKSH_POINTS_PER_STAR} نقطة = نجمة\n\n"
             "📌 العدد الذي سترسله = عدد الحسابات على كل منشور.\n"
             "مثال: 5 حسابات تعني أن كل منشور سيتفاعل عليه 5 حسابات.\n"
             "سيتم ضم نفس عدد الحسابات إلى القناة قبل بدء التفاعل.\n"
@@ -110,9 +110,12 @@ class AllPostsReactionsService(RakshService):
         payment_method: str,
         duration_days: int,
     ) -> int:
-        """السعر = عدد الحسابات لكل منشور × عدد الأيام × السعر اليومي."""
+        """السعر يعتمد على الحسابات والأيام، لا على عدد المنشورات."""
         days = max(1, min(int(duration_days or 1), self.MAX_DURATION_DAYS))
-        return self.get_total(quantity, payment_method) * days
+        points_total = self.get_total(quantity, "points") * days
+        if payment_method == "stars":
+            return points_to_stars(points_total)
+        return points_total
 
     async def handle_text(self, update, context, text, user, state, is_own) -> bool:
         """جمع الرابط ثم عدد الحسابات لكل منشور ثم عدد الأيام فقط."""
