@@ -1195,9 +1195,14 @@ def raksh_price_settings_kb():
     rows = []
     for service_type, svc in RAKSH_SERVICES.items():
         config = svc.get_price_config()
+        stars_label = (
+            f"⭐ تلقائي/{RAKSH_POINTS_PER_STAR} نقطة"
+            if service_type == "all_posts_reactions"
+            else f"⭐ {config['stars_price']}/{config['stars_quantity']}"
+        )
         rows.append([
             InlineKeyboardButton(
-                f"{svc.label}: ⭐ {config['stars_price']}/{config['stars_quantity']} | "
+                f"{svc.label}: {stars_label} | "
                 f"💰 {config['points_price']}/{config['points_quantity']}",
                 callback_data=f"raksh:price:{service_type}",
             )
@@ -1414,7 +1419,8 @@ async def _handle_raksh_callback_impl(
             "اضغط على الخدمة، ثم أرسل السعرين بصيغة:\n"
             "⭐ `نجوم 1 لكل 10`\n"
             "💰 `نقاط 30 لكل 1`\n\n"
-            "أي سطر ترسله سيحدّث الطريقة المذكورة فيه.",
+            "أي سطر ترسله سيحدّث الطريقة المذكورة فيه."
+            "\nفي جميع المنشورات، النجوم تُحسب تلقائياً من إجمالي النقاط.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=raksh_price_settings_kb(),
         )
@@ -1435,8 +1441,13 @@ async def _handle_raksh_callback_impl(
         context.user_data["raksh_step"] = "admin_price"
         await query.edit_message_text(
             f"✏️ *تعديل سعر {svc.label}*\n\n"
-            f"⭐ الحالي: {config['stars_price']} نجمة لكل {config['stars_quantity']}\n"
-            f"💰 الحالي: {config['points_price']} نقطة لكل {config['points_quantity']}\n\n"
+            +
+            (
+                f"⭐ تلقائي: كل {RAKSH_POINTS_PER_STAR} نقطة = نجمة\n"
+                if service_type == "all_posts_reactions"
+                else f"⭐ الحالي: {config['stars_price']} نجمة لكل {config['stars_quantity']}\n"
+            )
+            + f"💰 الحالي: {config['points_price']} نقطة لكل {config['points_quantity']}\n\n"
             "أرسل سطراً أو سطرين بهذا الشكل:\n"
             "`نجوم 1 لكل 10`\n"
             "`نقاط 30 لكل 1`",
@@ -1982,6 +1993,8 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return True
         
         svc = RAKSH_SERVICES[service_type]
+        if service_type == "all_posts_reactions":
+            updates.pop("stars", None)
         keys = svc.get_price_keys()
         if "stars" in updates:
             price, bundle_quantity = updates["stars"]
@@ -1995,8 +2008,13 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         config = svc.get_price_config()
         await update.message.reply_text(
             f"✅ تم حفظ أسعار {svc.label}.\n\n"
-            f"⭐ {config['stars_price']} نجمة لكل {config['stars_quantity']}\n"
-            f"💰 {config['points_price']} نقطة لكل {config['points_quantity']}\n\n"
+            +
+            (
+                f"⭐ تلقائي: كل {RAKSH_POINTS_PER_STAR} نقطة = نجمة\n"
+                if service_type == "all_posts_reactions"
+                else f"⭐ {config['stars_price']} نجمة لكل {config['stars_quantity']}\n"
+            )
+            + f"💰 {config['points_price']} نقطة لكل {config['points_quantity']}\n\n"
             "يمكنك إرسال تعديل آخر أو اختيار خدمة أخرى.",
             reply_markup=raksh_price_settings_kb(),
         )
