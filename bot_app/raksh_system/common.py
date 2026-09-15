@@ -298,14 +298,34 @@ def get_raksh_daily_remaining(user_id: int) -> int:
         logger.exception(f"فشل قراءة الحد اليومي للمستخدم {user_id}")
         return RAKSH_MAX_EXECUTIONS_PER_DAY
 
+def _dedupe_raksh_sessions(sessions: List[Dict]) -> List[Dict]:
+    """Keep one usable session per account and per auth key in each pool."""
+    unique = []
+    seen_phones = set()
+    seen_session_strings = set()
+    for session in sessions:
+        phone = _normalize_raksh_account_phone(session.get("phone_number"))
+        session_string = str(session.get("session_string") or "").strip()
+        if phone and phone in seen_phones:
+            continue
+        if session_string and session_string in seen_session_strings:
+            continue
+        if phone:
+            seen_phones.add(phone)
+        if session_string:
+            seen_session_strings.add(session_string)
+        unique.append(session)
+    return unique
+
+
 def _get_sessions_for_service(service_type: str, is_owner: bool = False) -> List[Dict]:
-    """Load sessions, then apply the owner/member pool and randomize it."""
+    """Load sessions, remove duplicate accounts/auth keys, then randomize."""
     cache_key = f"sessions_{service_type}"
     if cache_key in _RAKSH_SESSION_CACHE:
         cache_time = _RAKSH_SESSION_CACHE_TIME.get(cache_key, 0)
         if time.time() - cache_time < _RAKSH_SESSION_CACHE_TTL:
             return get_raksh_sessions_for_request(
-                _RAKSH_SESSION_CACHE[cache_key].copy(),
+                _dedupe_raksh_sessions(_RAKSH_SESSION_CACHE[cache_key].copy()),
                 is_owner=is_owner,
             )
 
@@ -321,7 +341,7 @@ def _get_sessions_for_service(service_type: str, is_owner: bool = False) -> List
             ORDER BY last_authorized DESC NULLS LAST, id ASC
         """
         rows = c.execute(query).fetchall()
-        sessions = [dict(row) for row in rows]
+        sessions = _dedupe_raksh_sessions([dict(row) for row in rows])
 
     _RAKSH_SESSION_CACHE[cache_key] = sessions
     _RAKSH_SESSION_CACHE_TIME[cache_key] = time.time()
