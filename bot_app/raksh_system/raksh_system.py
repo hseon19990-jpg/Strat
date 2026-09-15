@@ -2361,11 +2361,20 @@ async def _send_raksh_owner_result(
     if not OWNER_ID:
         return
     try:
+        is_all_posts_service = service_type == "all_posts_reactions"
         lines = [
             f"📊 نتيجة {_raksh_order_label(service_type)}",
             f"🔗 الرابط المستهدف: {target_link or 'غير متوفر'}",
-            f"📦 المطلوب: {quantity}",
-            f"✅ الناجح: {len(success_phones)}",
+            (
+                f"👥 المطلوب من الحسابات لكل منشور: {quantity}"
+                if is_all_posts_service
+                else f"📦 المطلوب: {quantity}"
+            ),
+            (
+                f"✅ الحسابات التي انضمت للقناة: {len(success_phones)}"
+                if is_all_posts_service
+                else f"✅ الناجح: {len(success_phones)}"
+            ),
             f"❌ الفاشل: {len(failed_phones)}",
             "",
         ]
@@ -2403,7 +2412,11 @@ async def _send_raksh_owner_result(
             )
         
         if success_phones:
-            lines.append("✅ الناجحين:")
+            lines.append(
+                "✅ الحسابات التي انضمت للقناة:"
+                if is_all_posts_service
+                else "✅ الناجحين:"
+            )
             lines.extend(
                 f"• {account_label(phone)}"
                 for phone in success_phones[:20]
@@ -2499,7 +2512,13 @@ async def _run_all_posts_reactions_order(context, order: Dict, progress_msg=None
         )
 
     try:
-        success_count, _, _, _, _ = await execute_raksh_service(
+        (
+            success_count,
+            success_phones,
+            success_details,
+            failed_phones,
+            failed_details,
+        ) = await execute_raksh_service(
             service_type="all_posts_reactions",
             quantity=quantity,
             sessions=sessions,
@@ -2515,6 +2534,38 @@ async def _run_all_posts_reactions_order(context, order: Dict, progress_msg=None
 
     if _is_raksh_order_cancelled(order_id):
         return
+
+    # إبلاغ المالك مرة واحدة بعد أول دورة فقط، حتى لا تصله رسالة جديدة
+    # كل دقيقة مع استمرار الحملة. الحسابات الناجحة هنا هي الحسابات التي
+    # انضمت للقناة فعلياً؛ وقد تُرفق الحسابات الفاشلة وسبب الفشل أيضاً.
+    if not params.get("join_report_sent"):
+        identity_phones = success_phones[:20] + failed_phones[:10]
+        account_identities = await _collect_raksh_account_identities(
+            sessions,
+            identity_phones,
+        )
+        requester_identity = await _load_raksh_requester_identity(
+            context.bot,
+            user_id,
+        )
+        await _send_raksh_owner_result(
+            context.bot,
+            "all_posts_reactions",
+            quantity,
+            success_phones,
+            failed_phones,
+            failed_details,
+            target_link=params.get("link", ""),
+            account_identities=account_identities,
+            requester_identity=requester_identity,
+        )
+        params["join_report_sent"] = True
+        with db_conn() as c:
+            c.execute(
+                "UPDATE raksh_orders SET params=%s::jsonb, updated_at=NOW() WHERE id=%s",
+                (json.dumps(params, ensure_ascii=False, default=str), order_id),
+            )
+
     if datetime.now(timezone.utc) >= expires_at:
         await finish_order()
         return
