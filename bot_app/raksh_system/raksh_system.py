@@ -2276,21 +2276,11 @@ async def raksh_successful_payment(update: Update, context: ContextTypes.DEFAULT
             return
         
         if quantity > _get_request_limit(user_id, service_type):
-            try:
-                await context.bot.refund_star_payment(
-                    user_id=user_id,
-                    telegram_payment_charge_id=payment.telegram_payment_charge_id,
-                )
-                await update.message.reply_text(
-                    "⚠️ تعذر بدء الطلب حالياً، وتمت إعادة قيمة الدفع.",
-                    reply_markup=raksh_menu_kb(user_id == OWNER_ID),
-                )
-            except Exception:
-                logger.exception(f"فشل إعادة دفع النجوم للمستخدم {user_id}")
-                await update.message.reply_text(
-                    "⚠️ تعذر بدء الطلب حالياً. تواصل مع المالك.",
-                    reply_markup=raksh_menu_kb(user_id == OWNER_ID),
-                )
+            # لا تُسترد نجوم Telegram تلقائياً؛ تُترك المعالجة للمالك.
+            await update.message.reply_text(
+                "⚠️ تعذر بدء الطلب حالياً بسبب تجاوز الحد المسموح. لم يتم استرداد النجوم تلقائياً؛ تواصل مع المالك.",
+                reply_markup=raksh_menu_kb(user_id == OWNER_ID),
+            )
             return
         
         context.user_data["raksh_service"] = service_type
