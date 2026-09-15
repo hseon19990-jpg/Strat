@@ -432,6 +432,7 @@ class AllPostsReactionsService(RakshService):
                     session=session,
                     params=params,
                     stop_event=stop_event,
+                    expires_at=expires_at,
                 ),
                 name=f"raksh-live-account-{session.get('phone_number')}",
             )
@@ -457,6 +458,7 @@ class AllPostsReactionsService(RakshService):
         session: Dict,
         params: Dict,
         stop_event: asyncio.Event,
+        expires_at: datetime,
     ) -> None:
         """إبقاء جلسة الحساب مستمعة للقناة والتفاعل مع كل منشور جديد."""
         phone_number = session.get("phone_number")
@@ -470,6 +472,7 @@ class AllPostsReactionsService(RakshService):
         retry_messages = {}
         processing_message_ids = set()
         last_seen_message_id = 0
+        last_membership_refresh = 0.0
 
         while not stop_event.is_set():
             client = TelegramClient(
@@ -492,6 +495,7 @@ class AllPostsReactionsService(RakshService):
                         channel_ref,
                         phone_number,
                         return_entity=True,
+                        leave_until=expires_at,
                     )
                     if not entity:
                         raise RuntimeError("تعذر انضمام الحساب إلى القناة")
@@ -569,6 +573,24 @@ class AllPostsReactionsService(RakshService):
 
                 async def poll_new_messages():
                     """تعويض أي تحديث مباشر لم يصل من Telegram."""
+                    nonlocal entity, last_membership_refresh
+                    now = asyncio.get_running_loop().time()
+                    if now - last_membership_refresh >= 900:
+                        async with session_lock:
+                            if not client.is_connected():
+                                await asyncio.wait_for(client.connect(), timeout=15)
+                            refreshed_entity = await _join_channel_and_schedule_leave(
+                                client,
+                                channel_ref,
+                                phone_number,
+                                return_entity=True,
+                                leave_until=expires_at,
+                            )
+                        if not refreshed_entity:
+                            raise RuntimeError("تعذر تجديد عضوية الحساب في القناة")
+                        entity = refreshed_entity
+                        last_membership_refresh = now
+
                     # Retry failed sends before asking Telegram for a newer
                     # range. This matters after a short disconnect or flood
                     # wait: last_seen_message_id may already be past the post.
@@ -687,6 +709,7 @@ class AllPostsReactionsService(RakshService):
                 channel_ref,
                 phone_number,
                 return_entity=True,
+                leave_until=self._as_utc(params.get("_raksh_expires_at")),
             )
             if not entity:
                 return False, "تعذر انضمام الحساب إلى القناة"
