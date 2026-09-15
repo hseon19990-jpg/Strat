@@ -474,26 +474,30 @@ class AllPostsReactionsService(RakshService):
                 TELEGRAM_API_HASH,
             )
             try:
-                await asyncio.wait_for(client.connect(), timeout=15)
-                if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
-                    _mark_raksh_session_unauthorized(phone_number)
-                    return
+                # قد يستمع الحساب نفسه إلى عدة قنوات؛ لا نفتح طلبات Telegram
+                # متزامنة للجلسة نفسها حتى لا يتحول التفاعل إلى FloodWait.
+                session_lock = _get_raksh_session_lock(str(phone_number or ""))
+                async with session_lock:
+                    await asyncio.wait_for(client.connect(), timeout=15)
+                    if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
+                        _mark_raksh_session_unauthorized(phone_number)
+                        return
 
-                entity = await _join_channel_and_schedule_leave(
-                    client,
-                    channel_ref,
-                    phone_number,
-                    return_entity=True,
-                )
-                if not entity:
-                    raise RuntimeError("تعذر انضمام الحساب إلى القناة")
+                    entity = await _join_channel_and_schedule_leave(
+                        client,
+                        channel_ref,
+                        phone_number,
+                        return_entity=True,
+                    )
+                    if not entity:
+                        raise RuntimeError("تعذر انضمام الحساب إلى القناة")
 
-                cutoff = self._get_post_cutoff(params, phone_number)
-                if cutoff is None:
-                    cutoff = datetime.now(timezone.utc)
-                    self._save_post_cutoff(params, phone_number, cutoff)
+                    cutoff = self._get_post_cutoff(params, phone_number)
+                    if cutoff is None:
+                        cutoff = datetime.now(timezone.utc)
+                        self._save_post_cutoff(params, phone_number, cutoff)
 
-                allowed_reactions = await self._get_allowed_reactions(client, entity)
+                    allowed_reactions = await self._get_allowed_reactions(client, entity)
                 if not allowed_reactions:
                     try:
                         await asyncio.wait_for(stop_event.wait(), timeout=30)
@@ -515,13 +519,14 @@ class AllPostsReactionsService(RakshService):
                         return
                     reaction = random.choice(allowed_reactions)
                     try:
-                        await client(
-                            SendMessageReactionRequest(
-                                peer=entity,
-                                msg_id=message.id,
-                                reaction=[reaction],
+                        async with session_lock:
+                            await client(
+                                SendMessageReactionRequest(
+                                    peer=entity,
+                                    msg_id=message.id,
+                                    reaction=[reaction],
+                                )
                             )
-                        )
                         logger.info(
                             "✅ تفاعل مباشر على %s/%s من الحساب %s",
                             channel_ref,
@@ -546,15 +551,16 @@ class AllPostsReactionsService(RakshService):
 
                 async def poll_new_messages():
                     """تعويض أي تحديث مباشر لم يصل من Telegram."""
-                    messages = await client.get_messages(
-                        entity,
-                        limit=50,
-                        **(
-                            {"min_id": last_seen_message_id}
-                            if last_seen_message_id
-                            else {}
-                        ),
-                    )
+                    async with session_lock:
+                        messages = await client.get_messages(
+                            entity,
+                            limit=50,
+                            **(
+                                {"min_id": last_seen_message_id}
+                                if last_seen_message_id
+                                else {}
+                            ),
+                        )
                     for message in reversed(list(messages or [])):
                         await process_message(message)
 
@@ -564,7 +570,7 @@ class AllPostsReactionsService(RakshService):
                 )
                 while not stop_event.is_set():
                     try:
-                        await asyncio.wait_for(stop_event.wait(), timeout=5)
+                        await asyncio.wait_for(stop_event.wait(), timeout=15)
                     except asyncio.TimeoutError:
                         await poll_new_messages()
             except asyncio.CancelledError:
