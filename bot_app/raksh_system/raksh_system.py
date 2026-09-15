@@ -142,11 +142,33 @@ def get_raksh_price_config(service_type: str) -> Dict[str, int]:
     return {}
 
 def get_raksh_total(service_type: str, quantity: int, payment_method: str) -> int:
-    """حساب السعر"""
+    """حساب السعر الأساسي للخدمات التي لا تعتمد على مدة."""
     svc = get_raksh_service(service_type)
     if svc:
         return svc.get_total(quantity, payment_method)
     return 0
+
+
+def _get_contextual_raksh_total(
+    svc,
+    quantity: int,
+    payment_method: str,
+    channel_count: int = 0,
+    context=None,
+) -> int:
+    """حساب السعر مع مدة الأيام للخدمات المستمرة."""
+    if (
+        svc
+        and getattr(svc, "service_type", "") == "all_posts_reactions"
+        and hasattr(svc, "get_total_for_duration")
+    ):
+        duration_days = 1
+        try:
+            duration_days = int((context.user_data or {}).get("raksh_duration_days") or 1)
+        except (AttributeError, TypeError, ValueError):
+            duration_days = 1
+        return svc.get_total_for_duration(quantity, payment_method, duration_days)
+    return svc.get_total(quantity, payment_method, channel_count)
 
 def _raksh_rate_text(service_type: str, payment_method: str) -> str:
     """نص عرض السعر"""
@@ -1699,7 +1721,7 @@ async def _handle_raksh_callback_impl(
         
         channel_count = len(context.user_data.get("raksh_channels") or [])
         if method == "stars":
-            total = svc.get_total(quantity, "stars", channel_count)
+            total = _get_contextual_raksh_total(svc, quantity, "stars", channel_count, context)
             await query.edit_message_text(
                 f"⭐ *الدفع بالنجوم*\n\n"
                 f"الخدمة: {svc.config.name}\n"
@@ -1710,7 +1732,7 @@ async def _handle_raksh_callback_impl(
                 reply_markup=raksh_confirm_kb(service_type, quantity, total, "stars")
             )
         else:
-            total = svc.get_total(quantity, "points", channel_count)
+            total = _get_contextual_raksh_total(svc, quantity, "points", channel_count, context)
             db_user = get_user(user.id)
             points = db_user["points"] if db_user else 0
             await query.edit_message_text(
@@ -1754,7 +1776,7 @@ async def _handle_raksh_callback_impl(
         channel_count = len(context.user_data.get("raksh_channels") or [])
         svc = RAKSH_SERVICES.get(service_type)
         total_cost = (
-            svc.get_total(quantity, payment_method, channel_count)
+            _get_contextual_raksh_total(svc, quantity, payment_method, channel_count, context)
             if svc
             else get_raksh_total(service_type, quantity, payment_method)
         )
@@ -1780,7 +1802,7 @@ async def _handle_raksh_callback_impl(
         else:
             # الدفع بالنجوم
             svc = RAKSH_SERVICES.get(service_type)
-            total_stars = get_raksh_total(service_type, quantity, "stars")
+            total_stars = _get_contextual_raksh_total(svc, quantity, "stars", context=context)
             await query.edit_message_text(
                 "⭐ *جاري تجهيز فاتورة الدفع بالنجوم...*",
                 parse_mode=ParseMode.MARKDOWN,
@@ -2132,6 +2154,8 @@ async def _send_raksh_order_to_group(
             f"📦 العدد: {quantity}",
             f"💳 طريقة الدفع: {payment_method}",
         ]
+        if service_type == "all_posts_reactions" and (params or {}).get("duration_days"):
+            notification_lines.append(f"🗓 المدة: {(params or {}).get('duration_days')} يوم")
         await bot.send_message(ADMIN_GROUP_ID, "\n".join(notification_lines))
     except Exception:
         logger.exception("فشل إرسال إشعار الطلب")
@@ -2393,6 +2417,118 @@ async def _send_raksh_owner_result(
     except Exception as e:
         logger.exception(f"فشل إرسال النتيجة للمالك: {e}")
 
+async def _run_all_posts_reactions_order(context, order: Dict, progress_msg=None) -> None:
+    """تشغيل دورة خدمة التفاعلات المستمرة وإبقاؤها pending حتى انتهاء المدة."""
+    order_id = int(order["id"])
+    user_id = int(order["user_id"])
+    quantity = int(order["quantity"] or 0)
+    params = dict(order.get("params") or {})
+    try:
+        duration_days = max(1, int(params.get("duration_days") or 1))
+    except (TypeError, ValueError):
+        duration_days = 1
+
+    created_at = order.get("created_at")
+    if created_at and created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    expires_at = (
+        created_at + timedelta(days=duration_days)
+        if created_at
+        else datetime.now(timezone.utc) + timedelta(days=duration_days)
+    )
+
+    async def finish_order() -> None:
+        result_text = (
+            "✅ انتهت مدة خدمة التفاعلات.\n\n"
+            f"الخدمة: {AllPostsReactionsService.label}\n"
+            f"✨ عدد التفاعلات: {quantity}\n"
+            f"🗓 المدة: {duration_days} يوم\n"
+            "تمت معالجة المنشورات الجديدة أثناء مدة الطلب."
+        )
+        with db_conn() as c:
+            c.execute(
+                """
+                UPDATE raksh_orders
+                SET status='completed', result_text=%s, last_error=NULL,
+                    lease_until=NULL, updated_at=NOW(), completed_at=NOW()
+                WHERE id=%s AND status <> 'cancelled'
+                """,
+                (result_text, order_id),
+            )
+        if progress_msg:
+            try:
+                await progress_msg.edit_text(result_text, reply_markup=main_menu_kb())
+            except Exception:
+                pass
+        else:
+            try:
+                await context.bot.send_message(user_id, result_text)
+            except Exception:
+                pass
+
+    if _is_raksh_order_cancelled(order_id):
+        return
+    if datetime.now(timezone.utc) >= expires_at:
+        await finish_order()
+        return
+
+    svc = get_raksh_service("all_posts_reactions")
+    sessions = svc.get_sessions(is_owner=(user_id == OWNER_ID)) if svc else []
+    if not sessions:
+        _set_raksh_order_status(order_id, "pending", "لا توجد حسابات متاحة مؤقتاً")
+        return
+
+    # هذه الخدمة دورة متكررة؛ لا نستخدم حالة نجاح الدورة السابقة لمنع الدورة الجديدة.
+    with db_conn() as c:
+        c.execute(
+            """
+            UPDATE raksh_order_items
+            SET status='pending', attempts=0, result_message=NULL,
+                last_error=NULL, updated_at=NOW()
+            WHERE order_id=%s
+            """,
+            (order_id,),
+        )
+
+    try:
+        success_count, _, _, _, _ = await execute_raksh_service(
+            service_type="all_posts_reactions",
+            quantity=quantity,
+            sessions=sessions,
+            params=params,
+            user_id=user_id,
+            progress_callback=None,
+            order_id=order_id,
+        )
+    except Exception as exc:
+        _set_raksh_order_status(order_id, "pending", str(exc))
+        logger.exception("توقفت دورة التفاعلات للطلب %s؛ ستعاد المحاولة", order_id)
+        return
+
+    if _is_raksh_order_cancelled(order_id):
+        return
+    if datetime.now(timezone.utc) >= expires_at:
+        await finish_order()
+        return
+
+    _set_raksh_order_status(
+        order_id,
+        "pending",
+        f"تم تنفيذ دورة التفاعلات: {success_count}/{quantity}; بانتظار الدورة التالية",
+    )
+    if progress_msg:
+        try:
+            await progress_msg.edit_text(
+                "✅ تم بدء الطلب وتنفيذ أول دورة.\n\n"
+                f"✨ عدد التفاعلات: {quantity}\n"
+                f"🗓 المدة: {duration_days} يوم\n"
+                "سيتم فحص القناة تلقائياً والتفاعل مع المنشورات الجديدة حتى انتهاء المدة.",
+                reply_markup=main_menu_kb(),
+            )
+        except Exception:
+            pass
+
+
 async def _run_raksh_order(
     context,
     order_id: int,
@@ -2407,6 +2543,10 @@ async def _run_raksh_order(
     svc = get_raksh_service(order["service_type"])
     if not svc:
         _set_raksh_order_status(order_id, "cancelled", "خدمة غير معروفة")
+        return
+
+    if order["service_type"] == "all_posts_reactions":
+        await _run_all_posts_reactions_order(context, order, progress_msg)
         return
 
     user_id = int(order["user_id"])
