@@ -290,9 +290,9 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=main_menu_kb(is_own)
                 )
-            elif existing and existing["status"] == "refunded":
+            elif existing and existing["status"] == "delivery_failed_no_refund":
                 await update.message.reply_text(
-                    "ℹ️ تمت إعادة قيمة هذه العملية لأن المخزون لم يكن متاحاً.",
+                    "⚠️ هذه العملية لم تُسلَّم بسبب عدم توفر رقم، ولم يتم استرداد النجوم تلقائياً. يرجى التواصل مع المالك.",
                     reply_markup=main_menu_kb(is_own)
                 )
             else:
@@ -301,24 +301,15 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         auto = await assign_verified_number(user.id, bot=context.bot)
         if not auto:
-            refunded = False
-            try:
-                await context.bot.refund_star_payment(
-                    user_id=user.id,
-                    telegram_payment_charge_id=charge_id
-                )
-                refunded = True
-            except Exception as refund_err:
-                logger.error(f"❌ تعذّر إعادة نجوم شراء الرقم {charge_id}: {refund_err}")
+            # لا تُسترد نجوم Telegram تلقائياً؛ تُسجّل العملية للمراجعة فقط.
             with db_conn() as c:
                 c.execute(
                     "UPDATE number_star_purchases SET status=%s WHERE telegram_payment_id=%s",
-                    ("refunded" if refunded else "refund_failed", charge_id)
+                    ("delivery_failed_no_refund", charge_id)
                 )
             await update.message.reply_text(
                 "😔 لا يتوفر حالياً رقم صالح في المخزون.\n"
-                + ("✅ تمت إعادة النجوم إلى حسابك." if refunded
-                   else "⚠️ تعذّرت الإعادة التلقائية، يرجى التواصل مع المالك فوراً."),
+                "⚠️ لم يتم استرداد النجوم تلقائياً. يرجى التواصل مع المالك لمعالجة العملية.",
                 reply_markup=main_menu_kb(is_own)
             )
             return
