@@ -79,6 +79,7 @@ export interface Post {
   campaignId: number;
   campaignName: string;
   channel: string;
+  telegramUrl: string;
   content: string;
   publishedAt: string;
   targetReactions: number;
@@ -91,10 +92,9 @@ export interface PostInput {
   campaignId: number;
   /** @minLength 1 */
   channel: string;
+  telegramUrl: string;
   /** @minLength 1 */
   content: string;
-  /** @minimum 1 */
-  targetReactions: number;
 }
 
 export type AccountStatus = typeof AccountStatus[keyof typeof AccountStatus];

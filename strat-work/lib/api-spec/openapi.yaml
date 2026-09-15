@@ -236,12 +236,13 @@ components:
         status: { type: string, enum: [active, paused] }
     Post:
       type: object
-      required: [id, campaignId, campaignName, channel, content, publishedAt, targetReactions, completedReactions, status, leaveStatus]
+      required: [id, campaignId, campaignName, channel, telegramUrl, content, publishedAt, targetReactions, completedReactions, status, leaveStatus]
       properties:
         id: { type: integer }
         campaignId: { type: integer }
         campaignName: { type: string }
         channel: { type: string }
+        telegramUrl: { type: string, format: uri }
         content: { type: string }
         publishedAt: { type: string, format: date-time }
         targetReactions: { type: integer }
@@ -250,12 +251,12 @@ components:
         leaveStatus: { type: string, enum: [pending, in_progress, completed] }
     PostInput:
       type: object
-      required: [campaignId, channel, content, targetReactions]
+      required: [campaignId, channel, telegramUrl, content]
       properties:
         campaignId: { type: integer }
         channel: { type: string, minLength: 1 }
+        telegramUrl: { type: string, format: uri }
         content: { type: string, minLength: 1 }
-        targetReactions: { type: integer, minimum: 1 }
     Account:
       type: object
       required: [id, handle, status, totalReactions, lastAction]

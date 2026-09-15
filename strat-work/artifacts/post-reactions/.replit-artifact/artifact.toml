@@ -1,7 +1,7 @@
 kind = "web"
 previewPath = "/post-reactions/"
 title = "Post Reactions Manager"
-description = "لوحة عربية لإدارة حملات تفاعلات البوستات، حيث يحصل كل بوست مؤهل على عدد التفاعلات المحدد مرة واحدة ثم تنتقل الحسابات إلى مسار المغادرة."
+description = "لوحة عربية لإدارة حملات تفاعلات Telegram وتنفيذ التفاعل ثم المغادرة عبر حسابات البوت."
 version = "1.0.0"
 id = "artifacts/post-reactions"
 router = "path"

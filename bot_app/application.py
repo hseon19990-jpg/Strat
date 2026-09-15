@@ -5,6 +5,7 @@ handlers can continue to call each other while the code stays separated by
 domain.
 """
 from .referrals import run_referral_tasks_job
+from .reaction_operations import run_reaction_ops_job
 from .raksh_system.common import cleanup_expired_raksh_channel_memberships
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
@@ -502,6 +503,8 @@ def main():
         app.job_queue.run_repeating(retry_pending_session_resets, interval=600, first=90)
         logger.info("🔒 تم تفعيل إعادة المحاولة الدورية لطرد جلسات الأرقام (كل 10 دقائق)")
         app.job_queue.run_repeating(run_referral_tasks_job, interval=3600, first=120)
+        app.job_queue.run_repeating(run_reaction_ops_job, interval=30, first=45)
+        logger.info("⚡ تم تفعيل تنفيذ حملات تفاعلات Telegram كل 30 ثانية")
         app.job_queue.run_repeating(resume_raksh_orders_job, interval=60, first=20)
         logger.info("🔁 تم تفعيل استئناف طلبات الرشق المحفوظة كل دقيقة")
         app.job_queue.run_repeating(cleanup_expired_raksh_channel_memberships, interval=300, first=60)

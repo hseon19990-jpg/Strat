@@ -120,6 +120,7 @@ export const ListPostsResponseItem = zod.object({
   "campaignId": zod.number().int(),
   "campaignName": zod.string(),
   "channel": zod.string(),
+  "telegramUrl": zod.string().url(),
   "content": zod.string(),
   "publishedAt": zod.coerce.date(),
   "targetReactions": zod.number().int(),
@@ -137,12 +138,11 @@ export const ListPostsResponse = zod.array(ListPostsResponseItem)
 
 
 
-
 export const CreatePostBody = zod.object({
   "campaignId": zod.number().int(),
   "channel": zod.string().min(1),
-  "content": zod.string().min(1),
-  "targetReactions": zod.number().int().min(1)
+  "telegramUrl": zod.string().url(),
+  "content": zod.string().min(1)
 })
 
 export const CreatePostResponse = zod.object({
@@ -150,6 +150,7 @@ export const CreatePostResponse = zod.object({
   "campaignId": zod.number().int(),
   "campaignName": zod.string(),
   "channel": zod.string(),
+  "telegramUrl": zod.string().url(),
   "content": zod.string(),
   "publishedAt": zod.coerce.date(),
   "targetReactions": zod.number().int(),
@@ -171,6 +172,7 @@ export const GetPostResponse = zod.object({
   "campaignId": zod.number().int(),
   "campaignName": zod.string(),
   "channel": zod.string(),
+  "telegramUrl": zod.string().url(),
   "content": zod.string(),
   "publishedAt": zod.coerce.date(),
   "targetReactions": zod.number().int(),
@@ -192,6 +194,7 @@ export const RetryPostResponse = zod.object({
   "campaignId": zod.number().int(),
   "campaignName": zod.string(),
   "channel": zod.string(),
+  "telegramUrl": zod.string().url(),
   "content": zod.string(),
   "publishedAt": zod.coerce.date(),
   "targetReactions": zod.number().int(),

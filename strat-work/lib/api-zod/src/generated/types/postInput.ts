@@ -10,8 +10,7 @@ export interface PostInput {
   campaignId: number;
   /** @minLength 1 */
   channel: string;
+  telegramUrl: string;
   /** @minLength 1 */
   content: string;
-  /** @minimum 1 */
-  targetReactions: number;
 }

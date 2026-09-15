@@ -13,6 +13,7 @@ export interface Post {
   campaignId: number;
   campaignName: string;
   channel: string;
+  telegramUrl: string;
   content: string;
   publishedAt: Date;
   targetReactions: number;

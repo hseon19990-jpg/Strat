@@ -7,6 +7,7 @@ export const postsTable = pgTable("posts", {
   id: serial("id").primaryKey(),
   campaignId: integer("campaign_id").notNull().references(() => campaignsTable.id),
   channel: text("channel").notNull(),
+  telegramUrl: text("telegram_url").notNull().default(""),
   content: text("content").notNull(),
   publishedAt: timestamp("published_at", { withTimezone: true }).notNull().defaultNow(),
   targetReactions: integer("target_reactions").notNull(),

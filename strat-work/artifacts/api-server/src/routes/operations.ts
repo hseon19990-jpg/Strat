@@ -85,6 +85,7 @@ async function seedDemoData(): Promise<void> {
     {
       campaignId: primaryCampaign.id,
       channel: primaryCampaign.channel,
+        telegramUrl: "https://t.me/daily_updates/1041",
       content: "ملخص اليوم: أهم التحديثات التي تحتاج إلى معرفتها.",
       targetReactions: 10,
       completedReactions: 10,
@@ -95,6 +96,7 @@ async function seedDemoData(): Promise<void> {
     {
       campaignId: primaryCampaign.id,
       channel: primaryCampaign.channel,
+        telegramUrl: "https://t.me/daily_updates/1042",
       content: "دليل عملي جديد مع خطوات واضحة وتفاصيل قابلة للتطبيق.",
       targetReactions: 10,
       completedReactions: 7,
@@ -105,6 +107,7 @@ async function seedDemoData(): Promise<void> {
     {
       campaignId: secondaryCampaign.id,
       channel: secondaryCampaign.channel,
+        telegramUrl: "https://t.me/newsroom_ar/204",
       content: "خبر عاجل: نتابع التفاصيل وننشر المستجدات أولًا بأول.",
       targetReactions: 30,
       completedReactions: 0,
@@ -115,6 +118,7 @@ async function seedDemoData(): Promise<void> {
     {
       campaignId: primaryCampaign.id,
       channel: primaryCampaign.channel,
+        telegramUrl: "https://t.me/daily_updates/1040",
       content: "نتائج الأسبوع والأرقام التي صنعت الفرق.",
       targetReactions: 10,
       completedReactions: 10,
@@ -278,6 +282,7 @@ router.post("/posts", async (req, res): Promise<void> => {
     .insert(postsTable)
     .values({
       ...parsed.data,
+      targetReactions: campaign.reactionsPerPost,
       status: "queued",
       leaveStatus: "pending",
       completedReactions: 0,
