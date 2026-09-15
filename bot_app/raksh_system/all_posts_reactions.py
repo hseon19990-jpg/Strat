@@ -836,8 +836,7 @@ class AllPostsReactionsService(RakshService):
                 )
             return True, (
                 f"✅ تمت معالجة {success_count} من {attempted_count} منشوراً "
-                f"من الحساب {session.get('phone_number', '')}
-"
+                f"من الحساب {session.get('phone_number', '')}\n"
                 f"👁 مشاهدات: {view_success_count} | 💬 تفاعلات: {reaction_success_count}"
             )
         except Exception as exc:
