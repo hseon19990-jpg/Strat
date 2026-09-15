@@ -598,6 +598,38 @@ def _reset_raksh_order_item_for_retry(order_id: Optional[int], phone: str) -> No
         )
 
 
+def _add_raksh_order_item_for_replacement(
+    order_id: Optional[int],
+    session: Dict,
+) -> bool:
+    """إضافة الحساب البديل إلى الطلب حتى ينجح تشغيله فوراً."""
+    if not order_id:
+        return False
+    phone = str(session.get("phone_number") or "").strip()
+    if not phone:
+        return False
+    with db_conn() as c:
+        position = c.execute(
+            """
+            SELECT COALESCE(MAX(position), -1) + 1 AS next_position
+            FROM raksh_order_items
+            WHERE order_id=%s
+            """,
+            (order_id,),
+        ).fetchone()["next_position"]
+        row = c.execute(
+            """
+            INSERT INTO raksh_order_items
+                (order_id, position, stock_id, phone_number)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (order_id, phone_number) DO NOTHING
+            RETURNING id
+            """,
+            (order_id, position, session.get("id"), phone),
+        ).fetchone()
+    return bool(row)
+
+
 def _set_raksh_order_status(
     order_id: int,
     status: str,
@@ -988,6 +1020,56 @@ async def _execute_raksh_parallel(
     completed_count = success_count + len(failed_phones)
     attempted_phones = set(success_phones) | set(failed_phones)
     pool = list(sessions)
+    queued_replacement_phones = set()
+    is_all_posts_service = service_type == "all_posts_reactions"
+
+    def queue_immediate_replacement() -> None:
+        """ضع حساباً صالحاً في نفس الدفعة بعد تجاوز حساب مجمد."""
+        if not is_all_posts_service:
+            return
+
+        occupied_phones = (
+            attempted_phones
+            | queued_replacement_phones
+            | {
+                str(item.get("phone_number") or "").strip()
+                for item in pool
+                if item.get("phone_number")
+            }
+        )
+        fresh_sessions = svc.get_sessions(is_owner=(user_id == OWNER_ID))
+        replacement = next(
+            (
+                candidate
+                for candidate in fresh_sessions
+                if str(candidate.get("phone_number") or "").strip()
+                and str(candidate.get("phone_number")).strip() not in occupied_phones
+            ),
+            None,
+        )
+        if not replacement:
+            logger.warning(
+                "⚠️ لا يوجد حساب بديل متاح فوراً لخدمة التفاعل على جميع المنشورات"
+            )
+            return
+
+        replacement_phone = str(replacement["phone_number"]).strip()
+        if order_id and not _add_raksh_order_item_for_replacement(
+            order_id,
+            replacement,
+        ):
+            logger.warning(
+                "⚠️ تعذر إضافة الحساب البديل %s إلى طلب الرشق %s",
+                replacement_phone,
+                order_id,
+            )
+            return
+        pool.append(replacement)
+        queued_replacement_phones.add(replacement_phone)
+        logger.info(
+            "🔄 تم إدراج الحساب البديل %s فوراً بعد تجاوز الحساب المجمد",
+            replacement_phone,
+        )
 
     async def execute_one(session, index, is_first=False):
         phone = session["phone_number"]
@@ -1037,7 +1119,8 @@ async def _execute_raksh_parallel(
                 ok, msg = result
             if not ok and is_raksh_frozen_account_error(msg):
                 _reset_raksh_order_item_for_retry(order_id, phone)
-                logger.info("⏭️ تم تجاوز الحساب المجمد %s واستبداله بحساب آخر", phone)
+                queue_immediate_replacement()
+                logger.info("⏭️ تم تجاوز الحساب المجمد %s واستبداله فورياً", phone)
                 continue
             ok, msg = _classify_raksh_result(service_type, phone, ok, msg)
             completed_count += 1
@@ -2655,9 +2738,12 @@ async def _run_all_posts_reactions_order(context, order: Dict, progress_msg=None
 
     if svc and success_count >= quantity:
         successful_phones = {str(phone) for phone in success_phones}
+        # قد يكون أحد الحسابات الناجحة بديلاً أُضيف داخل نفس الدفعة؛
+        # أعد تحميل الجلسات حتى يدخل البديل في المستمع المباشر أيضاً.
+        live_session_pool = svc.get_sessions(is_owner=(user_id == OWNER_ID))
         live_sessions = [
             session
-            for session in sessions
+            for session in live_session_pool
             if str(session.get("phone_number")) in successful_phones
         ]
         monitor_params = dict(params)
