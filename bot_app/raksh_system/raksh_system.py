@@ -1811,7 +1811,7 @@ async def _handle_raksh_callback_impl(
                 chat_id=user.id,
                 title=svc.config.name,
                 description=(
-                    f"{quantity} تفاعل"
+                    f"{quantity} حساب لكل منشور"
                     + (f" لمدة {context.user_data.get('raksh_duration_days')} يوم" if service_type == "all_posts_reactions" else "")
                     + f" | {total_stars} نجمة"
                 ),
@@ -2155,7 +2155,11 @@ async def _send_raksh_order_to_group(
         notification_lines = [
             f"📋 طلب {_raksh_order_label(service_type)}",
             f"👤 المستخدم: {user_id}",
-            f"📦 العدد: {quantity}",
+            (
+                f"👥 الحسابات لكل منشور: {quantity}"
+                if service_type == "all_posts_reactions"
+                else f"📦 العدد: {quantity}"
+            ),
             f"💳 طريقة الدفع: {payment_method}",
         ]
         if service_type == "all_posts_reactions" and (params or {}).get("duration_days"):
@@ -2445,9 +2449,9 @@ async def _run_all_posts_reactions_order(context, order: Dict, progress_msg=None
         result_text = (
             "✅ انتهت مدة خدمة التفاعلات.\n\n"
             f"الخدمة: {AllPostsReactionsService.label}\n"
-            f"✨ عدد التفاعلات: {quantity}\n"
+            f"👥 الحسابات لكل منشور: {quantity}\n"
             f"🗓 المدة: {duration_days} يوم\n"
-            "تمت معالجة المنشورات الجديدة أثناء مدة الطلب."
+            "تم التفاعل مع المنشورات الجديدة بهذا العدد من الحسابات طوال مدة الطلب."
         )
         with db_conn() as c:
             c.execute(
@@ -2524,9 +2528,9 @@ async def _run_all_posts_reactions_order(context, order: Dict, progress_msg=None
         try:
             await progress_msg.edit_text(
                 "✅ تم بدء الطلب وتنفيذ أول دورة.\n\n"
-                f"✨ عدد التفاعلات: {quantity}\n"
+                f"👥 الحسابات لكل منشور: {quantity}\n"
                 f"🗓 المدة: {duration_days} يوم\n"
-                "سيتم فحص القناة تلقائياً والتفاعل مع المنشورات الجديدة حتى انتهاء المدة.",
+                "سيتم فحص القناة تلقائياً والتفاعل مع كل منشور جديد بهذا العدد من الحسابات حتى انتهاء المدة.",
                 reply_markup=main_menu_kb(),
             )
         except Exception:
