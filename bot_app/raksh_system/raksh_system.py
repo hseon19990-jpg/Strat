@@ -573,6 +573,31 @@ def _mark_raksh_order_item_result(
         )
 
 
+def _reset_raksh_order_item_for_retry(order_id: Optional[int], phone: str) -> None:
+    """إعادة الحساب المجمد إلى الانتظار دون تسجيله كحساب فاشل."""
+    if not order_id:
+        return
+    with db_conn() as c:
+        c.execute(
+            """
+            UPDATE raksh_order_items
+            SET status='pending', result_message=NULL, last_error=NULL,
+                updated_at=NOW()
+            WHERE order_id=%s AND phone_number=%s AND status <> 'cancelled'
+            """,
+            (order_id, phone),
+        )
+        c.execute(
+            """
+            UPDATE raksh_orders
+            SET updated_at=NOW(),
+                lease_until=NOW() + (%s * INTERVAL '1 minute')
+            WHERE id=%s AND status <> 'cancelled'
+            """,
+            (RAKSH_ORDER_LEASE_MINUTES, order_id),
+        )
+
+
 def _set_raksh_order_status(
     order_id: int,
     status: str,
@@ -889,6 +914,11 @@ async def _execute_raksh_sequential(
                 ok = False
                 msg = f"❌ خطأ: {str(e)}"
 
+        if not ok and is_raksh_frozen_account_error(msg):
+            _reset_raksh_order_item_for_retry(order_id, phone)
+            logger.info("⏭️ تم تجاوز الحساب المجمد %s واستبداله بحساب آخر", phone)
+            continue
+
         if not ok and _is_retryable_raksh_session_message(msg):
             retry_counts[phone] = retry_counts.get(phone, 0) + 1
             if retry_counts[phone] < RAKSH_SESSION_RETRY_LIMIT:
@@ -990,6 +1020,8 @@ async def _execute_raksh_parallel(
                     timeout=RAKSH_ACCOUNT_EXECUTION_TIMEOUT_SECONDS,
                 )
             except Exception as e:
+                if is_raksh_frozen_account_error(e):
+                    return False, RAKSH_FROZEN_ACCOUNT_MARKER
                 return False, f"❌ خطأ: {str(e)}"
 
     async def process_wave(wave, results):
@@ -997,9 +1029,16 @@ async def _execute_raksh_parallel(
         for session, result in zip(wave, results):
             phone = session["phone_number"]
             if isinstance(result, BaseException):
-                ok, msg = False, f"❌ خطأ من {phone}: {str(result)[:80]}"
+                if is_raksh_frozen_account_error(result):
+                    ok, msg = False, RAKSH_FROZEN_ACCOUNT_MARKER
+                else:
+                    ok, msg = False, f"❌ خطأ من {phone}: {str(result)[:80]}"
             else:
                 ok, msg = result
+            if not ok and is_raksh_frozen_account_error(msg):
+                _reset_raksh_order_item_for_retry(order_id, phone)
+                logger.info("⏭️ تم تجاوز الحساب المجمد %s واستبداله بحساب آخر", phone)
+                continue
             ok, msg = _classify_raksh_result(service_type, phone, ok, msg)
             completed_count += 1
             if ok:
