@@ -29,6 +29,9 @@ CATEGORY_MAP = {
 
 RAKSH_ACCOUNTS_LABEL_SETTING = "raksh_accounts_label"
 DEFAULT_RAKSH_ACCOUNTS_LABEL = "خدمات تيليجرام أسطورية"
+ALL_POSTS_REACTIONS_MENU_MIGRATION_SETTING = (
+    "raksh_all_posts_reactions_menu_exposed"
+)
 
 def get_raksh_accounts_label() -> str:
     """يعيد الاسم المخصص لقسم حسابات الرشق مع قيمة افتراضية آمنة."""
@@ -195,7 +198,7 @@ RAKSH_MENU_DEFAULTS = [
     ("🗳 رشق أصوات", "raksh:start:votes", 1),
     ("🛡 رشق تصويت مع تحقق", "raksh:start:votes_ai", 1),
     ("✨ رشق تفاعل مميز", "raksh:start:premium_reaction", 1),
-    ("✨ رشق تفاعلات لكل البوستات", "raksh:start:all_posts_reactions", 1),
+    ("✨ تفاعل على جميع البوستات", "raksh:start:all_posts_reactions", 1),
     ("🔥 إدارة خدمات الرشق", "os:raksh_accounts", 1),
     ("⚙️ إدارة الأسعار", "raksh:settings", 1),
 ]
@@ -433,6 +436,21 @@ def seed_menu_items(menu: str):
                         (menu, label, "builtin", value, width, next_order)
                     )
                     next_order += 1
+
+    if (
+        menu == "raksh_menu"
+        and get_setting(ALL_POSTS_REACTIONS_MENU_MIGRATION_SETTING) != "1"
+    ):
+        # The option already exists in the defaults, but older databases may
+        # have it disabled. Expose it once so the owner can use the feature;
+        # subsequent manual hide/show changes remain untouched.
+        with db_conn() as c:
+            c.execute(
+                "UPDATE menu_items SET enabled=1 "
+                "WHERE menu=? AND action_value=?",
+                (menu, "raksh:start:all_posts_reactions"),
+            )
+        set_setting(ALL_POSTS_REACTIONS_MENU_MIGRATION_SETTING, "1")
 
     if menu == "raksh_menu":
         with db_conn() as c:
