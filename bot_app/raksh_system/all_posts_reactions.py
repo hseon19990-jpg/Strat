@@ -4,8 +4,12 @@ from .common import *
 from ..database import db_conn
 from datetime import datetime, timezone
 import json
+from telethon import events
 from telethon.tl.functions.messages import SendReactionRequest as SendMessageReactionRequest
 from telethon.tl.types import ReactionCustomEmoji, ReactionEmoji
+
+
+_LIVE_MONITORS = {}
 
 
 class AllPostsReactionsService(RakshService):
@@ -281,6 +285,201 @@ class AllPostsReactionsService(RakshService):
                 "تعذر حفظ نقطة بداية منشورات التفاعل للطلب %s",
                 order_id,
             )
+
+    @staticmethod
+    def _is_order_cancelled(order_id: int) -> bool:
+        with db_conn() as c:
+            row = c.execute(
+                "SELECT status FROM raksh_orders WHERE id=%s",
+                (order_id,),
+            ).fetchone()
+        return bool(row and row["status"] == "cancelled")
+
+    def is_live_monitoring(self, order_id: int) -> bool:
+        """هل يوجد مستمع مباشر يعمل لهذا الطلب؟"""
+        task = _LIVE_MONITORS.get(int(order_id))
+        if task is None:
+            return False
+        if task.done():
+            _LIVE_MONITORS.pop(int(order_id), None)
+            return False
+        return True
+
+    async def start_live_monitor(
+        self,
+        order_id: int,
+        sessions: List[Dict],
+        params: Dict,
+        expires_at: datetime,
+        on_finished: Callable[[], Any],
+    ) -> bool:
+        """بدء مستمع مباشر للمنشورات الجديدة بدلاً من انتظار دورة الفحص."""
+        order_id = int(order_id)
+        if self.is_live_monitoring(order_id) or not sessions:
+            return False
+
+        task = asyncio.create_task(
+            self._run_live_monitor(
+                order_id=order_id,
+                sessions=sessions,
+                params=dict(params),
+                expires_at=expires_at,
+                on_finished=on_finished,
+            ),
+            name=f"raksh-live-reactions-{order_id}",
+        )
+        _LIVE_MONITORS[order_id] = task
+
+        def forget_monitor(done_task):
+            if _LIVE_MONITORS.get(order_id) is done_task:
+                _LIVE_MONITORS.pop(order_id, None)
+            if done_task.cancelled():
+                return
+            error = done_task.exception()
+            if error:
+                logger.error(
+                    "توقف مستمع التفاعل المباشر للطلب %s",
+                    order_id,
+                    exc_info=(type(error), error, error.__traceback__),
+                )
+
+        task.add_done_callback(forget_monitor)
+        return True
+
+    async def _run_live_monitor(
+        self,
+        order_id: int,
+        sessions: List[Dict],
+        params: Dict,
+        expires_at: datetime,
+        on_finished: Callable[[], Any],
+    ) -> None:
+        stop_event = asyncio.Event()
+        account_tasks = [
+            asyncio.create_task(
+                self._watch_account(
+                    session=session,
+                    params=params,
+                    stop_event=stop_event,
+                ),
+                name=f"raksh-live-account-{session.get('phone_number')}",
+            )
+            for session in sessions
+        ]
+        try:
+            while datetime.now(timezone.utc) < expires_at:
+                if self._is_order_cancelled(order_id):
+                    return
+                remaining = (expires_at - datetime.now(timezone.utc)).total_seconds()
+                await asyncio.sleep(min(5, max(1, remaining)))
+        finally:
+            stop_event.set()
+            for task in account_tasks:
+                task.cancel()
+            await asyncio.gather(*account_tasks, return_exceptions=True)
+
+        if not self._is_order_cancelled(order_id):
+            await on_finished()
+
+    async def _watch_account(
+        self,
+        session: Dict,
+        params: Dict,
+        stop_event: asyncio.Event,
+    ) -> None:
+        """إبقاء جلسة الحساب مستمعة للقناة والتفاعل مع كل منشور جديد."""
+        phone_number = session.get("phone_number")
+        channel_ref = self._parse_channel_target(params.get("link"))
+        if not channel_ref:
+            return
+
+        while not stop_event.is_set():
+            client = TelegramClient(
+                StringSession(session["session_string"]),
+                int(TELEGRAM_API_ID),
+                TELEGRAM_API_HASH,
+            )
+            try:
+                await asyncio.wait_for(client.connect(), timeout=15)
+                if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
+                    _mark_raksh_session_unauthorized(phone_number)
+                    return
+
+                joined = await _join_channel_and_schedule_leave(
+                    client,
+                    channel_ref,
+                    phone_number,
+                )
+                if not joined:
+                    raise RuntimeError("تعذر انضمام الحساب إلى القناة")
+
+                cutoff = self._get_post_cutoff(params, phone_number)
+                if cutoff is None:
+                    cutoff = datetime.now(timezone.utc)
+                    self._save_post_cutoff(params, phone_number, cutoff)
+
+                entity = await asyncio.wait_for(
+                    client.get_entity(channel_ref),
+                    timeout=15,
+                )
+                allowed_reactions = await self._get_allowed_reactions(client, entity)
+                if not allowed_reactions:
+                    try:
+                        await asyncio.wait_for(stop_event.wait(), timeout=30)
+                    except asyncio.TimeoutError:
+                        pass
+                    continue
+
+                async def on_new_message(event):
+                    message = event.message
+                    if not getattr(message, "id", None):
+                        return
+                    message_date = self._as_utc(getattr(message, "date", None))
+                    if message_date is None or message_date <= cutoff:
+                        return
+                    reaction = random.choice(allowed_reactions)
+                    try:
+                        await client(
+                            SendMessageReactionRequest(
+                                peer=entity,
+                                msg_id=message.id,
+                                reaction=[reaction],
+                            )
+                        )
+                        logger.info(
+                            "✅ تفاعل مباشر على %s/%s من الحساب %s",
+                            channel_ref,
+                            message.id,
+                            phone_number,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "فشل التفاعل المباشر على %s/%s من الحساب %s: %s",
+                            channel_ref,
+                            message.id,
+                            phone_number,
+                            exc,
+                        )
+
+                client.add_event_handler(
+                    on_new_message,
+                    events.NewMessage(chats=entity),
+                )
+                await stop_event.wait()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "انقطع مستمع التفاعل المباشر للحساب %s؛ ستعاد المحاولة: %s",
+                    phone_number,
+                    exc,
+                )
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=10)
+                except asyncio.TimeoutError:
+                    pass
+            finally:
+                await client.disconnect()
 
     async def _get_allowed_reactions(self, client, entity) -> list:
         """جلب التفاعلات المسموحة فعلياً في القناة."""
