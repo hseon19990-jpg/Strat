@@ -2883,13 +2883,21 @@ async def resume_raksh_orders_job(context) -> None:
         if recovered:
             logger.info(f"🔁 تمت إعادة {recovered} طلب رشق إلى طابور الاستئناف")
 
+        job_data = getattr(getattr(context, "job", None), "data", None) or {}
+        all_posts_only = bool(job_data.get("all_posts_only"))
+        service_filter = (
+            "AND service_type = 'all_posts_reactions'"
+            if all_posts_only
+            else "AND service_type <> 'all_posts_reactions'"
+        )
         with db_conn() as c:
             rows = c.execute(
-                """
+                f"""
                 SELECT id
                 FROM raksh_orders
                 WHERE status IN ('pending', 'running')
                   AND (lease_until IS NULL OR lease_until < NOW())
+                  {service_filter}
                 ORDER BY created_at ASC, id ASC
                 LIMIT 5
                 """
