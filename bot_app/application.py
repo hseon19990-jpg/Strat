@@ -560,38 +560,6 @@ def main():
         app.job_queue.run_repeating(_account_fixup_job, interval=30, first=15)
         logger.info("🔧 تم تفعيل حلقة الإصلاح التلقائي للحسابات (كل 30 ثانية)")
 
-    async def _resume_raksh_directly_after_startup():
-        """تشغيل محاولة استئناف مستقلة عن JobQueue بعد الإقلاع.
-
-        بعض نسخ Railway أو إعدادات التشغيل قد تبدأ polling بينما تكون
-        JobQueue متأخرة أو غير متاحة. هذه المحاولة تستخدم نفس منطق الاستئناف
-        مباشرة، مع بقاء الحجز في PostgreSQL لمنع تشغيل الطلب مرتين.
-        """
-        await asyncio.sleep(2)
-        contexts = [
-            SimpleNamespace(
-                bot=app.bot,
-                job=SimpleNamespace(data={"all_posts_only": True}),
-            ),
-            SimpleNamespace(
-                bot=app.bot,
-                job=SimpleNamespace(data={"exclude_all_posts": True}),
-            ),
-        ]
-        results = await asyncio.gather(
-            *(resume_raksh_orders_job(ctx) for ctx in contexts),
-            return_exceptions=True,
-        )
-        for result in results:
-            if isinstance(result, Exception):
-                logger.error(
-                    "فشلت محاولة الاستئناف المباشر بعد الإقلاع",
-                    exc_info=(type(result), result, result.__traceback__),
-                )
-
-    asyncio.create_task(_resume_raksh_directly_after_startup())
-    logger.info("🚀 تم تشغيل محاولة استئناف مباشرة مستقلة عن JobQueue")
-
     logger.info("🤖 Bot started!")
     app.run_polling(
         drop_pending_updates=True,
