@@ -1,13 +1,16 @@
-"""خدمة رشق تفاعلات لعدة منشورات من قناة تيليجرام."""
+"""خدمة تفاعل مستمرة على منشورات قناة تيليجرام."""
 
 from .common import *
 
 
 class AllPostsReactionsService(RakshService):
-    """رشق تفاعل واحد على عدد محدد من منشورات قناة تيليجرام."""
+    """تفاعل مستمر على كل منشورات القناة خلال مدة يحددها المستخدم."""
 
     service_type = "all_posts_reactions"
     label = "✨ رشق تفاعلات لكل البوستات"
+    MAX_DURATION_DAYS = 30
+    MAX_POSTS_PER_CYCLE = 100
+
     config = ServiceConfig(
         name=label,
         price_points=1,
@@ -59,7 +62,7 @@ class AllPostsReactionsService(RakshService):
 
     def get_link_instruction(self) -> str:
         return (
-            "أرسل رابط القناة أو رابط أي منشور منها.\n"
+            "أرسل رابط القناة.\n"
             "مثال: https://t.me/channel أو https://t.me/channel/123"
         )
 
@@ -67,22 +70,32 @@ class AllPostsReactionsService(RakshService):
         if not self._parse_channel_target(value):
             return (
                 "⚠️ الرابط غير صحيح.\n\n"
-                "أرسل رابط قناة تيليجرام أو رابط منشور منها، مثل:\n"
-                "https://t.me/channel/123"
+                "أرسل رابط قناة تيليجرام، مثل:\n"
+                "https://t.me/channel"
             )
         return None
 
     def get_start_message(self) -> str:
         return (
             f"{self.config.name}\n\n"
-            f"💰 السعر: {self.get_rate_text('points')}\n"
-            f"⭐ السعر: {self.get_rate_text('stars')}\n\n"
-            "🔗 *أرسل رابط القناة أو رابط أحد منشوراتها:*\n"
+            f"💰 السعر الأساسي: {self.get_rate_text('points')} لكل تفاعل/يوم\n"
+            f"⭐ السعر الأساسي: {self.get_rate_text('stars')} لكل تفاعل/يوم\n\n"
+            "🔗 *أرسل رابط القناة:*\n"
             f"{self.get_link_instruction()}"
         )
 
+    def get_total_for_duration(
+        self,
+        quantity: int,
+        payment_method: str,
+        duration_days: int,
+    ) -> int:
+        """السعر = عدد التفاعلات × عدد الأيام × سعر التفاعل اليومي."""
+        days = max(1, min(int(duration_days or 1), self.MAX_DURATION_DAYS))
+        return self.get_total(quantity, payment_method) * days
+
     async def handle_text(self, update, context, text, user, state, is_own) -> bool:
-        """جمع بيانات الطلب قبل الانتقال إلى الدفع والتنفيذ."""
+        """جمع الرابط ثم عدد التفاعلات ثم عدد الأيام فقط."""
         cancel_keyboard = self.get_start_keyboard()
 
         if state == "link":
@@ -92,58 +105,6 @@ class AllPostsReactionsService(RakshService):
                 return True
 
             context.user_data["raksh_link"] = text.strip()
-            context.user_data["raksh_step"] = "post_limit"
-            await update.message.reply_text(
-                "✅ تم حفظ الرابط.\n\n"
-                "🔢 *أرسل عدد المنشورات المطلوب التفاعل معها:*\n"
-                "مثال: 10 (الحد الأقصى 100 منشور)",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=cancel_keyboard,
-            )
-            return True
-
-        if state == "post_limit":
-            try:
-                post_limit = int(text.strip())
-            except (TypeError, ValueError):
-                await update.message.reply_text(
-                    "⚠️ أرسل رقماً صحيحاً بين 1 و 100.",
-                    reply_markup=cancel_keyboard,
-                )
-                return True
-
-            if not 1 <= post_limit <= 100:
-                await update.message.reply_text(
-                    "⚠️ العدد المسموح بين 1 و 100 منشور.",
-                    reply_markup=cancel_keyboard,
-                )
-                return True
-
-            context.user_data["raksh_post_limit"] = post_limit
-            context.user_data["raksh_step"] = "reaction"
-            await update.message.reply_text(
-                "✨ *أرسل نوع التفاعل المطلوب:*\n"
-                "مثال: ❤️ أو 👍 أو 🔥\n"
-                "أرسل كلمة عشوائي لاختيار تفاعل عشوائي لكل حساب.",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=cancel_keyboard,
-            )
-            return True
-
-        if state == "reaction":
-            reaction_text = text.strip()
-            if reaction_text.lower() in {"عشوائي", "عشوائيًا", "random"}:
-                reaction = "random"
-            else:
-                reaction = RAKSH_REACTIONS.get(reaction_text.lower(), reaction_text)
-                if reaction not in RAKSH_REACTIONS.values():
-                    await update.message.reply_text(
-                        "⚠️ أرسل إيموجي مدعوماً مثل ❤️ أو 👍 أو 🔥، أو اكتب عشوائي.",
-                        reply_markup=cancel_keyboard,
-                    )
-                    return True
-
-            context.user_data["raksh_reaction"] = reaction
             context.user_data["raksh_step"] = "quantity"
             max_qty = self.get_request_limit(user.id)
             if max_qty < 1:
@@ -154,8 +115,8 @@ class AllPostsReactionsService(RakshService):
                 return True
 
             await update.message.reply_text(
-                f"✅ تم حفظ التفاعل: {('🎲 عشوائي' if reaction == 'random' else reaction)}\n\n"
-                f"👥 *أرسل عدد الحسابات المطلوبة:*\n"
+                "✅ تم حفظ الرابط.\n\n"
+                "✨ *أرسل عدد التفاعلات المطلوبة:*\n"
                 f"(الحد الأقصى: {max_qty})",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=cancel_keyboard,
@@ -167,7 +128,7 @@ class AllPostsReactionsService(RakshService):
                 quantity = int(text.strip())
             except (TypeError, ValueError):
                 await update.message.reply_text(
-                    "⚠️ أرسل رقماً صحيحاً.",
+                    "⚠️ أرسل رقماً صحيحاً لعدد التفاعلات.",
                     reply_markup=cancel_keyboard,
                 )
                 return True
@@ -181,21 +142,51 @@ class AllPostsReactionsService(RakshService):
                 return True
             if not 1 <= quantity <= max_qty:
                 await update.message.reply_text(
-                    f"⚠️ العدد المسموح بين 1 و {max_qty}.",
+                    f"⚠️ عدد التفاعلات المسموح بين 1 و {max_qty}.",
                     reply_markup=cancel_keyboard,
                 )
                 return True
 
             context.user_data["raksh_quantity"] = quantity
+            context.user_data["raksh_step"] = "duration_days"
+            await update.message.reply_text(
+                "✅ تم حفظ عدد التفاعلات.\n\n"
+                "🗓 *أرسل عدد الأيام:*\n"
+                f"(من 1 إلى {self.MAX_DURATION_DAYS} يوماً)",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=cancel_keyboard,
+            )
+            return True
+
+        if state == "duration_days":
+            try:
+                duration_days = int(text.strip())
+            except (TypeError, ValueError):
+                await update.message.reply_text(
+                    "⚠️ أرسل رقماً صحيحاً لعدد الأيام.",
+                    reply_markup=cancel_keyboard,
+                )
+                return True
+
+            if not 1 <= duration_days <= self.MAX_DURATION_DAYS:
+                await update.message.reply_text(
+                    f"⚠️ عدد الأيام المسموح بين 1 و {self.MAX_DURATION_DAYS}.",
+                    reply_markup=cancel_keyboard,
+                )
+                return True
+
+            quantity = int(context.user_data.get("raksh_quantity") or 0)
+            context.user_data["raksh_duration_days"] = duration_days
+            context.user_data["raksh_reaction"] = "random"
             context.user_data["raksh_step"] = "payment"
-            points_cost = self.get_total(quantity, "points")
-            stars_cost = self.get_total(quantity, "stars")
+            points_cost = self.get_total_for_duration(quantity, "points", duration_days)
+            stars_cost = self.get_total_for_duration(quantity, "stars", duration_days)
             await update.message.reply_text(
                 "📋 *تفاصيل الطلب*\n\n"
                 f"🔗 الرابط: {context.user_data['raksh_link']}\n"
-                f"📰 عدد المنشورات: {context.user_data['raksh_post_limit']}\n"
-                f"✨ التفاعل: {context.user_data['raksh_reaction']}\n"
-                f"👥 عدد الحسابات: {quantity}\n\n"
+                f"✨ عدد التفاعلات: {quantity}\n"
+                f"🗓 المدة: {duration_days} يوم\n\n"
+                f"💰 التكلفة: {points_cost} نقطة أو {stars_cost} نجمة\n\n"
                 "💳 *اختر طريقة الدفع:*",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
@@ -216,11 +207,12 @@ class AllPostsReactionsService(RakshService):
 
     def get_execution_params(self, context) -> Dict:
         params = super().get_execution_params(context)
-        params["post_limit"] = context.user_data.get("raksh_post_limit")
+        params["duration_days"] = context.user_data.get("raksh_duration_days")
+        params["post_limit"] = self.MAX_POSTS_PER_CYCLE
         return params
 
     async def execute(self, session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
-        """إضافة التفاعل المختار إلى أحدث المنشورات المحددة في القناة."""
+        """تنفيذ دورة تفاعل على أحدث منشورات القناة."""
         client = TelegramClient(
             StringSession(session["session_string"]),
             int(TELEGRAM_API_ID),
@@ -235,21 +227,16 @@ class AllPostsReactionsService(RakshService):
             channel_ref = self._parse_channel_target(params.get("link"))
             if not channel_ref:
                 return False, "رابط القناة غير صحيح"
-
             try:
                 entity = await asyncio.wait_for(client.get_entity(channel_ref), timeout=15)
             except Exception as exc:
                 return False, f"تعذر الوصول إلى القناة: {exc}"
 
             try:
-                post_limit = int(params.get("post_limit") or 1)
+                post_limit = int(params.get("post_limit") or self.MAX_POSTS_PER_CYCLE)
             except (TypeError, ValueError):
-                post_limit = 1
-            post_limit = max(1, min(post_limit, 100))
-
-            reaction = params.get("reaction") or "❤️"
-            if reaction == "random":
-                reaction = random.choice(list(RAKSH_REACTIONS.values()))
+                post_limit = self.MAX_POSTS_PER_CYCLE
+            post_limit = max(1, min(post_limit, self.MAX_POSTS_PER_CYCLE))
 
             success_count = 0
             attempted_count = 0
@@ -257,6 +244,7 @@ class AllPostsReactionsService(RakshService):
                 if not getattr(message, "id", None):
                     continue
                 attempted_count += 1
+                reaction = random.choice(list(RAKSH_REACTIONS.values()))
                 try:
                     await client(SendReactionRequest(
                         peer=entity,
@@ -266,7 +254,7 @@ class AllPostsReactionsService(RakshService):
                     success_count += 1
                 except Exception as exc:
                     logger.warning(
-                        "فشل تفاعل خدمة كل المنشورات على %s/%s: %s",
+                        "فشل تفاعل الخدمة المستمرة على %s/%s: %s",
                         channel_ref,
                         message.id,
                         exc,
@@ -277,10 +265,10 @@ class AllPostsReactionsService(RakshService):
             if not success_count:
                 return False, "تعذر تنفيذ التفاعل على المنشورات"
             return True, (
-                f"✅ تم التفاعل على {success_count} من {attempted_count} منشوراً "
+                f"✅ تمت معالجة {success_count} من {attempted_count} منشوراً "
                 f"من الحساب {session.get('phone_number', '')}"
             )
         except Exception as exc:
-            return False, f"❌ فشل تنفيذ التفاعلات: {exc}"
+            return False, f"❌ فشل تنفيذ دورة التفاعلات: {exc}"
         finally:
             await client.disconnect()
