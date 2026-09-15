@@ -13,10 +13,10 @@ def _read(path: Path) -> str:
 
 
 class AllPostsReactionsServiceTests(unittest.TestCase):
-    def test_service_is_registered_as_a_reaction_only_menu_item(self):
+    def test_service_is_registered_as_a_reaction_and_views_menu_item(self):
         menu_source = _read(SERVICES)
         self.assertIn(
-            '("💬 رشق تفاعلات لكل البوستات", "raksh:start:all_posts_reactions", 1)',
+            '("💬👁 رشق تفاعلات ومشاهدات لكل البوستات", "raksh:start:all_posts_reactions", 1)',
             menu_source,
         )
 
@@ -34,7 +34,7 @@ class AllPostsReactionsServiceTests(unittest.TestCase):
             and len(node.targets) == 1
             and isinstance(node.targets[0], ast.Name)
         }
-        self.assertTrue(
+        self.assertFalse(
             ast.literal_eval(class_assignments["reaction_only"])
         )
         self.assertEqual(
@@ -42,12 +42,12 @@ class AllPostsReactionsServiceTests(unittest.TestCase):
             "all_posts_reactions",
         )
 
-    def test_runtime_contains_reaction_requests_but_no_view_request(self):
+    def test_runtime_contains_reaction_and_view_requests(self):
         source = _read(SERVICE)
         self.assertIn("SendMessageReactionRequest", source)
-        self.assertNotIn("GetMessagesViewsRequest", source)
-        self.assertNotIn("IncrementMessageViewsRequest", source)
-        self.assertIn("ولا تنفذ مشاهدات أو رشق مشاهدات", source)
+        self.assertIn("GetMessagesViewsRequest", source)
+        self.assertIn("increment=True", source)
+        self.assertNotIn("ولا تنفذ مشاهدات أو رشق مشاهدات", source)
 
 
 if __name__ == "__main__":
