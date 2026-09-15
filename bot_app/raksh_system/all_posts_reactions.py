@@ -4,10 +4,10 @@ from .common import *
 
 
 class AllPostsReactionsService(RakshService):
-    """تفاعل مستمر على كل منشورات القناة خلال مدة يحددها المستخدم."""
+    """تفاعل مستمر على كل منشورات القناة بعدد حسابات يحدده المستخدم."""
 
     service_type = "all_posts_reactions"
-    label = "✨ رشق تفاعلات لكل البوستات"
+    label = "✨ تفاعل على جميع البوستات"
     MAX_DURATION_DAYS = 30
     MAX_POSTS_PER_CYCLE = 100
 
@@ -78,8 +78,12 @@ class AllPostsReactionsService(RakshService):
     def get_start_message(self) -> str:
         return (
             f"{self.config.name}\n\n"
-            f"💰 السعر الأساسي: {self.get_rate_text('points')} لكل تفاعل/يوم\n"
-            f"⭐ السعر الأساسي: {self.get_rate_text('stars')} لكل تفاعل/يوم\n\n"
+            f"💰 السعر الأساسي: {self.get_rate_text('points')} لكل حساب/يوم\n"
+            f"⭐ السعر الأساسي: {self.get_rate_text('stars')} لكل حساب/يوم\n\n"
+            "📌 العدد الذي سترسله = عدد الحسابات على كل منشور.\n"
+            "مثال: 5 حسابات تعني أن كل منشور سيتفاعل عليه 5 حسابات.\n"
+            "سيتم ضم نفس عدد الحسابات إلى القناة قبل بدء التفاعل.\n"
+            "ويستمر ذلك مع المنشورات الجديدة حتى انتهاء المدة.\n\n"
             "🔗 *أرسل رابط القناة:*\n"
             f"{self.get_link_instruction()}"
         )
@@ -90,12 +94,12 @@ class AllPostsReactionsService(RakshService):
         payment_method: str,
         duration_days: int,
     ) -> int:
-        """السعر = عدد التفاعلات × عدد الأيام × سعر التفاعل اليومي."""
+        """السعر = عدد الحسابات لكل منشور × عدد الأيام × السعر اليومي."""
         days = max(1, min(int(duration_days or 1), self.MAX_DURATION_DAYS))
         return self.get_total(quantity, payment_method) * days
 
     async def handle_text(self, update, context, text, user, state, is_own) -> bool:
-        """جمع الرابط ثم عدد التفاعلات ثم عدد الأيام فقط."""
+        """جمع الرابط ثم عدد الحسابات لكل منشور ثم عدد الأيام فقط."""
         cancel_keyboard = self.get_start_keyboard()
 
         if state == "link":
@@ -116,7 +120,8 @@ class AllPostsReactionsService(RakshService):
 
             await update.message.reply_text(
                 "✅ تم حفظ الرابط.\n\n"
-                "✨ *أرسل عدد التفاعلات المطلوبة:*\n"
+                "✨ *أرسل عدد الحسابات التي ستتفاعل مع كل منشور:*\n"
+                "مثال: 5 = خمسة حسابات تتفاعل مع كل منشور\n"
                 f"(الحد الأقصى: {max_qty})",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=cancel_keyboard,
@@ -128,7 +133,7 @@ class AllPostsReactionsService(RakshService):
                 quantity = int(text.strip())
             except (TypeError, ValueError):
                 await update.message.reply_text(
-                    "⚠️ أرسل رقماً صحيحاً لعدد التفاعلات.",
+                    "⚠️ أرسل رقماً صحيحاً لعدد الحسابات.",
                     reply_markup=cancel_keyboard,
                 )
                 return True
@@ -142,7 +147,7 @@ class AllPostsReactionsService(RakshService):
                 return True
             if not 1 <= quantity <= max_qty:
                 await update.message.reply_text(
-                    f"⚠️ عدد التفاعلات المسموح بين 1 و {max_qty}.",
+                    f"⚠️ عدد الحسابات المسموح بين 1 و {max_qty}.",
                     reply_markup=cancel_keyboard,
                 )
                 return True
@@ -150,7 +155,7 @@ class AllPostsReactionsService(RakshService):
             context.user_data["raksh_quantity"] = quantity
             context.user_data["raksh_step"] = "duration_days"
             await update.message.reply_text(
-                "✅ تم حفظ عدد التفاعلات.\n\n"
+                "✅ تم حفظ عدد الحسابات لكل منشور.\n\n"
                 "🗓 *أرسل عدد الأيام:*\n"
                 f"(من 1 إلى {self.MAX_DURATION_DAYS} يوماً)",
                 parse_mode=ParseMode.MARKDOWN,
@@ -184,9 +189,11 @@ class AllPostsReactionsService(RakshService):
             await update.message.reply_text(
                 "📋 *تفاصيل الطلب*\n\n"
                 f"🔗 الرابط: {context.user_data['raksh_link']}\n"
-                f"✨ عدد التفاعلات: {quantity}\n"
+                f"👥 الحسابات لكل منشور: {quantity}\n"
                 f"🗓 المدة: {duration_days} يوم\n\n"
                 f"💰 التكلفة: {points_cost} نقطة أو {stars_cost} نجمة\n\n"
+                f"سيتم ضم {quantity} حساباً إلى القناة قبل بدء التفاعل.\n"
+                "كل منشور جديد سيتفاعل عليه هذا العدد من الحسابات طوال المدة.\n\n"
                 "💳 *اختر طريقة الدفع:*",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
@@ -227,6 +234,18 @@ class AllPostsReactionsService(RakshService):
             channel_ref = self._parse_channel_target(params.get("link"))
             if not channel_ref:
                 return False, "رابط القناة غير صحيح"
+
+            # كل حساب محسوب في الطلب يجب أن يكون عضواً في القناة قبل تنفيذ
+            # التفاعل. نكرر الاستدعاء في كل دورة حتى تبقى العضوية وموعد
+            # المغادرة محدثين طوال مدة الحملة.
+            joined = await _join_channel_and_schedule_leave(
+                client,
+                channel_ref,
+                session.get("phone_number"),
+            )
+            if not joined:
+                return False, "تعذر انضمام الحساب إلى القناة"
+
             try:
                 entity = await asyncio.wait_for(client.get_entity(channel_ref), timeout=15)
             except Exception as exc:
