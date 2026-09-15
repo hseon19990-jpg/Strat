@@ -1,6 +1,7 @@
 """خدمة تفاعل مستمرة على منشورات قناة تيليجرام."""
 
 from .common import *
+from telethon.tl.functions.messages import SendReactionRequest as SendMessageReactionRequest
 
 
 class AllPostsReactionsService(RakshService):
@@ -265,7 +266,7 @@ class AllPostsReactionsService(RakshService):
                 attempted_count += 1
                 reaction = random.choice(list(RAKSH_REACTIONS.values()))
                 try:
-                    await client(SendReactionRequest(
+                    await client(SendMessageReactionRequest(
                         peer=entity,
                         msg_id=message.id,
                         reaction=[ReactionEmoji(emoticon=reaction)],
