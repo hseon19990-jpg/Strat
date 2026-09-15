@@ -850,6 +850,61 @@ async def _is_raksh_entity_in_dialogs(client, entity) -> Optional[bool]:
         logger.debug("تعذر فحص عضوية القناة قبل الانضمام: %s", exc)
         return None
 
+async def _resolve_raksh_entity(client, normalized_ref: str, phone_number: Optional[str]):
+    """حل القناة من الاسم أو من محادثات الحساب عند تعذر حل الاسم العام."""
+    try:
+        return await client.get_entity(normalized_ref)
+    except Exception as resolve_error:
+        original_error = resolve_error
+        if normalized_ref.startswith(("invite:", "-100")):
+            raise
+
+        stored_channel_ids = set()
+        if phone_number:
+            try:
+                with db_conn() as c:
+                    rows = c.execute(
+                        "SELECT telegram_channel_id "
+                        "FROM raksh_channel_memberships "
+                        "WHERE phone_number=%s AND channel_ref=%s "
+                        "AND telegram_channel_id IS NOT NULL "
+                        "ORDER BY leave_at DESC",
+                        (str(phone_number).strip(), normalized_ref),
+                    ).fetchall()
+                stored_channel_ids = {
+                    row["telegram_channel_id"]
+                    for row in rows
+                    if row["telegram_channel_id"] is not None
+                }
+            except Exception as db_error:
+                logger.debug("تعذر قراءة معرف القناة المحفوظ: %s", db_error)
+
+        try:
+            dialogs = await asyncio.wait_for(client.get_dialogs(), timeout=25)
+        except Exception:
+            raise original_error
+
+        wanted_username = normalized_ref.lstrip("@").casefold()
+        for dialog in dialogs:
+            candidate = getattr(dialog, "entity", None)
+            if candidate is None:
+                continue
+            candidate_id = getattr(candidate, "id", None)
+            candidate_username = str(
+                getattr(candidate, "username", "") or ""
+            ).casefold()
+            if (
+                candidate_id in stored_channel_ids
+                or candidate_username == wanted_username
+            ):
+                logger.info(
+                    "تم حل القناة %s من محادثات الحساب رغم تعذر حل اسم المستخدم",
+                    normalized_ref,
+                )
+                return candidate
+
+        raise original_error
+
 async def _join_channel_and_schedule_leave(
     client,
     channel_ref: str,
@@ -878,7 +933,11 @@ async def _join_channel_and_schedule_leave(
                 )
                 entity = getattr(invite_info, "chat", None)
         else:
-            entity = await client.get_entity(normalized_ref)
+            entity = await _resolve_raksh_entity(
+                client,
+                normalized_ref,
+                phone_number,
+            )
             is_member = await _is_raksh_entity_in_dialogs(client, entity)
             if is_member is True:
                 logger.info(
