@@ -242,7 +242,7 @@ components:
         campaignId: { type: integer }
         campaignName: { type: string }
         channel: { type: string }
-        telegramUrl: { type: string, format: uri }
+        telegramUrl: { type: string }
         content: { type: string }
         publishedAt: { type: string, format: date-time }
         targetReactions: { type: integer }
