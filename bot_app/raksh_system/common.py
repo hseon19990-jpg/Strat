@@ -67,6 +67,35 @@ RAKSH_MAX_EXECUTIONS_PER_HOUR = 99999999999
 RAKSH_NO_VERIFICATION_MESSAGE = "بدون زر تحقق"
 RAKSH_DUPLICATE_MARKER = "RAKSH_DUPLICATE"
 RAKSH_VERIFICATION_FAILURE_MARKER = "RAKSH_VERIFICATION_FAILURE"
+RAKSH_FROZEN_ACCOUNT_MARKER = "__RAKSH_FROZEN_ACCOUNT__"
+
+
+def is_raksh_frozen_account_error(error: object) -> bool:
+    """تمييز الحسابات المجمدة أو المعطلة حتى يتم تجاوزها بصمت."""
+    if error is None:
+        return False
+    error_name = type(error).__name__.casefold()
+    text = str(error).casefold()
+    frozen_markers = (
+        RAKSH_FROZEN_ACCOUNT_MARKER.casefold(),
+        "userdeactivatedbanerror",
+        "userdeactivatederror",
+        "userdeactivatedban",
+        "userdeactivated",
+        "phonenumberbannederror",
+        "account is frozen",
+        "account frozen",
+        "account is deactivated",
+        "account deactivated",
+        "الحساب مجمد",
+        "الحساب مجمّد",
+        "الحساب معطل",
+        "الحساب معطّل",
+        "الحساب محظور",
+    )
+    return any(marker in error_name or marker in text for marker in frozen_markers)
+
+
 # هذه الخدمات تحتاج نتيجة تنفيذ فعلية، بخلاف بقية خدمات الرشق.
 RAKSH_RESULT_EXCEPTIONS = frozenset({"forced_ref", "forced_ref_ai", "votes_ai"})
 RAKSH_DUPLICATE_TEXT_MARKERS = (
@@ -285,6 +314,7 @@ def _get_sessions_for_service(service_type: str, is_owner: bool = False) -> List
               AND BTRIM(session_string) <> ''
               AND deleted_at IS NULL
               AND forced_ref_excluded IS NOT TRUE
+              AND last_authorized IS NOT FALSE
             ORDER BY last_authorized DESC NULLS LAST, id ASC
         """
         rows = c.execute(query).fetchall()
