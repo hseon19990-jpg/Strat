@@ -351,6 +351,79 @@ def init_db():
               assigned_at   TIMESTAMPTZ,
               added_at      TIMESTAMPTZ DEFAULT NOW()
           )""")
+
+          # جداول لوحة «رشق تفاعل لكل المنشورات».
+          # كانت هذه الجداول موجودة فقط في مخطط واجهة الويب، لذلك كان
+          # تشغيل البوت وحده على Railway يفشل عند أول دورة للـ scheduler
+          # برسالة: relation "posts" does not exist.
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS campaigns (
+              id                SERIAL PRIMARY KEY,
+              name              TEXT NOT NULL,
+              channel           TEXT NOT NULL,
+              duration_days     INTEGER NOT NULL,
+              reactions_per_post INTEGER NOT NULL,
+              status            TEXT NOT NULL DEFAULT 'active',
+              start_date        DATE NOT NULL,
+              end_date          DATE NOT NULL,
+              created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )""")
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS posts (
+              id                  SERIAL PRIMARY KEY,
+              campaign_id         INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+              channel             TEXT NOT NULL,
+              telegram_url        TEXT NOT NULL DEFAULT '',
+              content             TEXT NOT NULL,
+              published_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              target_reactions    INTEGER NOT NULL,
+              completed_reactions INTEGER NOT NULL DEFAULT 0,
+              status              TEXT NOT NULL DEFAULT 'queued',
+              leave_status        TEXT NOT NULL DEFAULT 'pending'
+          )""")
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS accounts (
+              id              SERIAL PRIMARY KEY,
+              handle          TEXT NOT NULL UNIQUE,
+              status          TEXT NOT NULL DEFAULT 'available',
+              total_reactions INTEGER NOT NULL DEFAULT 0,
+              last_action     TEXT NOT NULL DEFAULT '',
+              updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )""")
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS activity (
+              id         SERIAL PRIMARY KEY,
+              type       TEXT NOT NULL,
+              message    TEXT NOT NULL,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              tone       TEXT NOT NULL DEFAULT 'neutral'
+          )""")
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS reaction_post_accounts (
+              id             BIGSERIAL PRIMARY KEY,
+              post_id        INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+              stock_id       BIGINT NOT NULL,
+              account_handle TEXT NOT NULL DEFAULT '',
+              status         TEXT NOT NULL DEFAULT 'pending',
+              reaction_emoji TEXT NOT NULL DEFAULT '',
+              attempts       INTEGER NOT NULL DEFAULT 0,
+              reacted_at     TIMESTAMPTZ,
+              leave_after    TIMESTAMPTZ,
+              left_at        TIMESTAMPTZ,
+              last_error     TEXT NOT NULL DEFAULT '',
+              created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              UNIQUE (post_id, stock_id)
+          )""")
+          c.execute("""
+          CREATE INDEX IF NOT EXISTS posts_status_published_idx
+          ON posts (status, published_at)
+          """)
+          c.execute("""
+          CREATE INDEX IF NOT EXISTS reaction_post_accounts_queue_idx
+          ON reaction_post_accounts (status, leave_after, updated_at)
+          """)
+
           c.execute("""
           CREATE TABLE IF NOT EXISTS mandatory_channels (
               id               SERIAL PRIMARY KEY,
