@@ -1810,7 +1810,11 @@ async def _handle_raksh_callback_impl(
             await context.bot.send_invoice(
                 chat_id=user.id,
                 title=svc.config.name,
-                description=f"{quantity} وحدة | {total_stars} نجمة",
+                description=(
+                    f"{quantity} تفاعل"
+                    + (f" لمدة {context.user_data.get('raksh_duration_days')} يوم" if service_type == "all_posts_reactions" else "")
+                    + f" | {total_stars} نجمة"
+                ),
                 payload=f"raksh_stars:{user.id}:{service_type}:{quantity}:{total_stars}",
                 provider_token="",
                 currency="XTR",
