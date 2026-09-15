@@ -63,6 +63,11 @@ class AllPostsReactionsService(RakshService):
                 parts = parts[1:]
             if not parts:
                 return None
+            if parts[0] == "joinchat" and len(parts) >= 2:
+                return f"invite:{parts[1]}"
+            if parts[0].startswith("+"):
+                invite_hash = parts[0][1:]
+                return f"invite:{invite_hash}" if invite_hash else None
             if parts[0] == "c" and len(parts) >= 2 and parts[1].isdigit():
                 return f"-100{parts[1]}"
             if re.fullmatch(r"[A-Za-z0-9_]{5,32}", parts[0]):
@@ -405,12 +410,13 @@ class AllPostsReactionsService(RakshService):
                     _mark_raksh_session_unauthorized(phone_number)
                     return
 
-                joined = await _join_channel_and_schedule_leave(
+                entity = await _join_channel_and_schedule_leave(
                     client,
                     channel_ref,
                     phone_number,
+                    return_entity=True,
                 )
-                if not joined:
+                if not entity:
                     raise RuntimeError("تعذر انضمام الحساب إلى القناة")
 
                 cutoff = self._get_post_cutoff(params, phone_number)
@@ -418,10 +424,6 @@ class AllPostsReactionsService(RakshService):
                     cutoff = datetime.now(timezone.utc)
                     self._save_post_cutoff(params, phone_number, cutoff)
 
-                entity = await asyncio.wait_for(
-                    client.get_entity(channel_ref),
-                    timeout=15,
-                )
                 allowed_reactions = await self._get_allowed_reactions(client, entity)
                 if not allowed_reactions:
                     try:
@@ -539,12 +541,13 @@ class AllPostsReactionsService(RakshService):
             # كل حساب محسوب في الطلب يجب أن يكون عضواً في القناة قبل تنفيذ
             # التفاعل. نكرر الاستدعاء في كل دورة حتى تبقى العضوية وموعد
             # المغادرة محدثين طوال مدة الحملة.
-            joined = await _join_channel_and_schedule_leave(
+            entity = await _join_channel_and_schedule_leave(
                 client,
                 channel_ref,
                 phone_number,
+                return_entity=True,
             )
-            if not joined:
+            if not entity:
                 return False, "تعذر انضمام الحساب إلى القناة"
 
             # لا نستخدم تاريخ الطلب أو أحدث منشور كمرجع. المرجع هو اللحظة
@@ -554,11 +557,6 @@ class AllPostsReactionsService(RakshService):
             if post_cutoff is None:
                 post_cutoff = datetime.now(timezone.utc)
                 self._save_post_cutoff(params, phone_number, post_cutoff)
-
-            try:
-                entity = await asyncio.wait_for(client.get_entity(channel_ref), timeout=15)
-            except Exception as exc:
-                return False, f"تعذر الوصول إلى القناة: {exc}"
 
             allowed_reactions = await self._get_allowed_reactions(client, entity)
             if not allowed_reactions:
