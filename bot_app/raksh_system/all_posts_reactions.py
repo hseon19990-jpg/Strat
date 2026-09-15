@@ -83,6 +83,8 @@ class AllPostsReactionsService(RakshService):
     MAX_DURATION_DAYS = 30
     MAX_POSTS_PER_CYCLE = 100
     POST_CUTOFFS_PARAM = "post_reaction_cutoffs"
+    CAMPAIGN_EXPIRES_PARAM = "campaign_expires_at"
+    CAMPAIGN_ACCOUNTS_PARAM = "campaign_account_phones"
     ORDER_ID_PARAM = "_raksh_order_id"
 
     config = ServiceConfig(
