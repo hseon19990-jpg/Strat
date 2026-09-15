@@ -1,6 +1,9 @@
 """خدمة تفاعل مستمرة على منشورات قناة تيليجرام."""
 
 from .common import *
+from ..database import db_conn
+from datetime import datetime, timezone
+import json
 from telethon.tl.functions.messages import SendReactionRequest as SendMessageReactionRequest
 from telethon.tl.types import ReactionCustomEmoji, ReactionEmoji
 
@@ -12,6 +15,8 @@ class AllPostsReactionsService(RakshService):
     label = "✨ تفاعل على جميع البوستات"
     MAX_DURATION_DAYS = 30
     MAX_POSTS_PER_CYCLE = 100
+    POST_CUTOFFS_PARAM = "post_reaction_cutoffs"
+    ORDER_ID_PARAM = "_raksh_order_id"
 
     config = ServiceConfig(
         name=label,
@@ -220,6 +225,63 @@ class AllPostsReactionsService(RakshService):
         params["post_limit"] = self.MAX_POSTS_PER_CYCLE
         return params
 
+    @staticmethod
+    def _as_utc(value) -> Optional[datetime]:
+        """تحويل قيمة تاريخ محفوظة إلى تاريخ UTC قابل للمقارنة."""
+        if not value:
+            return None
+        try:
+            parsed = (
+                value
+                if isinstance(value, datetime)
+                else datetime.fromisoformat(str(value))
+            )
+        except (TypeError, ValueError):
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    def _get_post_cutoff(self, params: Dict, phone_number: str) -> Optional[datetime]:
+        cutoffs = params.get(self.POST_CUTOFFS_PARAM) or {}
+        return self._as_utc(cutoffs.get(str(phone_number)))
+
+    def _save_post_cutoff(
+        self,
+        params: Dict,
+        phone_number: str,
+        cutoff: datetime,
+    ) -> None:
+        """حفظ أول وقت انضمام للحساب حتى لا تعود الدورات للمنشورات القديمة."""
+        cutoffs = params.setdefault(self.POST_CUTOFFS_PARAM, {})
+        cutoffs[str(phone_number)] = cutoff.astimezone(timezone.utc).isoformat()
+
+        # تحفظ النقطة فوراً، لا بعد انتهاء الدورة، حتى لا تضيع عند إعادة تشغيل
+        # البوت أثناء أول تنفيذ.
+        order_id = params.get(self.ORDER_ID_PARAM)
+        if not order_id:
+            return
+        persisted_params = dict(params)
+        persisted_params.pop(self.ORDER_ID_PARAM, None)
+        try:
+            with db_conn() as c:
+                c.execute(
+                    """
+                    UPDATE raksh_orders
+                    SET params=%s::jsonb, updated_at=NOW()
+                    WHERE id=%s
+                    """,
+                    (
+                        json.dumps(persisted_params, ensure_ascii=False, default=str),
+                        int(order_id),
+                    ),
+                )
+        except Exception:
+            logger.exception(
+                "تعذر حفظ نقطة بداية منشورات التفاعل للطلب %s",
+                order_id,
+            )
+
     async def _get_allowed_reactions(self, client, entity) -> list:
         """جلب التفاعلات المسموحة فعلياً في القناة."""
         fallback = [
@@ -272,16 +334,27 @@ class AllPostsReactionsService(RakshService):
             if not channel_ref:
                 return False, "رابط القناة غير صحيح"
 
+            phone_number = session.get("phone_number")
+            post_cutoff = self._get_post_cutoff(params, phone_number)
+
             # كل حساب محسوب في الطلب يجب أن يكون عضواً في القناة قبل تنفيذ
             # التفاعل. نكرر الاستدعاء في كل دورة حتى تبقى العضوية وموعد
             # المغادرة محدثين طوال مدة الحملة.
             joined = await _join_channel_and_schedule_leave(
                 client,
                 channel_ref,
-                session.get("phone_number"),
+                phone_number,
             )
             if not joined:
                 return False, "تعذر انضمام الحساب إلى القناة"
+
+            # لا نستخدم تاريخ الطلب أو أحدث منشور كمرجع. المرجع هو اللحظة
+            # التي اكتمل فيها انضمام هذا الحساب في هذا الطلب تحديداً.
+            # عند الدورات التالية نعيد استخدام نفس النقطة، فلا نلمس أي منشور
+            # سبق انضمام الحساب.
+            if post_cutoff is None:
+                post_cutoff = datetime.now(timezone.utc)
+                self._save_post_cutoff(params, phone_number, post_cutoff)
 
             try:
                 entity = await asyncio.wait_for(client.get_entity(channel_ref), timeout=15)
@@ -306,6 +379,15 @@ class AllPostsReactionsService(RakshService):
             async for message in client.iter_messages(entity, limit=post_limit):
                 if not getattr(message, "id", None):
                     continue
+                message_date = self._as_utc(getattr(message, "date", None))
+                if message_date is None:
+                    # المنشور بلا تاريخ غير قابل للتأكد من أنه جديد؛ تجاهله
+                    # بدلاً من المخاطرة بالتفاعل مع منشور قديم.
+                    continue
+                if message_date <= post_cutoff:
+                    # iter_messages يعيد الأحدث أولاً، لذا لا حاجة لفحص ما
+                    # بعد أول منشور وصل قبل نقطة الانضمام.
+                    break
                 attempted_count += 1
                 reaction = random.choice(allowed_reactions)
                 try:
