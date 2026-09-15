@@ -930,8 +930,15 @@ async def _join_channel_and_schedule_leave(
     channel_ref: str,
     phone_number: Optional[str] = None,
     return_entity: bool = False,
+    leave_after_seconds: Optional[int] = None,
+    leave_until: Optional[datetime] = None,
 ) -> Any:
-    """ينضم للقناة ويسجل مهلة مغادرة دائمة قابلة لإعادة الضبط."""
+    """ينضم للقناة ويسجل موعد مغادرة قابل لإعادة الضبط.
+
+    ``leave_until`` is used by long-running services so their membership does
+    not expire at the global cleanup horizon while the order is still active.
+    The stored deadline is only extended, never shortened.
+    """
     normalized_ref = _normalize_raksh_channel_ref(channel_ref)
     if not normalized_ref:
         return False
@@ -986,29 +993,50 @@ async def _join_channel_and_schedule_leave(
         logger.warning(f"تم الانضمام للقناة {normalized_ref} بلا رقم حساب؛ لن تُحفظ مهلة المغادرة")
         return True
 
-    leave_hours = _raksh_channel_leave_hours()
+    default_leave_at = datetime.now(timezone.utc) + timedelta(
+        hours=_raksh_channel_leave_hours()
+    )
+    requested_leave_at = None
+    if leave_until:
+        requested_leave_at = (
+            leave_until
+            if leave_until.tzinfo is not None
+            else leave_until.replace(tzinfo=timezone.utc)
+        ).astimezone(timezone.utc)
+    elif leave_after_seconds is not None:
+        try:
+            requested_leave_at = datetime.now(timezone.utc) + timedelta(
+                seconds=max(1, int(leave_after_seconds))
+            )
+        except (TypeError, ValueError):
+            requested_leave_at = None
+    # Explicit service deadlines are authoritative for a new membership.
+    # Existing rows are still protected by GREATEST below, so a new request
+    # can never shorten another active campaign on the same channel.
+    leave_at = requested_leave_at or default_leave_at
     telegram_channel_id = getattr(entity, "id", None)
     with db_conn() as c:
         # إعادة استخدام القناة تمدد مهلة جميع الحسابات المرتبطة بها،
         # لذلك لا يغادر حساب قديم أثناء حملة جديدة على نفس القناة.
         c.execute(
             "UPDATE raksh_channel_memberships "
-            "SET leave_at=NOW() + (%s * INTERVAL '1 hour') "
+            "SET leave_at=GREATEST(COALESCE(leave_at, NOW()), %s) "
             "WHERE channel_ref=%s",
-            (leave_hours, normalized_ref),
+            (leave_at, normalized_ref),
         )
         c.execute(
             "INSERT INTO raksh_channel_memberships "
             "(phone_number, channel_ref, telegram_channel_id, joined_at, leave_at) "
-            "VALUES (%s,%s,%s,NOW(),NOW() + (%s * INTERVAL '1 hour')) "
+            "VALUES (%s,%s,%s,NOW(),%s) "
             "ON CONFLICT (phone_number, channel_ref) DO UPDATE SET "
             "telegram_channel_id=COALESCE(EXCLUDED.telegram_channel_id, raksh_channel_memberships.telegram_channel_id), "
-            "joined_at=NOW(), leave_at=EXCLUDED.leave_at",
-            (str(phone_number).strip(), normalized_ref, telegram_channel_id, leave_hours),
+            "joined_at=NOW(), "
+            "leave_at=GREATEST(COALESCE(raksh_channel_memberships.leave_at, NOW()), EXCLUDED.leave_at)",
+            (str(phone_number).strip(), normalized_ref, telegram_channel_id, leave_at),
         )
     logger.info(
         f"✅ تم حفظ عضوية {normalized_ref} للحساب {phone_number}; "
-        f"المغادرة بعد {leave_hours} ساعة (قابلة لإعادة الضبط)"
+        f"المغادرة في {leave_at.isoformat()} (قابلة لإعادة الضبط)"
     )
     return entity if return_entity else True
 
