@@ -531,7 +531,15 @@ def main():
             first=20,
             data={"all_posts_only": True},
         )
-        logger.info("🔔 تم تفعيل استئناف التفاعل المستمر بعد الإقلاع وكل دقيقة")
+        # نفّذ محاولة استئناف قصيرة بعد بدء JobQueue مباشرة، ثم اترك
+        # الفحص الدوري كشبكة أمان إذا تأخرت قاعدة البيانات أو Telegram.
+        app.job_queue.run_once(
+            resume_raksh_orders_job,
+            when=5,
+            data={"all_posts_only": True},
+            name="resume-all-posts-after-startup",
+        )
+        logger.info("🔔 تم تفعيل استئناف التفاعل المستمر فور الإقلاع وكل دقيقة")
         app.job_queue.run_repeating(
             resume_raksh_orders_job,
             interval=60,
