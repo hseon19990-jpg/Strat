@@ -463,15 +463,32 @@ class AllPostsReactionsService(RakshService):
             for session in sessions
         ]
         last_heartbeat = 0.0
+        expired = False
         try:
-            while datetime.now(timezone.utc) < expires_at:
+            while True:
                 if self._is_order_cancelled(order_id):
                     return
+                remaining = (expires_at - datetime.now(timezone.utc)).total_seconds()
+                if remaining <= 0:
+                    expired = True
+                    break
+
+                # A frozen or revoked account can finish its own watcher. Do
+                # not complete the whole order just because one watcher is
+                # gone; let the recovery job replace it while the campaign
+                # remains pending.
+                if not any(not task.done() for task in account_tasks):
+                    logger.warning(
+                        "لا توجد جلسات نشطة متبقية لمراقب التفاعل للطلب %s؛ "
+                        "سيبقى الطلب قابلاً للاستئناف",
+                        order_id,
+                    )
+                    return
+
                 now = asyncio.get_running_loop().time()
                 if now - last_heartbeat >= 30:
                     _touch_live_monitor(order_id)
                     last_heartbeat = now
-                remaining = (expires_at - datetime.now(timezone.utc)).total_seconds()
                 await asyncio.sleep(min(5, max(1, remaining)))
         finally:
             stop_event.set()
@@ -479,7 +496,7 @@ class AllPostsReactionsService(RakshService):
                 task.cancel()
             await asyncio.gather(*account_tasks, return_exceptions=True)
 
-        if not self._is_order_cancelled(order_id):
+        if expired and not self._is_order_cancelled(order_id):
             await on_finished()
 
     async def _watch_account(
@@ -596,7 +613,10 @@ class AllPostsReactionsService(RakshService):
                     except Exception as exc:
                         if is_raksh_frozen_account_error(exc):
                             _mark_raksh_session_unauthorized(phone_number)
-                            stop_event.set()
+                            # Only this account is unusable. The campaign
+                            # must keep watching with its other accounts and
+                            # remain pending so the recovery job can replace
+                            # the account later.
                             return
                         logger.warning(
                             "فشل المشاهدة/التفاعل المباشر على %s/%s من الحساب %s: %s",
