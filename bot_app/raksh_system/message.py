@@ -112,6 +112,7 @@ def _message_sessions(is_owner: bool = False) -> list[dict]:
             WHERE session_string IS NOT NULL
               AND BTRIM(session_string) <> ''
               AND deleted_at IS NULL
+              AND frozen_at IS NULL
               AND forced_ref_excluded IS NOT TRUE
             ORDER BY last_authorized DESC NULLS LAST, id ASC
             """

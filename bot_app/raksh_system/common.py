@@ -336,6 +336,7 @@ def _get_sessions_for_service(service_type: str, is_owner: bool = False) -> List
             WHERE session_string IS NOT NULL
               AND BTRIM(session_string) <> ''
               AND deleted_at IS NULL
+              AND frozen_at IS NULL
               AND forced_ref_excluded IS NOT TRUE
               AND last_authorized IS NOT FALSE
             ORDER BY last_authorized DESC NULLS LAST, id ASC
