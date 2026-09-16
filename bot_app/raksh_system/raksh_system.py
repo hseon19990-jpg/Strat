@@ -640,6 +640,11 @@ def _set_raksh_order_status(
             """
             UPDATE raksh_orders
             SET status=%s, last_error=%s, updated_at=NOW(),
+                live_monitor_heartbeat_at=CASE
+                    WHEN %s IN ('completed', 'cancelled')
+                    THEN NULL
+                    ELSE live_monitor_heartbeat_at
+                END,
                 completed_at=CASE
                     WHEN %s IN ('completed', 'cancelled') THEN NOW()
                     ELSE completed_at
@@ -647,8 +652,42 @@ def _set_raksh_order_status(
                 lease_until=NULL
             WHERE id=%s AND status <> 'cancelled'
             """,
-            (status, last_error, status, order_id),
+            (status, last_error, status, status, order_id),
         )
+
+
+def _persist_live_monitor_state(order_id: int, params: Dict) -> None:
+    """حفظ حالة المستمع قبل تشغيله حتى يمكن استعادته بعد إعادة النشر."""
+    with db_conn() as c:
+        c.execute(
+            """
+            UPDATE raksh_orders
+            SET params=%s::jsonb,
+                live_monitor_heartbeat_at=NOW(),
+                updated_at=NOW()
+            WHERE id=%s AND status <> 'cancelled'
+            """,
+            (
+                json.dumps(params, ensure_ascii=False, default=str),
+                int(order_id),
+            ),
+        )
+
+
+def _touch_live_monitor(order_id: int) -> None:
+    """تحديث نبضة المستمع الدائم في PostgreSQL."""
+    try:
+        with db_conn() as c:
+            c.execute(
+                """
+                UPDATE raksh_orders
+                SET live_monitor_heartbeat_at=NOW(), updated_at=NOW()
+                WHERE id=%s AND status <> 'cancelled'
+                """,
+                (int(order_id),),
+            )
+    except Exception:
+        logger.exception("تعذر تحديث نبضة مستمع التفاعل للطلب %s", order_id)
 
 
 def _requeue_raksh_order_after_failure(
@@ -2663,7 +2702,9 @@ async def _run_all_posts_reactions_order(context, order: Dict, progress_msg=None
                 """
                 UPDATE raksh_orders
                 SET status='completed', result_text=%s, last_error=NULL,
-                    lease_until=NULL, updated_at=NOW(), completed_at=NOW()
+                    lease_until=NULL, live_monitor_heartbeat_at=NULL,
+                    params=COALESCE(params, '{}'::jsonb) - 'live_monitor',
+                    updated_at=NOW(), completed_at=NOW()
                 WHERE id=%s AND status <> 'cancelled'
                 """,
                 (result_text, order_id),
@@ -2693,6 +2734,44 @@ async def _run_all_posts_reactions_order(context, order: Dict, progress_msg=None
             "مستمع مباشر نشط؛ تتم معالجة المنشورات فور نشرها",
         )
         return
+
+    persisted_monitor = params.get("live_monitor")
+    if isinstance(persisted_monitor, dict):
+        monitor_expires_at = AllPostsReactionsService._as_utc(
+            persisted_monitor.get("expires_at")
+        )
+        monitor_phones = {
+            str(phone)
+            for phone in (persisted_monitor.get("account_phones") or [])
+            if phone
+        }
+        if monitor_expires_at and datetime.now(timezone.utc) < monitor_expires_at:
+            live_session_pool = svc.get_sessions(is_owner=(user_id == OWNER_ID))
+            live_sessions = [
+                session
+                for session in live_session_pool
+                if str(session.get("phone_number")) in monitor_phones
+            ]
+            if live_sessions:
+                _touch_live_monitor(order_id)
+                started = await svc.start_live_monitor(
+                    order_id=order_id,
+                    sessions=live_sessions,
+                    params=params,
+                    expires_at=monitor_expires_at,
+                    on_finished=finish_order,
+                )
+                if started:
+                    _set_raksh_order_status(
+                        order_id,
+                        "pending",
+                        "تم استئناف مستمع التفاعل المحفوظ بعد إعادة التشغيل",
+                    )
+                    return
+        elif monitor_expires_at:
+            await finish_order()
+            return
+
     sessions = svc.get_sessions(is_owner=(user_id == OWNER_ID)) if svc else []
     if not sessions:
         _set_raksh_order_status(order_id, "pending", "لا توجد حسابات متاحة مؤقتاً")
@@ -2782,7 +2861,12 @@ async def _run_all_posts_reactions_order(context, order: Dict, progress_msg=None
             if str(session.get("phone_number")) in successful_phones
         ]
         monitor_params = dict(params)
-        monitor_params["_raksh_order_id"] = order_id
+        monitor_params.pop("_raksh_order_id", None)
+        monitor_params["live_monitor"] = {
+            "account_phones": sorted(successful_phones),
+            "expires_at": expires_at.isoformat(),
+        }
+        _persist_live_monitor_state(order_id, monitor_params)
         await svc.start_live_monitor(
             order_id=order_id,
             sessions=live_sessions,

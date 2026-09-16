@@ -49,6 +49,17 @@ class AllPostsReactionsServiceTests(unittest.TestCase):
         self.assertIn("increment=True", source)
         self.assertNotIn("ولا تنفذ مشاهدات أو رشق مشاهدات", source)
 
+    def test_live_monitor_state_is_persisted_for_restart_recovery(self):
+        service_source = _read(SERVICE)
+        order_source = _read(ROOT / "bot_app" / "raksh_system" / "raksh_system.py")
+        database_source = _read(ROOT / "bot_app" / "database.py")
+
+        self.assertIn("live_monitor_heartbeat_at", database_source)
+        self.assertIn('monitor_params["live_monitor"]', order_source)
+        self.assertIn("persisted_monitor", order_source)
+        self.assertIn("_touch_live_monitor(order_id)", service_source)
+        self.assertIn("تم استئناف مستمع التفاعل المحفوظ بعد إعادة التشغيل", order_source)
+
 
 if __name__ == "__main__":
     unittest.main()

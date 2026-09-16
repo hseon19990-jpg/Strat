@@ -15,6 +15,22 @@ from telethon.tl.types import ReactionCustomEmoji, ReactionEmoji
 _LIVE_MONITORS = {}
 
 
+def _touch_live_monitor(order_id: int) -> None:
+    """تحديث نبضة المستمع الدائم في PostgreSQL."""
+    try:
+        with db_conn() as c:
+            c.execute(
+                """
+                UPDATE raksh_orders
+                SET live_monitor_heartbeat_at=NOW(), updated_at=NOW()
+                WHERE id=%s AND status <> 'cancelled'
+                """,
+                (int(order_id),),
+            )
+    except Exception:
+        logger.exception("تعذر تحديث نبضة مستمع التفاعل للطلب %s", order_id)
+
+
 async def _leave_non_interaction_channel_if_needed(
     client,
     phone_number: Optional[str],
@@ -446,10 +462,15 @@ class AllPostsReactionsService(RakshService):
             )
             for session in sessions
         ]
+        last_heartbeat = 0.0
         try:
             while datetime.now(timezone.utc) < expires_at:
                 if self._is_order_cancelled(order_id):
                     return
+                now = asyncio.get_running_loop().time()
+                if now - last_heartbeat >= 30:
+                    _touch_live_monitor(order_id)
+                    last_heartbeat = now
                 remaining = (expires_at - datetime.now(timezone.utc)).total_seconds()
                 await asyncio.sleep(min(5, max(1, remaining)))
         finally:

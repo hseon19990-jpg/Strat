@@ -236,6 +236,7 @@ def init_db():
                refund_points INTEGER NOT NULL DEFAULT 0,
                special_count INTEGER NOT NULL DEFAULT 0,
                result_text   TEXT,
+               live_monitor_heartbeat_at TIMESTAMPTZ,
                created_at    TIMESTAMPTZ DEFAULT NOW(),
                updated_at    TIMESTAMPTZ DEFAULT NOW(),
                completed_at  TIMESTAMPTZ
@@ -296,6 +297,10 @@ def init_db():
           c.execute(
               "ALTER TABLE raksh_orders ADD COLUMN IF NOT EXISTS "
               "completed_at TIMESTAMPTZ"
+          )
+          c.execute(
+              "ALTER TABLE raksh_orders ADD COLUMN IF NOT EXISTS "
+              "live_monitor_heartbeat_at TIMESTAMPTZ"
           )
           c.execute(
               "ALTER TABLE raksh_order_items ADD COLUMN IF NOT EXISTS "
