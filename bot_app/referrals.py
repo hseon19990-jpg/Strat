@@ -99,6 +99,7 @@ def get_pending_numbers_for_task(task_id: int) -> list:
               AND BTRIM(ns.session_string) <> ''
               AND ns.deleted_at IS NULL
               AND ns.frozen_at IS NULL
+              AND ns.last_authorized IS NOT FALSE
               AND ns.id NOT IN (
                   SELECT stock_id FROM referral_completions
                   WHERE task_id=%s AND status='done'
@@ -2549,6 +2550,7 @@ async def _run_mansub_order(order_id, bot_user, start_p, channels, quantity, req
             " WHERE session_string IS NOT NULL AND BTRIM(session_string) <> ''"
             " AND deleted_at IS NULL"
             " AND frozen_at IS NULL"
+            " AND last_authorized IS NOT FALSE"
             " ORDER BY id"
         ).fetchall()
     with db_conn() as _cm:
@@ -3383,6 +3385,7 @@ async def _run_forced_ref_order(order_id, bot_user, start_p, channels, quantity,
             " WHERE session_string IS NOT NULL AND BTRIM(session_string) <> ''"
             " AND deleted_at IS NULL"
             " AND frozen_at IS NULL"
+            " AND last_authorized IS NOT FALSE"
             " ORDER BY id"
         ).fetchall()
         _global_ch_rows = c.execute(

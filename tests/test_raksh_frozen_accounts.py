@@ -44,8 +44,8 @@ class RakshFrozenAccountTests(unittest.TestCase):
         pool_query = common_source[start:end]
 
         self.assertIn("AND frozen_at IS NULL", pool_query)
+        self.assertIn("AND last_authorized IS NOT FALSE", pool_query)
         self.assertNotIn("forced_ref_excluded IS NOT TRUE", pool_query)
-        self.assertNotIn("last_authorized IS NOT FALSE", pool_query)
 
     def test_legacy_raksh_pools_match_the_same_session_rule(self):
         referrals_source = (ROOT / "bot_app" / "referrals.py").read_text(
@@ -58,6 +58,7 @@ class RakshFrozenAccountTests(unittest.TestCase):
         forced_pool = referrals_source[forced_start:]
 
         self.assertIn("AND frozen_at IS NULL", forced_pool)
+        self.assertIn("AND last_authorized IS NOT FALSE", forced_pool)
         self.assertNotIn("AND forced_ref_excluded IS NOT TRUE", forced_pool)
         self.assertNotIn("AND raksh_only IS NOT TRUE", forced_pool)
         self.assertNotIn("forced_ref_excluded IS NOT TRUE", message_source)
