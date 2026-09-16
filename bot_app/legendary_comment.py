@@ -400,8 +400,6 @@ def _get_all_active_sessions() -> list[dict]:
             "FROM number_stock "
             "WHERE session_string IS NOT NULL AND BTRIM(session_string) <> '' "
             "AND deleted_at IS NULL AND frozen_at IS NULL "
-            "AND last_authorized IS NOT FALSE "
-            "AND forced_ref_excluded IS NOT TRUE "
             "ORDER BY id ASC"
         ).fetchall()
     return [dict(row) for row in rows]

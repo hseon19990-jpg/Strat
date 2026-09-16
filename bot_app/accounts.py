@@ -797,17 +797,16 @@ def get_referral_session_count() -> int:
     """عدد كل الأرقام التي يملك البوت جلسة محفوظة لها.
 
     الإحالة لا تعتمد على حالة البيع أو 2FA أو معرفة إرسال الكود أو كون
-    الجلسة الوحيدة. المحاولة الفعلية داخل do_referral_for_number هي التي
-    تتحقق من أن الجلسة ما زالت صالحة وقابلة للعمل.
+    الجلسة الوحيدة أو أي استثناء إداري قديم. الحساب الوحيد المستثنى هنا
+    هو الحساب المجمد؛ المحاولة الفعلية داخل do_referral_for_number هي
+    التي تتحقق من أن الجلسة ما زالت صالحة وقابلة للعمل.
     """
     with db_conn() as c:
         row = c.execute(
             "SELECT COUNT(*) AS cnt FROM number_stock "
             "WHERE session_string IS NOT NULL AND BTRIM(session_string) <> '' "
             "AND deleted_at IS NULL "
-            "AND frozen_at IS NULL "
-            "AND forced_ref_excluded IS NOT TRUE "
-            "AND raksh_only IS NOT TRUE"
+            "AND frozen_at IS NULL"
         ).fetchone()
         return row["cnt"] if row else 0
 
@@ -829,8 +828,7 @@ def find_and_enable_referral_sessions() -> dict:
             "SELECT id, forced_ref_excluded FROM number_stock "
             "WHERE session_string IS NOT NULL AND BTRIM(session_string) <> '' "
             "AND deleted_at IS NULL "
-            "AND frozen_at IS NULL "
-            "AND raksh_only IS NOT TRUE"
+            "AND frozen_at IS NULL"
         ).fetchall()
         total = len(rows)
         reenabled = sum(1 for row in rows if row["forced_ref_excluded"] is True)
@@ -838,8 +836,7 @@ def find_and_enable_referral_sessions() -> dict:
             "UPDATE number_stock SET forced_ref_excluded=FALSE "
             "WHERE session_string IS NOT NULL AND BTRIM(session_string) <> '' "
             "AND deleted_at IS NULL "
-            "AND frozen_at IS NULL "
-            "AND raksh_only IS NOT TRUE"
+            "AND frozen_at IS NULL"
         )
     return {
         "total": total,

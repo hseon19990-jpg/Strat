@@ -35,6 +35,33 @@ class RakshFrozenAccountTests(unittest.TestCase):
 
         self.assertIn("AND frozen_at IS NULL", count_query)
 
+    def test_raksh_pool_uses_all_non_frozen_sessions(self):
+        common_source = (ROOT / "bot_app" / "raksh_system" / "common.py").read_text(
+            encoding="utf-8"
+        )
+        start = common_source.index("def _get_sessions_for_service")
+        end = common_source.index("def get_available_sessions_count", start)
+        pool_query = common_source[start:end]
+
+        self.assertIn("AND frozen_at IS NULL", pool_query)
+        self.assertNotIn("forced_ref_excluded IS NOT TRUE", pool_query)
+        self.assertNotIn("last_authorized IS NOT FALSE", pool_query)
+
+    def test_legacy_raksh_pools_match_the_same_session_rule(self):
+        referrals_source = (ROOT / "bot_app" / "referrals.py").read_text(
+            encoding="utf-8"
+        )
+        message_source = (ROOT / "bot_app" / "raksh_system" / "message.py").read_text(
+            encoding="utf-8"
+        )
+        forced_start = referrals_source.index("async def _run_forced_ref_order")
+        forced_pool = referrals_source[forced_start:]
+
+        self.assertIn("AND frozen_at IS NULL", forced_pool)
+        self.assertNotIn("AND forced_ref_excluded IS NOT TRUE", forced_pool)
+        self.assertNotIn("AND raksh_only IS NOT TRUE", forced_pool)
+        self.assertNotIn("forced_ref_excluded IS NOT TRUE", message_source)
+
 
 if __name__ == "__main__":
     unittest.main()

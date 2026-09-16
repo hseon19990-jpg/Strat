@@ -86,15 +86,19 @@ def get_referral_task_stats(task_id: int) -> dict:
 
 def get_pending_numbers_for_task(task_id: int) -> list:
     """أرقام المخزون التي لم تُكمل هذه المهمة بعد (لم تُسجَّل في referral_completions بحالة done).
-    القيد الوحيد: استبعاد الحسابات المباعة (ever_sold IS TRUE).
-    الأرقام بدون جلسة تُتجاوز وقت التشغيل ولا تُسجَّل كـ failed (تُعاد في الدورة التالية)."""
+    لا تُستخدم إلا الحسابات التي يملك البوت جلسة غير فارغة لها وغير مجمدة.
+    الأرقام المباعة مستثناة من مهام الإحالة القديمة، والأرقام بدون جلسة
+    لا تُسجَّل كـ failed حتى تعود في دورة لاحقة بعد إضافة الجلسة."""
     with db_conn() as c:
         rows = c.execute(
             """
             SELECT ns.id, ns.phone_number, ns.session_string
             FROM number_stock ns
             WHERE ns.ever_sold IS NOT TRUE
-              AND ns.raksh_only IS NOT TRUE
+              AND ns.session_string IS NOT NULL
+              AND BTRIM(ns.session_string) <> ''
+              AND ns.deleted_at IS NULL
+              AND ns.frozen_at IS NULL
               AND ns.id NOT IN (
                   SELECT stock_id FROM referral_completions
                   WHERE task_id=%s AND status='done'
@@ -2545,7 +2549,6 @@ async def _run_mansub_order(order_id, bot_user, start_p, channels, quantity, req
             " WHERE session_string IS NOT NULL AND BTRIM(session_string) <> ''"
             " AND deleted_at IS NULL"
             " AND frozen_at IS NULL"
-            " AND raksh_only IS NOT TRUE"
             " ORDER BY id"
         ).fetchall()
     with db_conn() as _cm:
@@ -3380,8 +3383,6 @@ async def _run_forced_ref_order(order_id, bot_user, start_p, channels, quantity,
             " WHERE session_string IS NOT NULL AND BTRIM(session_string) <> ''"
             " AND deleted_at IS NULL"
             " AND frozen_at IS NULL"
-            " AND raksh_only IS NOT TRUE"
-            " AND forced_ref_excluded IS NOT TRUE"
             " ORDER BY id"
         ).fetchall()
         _global_ch_rows = c.execute(
