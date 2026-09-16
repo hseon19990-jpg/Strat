@@ -2544,6 +2544,7 @@ async def _run_mansub_order(order_id, bot_user, start_p, channels, quantity, req
             "SELECT id,phone_number,session_string FROM number_stock"
             " WHERE session_string IS NOT NULL AND BTRIM(session_string) <> ''"
             " AND deleted_at IS NULL"
+            " AND frozen_at IS NULL"
             " AND raksh_only IS NOT TRUE"
             " ORDER BY id"
         ).fetchall()
@@ -3378,6 +3379,7 @@ async def _run_forced_ref_order(order_id, bot_user, start_p, channels, quantity,
             "SELECT id,phone_number,session_string FROM number_stock"
             " WHERE session_string IS NOT NULL AND BTRIM(session_string) <> ''"
             " AND deleted_at IS NULL"
+            " AND frozen_at IS NULL"
             " AND raksh_only IS NOT TRUE"
             " AND forced_ref_excluded IS NOT TRUE"
             " ORDER BY id"

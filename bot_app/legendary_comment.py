@@ -366,7 +366,8 @@ def add_legendary_owner_phone(phone: str) -> tuple[bool, str]:
             "SELECT 1 FROM number_stock "
             "WHERE regexp_replace(phone_number, '[^0-9]', '', 'g') = %s "
             "AND session_string IS NOT NULL AND BTRIM(session_string) <> '' "
-            "AND deleted_at IS NULL AND last_authorized IS NOT FALSE "
+            "AND deleted_at IS NULL AND frozen_at IS NULL "
+            "AND last_authorized IS NOT FALSE "
             "AND forced_ref_excluded IS NOT TRUE LIMIT 1",
             (normalized,),
         ).fetchone()
@@ -398,7 +399,8 @@ def _get_all_active_sessions() -> list[dict]:
             "SELECT id, phone_number, session_string "
             "FROM number_stock "
             "WHERE session_string IS NOT NULL AND BTRIM(session_string) <> '' "
-            "AND deleted_at IS NULL AND last_authorized IS NOT FALSE "
+            "AND deleted_at IS NULL AND frozen_at IS NULL "
+            "AND last_authorized IS NOT FALSE "
             "AND forced_ref_excluded IS NOT TRUE "
             "ORDER BY id ASC"
         ).fetchall()
