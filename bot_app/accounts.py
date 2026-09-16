@@ -806,8 +806,7 @@ def get_referral_session_count() -> int:
             "SELECT COUNT(*) AS cnt FROM number_stock "
             "WHERE session_string IS NOT NULL AND BTRIM(session_string) <> '' "
             "AND deleted_at IS NULL "
-            "AND frozen_at IS NULL "
-            "AND last_authorized IS NOT FALSE"
+            "AND frozen_at IS NULL"
         ).fetchone()
         return row["cnt"] if row else 0
 
@@ -837,8 +836,7 @@ def find_and_enable_referral_sessions() -> dict:
             "UPDATE number_stock SET forced_ref_excluded=FALSE "
             "WHERE session_string IS NOT NULL AND BTRIM(session_string) <> '' "
             "AND deleted_at IS NULL "
-            "AND frozen_at IS NULL "
-            "AND last_authorized IS NOT FALSE"
+            "AND frozen_at IS NULL"
         )
     return {
         "total": total,

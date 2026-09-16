@@ -15,6 +15,7 @@ class RakshFrozenAccountTests(unittest.TestCase):
         pool_query = source[start:end]
 
         self.assertIn("AND frozen_at IS NULL", pool_query)
+        self.assertNotIn("AND last_authorized IS NOT FALSE", pool_query)
 
     def test_message_and_legendary_pools_exclude_frozen_accounts(self):
         message_source = (ROOT / "bot_app" / "raksh_system" / "message.py").read_text(
@@ -44,7 +45,7 @@ class RakshFrozenAccountTests(unittest.TestCase):
         pool_query = common_source[start:end]
 
         self.assertIn("AND frozen_at IS NULL", pool_query)
-        self.assertIn("AND last_authorized IS NOT FALSE", pool_query)
+        self.assertNotIn("AND last_authorized IS NOT FALSE", pool_query)
         self.assertNotIn("forced_ref_excluded IS NOT TRUE", pool_query)
 
     def test_legacy_raksh_pools_match_the_same_session_rule(self):
@@ -58,10 +59,22 @@ class RakshFrozenAccountTests(unittest.TestCase):
         forced_pool = referrals_source[forced_start:]
 
         self.assertIn("AND frozen_at IS NULL", forced_pool)
-        self.assertIn("AND last_authorized IS NOT FALSE", forced_pool)
+        self.assertNotIn("AND last_authorized IS NOT FALSE", forced_pool)
         self.assertNotIn("AND forced_ref_excluded IS NOT TRUE", forced_pool)
         self.assertNotIn("AND raksh_only IS NOT TRUE", forced_pool)
         self.assertNotIn("forced_ref_excluded IS NOT TRUE", message_source)
+
+    def test_frozen_service_failures_persist_frozen_at_and_clear_pool_cache(self):
+        common_source = (ROOT / "bot_app" / "raksh_system" / "common.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("def _mark_raksh_session_frozen", common_source)
+        self.assertIn("frozen_at=COALESCE(frozen_at, NOW())", common_source)
+        self.assertIn("last_authorized=FALSE, session_string=NULL", common_source)
+        all_posts_source = (
+            ROOT / "bot_app" / "raksh_system" / "all_posts_reactions.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("_mark_raksh_session_frozen(", all_posts_source)
 
 
 if __name__ == "__main__":

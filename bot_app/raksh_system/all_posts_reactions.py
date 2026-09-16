@@ -612,7 +612,7 @@ class AllPostsReactionsService(RakshService):
                                 )
                     except Exception as exc:
                         if is_raksh_frozen_account_error(exc):
-                            _mark_raksh_session_unauthorized(phone_number)
+                            _mark_raksh_session_frozen(phone_number)
                             # Only this account is unusable. The campaign
                             # must keep watching with its other accounts and
                             # remain pending so the recovery job can replace
@@ -693,7 +693,7 @@ class AllPostsReactionsService(RakshService):
                 raise
             except Exception as exc:
                 if is_raksh_frozen_account_error(exc):
-                    _mark_raksh_session_unauthorized(phone_number)
+                    _mark_raksh_session_frozen(phone_number)
                     return
                 logger.warning(
                     "انقطع مستمع التفاعل المباشر للحساب %s؛ ستعاد المحاولة: %s",
@@ -754,7 +754,7 @@ class AllPostsReactionsService(RakshService):
                 await asyncio.wait_for(client.connect(), timeout=15)
             except Exception as exc:
                 if is_raksh_frozen_account_error(exc):
-                    _mark_raksh_session_unauthorized(session.get("phone_number"))
+                    _mark_raksh_session_frozen(session.get("phone_number"))
                     return False, RAKSH_FROZEN_ACCOUNT_MARKER
                 raise
 
@@ -882,7 +882,7 @@ class AllPostsReactionsService(RakshService):
             )
         except Exception as exc:
             if is_raksh_frozen_account_error(exc):
-                _mark_raksh_session_unauthorized(session.get("phone_number"))
+                _mark_raksh_session_frozen(session.get("phone_number"))
                 return False, RAKSH_FROZEN_ACCOUNT_MARKER
             return False, f"❌ فشل تنفيذ دورة التفاعلات: {exc}"
         finally:

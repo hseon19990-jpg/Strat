@@ -1184,6 +1184,7 @@ async def _execute_raksh_parallel(
                 )
             except Exception as e:
                 if is_raksh_frozen_account_error(e):
+                    _mark_raksh_session_frozen(phone)
                     return False, RAKSH_FROZEN_ACCOUNT_MARKER
                 return False, f"❌ خطأ: {str(e)}"
 

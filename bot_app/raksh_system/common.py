@@ -337,7 +337,6 @@ def _get_sessions_for_service(service_type: str, is_owner: bool = False) -> List
               AND BTRIM(session_string) <> ''
               AND deleted_at IS NULL
               AND frozen_at IS NULL
-              AND last_authorized IS NOT FALSE
             ORDER BY last_authorized DESC NULLS LAST, id ASC
         """
         rows = c.execute(query).fetchall()
@@ -360,7 +359,7 @@ def _mark_raksh_session_unauthorized(phone_number: str) -> None:
     try:
         with db_conn() as c:
             c.execute(
-                "UPDATE number_stock SET last_authorized=FALSE "
+                "UPDATE number_stock SET last_authorized=FALSE, session_string=NULL "
                 "WHERE phone_number=%s AND deleted_at IS NULL",
                 (phone_number,)
             )
@@ -369,6 +368,29 @@ def _mark_raksh_session_unauthorized(phone_number: str) -> None:
         _RAKSH_SESSION_CACHE_TIME.clear()
     except Exception as exc:
         logger.warning(f"تعذر تحديث حالة الجلسة {phone_number}: {exc}")
+
+
+def _mark_raksh_session_frozen(phone_number: str) -> None:
+    """استبعاد الحساب المتجمّد من جميع خدمات الرشق."""
+    if not phone_number:
+        return
+    try:
+        with db_conn() as c:
+            c.execute(
+                """
+                UPDATE number_stock
+                   SET frozen_at=COALESCE(frozen_at, NOW()),
+                       last_authorized=FALSE
+                 WHERE phone_number=%s AND deleted_at IS NULL
+                """,
+                (phone_number,),
+            )
+        logger.warning(f"🧊 تم استبعاد الحساب المتجمّد من الرشق: {phone_number}")
+        _RAKSH_SESSION_CACHE.clear()
+        _RAKSH_SESSION_CACHE_TIME.clear()
+    except Exception as exc:
+        logger.warning(f"تعذر استبعاد الحساب المتجمّد {phone_number}: {exc}")
+
 
 async def _remove_invalid_raksh_sessions(failed_phones: List[str]) -> None:
     """إزالة الجلسات غير الصالحة"""

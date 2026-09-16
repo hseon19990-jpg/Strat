@@ -146,7 +146,6 @@ def _claim_queued_posts() -> None:
                   AND ns.assigned_to IS NULL
                   AND ns.deleted_at IS NULL
                   AND ns.frozen_at IS NULL
-                  AND ns.last_authorized IS NOT FALSE
                   AND NOT EXISTS (
                     SELECT 1
                     FROM reaction_post_accounts rpa

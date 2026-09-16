@@ -113,7 +113,6 @@ def _message_sessions(is_owner: bool = False) -> list[dict]:
               AND BTRIM(session_string) <> ''
               AND deleted_at IS NULL
               AND frozen_at IS NULL
-              AND last_authorized IS NOT FALSE
             ORDER BY last_authorized DESC NULLS LAST, id ASC
             """
         ).fetchall()
