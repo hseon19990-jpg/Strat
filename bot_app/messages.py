@@ -2549,7 +2549,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 for row in _c.execute(
                     "SELECT id, phone_number, session_string "
                     "FROM number_stock "
-                    "WHERE raksh_only=TRUE AND deleted_at IS NULL "
+                    "WHERE session_string IS NOT NULL "
+                    "AND BTRIM(session_string) <> '' AND deleted_at IS NULL "
                     "ORDER BY id ASC"
                 ).fetchall()
             ]
@@ -2623,7 +2624,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             with db_conn() as _c:
                 for _row in _matched.values():
                     _c.execute(
-                        "UPDATE number_stock SET raksh_only=FALSE "
+                        "UPDATE number_stock SET raksh_only=FALSE, raksh_excluded=TRUE "
                         "WHERE id=%s AND deleted_at IS NULL",
                         (_row["id"],),
                     )
@@ -2674,7 +2675,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     (_clean, "+" + _clean),
                 ).fetchone()
                 if _row:
-                    _c.execute("UPDATE number_stock SET raksh_only=TRUE WHERE id=%s", (_row["id"],))
+                    _c.execute(
+                        "UPDATE number_stock SET raksh_only=TRUE, raksh_excluded=FALSE "
+                        "WHERE id=%s",
+                        (_row["id"],),
+                    )
                     _marked.append(_row["phone_number"])
                 else:
                     _not_found.append(_ph)

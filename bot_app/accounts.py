@@ -641,7 +641,7 @@ async def scan_all_account_statuses() -> dict[str, list[dict]]:
     return result
 
 async def remove_raksh_account_by_reference(reference: str) -> dict:
-    """يزيل حساباً من حسابات الرشق باستخدام الرقم أو Telegram ID أو اليوزر."""
+    """يستثني حساباً ذا جلسة من خدمات الرشق باستخدام أي معرّف."""
     _reference = str(reference or "").strip()
     if not _reference:
         return {"status": "invalid", "message": "لم يتم إرسال مُعرّف للحساب."}
@@ -652,14 +652,21 @@ async def remove_raksh_account_by_reference(reference: str) -> dict:
         _rows = _c.execute(
             "SELECT id, phone_number, session_string "
             "FROM number_stock "
-            "WHERE raksh_only=TRUE AND deleted_at IS NULL "
+            "WHERE session_string IS NOT NULL "
+            "AND BTRIM(session_string) <> '' AND deleted_at IS NULL "
             "ORDER BY id ASC"
         ).fetchall()
 
     _rows = [dict(_row) for _row in _rows]
     _matched = None
+    for _row in _rows:
+        if str(_row.get("id") or "") == _reference:
+            _matched = _row
+            break
     if _digits:
         for _row in _rows:
+            if _matched is not None:
+                break
             _phone_digits = re.sub(r"\D", "", str(_row.get("phone_number") or ""))
             if _phone_digits and _phone_digits == _digits:
                 _matched = _row
@@ -711,14 +718,14 @@ async def remove_raksh_account_by_reference(reference: str) -> dict:
 
     with db_conn() as _c:
         _updated = _c.execute(
-            "UPDATE number_stock SET raksh_only=FALSE "
-            "WHERE id=%s AND raksh_only=TRUE AND deleted_at IS NULL",
+            "UPDATE number_stock SET raksh_only=FALSE, raksh_excluded=TRUE "
+            "WHERE id=%s AND deleted_at IS NULL",
             (_matched["id"],),
         ).rowcount
     if not _updated:
         return {
             "status": "not_found",
-            "message": "الحساب لم يعد مخصصاً للرشق أو تم حذفه.",
+            "message": "الحساب لم يعد موجوداً أو تم حذفه.",
         }
 
     return {
@@ -1007,7 +1014,8 @@ def get_referral_session_count() -> int:
             "SELECT COUNT(*) AS cnt FROM number_stock "
             "WHERE session_string IS NOT NULL AND BTRIM(session_string) <> '' "
             "AND deleted_at IS NULL "
-            "AND frozen_at IS NULL"
+            "AND frozen_at IS NULL "
+            "AND raksh_excluded IS NOT TRUE"
         ).fetchone()
         return row["cnt"] if row else 0
 
@@ -1029,7 +1037,8 @@ def find_and_enable_referral_sessions() -> dict:
             "SELECT id, forced_ref_excluded FROM number_stock "
             "WHERE session_string IS NOT NULL AND BTRIM(session_string) <> '' "
             "AND deleted_at IS NULL "
-            "AND frozen_at IS NULL"
+            "AND frozen_at IS NULL "
+            "AND raksh_excluded IS NOT TRUE"
         ).fetchall()
         total = len(rows)
         reenabled = sum(1 for row in rows if row["forced_ref_excluded"] is True)
@@ -1037,7 +1046,8 @@ def find_and_enable_referral_sessions() -> dict:
             "UPDATE number_stock SET forced_ref_excluded=FALSE "
             "WHERE session_string IS NOT NULL AND BTRIM(session_string) <> '' "
             "AND deleted_at IS NULL "
-            "AND frozen_at IS NULL"
+            "AND frozen_at IS NULL "
+            "AND raksh_excluded IS NOT TRUE"
         )
     return {
         "total": total,
@@ -1098,7 +1108,8 @@ def add_number_with_session(phone: str, session_str: str, raksh_only: bool = Fal
             "VALUES (%s,%s,NULL,%s) "
             "ON CONFLICT (phone_number) DO UPDATE SET "
             "session_string=EXCLUDED.session_string, deleted_at=NULL, "
-            "raksh_only=number_stock.raksh_only OR EXCLUDED.raksh_only",
+            "raksh_only=number_stock.raksh_only OR EXCLUDED.raksh_only, "
+            "raksh_excluded=FALSE",
             (phone, session_str, raksh_only)
         )
         return True

@@ -337,6 +337,7 @@ def _get_sessions_for_service(service_type: str, is_owner: bool = False) -> List
               AND BTRIM(session_string) <> ''
               AND deleted_at IS NULL
               AND frozen_at IS NULL
+              AND raksh_excluded IS NOT TRUE
             ORDER BY last_authorized DESC NULLS LAST, id ASC
         """
         rows = c.execute(query).fetchall()

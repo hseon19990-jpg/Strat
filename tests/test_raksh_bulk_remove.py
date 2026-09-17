@@ -26,6 +26,25 @@ class RakshBulkRemoveTests(unittest.TestCase):
         self.assertIn("phone_number", block)
         self.assertIn("get_me()", block)
         self.assertIn("raksh_only=FALSE", block)
+        self.assertIn("raksh_excluded=TRUE", block)
+
+    def test_removal_pool_is_independent_of_raksh_only(self):
+        accounts_source = (ROOT / "bot_app" / "accounts.py").read_text(
+            encoding="utf-8"
+        )
+        common_source = (ROOT / "bot_app" / "raksh_system" / "common.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("AND BTRIM(session_string) <> ''", accounts_source)
+        self.assertIn("raksh_excluded=TRUE", accounts_source)
+        self.assertIn("AND raksh_excluded IS NOT TRUE", common_source)
+
+    def test_raksh_exclusion_column_is_migrated(self):
+        source = (ROOT / "bot_app" / "database.py").read_text(encoding="utf-8")
+        self.assertIn(
+            "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS raksh_excluded",
+            source,
+        )
 
 
 if __name__ == "__main__":
