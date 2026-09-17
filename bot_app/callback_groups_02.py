@@ -18,7 +18,7 @@ async def export_ready_sessions(context, user_id, edit_message, requested_count=
         _export_rows,
         _export_checked,
         _export_total_candidates,
-    ) = await find_unrestricted_message_accounts()
+    ) = await find_unrestricted_message_accounts(max_accounts=None)
     _available_count = len(_export_rows)
     if requested_count is not None:
         _export_rows = _export_rows[:requested_count]
