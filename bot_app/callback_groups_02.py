@@ -1953,6 +1953,7 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                 [InlineKeyboardButton("🔑 تسجيل دخول حساب للرشق", callback_data="os:raksh_login_number")],
                 [InlineKeyboardButton("➕ إضافة حسابات", callback_data="os:raksh_add_accounts")],
                 [InlineKeyboardButton("🚫 إزالة حساب من خدمات الرشق", callback_data="os:raksh_remove_account")],
+                [InlineKeyboardButton("🗑️ إزالة حسابات متعددة", callback_data="os:raksh_unmark_bulk")],
             ]
             for _raksh_row in _raksh_rows[:30]:
                 _raksh_buttons.append([
@@ -2016,6 +2017,22 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             )
             return
 
+        if data == "os:raksh_unmark_bulk" and is_own:
+            context.user_data["state"] = "os_await_raksh_unmark_accounts"
+            await q.edit_message_text(
+                "🗑️ *إزالة حسابات متعددة من الرشق*\n\n"
+                "أرسل كل معلومة في سطر مستقل:\n"
+                "• رقم الهاتف\n"
+                "• ID الحساب في القائمة أو Telegram ID\n"
+                "• username مثل `@example`\n\n"
+                "سيتم إزالة تصنيف الرشق فقط، ولن يُحذف الحساب من المخزون.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="os:raksh_accounts")]
+                ]),
+            )
+            return
+
         if data.startswith("os:raksh_unmark:") and is_own:
             context.user_data["state"] = "main_menu"
             _raksh_id = data.split(":", 2)[2]
@@ -2046,6 +2063,7 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             _raksh_buttons = [
                 [InlineKeyboardButton("🔑 تسجيل دخول حساب للرشق", callback_data="os:raksh_login_number")],
                 [InlineKeyboardButton("➕ إضافة حسابات", callback_data="os:raksh_add_accounts")],
+                [InlineKeyboardButton("🗑️ إزالة حسابات متعددة", callback_data="os:raksh_unmark_bulk")],
             ]
             for _raksh_row in _raksh_rows[:30]:
                 _raksh_buttons.append([

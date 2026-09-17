@@ -2535,6 +2535,122 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     [InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")],
                 ]),
             )
+
+    if is_own and state == "os_await_raksh_unmark_accounts":
+        _tokens = [
+            line.strip()
+            for line in text.replace("،", "\n").replace(",", "\n").splitlines()
+            if line.strip()
+        ]
+        _rows = []
+        with db_conn() as _c:
+            _rows = [
+                dict(row)
+                for row in _c.execute(
+                    "SELECT id, phone_number, session_string "
+                    "FROM number_stock "
+                    "WHERE raksh_only=TRUE AND deleted_at IS NULL "
+                    "ORDER BY id ASC"
+                ).fetchall()
+            ]
+
+        def _digits(value):
+            return "".join(ch for ch in str(value or "") if ch.isdigit())
+
+        _by_id = {str(row["id"]): row for row in _rows}
+        _by_phone = {}
+        for _row in _rows:
+            _phone_digits = _digits(_row.get("phone_number"))
+            if _phone_digits:
+                _by_phone[_phone_digits] = _row
+
+        _matched = {}
+        _unresolved = []
+        for _token in _tokens:
+            _value = _token.strip()
+            _normalized_username = _value.lstrip("@").strip().lower()
+            _row = _by_id.get(_value)
+            if not _row:
+                _row = _by_phone.get(_digits(_value))
+            if _row:
+                _matched[_row["id"]] = _row
+            else:
+                _unresolved.append((_value, _normalized_username))
+
+        # Usernames and Telegram IDs are not stored in number_stock. Resolve
+        # only unresolved values through each account's existing session.
+        if _unresolved and TELEGRAM_API_ID and TELEGRAM_API_HASH:
+            for _row in _rows:
+                if not _row.get("session_string"):
+                    continue
+                _client = None
+                try:
+                    _client = TelegramClient(
+                        StringSession(_row["session_string"]),
+                        int(TELEGRAM_API_ID),
+                        TELEGRAM_API_HASH,
+                    )
+                    await asyncio.wait_for(_client.connect(), timeout=8)
+                    if not await asyncio.wait_for(_client.is_user_authorized(), timeout=6):
+                        continue
+                    _me = await asyncio.wait_for(_client.get_me(), timeout=8)
+                    _me_id = str(getattr(_me, "id", "") or "")
+                    _me_username = str(getattr(_me, "username", "") or "").lower()
+                    _found = []
+                    for _raw, _normalized in _unresolved:
+                        if (_normalized and _normalized == _me_username) or (
+                            _raw.isdigit() and _raw == _me_id
+                        ):
+                            _found.append((_raw, _normalized))
+                            _matched[_row["id"]] = _row
+                    if _found:
+                        _unresolved = [
+                            item for item in _unresolved if item not in _found
+                        ]
+                    if not _unresolved:
+                        break
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        if _client is not None:
+                            await _client.disconnect()
+                    except Exception:
+                        pass
+
+        _removed = []
+        if _matched:
+            with db_conn() as _c:
+                for _row in _matched.values():
+                    _c.execute(
+                        "UPDATE number_stock SET raksh_only=FALSE "
+                        "WHERE id=%s AND deleted_at IS NULL",
+                        (_row["id"],),
+                    )
+                    if _c.rowcount:
+                        _removed.append(_row["phone_number"])
+
+        context.user_data["state"] = "main_menu"
+        _lines = [
+            f"✅ تمت إزالة {len(_removed)} حساب من الرشق.",
+            "لم يتم حذف الحسابات من المخزون؛ أزيل تصنيف الرشق فقط.",
+        ]
+        if _removed:
+            _lines.append("\n🗑️ الحسابات التي أزيلت:\n" + "\n".join(
+                f"• `{phone}`" for phone in _removed[:50]
+            ))
+        if _unresolved:
+            _lines.append(
+                "\n❌ لم أجد:\n" + "\n".join(f"• {raw}" for raw, _ in _unresolved[:50])
+            )
+        await update.message.reply_text(
+            "\n".join(_lines),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔥 عرض حسابات الرشق", callback_data="os:raksh_accounts")],
+                [InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")],
+            ]),
+        )
         return
 
     if is_own and state in {"os_await_raksh_add_accounts", "os_await_raksh_mark_numbers"}:
