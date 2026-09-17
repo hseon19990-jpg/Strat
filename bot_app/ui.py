@@ -690,6 +690,12 @@ def account_info_kb() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(
+                "📊 حالة كل الحسابات",
+                callback_data="os:account_statuses",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
                 "📦 تصدير جلسات الحسابات",
                 callback_data="os:export_ready_sessions",
             ),

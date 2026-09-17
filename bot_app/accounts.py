@@ -526,6 +526,120 @@ async def check_account_frozen(client: TelegramClient, stock_id: int | None = No
 
     return is_frozen, status_text, frozen_at_str
 
+async def scan_all_account_statuses() -> dict[str, list[dict]]:
+    """يفحص كل الحسابات غير المحذوفة ويجمعها حسب حالتها الحالية.
+
+    لا يغيّر تصنيف الحساب أو حالة البيع. الفحص الحي يجمع بين حالة الجلسة،
+    فحص التجميد، ورد SpamBot لمعرفة الحسابات المقيّدة من إرسال الرسائل.
+    """
+    with db_conn() as c:
+        rows = c.execute(
+            "SELECT id, phone_number, session_string "
+            "FROM number_stock "
+            "WHERE deleted_at IS NULL "
+            "ORDER BY id ASC"
+        ).fetchall()
+
+    result = {
+        "healthy": [],
+        "restricted": [],
+        "frozen": [],
+        "unavailable": [],
+    }
+
+    if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
+        for raw_row in rows:
+            row = dict(raw_row)
+            result["unavailable"].append({
+                "stock_id": row.get("id"),
+                "phone_number": str(row.get("phone_number") or "غير معروف"),
+                "telegram_id": None,
+                "detail": "API_ID / API_HASH غير مضبوطين",
+            })
+        return result
+
+    for raw_row in rows:
+        row = dict(raw_row)
+        item = {
+            "stock_id": row.get("id"),
+            "phone_number": str(row.get("phone_number") or "غير معروف"),
+            "telegram_id": None,
+            "detail": "",
+        }
+        session_string = str(row.get("session_string") or "").strip()
+        if not session_string:
+            item["detail"] = "لا توجد جلسة محفوظة"
+            result["unavailable"].append(item)
+            continue
+
+        client = TelegramClient(
+            StringSession(session_string),
+            int(TELEGRAM_API_ID),
+            TELEGRAM_API_HASH,
+        )
+        try:
+            await asyncio.wait_for(client.connect(), timeout=15)
+            authorized = await asyncio.wait_for(
+                client.is_user_authorized(),
+                timeout=8,
+            )
+            if not authorized:
+                item["detail"] = "الجلسة غير مصرّح بها"
+                result["unavailable"].append(item)
+                continue
+
+            me = await asyncio.wait_for(client.get_me(), timeout=10)
+            item["telegram_id"] = getattr(me, "id", None)
+            frozen, frozen_status, _ = await asyncio.wait_for(
+                check_account_frozen(client, row.get("id")),
+                timeout=15,
+            )
+            if frozen:
+                item["detail"] = frozen_status
+                result["frozen"].append(item)
+                continue
+
+            spam_detail = await asyncio.wait_for(
+                check_spam_status_detailed(client),
+                timeout=35,
+            )
+            if spam_detail.get("restricted") is True:
+                item["detail"] = spam_detail.get("display") or "مقيّد من الإرسال"
+                result["restricted"].append(item)
+            elif spam_detail.get("restricted") is False:
+                item["detail"] = "غير مقيّد من الإرسال"
+                result["healthy"].append(item)
+            else:
+                item["detail"] = spam_detail.get("display") or "تعذّر تحديد الحالة"
+                result["unavailable"].append(item)
+        except Exception as exc:
+            logger.warning(
+                f"تعذّر فحص حالة الحساب {item['phone_number']}: {exc}"
+            )
+            item["detail"] = "تعذّر الفحص"
+            _error_text = str(exc).lower()
+            if any(
+                marker in _error_text
+                for marker in (
+                    "auth_key_unregistered",
+                    "user_deactivated",
+                    "session_revoked",
+                    "deactivated_ban",
+                    "frozen",
+                )
+            ):
+                item["detail"] = "محظور/مجمّد أو الجلسة أُلغيت"
+                result["frozen"].append(item)
+            else:
+                result["unavailable"].append(item)
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+
+    return result
+
 async def _fetch_code_for_delivery(session_str: str) -> str | None:
     """يحاول جلب آخر كود تحقق من رسائل 777000 عبر الجلسة — للإرسال الفوري عند التسليم."""
     if not (session_str and TELEGRAM_API_ID and TELEGRAM_API_HASH):

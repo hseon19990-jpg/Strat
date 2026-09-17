@@ -450,6 +450,81 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             )
             return
 
+        if data == "os:account_statuses" and is_own:
+            await q.edit_message_text(
+                "⏳ *جاري فحص حالة كل الحسابات...*\n"
+                "قد يستغرق الفحص وقتاً بحسب عدد الجلسات.\n"
+                "لن يتم تغيير حالة البيع أو الرشق لأي حساب.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            _account_statuses = await scan_all_account_statuses()
+            _status_sections = [
+                ("✅ الحسابات السليمة", _account_statuses["healthy"]),
+                ("🚫 الحسابات المقيّدة من الإرسال", _account_statuses["restricted"]),
+                ("🧊 الحسابات المحظورة أو المجمّدة", _account_statuses["frozen"]),
+                ("⚠️ غير متاحة أو تعذّر فحصها", _account_statuses["unavailable"]),
+            ]
+            _status_lines = [
+                "📊 حالة كل الحسابات",
+                "",
+                f"📦 الإجمالي: {sum(len(rows) for _, rows in _status_sections):,}",
+                "",
+            ]
+            for _section_title, _section_rows in _status_sections:
+                _status_lines.append(
+                    f"{_section_title}: {len(_section_rows):,}"
+                )
+                if _section_rows:
+                    for _status_row in _section_rows:
+                        _status_lines.append(
+                            f"• الرقم: {_status_row['phone_number']} — "
+                            f"ID: {_status_row.get('telegram_id') or 'غير معروف'}"
+                        )
+                        if _status_row.get("detail") and _section_title.startswith("⚠️"):
+                            _status_lines.append(
+                                f"  السبب: {_status_row['detail']}"
+                            )
+                else:
+                    _status_lines.append("  لا توجد حسابات")
+                _status_lines.append("")
+
+            _status_lines.append("ℹ️ الفحص حي ولم يغيّر أي تصنيف في المخزون.")
+            _status_text = "\n".join(_status_lines)
+            _status_chunks = []
+            _status_current = ""
+            for _status_line in _status_text.splitlines():
+                _status_candidate = (
+                    f"{_status_current}\n{_status_line}"
+                    if _status_current else _status_line
+                )
+                if len(_status_candidate) > 3800 and _status_current:
+                    _status_chunks.append(_status_current)
+                    _status_current = _status_line
+                else:
+                    _status_current = _status_candidate
+            if _status_current:
+                _status_chunks.append(_status_current)
+
+            _status_markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
+            ])
+            await q.edit_message_text(
+                _status_chunks[0] if _status_chunks else "لا توجد بيانات.",
+                reply_markup=_status_markup if len(_status_chunks) == 1 else None,
+            )
+            for _status_chunk in _status_chunks[1:]:
+                await context.bot.send_message(
+                    chat_id=q.message.chat_id,
+                    text=_status_chunk,
+                )
+            if len(_status_chunks) > 1:
+                await context.bot.send_message(
+                    chat_id=q.message.chat_id,
+                    text="✅ انتهى الفحص.",
+                    reply_markup=_status_markup,
+                )
+            return
+
         # ─── بايو ──────────────────────────────────────────────────────────
         if data == "os:account_bios" and is_own:
             bio_count = _account_bio_count()
