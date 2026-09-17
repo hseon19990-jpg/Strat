@@ -1952,6 +1952,7 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             _raksh_buttons = [
                 [InlineKeyboardButton("🔑 تسجيل دخول حساب للرشق", callback_data="os:raksh_login_number")],
                 [InlineKeyboardButton("➕ إضافة حسابات", callback_data="os:raksh_add_accounts")],
+                [InlineKeyboardButton("🚫 إزالة حساب من خدمات الرشق", callback_data="os:raksh_remove_account")],
             ]
             for _raksh_row in _raksh_rows[:30]:
                 _raksh_buttons.append([
@@ -1965,6 +1966,22 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                 "\n".join(_raksh_lines),
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup(_raksh_buttons),
+            )
+            return
+
+        if data == "os:raksh_remove_account" and is_own:
+            context.user_data["state"] = "os_await_raksh_remove_account"
+            await q.edit_message_text(
+                "🚫 *إزالة حساب من خدمات الرشق*\n\n"
+                "أرسل أحد هذه المعرفات:\n"
+                "• رقم الهاتف بصيغة دولية\n"
+                "• Telegram ID\n"
+                "• اليوزر مثل `@username`\n\n"
+                "سيتم إزالة تصنيف الرشق فقط، ولن يتم حذف الحساب من المخزون.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="os:raksh_accounts")]
+                ]),
             )
             return
 

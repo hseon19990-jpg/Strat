@@ -640,6 +640,93 @@ async def scan_all_account_statuses() -> dict[str, list[dict]]:
 
     return result
 
+async def remove_raksh_account_by_reference(reference: str) -> dict:
+    """يزيل حساباً من حسابات الرشق باستخدام الرقم أو Telegram ID أو اليوزر."""
+    _reference = str(reference or "").strip()
+    if not _reference:
+        return {"status": "invalid", "message": "لم يتم إرسال مُعرّف للحساب."}
+
+    _username = _reference.lstrip("@").strip().lower()
+    _digits = re.sub(r"\D", "", _reference)
+    with db_conn() as _c:
+        _rows = _c.execute(
+            "SELECT id, phone_number, session_string "
+            "FROM number_stock "
+            "WHERE raksh_only=TRUE AND deleted_at IS NULL "
+            "ORDER BY id ASC"
+        ).fetchall()
+
+    _rows = [dict(_row) for _row in _rows]
+    _matched = None
+    if _digits:
+        for _row in _rows:
+            _phone_digits = re.sub(r"\D", "", str(_row.get("phone_number") or ""))
+            if _phone_digits and _phone_digits == _digits:
+                _matched = _row
+                break
+
+    if _matched is None and not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
+        return {
+            "status": "unavailable",
+            "message": "لا يمكن البحث باليوزر أو Telegram ID لأن إعدادات Telegram API غير مكتملة.",
+        }
+
+    if _matched is None:
+        for _row in _rows:
+            _session = str(_row.get("session_string") or "").strip()
+            if not _session:
+                continue
+            _client = TelegramClient(
+                StringSession(_session),
+                int(TELEGRAM_API_ID),
+                TELEGRAM_API_HASH,
+            )
+            try:
+                await asyncio.wait_for(_client.connect(), timeout=15)
+                if not await asyncio.wait_for(_client.is_user_authorized(), timeout=8):
+                    continue
+                _me = await asyncio.wait_for(_client.get_me(), timeout=10)
+                _me_id = str(getattr(_me, "id", "") or "")
+                _me_username = str(getattr(_me, "username", "") or "").lower()
+                if (_digits and _me_id == _digits) or (
+                    _username and _me_username == _username
+                ):
+                    _matched = _row
+                    break
+            except Exception as _exc:
+                logger.warning(
+                    f"تعذّر البحث عن حساب الرشق {_row.get('phone_number')}: {_exc}"
+                )
+            finally:
+                try:
+                    await _client.disconnect()
+                except Exception:
+                    pass
+
+    if _matched is None:
+        return {
+            "status": "not_found",
+            "message": "لم أجد حساباً مخصصاً للرشق بهذا المعرّف.",
+        }
+
+    with db_conn() as _c:
+        _updated = _c.execute(
+            "UPDATE number_stock SET raksh_only=FALSE "
+            "WHERE id=%s AND raksh_only=TRUE AND deleted_at IS NULL",
+            (_matched["id"],),
+        ).rowcount
+    if not _updated:
+        return {
+            "status": "not_found",
+            "message": "الحساب لم يعد مخصصاً للرشق أو تم حذفه.",
+        }
+
+    return {
+        "status": "removed",
+        "phone_number": _matched.get("phone_number"),
+        "stock_id": _matched.get("id"),
+    }
+
 async def _fetch_code_for_delivery(session_str: str) -> str | None:
     """يحاول جلب آخر كود تحقق من رسائل 777000 عبر الجلسة — للإرسال الفوري عند التسليم."""
     if not (session_str and TELEGRAM_API_ID and TELEGRAM_API_HASH):

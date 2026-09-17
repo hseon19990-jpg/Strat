@@ -2514,6 +2514,29 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
+    if is_own and state == "os_await_raksh_remove_account":
+        context.user_data["state"] = "main_menu"
+        _remove_result = await remove_raksh_account_by_reference(text)
+        if _remove_result.get("status") == "removed":
+            await update.message.reply_text(
+                "✅ تمت إزالة الحساب من خدمات الرشق.\n\n"
+                f"📱 الرقم: {_remove_result.get('phone_number') or 'غير معروف'}\n"
+                "ℹ️ لم يتم حذف الحساب من المخزون.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔥 عرض حسابات الرشق", callback_data="os:raksh_accounts")],
+                    [InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")],
+                ]),
+            )
+        else:
+            await update.message.reply_text(
+                f"⚠️ {_remove_result.get('message') or 'تعذّرت إزالة الحساب.'}",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔥 عرض حسابات الرشق", callback_data="os:raksh_accounts")],
+                    [InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")],
+                ]),
+            )
+        return
+
     if is_own and state in {"os_await_raksh_add_accounts", "os_await_raksh_mark_numbers"}:
         _phones_raw = [
             item.strip()
