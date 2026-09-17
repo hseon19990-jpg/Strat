@@ -378,22 +378,24 @@ async def check_spam_status_detailed(client: TelegramClient) -> dict:
         return {"restricted": None, "until": None, "raw": None,
                 "display": "⚠️ تعذر الفحص حالياً، حاول لاحقاً"}
 
-async def find_unrestricted_message_accounts(max_accounts: int = 20) -> tuple[list[dict], int, int]:
+async def find_unrestricted_message_accounts(max_accounts: int | None = 20) -> tuple[list[dict], int, int]:
     """يفحص الحسابات المعروضة للبيع عبر SpamBot ويعيد غير المقيّدة من إرسال الرسائل.
 
     لا يغيّر هذا الفحص أي تصنيف في المخزون؛ الحسابات تبقى قابلة للبيع والرشق.
-    يُحدّ عدد الفحوصات في الضغطة الواحدة حتى لا يرسل البوت عدداً كبيراً من
-    الطلبات إلى SpamBot دفعة واحدة.
+    عند تمرير None تُفحص كل الحسابات المؤهلة، مع ترتيب عشوائي حتى لا
+    يتكرر اختيار بداية القائمة نفسها في كل عملية تصدير.
     """
     candidates = [
         row for row in list_stock_numbers("listed")
         if row.get("session_string")
     ]
     total = len(candidates)
+    random.shuffle(candidates)
+    rows_to_check = candidates if max_accounts is None else candidates[:max_accounts]
     unrestricted = []
     checked = 0
 
-    for row in candidates[:max_accounts]:
+    for row in rows_to_check:
         client = TelegramClient(
             StringSession(row["session_string"]),
             int(TELEGRAM_API_ID),
