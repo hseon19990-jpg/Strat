@@ -96,6 +96,12 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 await legendary_payment_choice(update, context, q, is_own, service_type, "points")
                 return
 
+            if data == "legendary:payment_cancel":
+                context.user_data["state"] = "main_menu"
+                context.user_data.pop("legendary_pending_payment", None)
+                await q.edit_message_text("❌ تم إلغاء تنفيذ الخدمة.", reply_markup=main_menu_kb(is_own))
+                return
+
             if data.startswith("legendary:confirm:"):
                 payment_method = data.split(":")[2]
                 await legendary_payment_callback(update, context, q, is_own, f"confirm:{payment_method}")
