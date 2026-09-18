@@ -1895,6 +1895,33 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             )
             return
 
+        if data.startswith("transfer_confirm:"):
+            if context.user_data.get("state") != "confirm_transfer":
+                await q.answer("⚠️ انتهت صلاحية التحويل.", show_alert=True)
+                return
+            if data.endswith(":no"):
+                context.user_data["state"] = "main_menu"
+                await q.edit_message_text("❌ تم إلغاء التحويل.", reply_markup=main_menu_kb(is_own))
+                return
+            pts = int(context.user_data.get("transfer_pts", 0))
+            fee = int(context.user_data.get("transfer_fee", 0))
+            total = int(context.user_data.get("transfer_total", 0))
+            to_id = context.user_data.get("transfer_to")
+            if pts < 1 or total < 1 or not to_id or not deduct_points(user.id, total):
+                context.user_data["state"] = "main_menu"
+                await q.edit_message_text("❌ نقاطك غير كافية أو انتهت صلاحية التحويل.", reply_markup=main_menu_kb(is_own))
+                return
+            add_points(to_id, pts)
+            code = next_order_code(user.id)
+            with db_conn() as c:
+                c.execute("INSERT INTO point_transfers (from_user,to_user,points,fee) VALUES (?,?,?,?)", (user.id, to_id, pts, fee))
+            context.user_data["state"] = "main_menu"
+            await q.edit_message_text(f"✅ *تم التحويل بنجاح!*\n\n💰 {pts} نقطة إلى المستخدم.\n📌 كود العملية: `{code}`", parse_mode=ParseMode.MARKDOWN, reply_markup=main_menu_kb(is_own))
+            try:
+                await context.bot.send_message(to_id, f"🎉 تلقيت {pts} نقطة من مستخدم!\n📌 كود: `{code}`", parse_mode=ParseMode.MARKDOWN)
+            except Exception:
+                pass
+            return
         if data == "charge_points":
             try:
                 await q.edit_message_text("💎 *اختر طريقة الشحن:*", parse_mode=ParseMode.MARKDOWN,
