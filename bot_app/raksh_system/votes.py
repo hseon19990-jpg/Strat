@@ -45,6 +45,55 @@ def _parse_votes_bot_link(value: str) -> Tuple[Optional[str], Optional[str]]:
     return _parse_bot_link(raw)
 
 
+def _vote_button_score(button) -> int:
+    """Score only buttons that look like a vote, not profile/copy controls."""
+    if getattr(button, "url", None):
+        return -1
+
+    text = (getattr(button, "text", "") or "").strip()
+    if not text:
+        return -1
+    folded = text.casefold()
+    ignored_labels = (
+        "الملف الشخصي",
+        "profile",
+        "انسخ",
+        "copy",
+        "كود المتسابق",
+    )
+    if any(label in folded for label in ignored_labels):
+        return -1
+
+    score = 0
+    if any(keyword in folded for keyword in ("تصويت", "صوت", "vote", "voting")):
+        score = 100
+
+    has_counter = bool(re.search(r"\d+", text))
+    has_emoji = any(
+        0x1F300 <= ord(char) <= 0x1FAFF
+        or 0x2600 <= ord(char) <= 0x27BF
+        for char in text
+    )
+    if has_counter and has_emoji:
+        score = max(score, 80)
+
+    return score
+
+
+def _find_vote_button(message):
+    """Return the best vote-looking button in a post or bot message."""
+    candidates = []
+    for row in getattr(message, "buttons", None) or []:
+        for button in row:
+            score = _vote_button_score(button)
+            if score > 0:
+                candidates.append((score, button))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
+
+
 class VotesService(RakshService):
     """خدمة رشق أصوات - كل شيء في مكان واحد"""
     
@@ -426,36 +475,31 @@ class VotesService(RakshService):
             except Exception as fallback_exc:
                 return False, f"تعذر بدء بوت التصويت: {str(fallback_exc)[:80]}"
 
-        vote_keywords = ("تصويت", "صوت", "vote", "voting")
         for _ in range(6):
             await asyncio.sleep(1.0)
             messages = await client.get_messages(bot_entity, limit=10)
             for message in messages or []:
-                for row in getattr(message, "buttons", None) or []:
-                    for button in row:
-                        if getattr(button, "url", None):
-                            continue
-                        button_text = (getattr(button, "text", "") or "").strip().casefold()
-                        if not any(keyword in button_text for keyword in vote_keywords):
-                            continue
+                button = _find_vote_button(message)
+                if button is None:
+                    continue
 
-                        callback_data = getattr(button, "data", None)
-                        try:
-                            if callback_data is not None:
-                                await client(
-                                    GetBotCallbackAnswerRequest(
-                                        peer=bot_entity,
-                                        msg_id=message.id,
-                                        data=callback_data,
-                                    )
-                                )
-                            else:
-                                await button.click()
-                            return True, f"✅ تم الضغط على زر التصويت من {phone_number}"
-                        except Exception as exc:
-                            if _callback_vote_may_have_applied(exc):
-                                return True, f"✅ تم إرسال التصويت من {phone_number}"
-                            logger.warning("فشل الضغط على زر التصويت في البوت: %s", exc)
+                callback_data = getattr(button, "data", None)
+                try:
+                    if callback_data is not None:
+                        await client(
+                            GetBotCallbackAnswerRequest(
+                                peer=bot_entity,
+                                msg_id=message.id,
+                                data=callback_data,
+                            )
+                        )
+                    else:
+                        await button.click()
+                    return True, f"✅ تم الضغط على زر التصويت من {phone_number}"
+                except Exception as exc:
+                    if _callback_vote_may_have_applied(exc):
+                        return True, f"✅ تم إرسال التصويت من {phone_number}"
+                    logger.warning("فشل الضغط على زر التصويت في البوت: %s", exc)
 
         return False, "لم يُعثر على زر تصويت قابل للضغط داخل البوت"
 
@@ -489,78 +533,33 @@ class VotesService(RakshService):
             if not message:
                 return False, "المنشور غير موجود"
             
-            # 4️⃣ البحث عن الزر في المنشور (زر بدون رابط = زر قابل للضغط)
-            if getattr(message, "buttons", None):
-                for row in message.buttons:
-                    for btn in row:
-                        # تجاهل الأزرار التي تحتوي على روابط
-                        if getattr(btn, "url", None):
-                            continue
-                        
-                        # الضغط على الزر باستخدام GetBotCallbackAnswerRequest
-                        try:
-                            # استخراج البيانات من الزر
-                            callback_data = getattr(btn, "data", None)
-                            if callback_data is None:
-                                continue
-                            
-                            # إرسال طلب الضغط على الزر
-                            await client(GetBotCallbackAnswerRequest(
-                                peer=entity,
-                                msg_id=msg_id,
-                                data=callback_data
-                            ))
-                            
-                            await asyncio.sleep(1.0)
-                            return True, f"✅ تم الضغط على زر التصويت من {session['phone_number']}"
-                            
-                        except Exception as e:
-                            if _callback_vote_may_have_applied(e):
-                                logger.warning(
-                                    "⚠️ انتهت مهلة رد زر التصويت بعد الإرسال؛ "
-                                    "سيُحتسب التصويت بصورة غير مؤكدة: %s",
-                                    e,
-                                )
-                                return True, (
-                                    f"✅ تم إرسال التصويت من "
-                                    f"{session['phone_number']}"
-                                )
-                            logger.warning(f"فشل الضغط على الزر: {e}")
-                            continue
-            
-            # 5️⃣ إذا لم نجد زر، نجرب الضغط على أول زر موجود
-            if getattr(message, "buttons", None):
-                for row in message.buttons:
-                    for btn in row:
-                        if getattr(btn, "url", None):
-                            continue
-                        try:
-                            callback_data = getattr(btn, "data", None)
-                            if callback_data is None:
-                                continue
-                            
-                            await client(GetBotCallbackAnswerRequest(
-                                peer=entity,
-                                msg_id=msg_id,
-                                data=callback_data
-                            ))
-                            
-                            await asyncio.sleep(1.0)
-                            return True, f"✅ تم الضغط على الزر من {session['phone_number']}"
-                        except Exception as e:
-                            if _callback_vote_may_have_applied(e):
-                                logger.warning(
-                                    "⚠️ انتهت مهلة رد زر التصويت الاحتياطي؛ "
-                                    "سيُحتسب التصويت بصورة غير مؤكدة: %s",
-                                    e,
-                                )
-                                return True, (
-                                    f"✅ تم إرسال التصويت من "
-                                    f"{session['phone_number']}"
-                                )
-                            continue
-            
-            return False, "لم يتم العثور على زر قابل للضغط في المنشور"
+            # 4️⃣ اختيار زر التصويت المناسب، لا أول زر عشوائي
+            vote_button = _find_vote_button(message)
+            if vote_button is not None:
+                callback_data = getattr(vote_button, "data", None)
+                try:
+                    if callback_data is not None:
+                        await client(GetBotCallbackAnswerRequest(
+                            peer=entity,
+                            msg_id=msg_id,
+                            data=callback_data,
+                        ))
+                    else:
+                        await vote_button.click()
+
+                    await asyncio.sleep(1.0)
+                    return True, f"✅ تم الضغط على زر التصويت من {session['phone_number']}"
+                except Exception as e:
+                    if _callback_vote_may_have_applied(e):
+                        logger.warning(
+                            "⚠️ انتهت مهلة رد زر التصويت بعد الإرسال؛ "
+                            "سيُحتسب التصويت بصورة غير مؤكدة: %s",
+                            e,
+                        )
+                        return True, f"✅ تم إرسال التصويت من {session['phone_number']}"
+                    logger.warning(f"فشل الضغط على زر التصويت: {e}")
+
+            return False, "لم يتم العثور على زر تصويت مناسب في المنشور"
             
         except Exception as e:
             return False, f"❌ فشل التصويت: {str(e)}"
