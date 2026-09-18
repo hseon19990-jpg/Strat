@@ -1373,9 +1373,131 @@ async def _flush_avatar_album(owner_id: int, media_group_id: str, bot) -> None:
     except Exception as exc:
         logger.exception(f"❌ خطأ في معالجة ألبوم الأفتارات: {exc}")
 
+async def handle_login_qr_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """يقبل QR تسجيل الدخول المرسل من Telegram ويفعّله على الحساب المحدد."""
+    user = update.effective_user
+    state = context.user_data.get("state")
+    if not update.message or not user or state not in {
+        "buyer_await_login_qr",
+        "owner_await_login_qr",
+    }:
+        return
+
+    media = update.message.photo[-1] if update.message.photo else update.message.document
+    if not media:
+        await update.message.reply_text("⚠️ أرسل صورة QR واضحة.")
+        return
+
+    try:
+        import base64 as _base64
+        import io as _io
+        import numpy as _np
+        import cv2 as _cv2
+        from urllib.parse import parse_qs as _parse_qs, urlparse as _urlparse
+
+        tg_file = await context.bot.get_file(media.file_id)
+        image_buffer = _io.BytesIO()
+        await tg_file.download_to_memory(image_buffer)
+        image = _cv2.imdecode(
+            _np.frombuffer(image_buffer.getvalue(), dtype=_np.uint8),
+            _cv2.IMREAD_COLOR,
+        )
+        if image is None:
+            raise ValueError("تعذّر قراءة الصورة")
+
+        qr_value, _, _ = _cv2.QRCodeDetector().detectAndDecode(image)
+        if not qr_value:
+            await update.message.reply_text(
+                "❌ لم أجد QR صالحاً في الصورة. أرسل لقطة شاشة واضحة لباركود تسجيل دخول Telegram."
+            )
+            return
+
+        parsed = _urlparse(qr_value)
+        token_text = _parse_qs(parsed.query).get("token", [None])[0]
+        if not token_text or not (
+            (parsed.scheme == "tg" and parsed.netloc == "login")
+            or parsed.path.rstrip("/") == "/login"
+        ):
+            await update.message.reply_text(
+                "❌ هذا ليس باركود تسجيل دخول Telegram. افتح Telegram على الجهاز الآخر "
+                "واختر تسجيل الدخول عبر QR ثم أرسل الصورة."
+            )
+            return
+
+        token = _base64.urlsafe_b64decode(
+            token_text + ("=" * (-len(token_text) % 4))
+        )
+        selected_phone = context.user_data.get("login_qr_phone")
+        selected_stock_id = context.user_data.get("login_qr_stock_id")
+
+        with db_conn() as db:
+            if state == "buyer_await_login_qr":
+                allowed = db.execute(
+                    "SELECT ns.phone_number, ns.session_string "
+                    "FROM number_stock ns "
+                    "JOIN prize_exchanges pe ON pe.prize_value=ns.phone_number "
+                    "WHERE ns.phone_number=%s AND pe.user_id=%s "
+                    "AND pe.status='completed' "
+                    "AND pe.prize_type IN "
+                    "('telegram_number','telegram_number_code','telegram_number_stars') "
+                    "ORDER BY pe.id DESC LIMIT 1",
+                    (selected_phone, user.id),
+                ).fetchone()
+            else:
+                allowed = db.execute(
+                    "SELECT phone_number,session_string FROM number_stock "
+                    "WHERE id=%s AND deleted_at IS NULL",
+                    (selected_stock_id,),
+                ).fetchone()
+
+        if not allowed or not allowed["session_string"]:
+            await update.message.reply_text("❌ الحساب المحدد غير متاح أو لا توجد له جلسة.")
+            context.user_data.clear()
+            return
+
+        client = TelegramClient(
+            StringSession(allowed["session_string"]),
+            int(TELEGRAM_API_ID),
+            TELEGRAM_API_HASH,
+        )
+        try:
+            await asyncio.wait_for(client.connect(), timeout=15)
+            if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
+                await update.message.reply_text("❌ جلسة الحساب منتهية ولا يمكن قبول QR.")
+                return
+            await asyncio.wait_for(
+                client(AcceptLoginTokenRequest(token=token)),
+                timeout=15,
+            )
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+
+        context.user_data.pop("state", None)
+        context.user_data.pop("login_qr_phone", None)
+        context.user_data.pop("login_qr_stock_id", None)
+        await update.message.reply_text(
+            "✅ تم مسح باركود تسجيل الدخول بنجاح.\n"
+            "افتح Telegram على الجهاز الآخر؛ قد يطلب كلمة مرور 2FA إذا كانت مفعّلة."
+        )
+    except Exception as exc:
+        logger.warning("⚠️ فشل مسح QR لتسجيل الدخول: %s", exc)
+        await update.message.reply_text(
+            "❌ تعذّر قبول الباركود. تأكد أنه QR تسجيل دخول Telegram حديث "
+            "وليس باركود رقم الهاتف."
+        )
+
 async def handle_avatar_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """يجمع الألبومات ويدفع الصور المفردة مباشرة إلى طابور الأفتارات."""
     if not update.message or update.effective_user is None:
+        return
+    if context.user_data.get("state") in {
+        "buyer_await_login_qr",
+        "owner_await_login_qr",
+    }:
+        await handle_login_qr_photo(update, context)
         return
     if update.effective_user.id != OWNER_ID:
         return

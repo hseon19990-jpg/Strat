@@ -1487,6 +1487,36 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
             )
             return
 
+        if data.startswith("os:number_qr:") and is_own:
+            stock_id = int(data.split(":")[-1])
+            rec = get_stock_number(stock_id)
+            if not rec or rec.get("deleted_at") or not rec.get("session_string"):
+                await q.edit_message_text(
+                    "⚠️ هذا الحساب غير موجود أو لا توجد له جلسة صالحة.",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")
+                    ]])
+                )
+                return
+            context.user_data["state"] = "owner_await_login_qr"
+            context.user_data["login_qr_stock_id"] = stock_id
+            context.user_data.pop("login_qr_phone", None)
+            await q.edit_message_text(
+                f"📷 *تسجيل دخول QR للحساب*\n\n"
+                f"📱 الرقم: `{rec['phone_number']}`\n\n"
+                "افتح Telegram على الجهاز الآخر، اختر تسجيل الدخول عبر QR، "
+                "ثم أرسل صورة الباركود هنا.\n\n"
+                "سيتم قبول الباركود باستخدام هذا الحساب المحدد فقط.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        "❌ إلغاء",
+                        callback_data=f"os:number_info:{stock_id}"
+                    )
+                ]])
+            )
+            return
+
         if data.startswith("os:number_info:") and is_own:
             stock_id = int(data.split(":")[-1])
             rec = get_stock_number(stock_id)
@@ -1627,6 +1657,7 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                     [InlineKeyboardButton("📋 تفاصيل الأجهزة وتواريخ التسجيل", callback_data=f"os:number_devices:{stock_id}")],
                     [InlineKeyboardButton("🔑 جلب آخر كود دخول", callback_data=f"os:number_code:{stock_id}")],
                     [InlineKeyboardButton("🔐 كلمة مرور التحقق بخطوتين", callback_data=f"os:number_2fa:{stock_id}")],
+                    [InlineKeyboardButton("📷 تسجيل دخول جهاز عبر QR", callback_data=f"os:number_qr:{stock_id}")],
                     [InlineKeyboardButton("⏱ سماح 5 دقائق (طرد باقي الجلسات فوراً)", callback_data=f"os:allow_5min:{rec['phone_number']}")],
                 ]
                 if not rec["sessions_reset"] and not rec["force_listed"]:

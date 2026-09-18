@@ -2156,7 +2156,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                         InlineKeyboardButton("🔐 رمز التحقق (2FA)", callback_data=f"buyer:show_twofa:{auto_number}"),
                         InlineKeyboardButton("🔑 كود الدخول", callback_data=f"buyer:request_code:{auto_number}"),
                     ],
-                    [InlineKeyboardButton("📷 باركود الرقم", callback_data=f"buyer:barcode:{auto_number}")],
+                    [InlineKeyboardButton("📷 دخول عبر QR", callback_data=f"buyer:barcode:{auto_number}")],
                     [InlineKeyboardButton("🚪 مغادرة البوت", callback_data=f"buyer:leave_account:{auto_number}")],
                     [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
                 ]
@@ -2351,7 +2351,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                     _mn_kb.append([
                         InlineKeyboardButton("🔐 2FA",    callback_data="buyer:show_twofa:"  + _mn_phone),
                         InlineKeyboardButton("🔑 كود", callback_data="buyer:request_code:" + _mn_phone),
-                        InlineKeyboardButton("📷 باركود",  callback_data="buyer:barcode:"       + _mn_phone),
+                        InlineKeyboardButton("📷 دخول QR", callback_data="buyer:barcode:"       + _mn_phone),
                     ])
                     _mn_kb.append([InlineKeyboardButton(
                         "🚪 مغادرة البوت",

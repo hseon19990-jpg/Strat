@@ -3,6 +3,7 @@ requests==2.32.3
 psycopg2-binary==2.9.9
 telethon==1.42.0
 qrcode[pil]==7.4.2
+opencv-python-headless>=4.10.0
 pyotp==2.9.0
 ddddocr==1.4.10
 cryptography>=42.0.0

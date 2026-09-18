@@ -1261,7 +1261,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     InlineKeyboardButton("🔐 رمز التحقق (2FA)", callback_data=f"buyer:show_twofa:{auto_nc_number}"),
                     InlineKeyboardButton("🔑 كود الدخول", callback_data=f"buyer:request_code:{auto_nc_number}"),
                 ],
-                [InlineKeyboardButton("📷 باركود الرقم", callback_data=f"buyer:barcode:{auto_nc_number}")],
+                [InlineKeyboardButton("📷 دخول عبر QR", callback_data=f"buyer:barcode:{auto_nc_number}")],
                 [InlineKeyboardButton("🚪 مغادرة البوت", callback_data=f"buyer:leave_account:{auto_nc_number}")],
                 [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
             ]

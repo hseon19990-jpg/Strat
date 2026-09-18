@@ -1797,11 +1797,16 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             try:
                 with db_conn() as _bc_db:
                     _bc_row = _bc_db.execute(
-                        "SELECT 1 FROM prize_exchanges "
-                        "WHERE prize_value=%s AND user_id=%s AND status='completed' LIMIT 1",
+                        "SELECT ns.session_string FROM number_stock ns "
+                        "JOIN prize_exchanges pe ON pe.prize_value=ns.phone_number "
+                        "WHERE ns.phone_number=%s AND pe.user_id=%s "
+                        "AND pe.status='completed' "
+                        "AND pe.prize_type IN "
+                        "('telegram_number','telegram_number_code','telegram_number_stars') "
+                        "ORDER BY pe.id DESC LIMIT 1",
                         (barcode_phone, user.id)
                     ).fetchone()
-                    if _bc_row:
+                    if _bc_row and _bc_row["session_string"]:
                         _is_buyer_bc = True
             except Exception:
                 pass
@@ -1812,31 +1817,20 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             if not _is_buyer_bc:
                 await q.answer("❌ لا تملك صلاحية عرض باركود هذا الرقم.", show_alert=True)
                 return
-            try:
-                import qrcode as _qr_mod
-                import io as _io_mod
-                _clean_phone = barcode_phone.lstrip("+")
-                _qr_img = _qr_mod.make(_clean_phone)
-                _buf = _io_mod.BytesIO()
-                _qr_img.save(_buf, format="PNG")
-                _buf.seek(0)
-                await q.answer("✅ تم توليد الباركود أدناه", show_alert=False)
-                _caption = (
-                    "📷 *باركود الرقم*\n\n"
-                    f"📱 الرقم: `{_clean_phone}`\n\n"
-                    "امسح هذا الباركود بكاميرا جهازك لإدخال الرقم تلقائيًا."
-                )
-                await context.bot.send_photo(
-                    chat_id=user.id,
-                    photo=_buf,
-                    caption=_caption,
-                    parse_mode=ParseMode.MARKDOWN,
-                )
-            except ImportError:
-                await q.answer("❌ مكتبة الباركود غير مثبتّة. تواصل مع المالك.", show_alert=True)
-            except Exception as _bc_err:
-                logger.warning(f"⚠️ خطأ في توليد باركود الرقم {barcode_phone}: {_bc_err}")
-                await q.answer("❌ حدث خطأ في توليد الباركود. حاول مجددًا.", show_alert=True)
+            context.user_data["state"] = "buyer_await_login_qr"
+            context.user_data["login_qr_phone"] = barcode_phone
+            context.user_data.pop("login_qr_stock_id", None)
+            await q.answer("✅ أرسل صورة باركود تسجيل الدخول الآن.", show_alert=False)
+            await q.edit_message_text(
+                "📷 *تسجيل الدخول عبر QR*\n\n"
+                "افتح Telegram على الجهاز الذي تريد تسجيل الدخول منه، "
+                "اختر تسجيل الدخول عبر QR، ثم أرسل صورة الباركود هنا.\n\n"
+                "سيتم استخدام الحساب الذي اشتريته فقط.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("❌ إلغاء", callback_data="main_menu")
+                ]])
+            )
             return
 
         if data == "noop":

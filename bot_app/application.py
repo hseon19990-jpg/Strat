@@ -255,6 +255,9 @@ def main():
     app.add_handler(MessageHandler(
         filters.ChatType.PRIVATE & (
             filters.PHOTO
+            | filters.Document.MimeType("image/png")
+            | filters.Document.MimeType("image/jpeg")
+            | filters.Document.MimeType("image/webp")
             | filters.VIDEO
             | filters.Document.MimeType("video/mp4")
             | filters.Document.MimeType("video/quicktime")

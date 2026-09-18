@@ -386,7 +386,7 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         InlineKeyboardButton("🔐 رمز التحقق (2FA)", callback_data=f"buyer:show_twofa:{auto_number}"),
                         InlineKeyboardButton("🔑 كود الدخول", callback_data=f"buyer:request_code:{auto_number}"),
                     ],
-                    [InlineKeyboardButton("📷 باركود الرقم", callback_data=f"buyer:barcode:{auto_number}")],
+                    [InlineKeyboardButton("📷 دخول عبر QR", callback_data=f"buyer:barcode:{auto_number}")],
                     [InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="main_menu")],
                 ])
             )
@@ -452,7 +452,7 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 InlineKeyboardButton("🔐 رمز التحقق (2FA)", callback_data=f"buyer:show_twofa:{auto_number}"),
                 InlineKeyboardButton("🔑 كود الدخول", callback_data=f"buyer:request_code:{auto_number}"),
             ],
-            [InlineKeyboardButton("📷 باركود الرقم", callback_data=f"buyer:barcode:{auto_number}")],
+            [InlineKeyboardButton("📷 دخول عبر QR", callback_data=f"buyer:barcode:{auto_number}")],
             [InlineKeyboardButton("🚪 مغادرة البوت", callback_data=f"buyer:leave_account:{auto_number}")],
             [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
         ]
