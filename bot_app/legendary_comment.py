@@ -1999,7 +1999,15 @@ async def legendary_set_delay(update, context, q, is_own: bool):
 
 async def legendary_payment_callback(update, context, q, is_own: bool, payment_method: str):
     """Handle payment selection."""
-    if context.user_data.get("state") not in ("legendary_payment_confirm", "legendary_payment_input"):
+    is_confirmation = payment_method.startswith("confirm:")
+    if is_confirmation:
+        payment_method = payment_method.split(":", 1)[1]
+        if (context.user_data.get("state") != "legendary_payment_review" or
+                context.user_data.get("legendary_pending_payment") != payment_method):
+            await q.answer("⚠️ انتهت صلاحية الطلب، ابدأ من جديد.", show_alert=True)
+            return
+        context.user_data.pop("legendary_pending_payment", None)
+    elif context.user_data.get("state") not in ("legendary_payment_confirm", "legendary_payment_input"):
         await q.answer("⚠️ انتهت صلاحية الطلب، ابدأ من جديد.", show_alert=True)
         return
     
@@ -2019,6 +2027,39 @@ async def legendary_payment_callback(update, context, q, is_own: bool, payment_m
         payment_label = f"{points_cost} نقطة"
     
     requester_id = q.from_user.id
+
+    if payment_method not in ("stars", "points"):
+        await q.answer("⚠️ طريقة دفع غير صالحة.", show_alert=True)
+        return
+
+    if not is_confirmation:
+        if payment_method == "points":
+            db_user = get_user(q.from_user.id)
+            if not db_user or int(db_user.get("points") or 0) < total_cost:
+                await q.edit_message_text(
+                    f"❌ رصيدك غير كافٍ. التكلفة: {total_cost} نقطة.\n"
+                    f"💰 رصيدك الحالي: {db_user['points'] if db_user else 0} نقطة",
+                    reply_markup=legendary_services_back_kb()
+                )
+                context.user_data["state"] = "main_menu"
+                return
+        context.user_data["legendary_pending_payment"] = payment_method
+        context.user_data["state"] = "legendary_payment_review"
+        await q.edit_message_text(
+            f"📋 *تأكيد تنفيذ الخدمة*\n\n"
+            f"🔹 الخدمة: *{get_service_display_name(service_type)}*\n"
+            f"🔢 العدد: *{quantity}*\n"
+            f"💳 طريقة الدفع: *{payment_label}*\n\n"
+            f"⚠️ بعد التأكيد سيتم خصم النقاط أو إرسال فاتورة النجوم وبدء التنفيذ.\n"
+            f"هل تريد المتابعة؟",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ تأكيد الدفع والتنفيذ", callback_data=f"legendary:confirm:{payment_method}")],
+                [InlineKeyboardButton("❌ إلغاء", callback_data="legendary:payment_cancel")],
+            ])
+        )
+        return
+
 
     if payment_method == "points":
         db_user = get_user(requester_id)
