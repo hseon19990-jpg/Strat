@@ -1001,6 +1001,14 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
         if data.startswith("os:ref_deduct:") and is_own:
             parts = data.split(":")
             inv_id, rp_pts = int(parts[2]), int(parts[3])
+            confirmed = len(parts) > 4 and parts[4] == "confirm"
+            if not confirmed:
+                await q.edit_message_text(
+                    f"⚠️ *تأكيد خصم نقاط الإحالة*\n\n👤 العضو: `{inv_id}`\n💰 سيتم خصم: *{rp_pts:,} نقطة*\n🔓 وبعدها يُرفع التقييد عن العضو.\n\nهل تريد تنفيذ العملية؟",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تأكيد الخصم", callback_data=f"os:ref_deduct:{inv_id}:{rp_pts}:confirm")], [InlineKeyboardButton("❌ إلغاء", callback_data="os:restricted_members")]])
+                )
+                return
             with db_conn() as _c:
                 _c.execute("UPDATE users SET points=GREATEST(0, points-%s), referral_points_blocked=0 WHERE user_id=%s", (rp_pts, inv_id))
             await q.edit_message_text(
@@ -2002,6 +2010,17 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 reply_markup=InlineKeyboardMarkup(rows)
             )
             return
+
+            if data == "exchange_confirm:stars":
+                if context.user_data.get("state") != "confirm_exchange_stars":
+                    await q.answer("⚠️ انتهت صلاحية طلب الاستبدال.", show_alert=True)
+                    return
+                stars = int(context.user_data.get("exchange_stars_count", 0))
+                data = f"exchange:pkg:{stars}:confirm"
+            if data == "exchange_cancel:stars":
+                context.user_data["state"] = "main_menu"
+                await q.edit_message_text("❌ تم إلغاء استبدال النقاط.", reply_markup=main_menu_kb(is_own))
+                return
 
         if data.startswith("exchange:pkg:"):
             stars = int(data.split(":")[2])
