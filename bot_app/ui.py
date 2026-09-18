@@ -7,6 +7,7 @@ domain.
 
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
+from .qr_decoder import decode_login_qr_value
 
 def generate_math():
     a, b = random.randint(1, 9), random.randint(1, 9)
@@ -1405,7 +1406,7 @@ async def handle_login_qr_photo(update: Update, context: ContextTypes.DEFAULT_TY
         if image is None:
             raise ValueError("تعذّر قراءة الصورة")
 
-        qr_value, _, _ = _cv2.QRCodeDetector().detectAndDecode(image)
+        qr_value = decode_login_qr_value(image)
         if not qr_value:
             await update.message.reply_text(
                 "❌ لم أجد QR صالحاً في الصورة. أرسل لقطة شاشة واضحة لباركود تسجيل دخول Telegram."
