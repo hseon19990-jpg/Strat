@@ -479,6 +479,8 @@ async def handle_buyback_callback(update, context, q, data: str, user, is_owner:
         except ValueError:
             await q.answer("طلب غير صالح.", show_alert=True)
             return True
+        await q.answer("⏳ جارٍ تأمين الحساب، انتظر قليلاً...")
+
         with db_conn() as c:
             row = c.execute(
                 "SELECT * FROM account_buyback_offers WHERE id=%s AND seller_user_id=%s AND status='awaiting_seller_confirm'",
