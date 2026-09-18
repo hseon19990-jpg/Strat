@@ -318,7 +318,7 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
             delay_seconds=delay_seconds
         ))
 
-    # ─── شراء رقم تيلغرام بالنجوم — تسليم يدوي ───
+    # ─── شراء رقم تيلغرام بالنجوم — تسليم تلقائي ───
     elif payload.startswith("number_stars:"):
         parts = payload.split(":")
         if len(parts) != 3 or not parts[1].isdigit() or not parts[2].isdigit():
@@ -336,49 +336,164 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text("⚠️ تعذّر التحقق من عملية الدفع.", reply_markup=main_menu_kb(is_own))
             return
 
+        # Reserve the payment before doing the network-heavy stock checks.
+        # A duplicate Telegram update will see "processing" and cannot receive
+        # a second number.
+        already_completed = False
         with db_conn() as c:
-            inserted = c.execute(
-                "INSERT INTO number_star_purchases "
-                "(telegram_payment_id,user_id,stars,status) "
-                "VALUES (%s,%s,%s,'pending_manual') "
-                "ON CONFLICT (telegram_payment_id) DO NOTHING "
-                "RETURNING telegram_payment_id",
-                (charge_id, user.id, stars)
-            ).fetchone()
+            c.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (charge_id,))
             existing = c.execute(
-                "SELECT status FROM number_star_purchases WHERE telegram_payment_id=%s",
+                "SELECT status,phone_number FROM number_star_purchases "
+                "WHERE telegram_payment_id=%s FOR UPDATE",
                 (charge_id,)
             ).fetchone()
 
-        if not inserted:
-            status = existing["status"] if existing else "pending_manual"
-            if status == "completed":
-                message = "✅ هذه العملية مسجلة مسبقاً. إذا لم يصلك الرقم، تواصل مع المالك."
+            if existing and existing["status"] == "completed" and existing["phone_number"]:
+                auto_number = existing["phone_number"]
+                already_completed = True
+            elif existing and existing["status"] == "processing":
+                await update.message.reply_text(
+                    "⏳ تم استلام الدفع، وجارٍ تجهيز الرقم تلقائياً. "
+                    "سيصلك الرقم برسالة منفصلة قريباً.",
+                    reply_markup=main_menu_kb(is_own)
+                )
+                return
+            elif existing:
+                # Old pending_manual rows are intentionally not re-delivered:
+                # they may already have been handled by the owner.
+                await update.message.reply_text(
+                    "⏳ هذا الطلب مسجل مسبقاً وسيتم إكمال تسليمه من الإدارة.",
+                    reply_markup=main_menu_kb(is_own)
+                )
+                return
             else:
-                message = "⏳ تم تسجيل طلب شراء الرقم مسبقاً، والمالك سيقوم بتسليمه يدوياً."
+                c.execute(
+                    "INSERT INTO number_star_purchases "
+                    "(telegram_payment_id,user_id,stars,status) "
+                    "VALUES (%s,%s,%s,'processing')",
+                    (charge_id, user.id, stars)
+                )
+                auto_number = None
+
+        if auto_number and already_completed:
             await update.message.reply_text(
-                message + "\n⚠️ النجوم المدفوعة نهائية ولا تُسترد.",
-                reply_markup=main_menu_kb(is_own)
+                "✅ تم تسليم هذا الرقم مسبقاً.\n"
+                f"📱 الرقم: `{auto_number.lstrip('+')}`\n"
+                "استخدم الأزرار في رسالتك السابقة للحصول على بيانات الدخول.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("🔐 رمز التحقق (2FA)", callback_data=f"buyer:show_twofa:{auto_number}"),
+                        InlineKeyboardButton("🔑 كود الدخول", callback_data=f"buyer:request_code:{auto_number}"),
+                    ],
+                    [InlineKeyboardButton("📷 باركود الرقم", callback_data=f"buyer:barcode:{auto_number}")],
+                    [InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="main_menu")],
+                ])
             )
             return
 
+        if auto_number:
+            code = next_order_code(user.id)
+            with db_conn() as c:
+                pe = c.execute(
+                    "INSERT INTO prize_exchanges "
+                    "(user_id,prize_type,prize_value,points_cost,status,order_code) "
+                    "VALUES (%s,%s,%s,0,'completed',%s) RETURNING id",
+                    (user.id, "telegram_number_stars", auto_number, code)
+                ).fetchone()
+                c.execute(
+                    "UPDATE number_star_purchases "
+                    "SET status='completed',phone_number=%s "
+                    "WHERE telegram_payment_id=%s",
+                    (auto_number, charge_id)
+                )
+        else:
+            auto = await assign_verified_number(user.id, bot=context.bot)
+            if not auto:
+                with db_conn() as c:
+                    c.execute(
+                        "UPDATE number_star_purchases SET status='pending_manual' "
+                        "WHERE telegram_payment_id=%s",
+                        (charge_id,)
+                    )
+                await update.message.reply_text(
+                    "✅ تم استلام الدفع، لكن لا يوجد حالياً رقم صالح في المخزون.\n"
+                    "تم حفظ طلبك وسيتم تسليمه عند توفر رقم.",
+                    reply_markup=main_menu_kb(is_own)
+                )
+                await _notify_owner_manual_star_purchase(
+                    context,
+                    "🛒 شراء رقم بالنجوم يحتاج تدخلاً بسبب نفاد المخزون\n\n"
+                    f"👤 User ID: {user.id}\n"
+                    f"⭐ النجوم: {stars}\n"
+                    f"🧾 Payment ID: {charge_id}"
+                )
+                return
+
+            auto_number = auto["phone_number"]
+            code = next_order_code(user.id)
+            with db_conn() as c:
+                pe = c.execute(
+                    "INSERT INTO prize_exchanges "
+                    "(user_id,prize_type,prize_value,points_cost,status,order_code) "
+                    "VALUES (%s,%s,%s,0,'completed',%s) RETURNING id",
+                    (user.id, "telegram_number_stars", auto_number, code)
+                ).fetchone()
+                c.execute(
+                    "UPDATE number_star_purchases "
+                    "SET status='completed',phone_number=%s "
+                    "WHERE telegram_payment_id=%s",
+                    (auto_number, charge_id)
+                )
+
+        display_number = auto_number.lstrip("+")
+        result_kb = [
+            [
+                InlineKeyboardButton("🔐 رمز التحقق (2FA)", callback_data=f"buyer:show_twofa:{auto_number}"),
+                InlineKeyboardButton("🔑 كود الدخول", callback_data=f"buyer:request_code:{auto_number}"),
+            ],
+            [InlineKeyboardButton("📷 باركود الرقم", callback_data=f"buyer:barcode:{auto_number}")],
+            [InlineKeyboardButton("🚪 مغادرة البوت", callback_data=f"buyer:leave_account:{auto_number}")],
+            [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
+        ]
         await update.message.reply_text(
-            "✅ تم استلام دفعك بالنجوم.\n\n"
+            "✅ *تم شراء الرقم وتسليمه تلقائياً!*\n\n"
             f"⭐ المدفوع: {stars} نجمة\n"
-            "📨 تم إرسال طلب شراء الرقم إلى المالك، وسيقوم بتسليمه يدوياً.\n"
-            "⚠️ النجوم المدفوعة نهائية ولا تُسترد أو تُعاد بأي طريقة.",
-            reply_markup=main_menu_kb(is_own)
+            f"📱 *الرقم:*\n`{display_number}`\n\n"
+            "اضغط على الأزرار للحصول على رمز التحقق أو كود الدخول.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(result_kb)
         )
-        await _notify_owner_manual_star_purchase(
-            context,
-            "🛒 طلب شراء رقم بالنجوم — تسليم يدوي\n\n"
-            f"👤 الاسم: {user.full_name}\n"
-            f"🆔 User ID: {user.id}\n"
-            f"🔗 username: @{user.username or 'بدون معرف'}\n"
-            f"⭐ النجوم المدفوعة: {stars}\n"
-            f"🧾 Payment ID: {charge_id}\n\n"
-            "⚠️ لا يوجد تسليم تلقائي ولا استرداد تلقائي لهذه العملية."
-        )
+        try:
+            await context.bot.send_message(
+                user.id,
+                "📋 *إشعار تبرئة ذمة — يُرجى القراءة بعناية*\n\n"
+                "بإتمامك عملية الشراء فإنك توافق على أن الرقم والحساب أصبحا مسؤوليتك، "
+                "ولا يتحمل البائع مسؤولية أي حظر أو تقييد لاحق من تيليغرام.\n\n"
+                "⑤ لا يحق المطالبة باسترداد أو تعويض بعد استلام بيانات الدخول.\n\n"
+                "شكراً لثقتك 🤍",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception:
+            pass
+        if pe:
+            await notify_prize_exchange_owner(
+                context, pe["id"],
+                text_html=(
+                    "📱 <b>شراء رقم تيلغرام بالنجوم — تسليم تلقائي ✅</b>\n"
+                    f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
+                    f"📱 الرقم: <code>{auto_number}</code>\n"
+                    f"⭐ {stars} نجمة\n"
+                    f"📌 {code}"
+                ),
+                group_text_html=(
+                    "📱 <b>شراء رقم تيلغرام بالنجوم — تسليم تلقائي ✅</b>\n"
+                    f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
+                    f"⭐ {stars} نجمة\n"
+                    f"📌 {code}"
+                ),
+            )
+        return
 
     # ─── تمويل الاشتراك الإجباري بالنجوم ───
     elif payload.startswith("fund_mandatory:"):
