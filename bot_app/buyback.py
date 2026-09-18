@@ -95,6 +95,13 @@ def _buyback_cancel_markup():
     ]])
 
 
+def _buyback_code_markup():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 إعادة إرسال الكود", callback_data="buyback:resend_code")],
+        [InlineKeyboardButton("❌ إلغاء", callback_data="buyback:cancel")],
+    ])
+
+
 def _buyback_confirm_markup(offer_id: int):
     return InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ أؤكد بيع الحساب", callback_data=f"buyback:confirm:{offer_id}"),
@@ -226,7 +233,14 @@ async def handle_buyback_text(update, context, text: str) -> bool:
         client = TelegramClient(StringSession(), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
         try:
             await asyncio.wait_for(client.connect(), timeout=20)
-            sent = await asyncio.wait_for(client.send_code_request(phone), timeout=30)
+            # The default delivery is often the Telegram app (777000), which
+            # is easy to miss when the seller is waiting for an SMS.  Request
+            # an SMS resend while still explaining that Telegram may deliver
+            # the code inside the account instead.
+            sent = await asyncio.wait_for(
+                client.send_code_request(phone, force_sms=True),
+                timeout=30,
+            )
         except FloodWaitError as exc:
             await _disconnect_buyback_client(client)
             await update.message.reply_text(f"⚠️ محاولات كثيرة على الرقم. انتظر {exc.seconds} ثانية.", reply_markup=main_menu_kb(False))
@@ -248,7 +262,15 @@ async def handle_buyback_text(update, context, text: str) -> bool:
             "phone_code_hash": sent.phone_code_hash,
         }
         context.user_data["state"] = "buyback_await_code"
-        await update.message.reply_text("📩 أرسل كود الدخول الذي وصلك، ولن يتم حفظه.", reply_markup=_buyback_cancel_markup())
+        await update.message.reply_text(
+            "📩 تم طلب كود تسجيل الدخول.\n\n"
+            "تحقق أولاً من رسالة Telegram الرسمية باسم <b>Telegram</b> أو الرقم "
+            "<code>777000</code> داخل الحساب، وإذا لم يصل فافحص SMS.\n"
+            "يمكنك الضغط على «إعادة إرسال الكود» لطلب كود جديد. أرسل آخر كود وصلك فقط؛ "
+            "لن يتم حفظه.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=_buyback_code_markup(),
+        )
         return True
 
     if state == "buyback_await_code":
@@ -454,6 +476,39 @@ async def handle_buyback_callback(update, context, q, data: str, user, is_owner:
         await _clear_buyback_pending(user.id)
         context.user_data["state"] = "buyback_await_phone"
         await q.edit_message_text("📱 أرسل رقم الحساب بصيغة دولية.", reply_markup=_buyback_cancel_markup())
+        return True
+
+    if data == "buyback:resend_code":
+        pending = _pending_buyback_logins.get(user.id)
+        if not pending or context.user_data.get("state") != "buyback_await_code":
+            await q.answer("⚠️ انتهت جلسة الكود. ابدأ بيع الحساب من جديد.", show_alert=True)
+            return True
+        try:
+            sent = await asyncio.wait_for(
+                pending["client"].send_code_request(
+                    pending["phone"],
+                    force_sms=True,
+                ),
+                timeout=30,
+            )
+            pending["phone_code_hash"] = sent.phone_code_hash
+            await q.answer("✅ تم طلب كود جديد.")
+            await q.edit_message_text(
+                "📩 تم طلب كود جديد.\n\n"
+                "تحقق من رسالة Telegram الرسمية باسم <b>Telegram</b> أو الرقم "
+                "<code>777000</code> داخل الحساب، ثم افحص SMS أيضاً.\n"
+                "أرسل آخر كود وصلك فقط؛ لن يتم حفظه.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=_buyback_code_markup(),
+            )
+        except FloodWaitError as exc:
+            await q.answer(
+                f"⚠️ انتظر {exc.seconds} ثانية قبل إعادة الطلب.",
+                show_alert=True,
+            )
+        except Exception as exc:
+            logger.warning(f"⚠️ تعذر إعادة إرسال كود بيع الحساب: {exc}")
+            await q.answer("❌ تعذر إعادة إرسال الكود حالياً. حاول بعد قليل.", show_alert=True)
         return True
 
     if data == "buyback:cancel" or data.startswith("buyback:cancel:"):
