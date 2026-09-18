@@ -979,7 +979,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💸 الرسوم: {fee} نقطة (1%)\n"
             f"📤 الإجمالي: {total_deduct} نقطة\n\n"
             f"أرسل *نعم* للتأكيد أو *لا* للإلغاء",
-            parse_mode=ParseMode.MARKDOWN
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تأكيد التحويل", callback_data="transfer_confirm:yes")], [InlineKeyboardButton("❌ إلغاء", callback_data="transfer_confirm:no")]])
         )
         return
 
