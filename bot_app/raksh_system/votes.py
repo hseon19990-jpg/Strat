@@ -14,6 +14,37 @@ def _callback_vote_may_have_applied(error: Exception) -> bool:
     ))
 
 
+def _parse_votes_bot_link(value: str) -> Tuple[Optional[str], Optional[str]]:
+    """Parse a direct Telegram bot link without accepting channel/invite URLs."""
+    raw = (value or "").strip().strip("<>")
+    if not raw:
+        return None, None
+
+    if raw.startswith("@"):
+        parts = raw.split()
+        username = parts[0].lstrip("@")
+        if not re.fullmatch(r"[A-Za-z0-9_]{5,32}", username):
+            return None, None
+        return _parse_bot_link(raw)
+
+    try:
+        parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+    except Exception:
+        return None, None
+
+    netloc = parsed.netloc.lower().removeprefix("www.")
+    if netloc not in {"t.me", "telegram.me"}:
+        return None, None
+
+    parts = [part for part in parsed.path.strip("/").split("/") if part]
+    if len(parts) != 1:
+        return None, None
+    username = parts[0].lstrip("@")
+    if not re.fullmatch(r"[A-Za-z0-9_]{5,32}", username):
+        return None, None
+    return _parse_bot_link(raw)
+
+
 class VotesService(RakshService):
     """خدمة رشق أصوات - كل شيء في مكان واحد"""
     
@@ -39,8 +70,9 @@ class VotesService(RakshService):
     
     def get_link_instruction(self) -> str:
         return (
-            "أرسل رابط المنشور الذي يحتوي على زر التصويت:\n"
-            "https://t.me/channel/123"
+            "أرسل رابط المنشور الذي يحتوي على زر التصويت أو رابط البوت:\n"
+            "منشور: https://t.me/channel/123\n"
+            "بوت: https://t.me/xxxBot?start=vote-xxx"
         )
     
     def validate_link(self, value: str) -> Optional[str]:
@@ -48,10 +80,18 @@ class VotesService(RakshService):
             return "⚠️ الرابط لا يمكن أن يكون فارغاً"
         
         channel_ref, msg_id = _parse_post_link(value)
-        if not channel_ref:
-            return "⚠️ الرابط غير صحيح.\n\nأرسل رابط منشور: https://t.me/channel/123"
-        
-        return None
+        if channel_ref and msg_id is not None:
+            return None
+
+        bot_username, _ = _parse_votes_bot_link(value)
+        if bot_username:
+            return None
+
+        return (
+            "⚠️ الرابط غير صحيح لهذه الخدمة.\n\n"
+            "أرسل رابط منشور: https://t.me/channel/123\n"
+            "أو رابط بوت: https://t.me/xxxBot?start=vote-xxx"
+        )
     
     def get_start_message(self) -> str:
         return (
@@ -352,6 +392,73 @@ class VotesService(RakshService):
         
         return False
     
+    async def _execute_bot_link(
+        self,
+        client,
+        link: str,
+        phone_number: str,
+    ) -> Tuple[bool, str]:
+        """Start a direct vote bot and press only a clearly-labelled vote button."""
+        bot_username, start_param = _parse_votes_bot_link(link)
+        if not bot_username:
+            return False, "رابط البوت غير صحيح لهذه الخدمة"
+
+        try:
+            bot_entity = await client.get_entity(bot_username)
+        except Exception as exc:
+            return False, f"تعذر العثور على البوت: {str(exc)[:80]}"
+
+        try:
+            await client(
+                StartBotRequest(
+                    bot=bot_entity,
+                    peer=bot_entity,
+                    start_param=start_param or "",
+                )
+            )
+        except Exception as exc:
+            logger.warning("فشل بدء بوت التصويت %s: %s", bot_username, exc)
+            try:
+                await client.send_message(
+                    bot_entity,
+                    f"/start {start_param}" if start_param else "/start",
+                )
+            except Exception as fallback_exc:
+                return False, f"تعذر بدء بوت التصويت: {str(fallback_exc)[:80]}"
+
+        vote_keywords = ("تصويت", "صوت", "vote", "voting")
+        for _ in range(6):
+            await asyncio.sleep(1.0)
+            messages = await client.get_messages(bot_entity, limit=10)
+            for message in messages or []:
+                for row in getattr(message, "buttons", None) or []:
+                    for button in row:
+                        if getattr(button, "url", None):
+                            continue
+                        button_text = (getattr(button, "text", "") or "").strip().casefold()
+                        if not any(keyword in button_text for keyword in vote_keywords):
+                            continue
+
+                        callback_data = getattr(button, "data", None)
+                        try:
+                            if callback_data is not None:
+                                await client(
+                                    GetBotCallbackAnswerRequest(
+                                        peer=bot_entity,
+                                        msg_id=message.id,
+                                        data=callback_data,
+                                    )
+                                )
+                            else:
+                                await button.click()
+                            return True, f"✅ تم الضغط على زر التصويت من {phone_number}"
+                        except Exception as exc:
+                            if _callback_vote_may_have_applied(exc):
+                                return True, f"✅ تم إرسال التصويت من {phone_number}"
+                            logger.warning("فشل الضغط على زر التصويت في البوت: %s", exc)
+
+        return False, "لم يُعثر على زر تصويت قابل للضغط داخل البوت"
+
     async def execute(self, session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
         """تنفيذ رشق أصوات - الضغط على الزر في المنشور مباشرة"""
         client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
@@ -370,10 +477,11 @@ class VotesService(RakshService):
                     except Exception as e:
                         logger.warning(f"فشل الانضمام للقناة {channel_ref}: {e}")
             
-            # 2️⃣ تحليل رابط المنشور
-            channel_ref, msg_id = _parse_post_link(params["link"])
-            if not channel_ref:
-                return False, "رابط المنشور غير صحيح"
+            # 2️⃣ قبول رابط منشور أو رابط بوت مباشر
+            link = (params.get("link") or "").strip()
+            channel_ref, msg_id = _parse_post_link(link)
+            if not channel_ref or msg_id is None:
+                return await self._execute_bot_link(client, link, session["phone_number"])
             
             # 3️⃣ الوصول إلى القناة والمنشور
             entity = await client.get_entity(channel_ref)
