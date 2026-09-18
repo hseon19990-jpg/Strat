@@ -1040,7 +1040,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💡 للحصول على {pts} نقطة تحتاج *{stars} ⭐*\n"
             f"(ستحصل فعلياً على {stars * rate} نقطة)\n\n"
             f"أرسل *نعم* للمتابعة للدفع أو *لا* للإلغاء",
-            parse_mode=ParseMode.MARKDOWN
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تأكيد وإرسال الفاتورة", callback_data="charge_confirm:stars")], [InlineKeyboardButton("❌ إلغاء", callback_data="charge_cancel:stars")]])
         )
         return
 
@@ -1061,7 +1062,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"💡 *{stars} ⭐ = {pts} نقطة*\n\n"
             f"أرسل *نعم* للمتابعة للدفع أو *لا* للإلغاء",
-            parse_mode=ParseMode.MARKDOWN
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تأكيد وإرسال الفاتورة", callback_data="charge_confirm:stars")], [InlineKeyboardButton("❌ إلغاء", callback_data="charge_cancel:stars")]])
         )
         return
 
@@ -1103,6 +1105,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             context.user_data["state"] = "main_menu"
             return
+        context.user_data["exchange_stars_count"] = stars
+        context.user_data["exchange_stars_cost"] = cost
+        context.user_data["state"] = "confirm_exchange_stars"
+        await update.message.reply_text(
+            f"📋 *تأكيد استبدال النقاط بنجوم*\n\n⭐ المطلوب: *{stars} نجمة*\n💰 الخصم: *{cost:,} نقطة*\n💎 رصيدك بعد العملية تقريباً: *{pts - cost:,} نقطة*\n\n⚠️ سيتم تسجيل طلب النجوم لدى الإدارة بعد التأكيد.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تأكيد الخصم والطلب", callback_data="exchange_confirm:stars")], [InlineKeyboardButton("❌ إلغاء", callback_data="exchange_cancel:stars")]])
+        )
+        return
         if not deduct_points(user.id, cost):
             await update.message.reply_text("❌ حدث خطأ في خصم النقاط.", reply_markup=main_menu_kb(is_own))
             context.user_data["state"] = "main_menu"
@@ -1938,25 +1949,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if fund_type == "mandatory":
             total_stars = context.user_data.get("fund_stars_total", 1)
             context.user_data["fund_channel_username"] = channel
-            context.user_data["state"] = "main_menu"
-            payload_str = f"fund_mandatory:{user.id}:{member_count}:{channel}:{total_stars}"
-            await context.bot.send_invoice(
-                chat_id=user.id,
-                title=f"اشتراك إجباري — @{channel}",
-                description=f"تمويل {member_count:,} عضو كاشتراك إجباري في قناة @{channel}",
-                payload=payload_str,
-                provider_token="",
-                currency="XTR",
-                prices=[LabeledPrice(f"تمويل إجباري @{channel}", total_stars)],
-            )
+            context.user_data["state"] = "await_fund_stars_confirm"
             await update.message.reply_text(
-                f"📋 *مراجعة طلب التمويل:*\n\n"
-                f"📢 القناة: @{channel_md}\n"
-                f"👥 عدد الأعضاء الفعلي: {real_count:,}\n"
-                f"⭐ التكلفة: *{total_stars} نجمة*\n\n"
-                f"✅ تم إرسال الفاتورة أعلاه — اضغطها للدفع بالنجوم.",
+                f"📋 *مراجعة تمويل القناة بالنجوم:*\n\n📢 القناة: @{channel_md}\n👥 عدد الأعضاء الفعلي: {real_count:,}\n⭐ التكلفة: *{total_stars} نجمة*\n\n⚠️ بعد التأكيد ستظهر فاتورة Telegram، والنجوم المدفوعة لا تُسترد. هل تريد المتابعة؟",
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=main_menu_kb(is_own)
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تأكيد وإرسال الفاتورة", callback_data="fund_stars_confirm:yes")], [InlineKeyboardButton("❌ إلغاء", callback_data="fund_stars_confirm:no")]])
             )
             return
 
