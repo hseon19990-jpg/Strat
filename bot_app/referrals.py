@@ -952,6 +952,41 @@ async def solve_captcha_with_ai(
         ]
         return partial[0] if len(partial) == 1 else None
 
+    def _extract_numeric_button_target(text: str) -> str | None:
+        """يستخرج الرقم المطلوب من سؤال يطلب الضغط على زر رقمي.
+
+        بعض بوتات التحقق لا تستخدم كلمات «اختر» أو «كابتشا»، بل ترسل
+        نصاً مثل: «يرجى النقر على الرقم (58) من الأزرار». في هذه الحالة
+        يجب الضغط على زر 58 مباشرةً، وليس إرسال 58 كنص أو ترك AI يخمّن.
+        """
+        source = str(text or "").translate(
+            str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
+        )
+        patterns = (
+            r"(?:الرقم|رقم|number)\s*[\(\[\{]?\s*(\d{1,4})",
+            r"(?:النقر|انقر|اضغط|click|press|tap|select|choose)"
+            r"[^0-9]{0,30}(\d{1,4})",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, source, flags=re.IGNORECASE)
+            if match:
+                return match.group(1)
+        return None
+
+    def _choose_numeric_button(target: str, entries: list[tuple[str, object]]):
+        """يطابق الرقم المطلوب مع زر رقمي مطابق تماماً."""
+        target = str(target or "").strip()
+        if not target:
+            return None
+        matches = []
+        for label, button in entries:
+            normalized = str(label or "").translate(
+                str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
+            )
+            if re.fullmatch(rf"[^\d]*{re.escape(target)}[^\d]*", normalized):
+                matches.append(button)
+        return matches[0] if len(matches) == 1 else None
+
     def _caption_target_emoji(text: str) -> str | None:
         """يستخرج الإيموجي المطلوب عندما يكون مذكوراً صراحة في الكابتشن."""
         lowered = (text or "").casefold()
@@ -1508,6 +1543,7 @@ async def solve_captcha_with_ai(
                     )
                     if not button_entries:
                         continue
+                    numeric_target = _extract_numeric_button_target(msg_text)
 
                     # إذا احتوت الرسالة على زر تحقق صريح، فهذا هو الزر
                     # المقصود حتى لو كانت الرسالة تحتوي أزراراً أخرى.
@@ -1555,13 +1591,15 @@ async def solve_captcha_with_ai(
                         "اختر", "الزر الصحيح", "الإيموجي", "الصورة المطابقة",
                         "correct button", "choose", "select", "pick",
                         "which button", "click the", "press the",
-                        "captcha", "كابتشا",
+                        "captcha", "كابتشا", "النقر", "انقر", "اضغط على الرقم",
                     )
                     has_explicit_button_challenge = any(
                         marker in msg_text_lower
                         for marker in explicit_choice_markers
                     )
                     is_verif = (
+                        numeric_target is not None
+                        or
                         has_explicit_button_challenge
                         or (
                             len(btn_labels) >= 2
@@ -1574,9 +1612,13 @@ async def solve_captcha_with_ai(
 
                     target_custom_ids = _target_custom_emoji_ids(msg, msg_text)
                     target_emoji = _caption_target_emoji(msg_text)
-                    direct_chosen = _choose_button_by_custom_emoji(
-                        target_custom_ids, button_entries
+                    direct_chosen = _choose_numeric_button(
+                        numeric_target, button_entries
                     )
+                    if not direct_chosen:
+                        direct_chosen = _choose_button_by_custom_emoji(
+                            target_custom_ids, button_entries
+                        )
                     if not direct_chosen:
                         direct_chosen = _choose_button(target_emoji, button_entries)
 
@@ -1624,13 +1666,16 @@ async def solve_captcha_with_ai(
                             "فقط كما هو بالضبط."
                         )
 
-                    # AI هو الاختيار الأول، والمطابقة المباشرة مجرد fallback.
-                    answer = await _solve_text(prompt)
-                    if answer:
-                        logger.info(f"🤖 AI اختار زر → '{answer}' ({phone})")
-                    chosen = _choose_button(answer, button_entries) if answer else None
-                    if not chosen:
-                        chosen = direct_chosen
+                    # سؤال الرقم بين قوسين حتمي: اضغط الزر المطابق أولاً
+                    # ولا ترسل الرقم كنص أو تسمح لـ AI باختياره كفهرس خاطئ.
+                    answer = None
+                    if not direct_chosen:
+                        answer = await _solve_text(prompt)
+                        if answer:
+                            logger.info(f"🤖 AI اختار زر → '{answer}' ({phone})")
+                    chosen = direct_chosen or (
+                        _choose_button(answer, button_entries) if answer else None
+                    )
                     if not chosen:
                         logger.warning(
                             f"⚠️ لا يوجد تطابق مؤكد؛ سيتم تجربة كل أزرار Captcha "
