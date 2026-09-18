@@ -96,6 +96,11 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 await legendary_payment_choice(update, context, q, is_own, service_type, "points")
                 return
 
+            if data.startswith("legendary:confirm:"):
+                payment_method = data.split(":")[2]
+                await legendary_payment_callback(update, context, q, is_own, f"confirm:{payment_method}")
+                return
+
             if data.startswith("legendary:pay:"):
                 payment_method = data.split(":")[2]
                 await legendary_payment_callback(update, context, q, is_own, payment_method)
@@ -1886,6 +1891,22 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                     await q.answer(f"❌ خطأ: {_e}", show_alert=True)
             return
 
+            if data == "charge_confirm:stars":
+                if context.user_data.get("state") != "confirm_charge_stars":
+                    await q.answer("⚠️ انتهت صلاحية طلب الشحن.", show_alert=True)
+                    return
+                stars = int(context.user_data.get("charge_stars", 1))
+                pts = int(context.user_data.get("charge_pts", 0))
+                await q.answer("✅ تم التأكيد، ستظهر الفاتورة الآن.")
+                await context.bot.send_invoice(chat_id=user.id, title="شحن نقاط", description=f"شراء {pts} نقطة مقابل {stars} نجمة", payload=f"charge_stars:{stars}:{user.id}", provider_token="", currency="XTR", prices=[LabeledPrice("نجوم", stars)])
+                context.user_data["state"] = "main_menu"
+                return
+
+            if data == "charge_cancel:stars":
+                context.user_data["state"] = "main_menu"
+                await q.edit_message_text("❌ تم إلغاء شحن النقاط.", reply_markup=main_menu_kb(is_own))
+                return
+
         if data == "charge:stars":
             rate = get_setting("star_to_points") or "250"
             await q.edit_message_text(
@@ -1903,6 +1924,14 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             stars = int(data.split(":")[2])
             rate  = int(get_setting("star_to_points") or "250")
             pts   = stars * rate
+            confirmed = len(data.split(":") ) == 4 and data.endswith(":confirm")
+            if not confirmed:
+                await q.edit_message_text(
+                    f"📋 *تأكيد شحن النقاط*\n\n⭐ المبلغ: *{stars} نجمة*\n💎 الإضافة: *{pts} نقطة*\n\n⚠️ ستظهر فاتورة Telegram بعد التأكيد، والنجوم المدفوعة لا تُسترد.\n\nهل تريد المتابعة؟",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تأكيد وإرسال الفاتورة", callback_data=f"charge:quick:{stars}:confirm")], [InlineKeyboardButton("❌ إلغاء", callback_data="charge:stars")]])
+                )
+                return
             await q.edit_message_text(
                 f"⭐ *{stars} نجمة = {pts} نقطة*\n\nجارٍ تحضير الفاتورة...",
                 parse_mode=ParseMode.MARKDOWN
@@ -1980,6 +2009,14 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             cost = stars * rate
             db_user = get_user(user.id)
             pts = db_user["points"] if db_user else 0
+            confirmed = len(data.split(":") ) == 4 and data.endswith(":confirm")
+            if not confirmed:
+                await q.edit_message_text(
+                    f"📋 *تأكيد استبدال النقاط بنجوم*\n\n⭐ الباقة: *{stars} نجمة*\n💰 الخصم: *{cost:,} نقطة*\n💎 الرصيد بعد العملية تقريباً: *{pts - cost:,} نقطة*\n\n⚠️ سيتم تسجيل الطلب لدى الإدارة بعد التأكيد.",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تأكيد الخصم والطلب", callback_data=f"exchange:pkg:{stars}:confirm")], [InlineKeyboardButton("❌ إلغاء", callback_data="exchange:stars")]])
+                )
+                return
             if pts < cost:
                 kb_rows = contact_owner_row() + [[InlineKeyboardButton("🔙 رجوع", callback_data="exchange:stars")]]
                 await q.edit_message_text(
@@ -2025,7 +2062,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             )
             return
 
-        if data == "exchange:number":
+        if data in ("exchange:number", "exchange:number:confirm"):
             if not is_number_exchange_on():
                 await q.answer("🔒 استبدال الأرقام مغلق حالياً. تواصل مع المالك.", show_alert=True)
                 return
@@ -2036,6 +2073,14 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 await q.edit_message_text(
                     f"❌ نقاطك غير كافية! تحتاج {cost} نقطة ولديك {db_user['points']} نقطة.",
                     reply_markup=InlineKeyboardMarkup(kb_rows)
+                )
+                return
+            confirmed = data.endswith(":confirm")
+            if not confirmed:
+                await q.edit_message_text(
+                    f"📋 *تأكيد شراء رقم تيلغرام*\n\n💰 التكلفة: *{cost:,} نقطة*\n💎 رصيدك الحالي: *{db_user['points']:,} نقطة*\n\n⚠️ سيتم خصم النقاط ثم محاولة تسليم رقم صالح تلقائياً.",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تأكيد الخصم والشراء", callback_data="exchange:number:confirm")], [InlineKeyboardButton("❌ إلغاء", callback_data="exchange_points")]])
                 )
                 return
             if not deduct_points(user.id, cost):
@@ -2120,13 +2165,20 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             )
             return
 
-        if data == "exchange:number_stars":
+        if data in ("exchange:number_stars", "exchange:number_stars:confirm"):
             if not is_number_exchange_on():
                 await q.answer("🔒 شراء الأرقام مغلق حالياً. تواصل مع المالك.", show_alert=True)
                 return
             stars = int(get_setting("telegram_number_stars") or "18")
             if stars <= 0:
                 await q.answer("⚠️ شراء الرقم بالنجوم غير متاح حالياً.", show_alert=True)
+                return
+            if not data.endswith(":confirm"):
+                await q.edit_message_text(
+                    f"📋 *تأكيد شراء رقم تيلغرام بالنجوم*\n\n⭐ السعر: *{stars} نجمة*\n\n⚠️ ستظهر فاتورة Telegram بعد التأكيد، والدفع بالنجوم لا يُسترد.",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تأكيد وإرسال الفاتورة", callback_data="exchange:number_stars:confirm")], [InlineKeyboardButton("❌ إلغاء", callback_data="exchange_points")]])
+                )
                 return
             await q.edit_message_text(
                 f"📱 *شراء رقم تيلغرام بالنجوم*\n\n"
