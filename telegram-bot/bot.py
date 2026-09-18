@@ -4953,6 +4953,7 @@ def exchange_kb():
     rows = [
         [InlineKeyboardButton("⭐ استبدال نقاط بنجوم", callback_data="exchange:stars")],
         [InlineKeyboardButton("📱 شراء رقم تيلغرام",  callback_data="exchange:number")],
+        [InlineKeyboardButton("⭐ شراء رقم بالنجوم", callback_data="exchange:number_stars")],
         [InlineKeyboardButton("🎟 شراء عبر كود",       callback_data="exchange:num_code")],
     ]
     for p in prizes:
@@ -10851,6 +10852,28 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if data == "exchange:number_stars":
+        if not is_number_exchange_on():
+            await q.answer("🔒 شراء الأرقام مغلق حالياً. تواصل مع المالك.", show_alert=True)
+            return
+        if get_available_number_count() <= 0:
+            await q.answer("⚠️ لا يوجد رقم متاح حالياً.", show_alert=True)
+            return
+        number_points_cost = int(get_setting("telegram_number_cost") or "5000")
+        star_rate = max(1, int(get_setting("star_to_points") or "250"))
+        number_stars_cost = max(1, math.ceil(number_points_cost / star_rate))
+        await q.answer()
+        await context.bot.send_invoice(
+            chat_id=user.id,
+            title="شراء رقم تيليغرام",
+            description=f"شراء رقم تيليغرام مقابل {number_stars_cost} نجمة",
+            payload=f"number_stars:{number_stars_cost}:{user.id}",
+            provider_token="",
+            currency="XTR",
+            prices=[LabeledPrice("رقم تيليغرام", number_stars_cost)],
+        )
+        return
+
     if data == "exchange:number":
         if not is_number_exchange_on():
             await q.answer("🔒 استبدال الأرقام مغلق حالياً. تواصل مع المالك.", show_alert=True)
@@ -15626,6 +15649,15 @@ async def pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if query.from_user.id == uid_in_payload and actual_stars == expected_stars:
                     valid = True
 
+        # ─── شراء رقم تيليغرام بالنجوم ───
+        if payload.startswith("number_stars:"):
+            parts = payload.split(":")
+            if len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
+                expected_stars = int(parts[1])
+                uid_in_payload = int(parts[2])
+                if query.from_user.id == uid_in_payload and query.total_amount == expected_stars:
+                    valid = True
+
         # ─── الاشتراك الإجباري بالنجوم ───
         if payload.startswith("fund_mandatory:"):
             parts = payload.split(":")
@@ -15674,6 +15706,71 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=main_menu_kb(is_own)
         )
+
+    # ─── شراء رقم تيليغرام بالنجوم وتسليمه فوراً ───
+    elif payload.startswith("number_stars:"):
+        parts = payload.split(":")
+        if len(parts) != 3 or not parts[1].isdigit() or not parts[2].isdigit() or int(parts[2]) != user.id:
+            await update.message.reply_text("❌ تعذر التحقق من عملية شراء الرقم.")
+            return
+        stars_paid = int(parts[1])
+        code = next_order_code(user.id)
+        auto = await assign_verified_number(user.id, bot=context.bot)
+        if not auto:
+            try:
+                await context.bot.refund_star_payment(user.id, payment.telegram_payment_charge_id)
+                refund_note = "تمت إعادة النجوم تلقائياً."
+            except Exception as _refund_error:
+                logger.error(f"❌ تعذر إعادة نجوم شراء الرقم: {_refund_error}")
+                refund_note = "تعذر إعادة النجوم تلقائياً؛ تواصل مع المالك مع إيصال الدفع."
+            await update.message.reply_text(
+                f"😔 لا يوجد رقم متاح حالياً.\n{refund_note}",
+                reply_markup=main_menu_kb(is_own)
+            )
+            return
+        auto_number = auto["phone_number"]
+        with db_conn() as c:
+            pe = c.execute(
+                "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,status,order_code) "
+                "VALUES (%s,%s,%s,%s,'completed',%s) RETURNING id",
+                (user.id, "telegram_number", auto_number, 0, code)
+            ).fetchone()
+        display_number = auto_number.lstrip("+")
+        result_kb = [
+            [
+                InlineKeyboardButton("🔐 رمز التحقق (2FA)", callback_data=f"buyer:show_twofa:{auto_number}"),
+                InlineKeyboardButton("🔑 كود الدخول", callback_data=f"buyer:request_code:{auto_number}"),
+            ],
+            [InlineKeyboardButton("🚪 مغادرة البوت من الحساب", callback_data=f"buyer:leave_account:{auto_number}")],
+            [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
+        ]
+        await update.message.reply_text(
+            f"✅ تم شراء الرقم وتسليمه تلقائياً!\n\n"
+            f"📱 الرقم: `{display_number}`\n"
+            f"⭐ المدفوع: {stars_paid} نجمة\n"
+            f"📌 كود العملية: `{code}`\n\n"
+            "استخدم الأزرار أدناه للحصول على كود الدخول أو رمز 2FA.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(result_kb)
+        )
+        if pe:
+            await notify_prize_exchange_owner(
+                context, pe["id"],
+                text_html=(
+                    f"📱 <b>شراء رقم بالنجوم — تسليم تلقائي ✅</b>\n"
+                    f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
+                    f"📱 الرقم: <code>{auto_number}</code>\n"
+                    f"⭐ {stars_paid} نجمة\n"
+                    f"📌 {code}"
+                ),
+                group_text_html=(
+                    f"📱 <b>شراء رقم بالنجوم — تسليم تلقائي ✅</b>\n"
+                    f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
+                    f"⭐ {stars_paid} نجمة\n"
+                    f"📌 {code}"
+                ),
+            )
+        return
 
     # ─── تمويل الاشتراك الإجباري بالنجوم ───
     elif payload.startswith("fund_mandatory:"):
