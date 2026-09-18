@@ -112,45 +112,65 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         rate = int(get_setting("star_to_points") or "250")
         pts = stars * rate
+        already_credited = False
+
+        # Telegram can retry a successful-payment update. Record and credit in
+        # the same database transaction so a retry never gives the same payment
+        # points twice.
         with db_conn() as c:
+            # Lock by Telegram's immutable charge ID even when the first
+            # callback has not inserted its transaction row yet.
+            c.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (charge_id,))
             existing = c.execute(
-                "SELECT status FROM star_transactions WHERE telegram_payment_id=%s",
+                "SELECT status FROM star_transactions "
+                "WHERE telegram_payment_id=%s FOR UPDATE",
                 (charge_id,)
             ).fetchone()
-            if not existing:
-                c.execute(
-                    "INSERT INTO star_transactions "
-                    "(user_id,stars,points_given,telegram_payment_id,status) "
-                    "VALUES (%s,%s,%s,%s,'pending_manual')",
-                    (user.id, stars, pts, charge_id)
-                )
 
-        if existing:
+            if existing and existing["status"] == "completed":
+                already_credited = True
+            else:
+                # The user normally exists already, but UPSERT makes the
+                # payment handler safe when the first update is the payment.
+                c.execute(
+                    "INSERT INTO users (user_id,username,full_name,points) "
+                    "VALUES (%s,%s,%s,%s) "
+                    "ON CONFLICT (user_id) DO UPDATE SET "
+                    "points=COALESCE(users.points,0)+EXCLUDED.points, "
+                    "username=COALESCE(EXCLUDED.username,users.username), "
+                    "full_name=COALESCE(EXCLUDED.full_name,users.full_name)",
+                    (user.id, user.username, user.full_name, pts)
+                )
+                if existing:
+                    c.execute(
+                        "UPDATE star_transactions "
+                        "SET status='completed', points_given=%s "
+                        "WHERE telegram_payment_id=%s",
+                        (pts, charge_id)
+                    )
+                else:
+                    c.execute(
+                        "INSERT INTO star_transactions "
+                        "(user_id,stars,points_given,telegram_payment_id,status) "
+                        "VALUES (%s,%s,%s,%s,'completed')",
+                        (user.id, stars, pts, charge_id)
+                    )
+
+        if already_credited:
             await update.message.reply_text(
-                "⏳ تم تسجيل طلبك مسبقاً، والمالك سيقوم بتسليم النقاط يدوياً.\n"
+                "✅ هذه العملية مضافة مسبقاً إلى رصيدك.\n"
+                f"💰 رصيد الشحن: {pts} نقطة\n"
                 "⚠️ النجوم المدفوعة نهائية ولا تُسترد.",
                 reply_markup=main_menu_kb(is_own)
             )
             return
 
         await update.message.reply_text(
-            "✅ تم استلام دفعك بالنجوم.\n\n"
+            "✅ تم الشحن تلقائياً بنجاح!\n\n"
             f"⭐ المدفوع: {stars} نجمة\n"
-            f"✨ النقاط المطلوبة: {pts} نقطة\n\n"
-            "📨 تم إرسال طلبك إلى المالك، وسيقوم بإضافة النقاط يدوياً.\n"
+            f"💎 تمت إضافة: {pts} نقطة إلى رصيدك\n"
             "⚠️ النجوم المدفوعة نهائية ولا تُسترد أو تُعاد بأي طريقة.",
             reply_markup=main_menu_kb(is_own)
-        )
-        await _notify_owner_manual_star_purchase(
-            context,
-            "🛒 طلب شحن نقاط بالنجوم — تسليم يدوي\n\n"
-            f"👤 الاسم: {user.full_name}\n"
-            f"🆔 User ID: {user.id}\n"
-            f"🔗 username: @{user.username or 'بدون معرف'}\n"
-            f"⭐ النجوم المدفوعة: {stars}\n"
-            f"✨ النقاط المطلوب إضافتها يدوياً: {pts}\n"
-            f"🧾 Payment ID: {charge_id}\n\n"
-            "⚠️ لا يوجد تسليم تلقائي ولا استرداد تلقائي لهذه العملية."
         )
 
     # ─── الخدمات الأسطورية بالنجوم ───
