@@ -241,6 +241,33 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             )
             return
 
+        if data.startswith("fund_stars_confirm:"):
+            if context.user_data.get("state") != "await_fund_stars_confirm":
+                await q.answer("⚠️ انتهت صلاحية طلب التمويل.", show_alert=True)
+                return
+            if data.endswith(":no"):
+                context.user_data["state"] = "main_menu"
+                await q.edit_message_text("❌ تم إلغاء تمويل القناة.", reply_markup=main_menu_kb(is_own))
+                return
+            channel = context.user_data.get("fund_channel_username", "")
+            member_count = int(context.user_data.get("fund_member_count", 0))
+            total_stars = int(context.user_data.get("fund_stars_total", 0))
+            if not channel or member_count < 1 or total_stars < 1:
+                context.user_data["state"] = "main_menu"
+                await q.edit_message_text("⚠️ بيانات التمويل غير مكتملة. ابدأ من جديد.", reply_markup=main_menu_kb(is_own))
+                return
+            context.user_data["state"] = "main_menu"
+            await q.answer("✅ تم التأكيد، ستظهر الفاتورة الآن.")
+            await q.edit_message_text("⏳ جارٍ تحضير فاتورة النجوم...")
+            await context.bot.send_invoice(
+                chat_id=user.id,
+                title=f"اشتراك إجباري — @{channel}",
+                description=f"تمويل {member_count:,} عضو كاشتراك إجباري في قناة @{channel}",
+                payload=f"fund_mandatory:{user.id}:{member_count}:{channel}:{total_stars}",
+                provider_token="", currency="XTR",
+                prices=[LabeledPrice(f"تمويل إجباري @{channel}", total_stars)],
+            )
+            return
         if data == "fund_confirm:yes":
             fund_type    = context.user_data.get("fund_type", "mandatory")
             channel      = context.user_data.get("fund_channel_username", "")
