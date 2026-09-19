@@ -25,9 +25,11 @@ import json
 
 OWNER_FAST_BATCH_SIZE = 12
 OWNER_FAST_BATCH_INTERVAL_SECONDS = 2
-# all_posts_reactions: launch at most three account operations per second.
-ALL_POSTS_REACTIONS_BATCH_SIZE = 3
-ALL_POSTS_REACTIONS_BATCH_INTERVAL_SECONDS = 1.0
+# all_posts_reactions: start several accounts together so the live monitor
+# becomes active quickly. The per-session lock and Telegram's own limits
+# still protect an account from concurrent requests.
+ALL_POSTS_REACTIONS_BATCH_SIZE = 12
+ALL_POSTS_REACTIONS_BATCH_INTERVAL_SECONDS = 0.25
 RAKSH_ACCOUNT_EXECUTION_TIMEOUT_SECONDS = 180
 
 _ACTIVE_RAKSH_ORDER_IDS = set()
@@ -1100,14 +1102,15 @@ async def _execute_raksh_parallel(
     success_count = len(success_phones)
     completed_count = success_count + len(failed_phones)
     attempted_phones = set(success_phones) | set(failed_phones)
+    retry_counts = {}
     pool = list(sessions)
     queued_replacement_phones = set()
     is_all_posts_service = service_type == "all_posts_reactions"
 
-    def queue_immediate_replacement() -> None:
+    def queue_immediate_replacement() -> bool:
         """ضع حساباً صالحاً في نفس الدفعة بعد تجاوز حساب مجمد."""
         if not is_all_posts_service:
-            return
+            return False
 
         occupied_phones = (
             attempted_phones
@@ -1132,7 +1135,7 @@ async def _execute_raksh_parallel(
             logger.warning(
                 "⚠️ لا يوجد حساب بديل متاح فوراً لخدمة التفاعل على جميع المنشورات"
             )
-            return
+            return False
 
         replacement_phone = str(replacement["phone_number"]).strip()
         if order_id and not _add_raksh_order_item_for_replacement(
@@ -1144,13 +1147,14 @@ async def _execute_raksh_parallel(
                 replacement_phone,
                 order_id,
             )
-            return
+            return False
         pool.append(replacement)
         queued_replacement_phones.add(replacement_phone)
         logger.info(
             "🔄 تم إدراج الحساب البديل %s فوراً بعد تجاوز الحساب المجمد",
             replacement_phone,
         )
+        return True
 
     async def execute_one(session, index, is_first=False):
         phone = session["phone_number"]
@@ -1199,6 +1203,36 @@ async def _execute_raksh_parallel(
                     ok, msg = False, f"❌ خطأ من {phone}: {str(result)[:80]}"
             else:
                 ok, msg = result
+            phone = str(phone or "").strip()
+
+            # A temporary Telegram/network failure must not permanently
+            # remove an account from a continuous campaign. Retry the same
+            # account first, then replace it from the available stock.
+            if (
+                is_all_posts_service
+                and not ok
+                and not is_raksh_frozen_account_error(msg)
+            ):
+                retry_counts[phone] = retry_counts.get(phone, 0) + 1
+                if (
+                    _is_retryable_raksh_session_message(msg)
+                    and retry_counts[phone] < RAKSH_SESSION_RETRY_LIMIT
+                ):
+                    attempted_phones.discard(phone)
+                    pool.append(session)
+                    logger.info(
+                        "🔁 إعادة محاولة حساب التفاعل %s (%s/%s)",
+                        phone,
+                        retry_counts[phone],
+                        RAKSH_SESSION_RETRY_LIMIT - 1,
+                    )
+                    continue
+
+                if order_id:
+                    _reset_raksh_order_item_for_retry(order_id, phone)
+                if queue_immediate_replacement():
+                    continue
+
             if not ok and is_raksh_frozen_account_error(msg):
                 _reset_raksh_order_item_for_retry(order_id, phone)
                 queue_immediate_replacement()
