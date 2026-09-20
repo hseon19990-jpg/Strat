@@ -233,6 +233,118 @@ async def _cleanup_pending_login(owner_id: int):
         except Exception:
             pass
 
+
+async def _start_owner_qr_login(update: Update, context: ContextTypes.DEFAULT_TYPE, owner_id: int):
+    """Start QR login as a fallback for numbers whose API code is not delivered."""
+    pending = _pending_number_logins.get(owner_id)
+    if not pending:
+        await context.bot.send_message(
+            owner_id,
+            "⚠️ انتهت جلسة تسجيل الدخول. ابدأ إضافة الرقم من جديد.",
+        )
+        context.user_data["state"] = "main_menu"
+        return
+
+    old_client = pending.get("client")
+    try:
+        if old_client:
+            await old_client.disconnect()
+    except Exception:
+        pass
+
+    client = None
+    try:
+        import io as _qr_io
+        import qrcode as _qrcode
+
+        client = TelegramClient(
+            StringSession(),
+            int(TELEGRAM_API_ID),
+            TELEGRAM_API_HASH,
+        )
+        await asyncio.wait_for(client.connect(), timeout=20)
+        qr_login = await asyncio.wait_for(client.qr_login(), timeout=20)
+        pending["client"] = client
+        pending["qr_login"] = qr_login
+        pending["login_method"] = "qr"
+        context.user_data["state"] = "os_await_login_qr"
+
+        qr_image = _qrcode.make(qr_login.url)
+        qr_buffer = _qr_io.BytesIO()
+        qr_image.save(qr_buffer, format="PNG")
+        qr_buffer.seek(0)
+
+        await context.bot.send_photo(
+            chat_id=owner_id,
+            photo=qr_buffer,
+            caption=(
+                "📷 تسجيل الدخول عبر QR\n\n"
+                "افتح Telegram الرسمي على الهاتف الذي يحتوي على الرقم، ثم:\n"
+                "الإعدادات ← الأجهزة ← ربط جهاز سطح مكتب\n"
+                "وامسح رمز QR الظاهر هنا.\n\n"
+                "⏱ الرمز صالح لفترة قصيرة. لا ترسل صورة الرمز لأي شخص."
+            ),
+        )
+        asyncio.create_task(_wait_owner_qr_login(update, context, owner_id))
+    except Exception as exc:
+        logger.warning("⚠️ فشل تجهيز QR لتسجيل دخول الرقم: %s", exc)
+        if client:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+        _pending_number_logins.pop(owner_id, None)
+        context.user_data["state"] = "main_menu"
+        await context.bot.send_message(
+            owner_id,
+            "❌ تعذّر تجهيز تسجيل الدخول عبر QR. أعد المحاولة من قائمة إدارة الأرقام.",
+            reply_markup=owner_settings_kb(),
+        )
+
+
+async def _wait_owner_qr_login(update: Update, context: ContextTypes.DEFAULT_TYPE, owner_id: int):
+    """Wait for the phone to approve the QR and finish the normal stock flow."""
+    pending = _pending_number_logins.get(owner_id)
+    if not pending or pending.get("login_method") != "qr":
+        return
+
+    client = pending["client"]
+    qr_login = pending["qr_login"]
+    expected_phone = re.sub(r"\D", "", str(pending.get("phone") or ""))
+    try:
+        await asyncio.wait_for(qr_login.wait(), timeout=150)
+        me = await asyncio.wait_for(client.get_me(), timeout=15)
+        actual_phone = re.sub(r"\D", "", str(getattr(me, "phone", "") or ""))
+        if expected_phone and actual_phone and expected_phone != actual_phone:
+            raise ValueError("تم مسح QR لحساب مختلف عن الرقم المطلوب")
+        if expected_phone and not actual_phone:
+            raise ValueError("تعذّر التحقق من رقم الحساب بعد مسح QR")
+        await context.bot.send_message(owner_id, "✅ تم قبول QR، جارٍ حفظ الحساب...")
+        await _finish_number_login(update, context, owner_id)
+    except SessionPasswordNeededError:
+        context.user_data["state"] = "os_await_login_password"
+        await context.bot.send_message(
+            owner_id,
+            "🔒 تم قبول QR، لكن الحساب محمي بكلمة مرور 2FA. أرسل كلمة المرور الآن:",
+        )
+    except asyncio.TimeoutError:
+        await _cleanup_pending_login(owner_id)
+        context.user_data["state"] = "main_menu"
+        await context.bot.send_message(
+            owner_id,
+            "⌛ انتهت صلاحية QR. ابدأ المحاولة من جديد واضغط زر QR مرة أخرى.",
+            reply_markup=owner_settings_kb(),
+        )
+    except Exception as exc:
+        logger.warning("⚠️ فشل تسجيل دخول QR للمالك: %s", exc)
+        await _cleanup_pending_login(owner_id)
+        context.user_data["state"] = "main_menu"
+        await context.bot.send_message(
+            owner_id,
+            "❌ لم يتم قبول QR. تأكد من مسح الرمز من الحساب الصحيح ثم أعد المحاولة.",
+            reply_markup=owner_settings_kb(),
+        )
+
 # ────────────────────────────────────────────────────────────
 # تدوير الجلسة عبر QR Code — لا يحتاج لـ 2FA
 # ────────────────────────────────────────────────────────────
@@ -629,7 +741,17 @@ async def _finish_number_login(update: Update, context: ContextTypes.DEFAULT_TYP
     if not pending:
         return
     client = pending["client"]
-    phone = pending["phone"]
+    phone = pending.get("phone")
+    reply_target = getattr(update, "message", None) or getattr(update, "effective_message", None)
+    if not phone:
+        try:
+            me = await asyncio.wait_for(client.get_me(), timeout=15)
+            phone = "+" + str(getattr(me, "phone", "") or "").lstrip("+")
+            pending["phone"] = phone
+        except Exception:
+            phone = ""
+    if not phone:
+        raise ValueError("تعذّر تحديد رقم الحساب بعد تسجيل الدخول")
     raksh_only = bool(pending.get("raksh_only"))
     try:
         session_str = client.session.save()
@@ -638,7 +760,7 @@ async def _finish_number_login(update: Update, context: ContextTypes.DEFAULT_TYP
             # حسابات الرشق مخصصة للرشق فقط: لا تطرد الجلسات الأخرى،
             # لا تغيّر إعدادات الحساب، ولا تمر عبر تجهيزات أرقام البيع.
             avail = get_available_number_count()
-            await update.message.reply_text(
+            await reply_target.reply_text(
                 f"✅ *تم حفظ حساب الرشق فقط بنجاح!*\n\n"
                 f"📱 {phone}\n"
                 "🔥 لن يُعرض للبيع، ولن يطرد البوت أي جلسة منه، "
@@ -646,7 +768,7 @@ async def _finish_number_login(update: Update, context: ContextTypes.DEFAULT_TYP
                 f"📦 إجمالي المتاح للبيع الآن: {avail} رقم.",
                 parse_mode=ParseMode.MARKDOWN,
             )
-            await update.message.reply_text(
+            await reply_target.reply_text(
                 "📲 أرسل رقم حساب رشق آخر (بصيغة دولية)، أو أرسل /cancel للتوقف."
             )
             context.user_data["state"] = "os_await_raksh_login_phone"
@@ -713,7 +835,7 @@ async def _finish_number_login(update: Update, context: ContextTypes.DEFAULT_TYP
             if raksh_only
             else "\nعند بيع هذا الرقم، سيُرسَل رمز الجلسة تلقائياً للمشتري ليدخل مباشرة بدون أي كود."
         )
-        await update.message.reply_text(
+        await reply_target.reply_text(
             f"✅ *تم تسجيل الدخول وحفظ الرقم بالمخزون بنجاح!*\n\n"
             f"📱 {phone}\n📦 إجمالي المتاح للبيع الآن: {avail} رقم.{kicked_note}"
             f"{twofa_note}\n\n"
@@ -722,7 +844,7 @@ async def _finish_number_login(update: Update, context: ContextTypes.DEFAULT_TYP
             parse_mode=ParseMode.MARKDOWN,
         )
         # ─── للسرعة: ننتقل مباشرة لطلب الرقم التالي بدون الرجوع لأي قائمة ───
-        await update.message.reply_text(
+        await reply_target.reply_text(
             "📲 أرسل رقم الهاتف التالي (بصيغة دولية، مثل +9647xxxxxxxx) لإضافته، "
             "أو أرسل /cancel للتوقف والرجوع للقائمة."
         )
@@ -731,7 +853,7 @@ async def _finish_number_login(update: Update, context: ContextTypes.DEFAULT_TYP
         )
     except Exception as e:
         logger.error(f"❌ خطأ في حفظ جلسة الرقم {phone}: {e}")
-        await update.message.reply_text(
+        await reply_target.reply_text(
             "❌ حدث خطأ أثناء حفظ الجلسة. أرسل الرقم التالي للمحاولة من جديد، أو /cancel للتوقف.",
         )
         context.user_data["state"] = (

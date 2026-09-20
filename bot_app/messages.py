@@ -3278,7 +3278,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📩 تم طلب كود الدخول.\n\n"
             f"{_login_code_delivery_note(sent)}\n\n"
             "أرسل آخر كود وصلك هنا (أرقام فقط). إذا لم يظهر في SMS، افتح "
-            "Telegram على أي جهاز ما زال الحساب مسجلاً عليه وابحث عن 777000."
+            "Telegram على أي جهاز ما زال الحساب مسجلاً عليه وابحث عن 777000.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "📷 الدخول عبر QR بدل الكود",
+                    callback_data="os:login_qr_fallback",
+                )
+            ]]),
         )
         return
 

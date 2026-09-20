@@ -2549,6 +2549,21 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
             )
             return
 
+        if data == "os:login_qr_fallback" and is_own:
+            pending = _pending_number_logins.get(user.id)
+            if not pending or not pending.get("phone"):
+                await q.answer(
+                    "⚠️ انتهت جلسة الرقم. ابدأ إضافة الرقم من جديد.",
+                    show_alert=True,
+                )
+                return
+            await q.edit_message_text(
+                "⏳ جارٍ تجهيز رمز QR لتسجيل الدخول...\n"
+                "سيظهر الرمز خلال لحظات.",
+            )
+            asyncio.create_task(_start_owner_qr_login(update, context, user.id))
+            return
+
         if data == "os:add_numbers" and is_own:
             context.user_data["state"] = "os_await_add_numbers"
             await q.edit_message_text(
