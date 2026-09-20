@@ -1137,6 +1137,60 @@ def _find_bot_start_link(message) -> Tuple[Optional[str], Optional[str]]:
                     return bot_username, start_param
     return None, None
 
+_BUTTON_EMOJI_RE = re.compile(
+    r"[\U0001F300-\U0001FAFF\U0001F1E0-\U0001F1FF\u2600-\u27BF]"
+)
+
+
+def _button_label(button) -> str:
+    """Return a button label from Telethon wrappers and raw button objects."""
+    for candidate in (button, getattr(button, "button", None)):
+        if candidate is None:
+            continue
+        label = getattr(candidate, "text", None)
+        if label is not None:
+            return str(label)
+    return ""
+
+
+def _message_buttons(message) -> List[Any]:
+    """Flatten the visible button rows exposed by Telethon."""
+    rows = getattr(message, "buttons", None) or []
+    if not rows:
+        markup = getattr(message, "reply_markup", None)
+        rows = [
+            getattr(row, "buttons", None) or []
+            for row in getattr(markup, "rows", None) or []
+        ]
+    return [
+        button
+        for row in rows
+        for button in (row or [])
+        if button is not None
+    ]
+
+
+def _select_post_action_button(message):
+    """Choose the post button according to the voting-service contract.
+
+    A post with one visible button always uses that button, regardless of its
+    label. When several buttons are visible, only an emoji-labelled button is
+    a valid deterministic choice; the first such button wins.
+    """
+    buttons = _message_buttons(message)
+    if len(buttons) == 1:
+        return buttons[0]
+    if len(buttons) > 1:
+        return next(
+            (
+                button
+                for button in buttons
+                if _BUTTON_EMOJI_RE.search(_button_label(button))
+            ),
+            None,
+        )
+    return None
+
 def _normalize_digits(value: str) -> str:
     """توحيد الأرقام"""
     return (value or "").translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))

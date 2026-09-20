@@ -220,9 +220,22 @@ class VotesAIService(ForcedRefAIService):
 
                 if not post_message:
                     return False, "المنشور غير موجود."
-                bot_username, bot_start_param = _find_bot_start_link(post_message)
+                post_button = _select_post_action_button(post_message)
+                if post_button is None:
+                    return False, "لم يتم العثور على زر مناسب في المنشور."
+
+                button_url = getattr(post_button, "url", None)
+                bot_username, bot_start_param = _parse_bot_link(button_url or "")
                 if not bot_username:
-                    return False, "المنشور لا يحتوي على زر بوت صالح."
+                    # إذا كان الزر المختار callback عاديًا، نضغطه مباشرةً.
+                    # هذا يغطي المنشورات ذات الزر الواحد مهما كان نصه،
+                    # والمنشورات متعددة الأزرار التي تحتوي زرًا بإيموجي.
+                    try:
+                        await post_button.click()
+                        await asyncio.sleep(0.5)
+                        return True, f"✅ تم الضغط على زر التصويت من {session['phone_number']}"
+                    except Exception as exc:
+                        return False, f"تعذر الضغط على زر المنشور: {str(exc)[:80]}"
             else:
                 bot_username, bot_start_param = _parse_bot_link(link)
                 if not bot_username:
@@ -303,22 +316,8 @@ class VotesAIService(ForcedRefAIService):
                                 chosen.option,
                             )
                         else:
-                            # البحث عن زر تصويت في الأزرار
-                            vote_keywords = ("تصويت", "صوت", "vote", "voting")
-                            vote_button = None
-                            for row in getattr(refreshed_post, "buttons", None) or []:
-                                for button in row:
-                                    if getattr(button, "url", None):
-                                        continue
-                                    button_text = (
-                                        getattr(button, "text", "") or ""
-                                    ).casefold()
-                                    if any(keyword in button_text for keyword in vote_keywords):
-                                        vote_button = button
-                                        break
-                                if vote_button:
-                                    break
-                            if vote_button:
+                            vote_button = _select_post_action_button(refreshed_post)
+                            if vote_button and not getattr(vote_button, "url", None):
                                 await vote_button.click()
                                 await asyncio.sleep(0.5)
                 except Exception as exc:

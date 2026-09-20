@@ -45,53 +45,9 @@ def _parse_votes_bot_link(value: str) -> Tuple[Optional[str], Optional[str]]:
     return _parse_bot_link(raw)
 
 
-def _vote_button_score(button) -> int:
-    """Score only buttons that look like a vote, not profile/copy controls."""
-    if getattr(button, "url", None):
-        return -1
-
-    text = (getattr(button, "text", "") or "").strip()
-    if not text:
-        return -1
-    folded = text.casefold()
-    ignored_labels = (
-        "الملف الشخصي",
-        "profile",
-        "انسخ",
-        "copy",
-        "كود المتسابق",
-    )
-    if any(label in folded for label in ignored_labels):
-        return -1
-
-    score = 0
-    if any(keyword in folded for keyword in ("تصويت", "صوت", "vote", "voting")):
-        score = 100
-
-    has_counter = bool(re.search(r"\d+", text))
-    has_emoji = any(
-        0x1F300 <= ord(char) <= 0x1FAFF
-        or 0x2600 <= ord(char) <= 0x27BF
-        for char in text
-    )
-    if has_counter and has_emoji:
-        score = max(score, 80)
-
-    return score
-
-
 def _find_vote_button(message):
-    """Return the best vote-looking button in a post or bot message."""
-    candidates = []
-    for row in getattr(message, "buttons", None) or []:
-        for button in row:
-            score = _vote_button_score(button)
-            if score > 0:
-                candidates.append((score, button))
-    if not candidates:
-        return None
-    candidates.sort(key=lambda item: item[0], reverse=True)
-    return candidates[0][1]
+    """Choose the post/bot button using the shared voting-service rule."""
+    return _select_post_action_button(message)
 
 
 class VotesService(RakshService):
