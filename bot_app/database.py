@@ -162,8 +162,12 @@ def init_db():
               cost_stars   INTEGER DEFAULT 0,
               api_order_id TEXT DEFAULT '',
               status       TEXT DEFAULT 'pending',
-              order_code   TEXT,
-              created_at   TEXT DEFAULT CURRENT_TIMESTAMP
+               order_code   TEXT,
+               created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+               provider_rate_usd REAL DEFAULT 0,
+               provider_cost_usd REAL DEFAULT 0,
+               partial_refund_pts INTEGER DEFAULT 0,
+               refund_points INTEGER DEFAULT 0
           )""")
           c.execute("""
           CREATE TABLE IF NOT EXISTS services (
@@ -868,7 +872,29 @@ def init_db():
           pass
       try:
           with db_conn() as c:
-              c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS partial_refund_pts INTEGER DEFAULT 0")
+              c.execute(
+                  "ALTER TABLE orders ADD COLUMN IF NOT EXISTS "
+                  "provider_rate_usd REAL DEFAULT 0"
+              )
+              c.execute(
+                  "ALTER TABLE orders ADD COLUMN IF NOT EXISTS "
+                  "provider_cost_usd REAL DEFAULT 0"
+              )
+              c.execute(
+                  "ALTER TABLE orders ADD COLUMN IF NOT EXISTS "
+                  "partial_refund_pts INTEGER DEFAULT 0"
+              )
+              c.execute(
+                  "ALTER TABLE orders ADD COLUMN IF NOT EXISTS "
+                  "refund_points INTEGER DEFAULT 0"
+              )
+              # الطلبات الجزئية التي عُوّضت قبل إضافة refund_points يجب أن
+              # تبقى محمية من أي تعويض ثانٍ.
+              c.execute(
+                  "UPDATE orders SET refund_points=partial_refund_pts "
+                  "WHERE COALESCE(refund_points, 0)=0 "
+                  "AND COALESCE(partial_refund_pts, 0)>0"
+              )
       except Exception:
           pass
       try:

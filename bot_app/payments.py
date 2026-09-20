@@ -779,7 +779,7 @@ async def cmd_status_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_compensate_partial(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """أمر المالك: /compensate_partial
-    يفحص جميع طلبات SMMMAIN المكتملة التي لم تحصل على تعويض جزئي بعد،
+    يفحص جميع طلبات المواقع المكتملة التي لم تحصل على تعويض جزئي بعد،
     يسأل موقع الرشق عن حالتها، وإن كانت Partial يحسب النقاط ويُعيدها لأصحابها.
     مفيد لتعويض المستخدمين الذين خسروا نقاطاً قبل تفعيل هذه الميزة."""
     user = update.effective_user
@@ -799,9 +799,9 @@ async def cmd_compensate_partial(update: Update, context: ContextTypes.DEFAULT_T
                 "FROM orders o "
                 "LEFT JOIN services s ON s.id = o.service_id "
                 "WHERE o.status='completed' "
-                "  AND (o.partial_refund_pts IS NULL OR o.partial_refund_pts = 0) "
+                "  AND COALESCE(o.refund_points, 0) = 0 "
+                "  AND COALESCE(o.partial_refund_pts, 0) = 0 "
                 "  AND o.api_order_id IS NOT NULL AND o.api_order_id != '' "
-                "  AND (s.panel = 1 OR s.panel IS NULL)"   # فقط SMMMAIN
             ).fetchall()
     except Exception as e:
         await update.message.reply_text(f"❌ خطأ في جلب الطلبات: {e}")
@@ -818,7 +818,10 @@ async def cmd_compensate_partial(update: Update, context: ContextTypes.DEFAULT_T
 
     for o in candidates:
         try:
-            res = await asyncio.to_thread(smm_order_status, o["api_order_id"], panel=1)
+            panel = o.get("svc_panel") or 1
+            res = await asyncio.to_thread(
+                smm_order_status, o["api_order_id"], panel=panel
+            )
         except Exception:
             errors += 1
             continue
@@ -838,17 +841,27 @@ async def cmd_compensate_partial(update: Update, context: ContextTypes.DEFAULT_T
             skipped += 1
             continue
 
-        refund_pts = _calc_partial_refund_pts(o["svc_api_id"], remains)
+        refund_pts = _calc_partial_refund_pts(
+            o["svc_api_id"],
+            remains,
+            panel,
+            o.get("provider_rate_usd") or 0,
+        )
         if refund_pts <= 0:
             skipped += 1
             continue
 
-        add_points(o["user_id"], refund_pts)
-        with db_conn() as c:
-            c.execute(
-                "UPDATE orders SET partial_refund_pts=%s WHERE id=%s",
-                (refund_pts, o["id"])
-            )
+        settled = _settle_smm_order(
+            o["id"],
+            o["user_id"],
+            refund_pts,
+            "completed",
+            partial=True,
+            allow_completed=True,
+        )
+        if not settled:
+            skipped += 1
+            continue
 
         try:
             await context.bot.send_message(

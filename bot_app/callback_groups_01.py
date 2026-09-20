@@ -754,12 +754,40 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                         )
                     context.user_data["state"] = "main_menu"
                     return
+                if provider_rate is None or provider_rate <= 0:
+                    try:
+                        provider_info = await asyncio.to_thread(
+                            smm_service_info,
+                            svc["api_service_id"],
+                            panel=panel,
+                        )
+                        provider_rate = float(provider_info.get("rate", 0) or 0)
+                    except (AttributeError, TypeError, ValueError, KeyError):
+                        provider_rate = 0
+                provider_cost_usd = (
+                    (provider_rate * qty) / 1000
+                    if provider_rate > 0 and qty > 0
+                    else 0
+                )
                 api_oid = str(api_res.get("order", ""))
                 code    = next_order_code(user.id)
                 with db_conn() as c:
                     c.execute(
-                        "INSERT INTO orders (user_id,service_id,link,quantity,cost_points,api_order_id,order_code) VALUES (?,?,?,?,?,?,?)",
-                        (user.id, svc["id"], link, qty, cost, api_oid, code)
+                        "INSERT INTO orders "
+                        "(user_id,service_id,link,quantity,cost_points,api_order_id,"
+                        "order_code,provider_rate_usd,provider_cost_usd) "
+                        "VALUES (?,?,?,?,?,?,?,?,?)",
+                        (
+                            user.id,
+                            svc["id"],
+                            link,
+                            qty,
+                            cost,
+                            api_oid,
+                            code,
+                            provider_rate,
+                            provider_cost_usd,
+                        )
                     )
                 await q.edit_message_text(
                     f"✅ *تمت العملية بنجاح!*\n\n"

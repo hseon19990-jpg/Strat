@@ -1170,21 +1170,113 @@ LINK_ERROR_GUIDANCE = (
     "🔁 بعد التأكد من الرابط الصحيح، أعد إرسال طلبك."
 )
 
-def _calc_partial_refund_pts(api_service_id: int, remains: int) -> int:
-    """يحسب النقاط المستردّة من الطلب الجزئي لموقع SMMMAIN:
-    المعادلة: (سعر الخدمة بالدولار / 1000) × الوحدات المتبقية × 100,000
-    أي: 1000 نقطة لكل سنت يُستردّ (100,000 نقطة لكل دولار)."""
+def _usd_to_refund_points(amount_usd: float) -> int:
+    """يحوّل الدولار إلى نقاط: كل 0.01 دولار = 1000 نقطة."""
     try:
-        svc_info = smm_service_info(api_service_id, panel=1)
-        rate = float(svc_info.get("rate", 0) or 0)   # USD per 1000 units
-        if rate <= 0 or remains <= 0:
+        amount = float(amount_usd or 0)
+    except (TypeError, ValueError):
+        return 0
+    if amount <= 0:
+        return 0
+    return max(0, round(amount * 100_000))
+
+
+def _provider_rate_for_order(order: dict, panel: int) -> float:
+    """يعيد سعر المزود المحفوظ، أو يستكمله للطلبات القديمة من API الموقع."""
+    try:
+        stored_rate = float(order.get("provider_rate_usd") or 0)
+    except (TypeError, ValueError):
+        stored_rate = 0
+    if stored_rate > 0:
+        return stored_rate
+    try:
+        service_id = order.get("svc_api_id") or order.get("api_service_id")
+        if not service_id:
             return 0
-        refunded_usd   = (rate / 1000) * remains
-        refunded_cents = refunded_usd * 100
-        return max(1, round(refunded_cents * 1000))   # 1000 نقطة لكل سنت
+        service_info = smm_service_info(service_id, panel=panel)
+        return max(0.0, float(service_info.get("rate", 0) or 0))
+    except (AttributeError, TypeError, ValueError, KeyError) as exc:
+        logger.warning(f"⚠️ تعذر قراءة سعر مزود الطلب {order.get('order_code')}: {exc}")
+        return 0
+
+
+def _calc_refund_points_from_rate(rate_usd_per_1000: float, units: int) -> int:
+    """يحسب رد قيمة عدد من الوحدات وفق سعر الموقع بالدولار لكل 1000 وحدة."""
+    try:
+        rate = float(rate_usd_per_1000 or 0)
+        quantity = int(units or 0)
+    except (TypeError, ValueError):
+        return 0
+    if rate <= 0 or quantity <= 0:
+        return 0
+    return _usd_to_refund_points((rate * quantity) / 1000)
+
+
+def _calc_partial_refund_pts(
+    api_service_id: int,
+    remains: int,
+    panel: int = 1,
+    provider_rate: float = 0,
+) -> int:
+    """يحسب رد الجزء غير المنفذ من طلب مواقع الرشق."""
+    try:
+        rate = float(provider_rate or 0)
+        if rate <= 0:
+            svc_info = smm_service_info(api_service_id, panel=panel)
+            rate = float(svc_info.get("rate", 0) or 0)
+        return _calc_refund_points_from_rate(rate, remains)
     except Exception as e:
         logger.warning(f"⚠️ فشل حساب استرجاع الطلب الجزئي: {e}")
         return 0
+
+
+def _settle_smm_order(
+    order_id: int,
+    user_id: int,
+    refund_points: int,
+    final_status: str,
+    *,
+    partial: bool = False,
+    allow_completed: bool = False,
+) -> bool:
+    """ينهي الطلب ويضيف الرد في معاملة واحدة، مع حماية من التكرار.
+
+    قفل الصف مع شرط الحالة يجعل تشغيل مهمتين متزامنتين آمناً: مهمة واحدة فقط
+    تستطيع تغيير الطلب وإضافة النقاط، والإشعار يُرسل بعدها مرة واحدة.
+    """
+    refund_points = max(0, int(refund_points or 0))
+    allowed_statuses = ["pending"]
+    if allow_completed and partial:
+        allowed_statuses.append("completed")
+    with db_conn() as c:
+        order = c.execute(
+            "SELECT status, COALESCE(refund_points, 0) AS refund_points, "
+            "COALESCE(partial_refund_pts, 0) AS partial_refund_pts "
+            "FROM orders WHERE id=%s FOR UPDATE",
+            (order_id,),
+        ).fetchone()
+        if not order:
+            return False
+        if order["status"] not in allowed_statuses:
+            return False
+        if order["refund_points"] > 0 or order["partial_refund_pts"] > 0:
+            return False
+        if refund_points:
+            c.execute(
+                "UPDATE users SET points=points+%s WHERE user_id=%s",
+                (refund_points, user_id),
+            )
+        c.execute(
+            "UPDATE orders SET status=%s, refund_points=%s, "
+            "partial_refund_pts=%s WHERE id=%s",
+            (
+                final_status,
+                refund_points,
+                refund_points if partial else 0,
+                order_id,
+            ),
+        )
+        return c.rowcount == 1
 
 def _format_elapsed(added_at) -> str:
     """يعيد نصاً يوضّح المدة المنقضية منذ إضافة الرقم للبوت."""
@@ -1640,8 +1732,11 @@ async def check_pending_orders_job(context: ContextTypes.DEFAULT_TYPE):
             continue
 
         if panel_status == "completed":
-            with db_conn() as c:
-                c.execute("UPDATE orders SET status='completed' WHERE id=?", (o["id"],))
+            settled = _settle_smm_order(
+                o["id"], o["user_id"], 0, "completed"
+            )
+            if not settled:
+                continue
             try:
                 await context.bot.send_message(
                     o["user_id"],
@@ -1653,17 +1748,28 @@ async def check_pending_orders_job(context: ContextTypes.DEFAULT_TYPE):
         elif panel_status == "partial":
             remains    = int(res.get("remains", 0) or 0)
             refund_pts = 0
-            if panel == 1 and remains > 0 and o.get("svc_api_id"):
-                refund_pts = await asyncio.to_thread(_calc_partial_refund_pts, o["svc_api_id"], remains)
-
-            with db_conn() as c:
-                c.execute(
-                    "UPDATE orders SET status='completed', partial_refund_pts=%s WHERE id=%s",
-                    (refund_pts, o["id"])
+            if remains > 0 and o.get("svc_api_id"):
+                refund_pts = await asyncio.to_thread(
+                    _calc_partial_refund_pts,
+                    o["svc_api_id"],
+                    remains,
+                    panel,
+                    o.get("provider_rate_usd") or 0,
                 )
-            if refund_pts > 0:
-                add_points(o["user_id"], refund_pts)
-                logger.info(f"💰 استرجاع جزئي: طلب {o['order_code']} — {refund_pts:,} نقطة → مستخدم {o['user_id']}")
+
+            settled = _settle_smm_order(
+                o["id"],
+                o["user_id"],
+                refund_pts,
+                "completed",
+                partial=True,
+            )
+            if not settled:
+                continue
+            logger.info(
+                f"💰 استرجاع جزئي: طلب {o['order_code']} — "
+                f"{refund_pts:,} نقطة → مستخدم {o['user_id']}"
+            )
 
             try:
                 if refund_pts > 0:
@@ -1683,11 +1789,20 @@ async def check_pending_orders_job(context: ContextTypes.DEFAULT_TYPE):
                 pass
 
         elif panel_status in ("canceled", "cancelled", "failed", "error"):
-            with db_conn() as c:
-                c.execute("UPDATE orders SET status='cancelled' WHERE id=?", (o["id"],))
-            pts = o.get("cost_points", 0) or 0
-            if pts:
-                add_points(o["user_id"], pts)
+            provider_cost = o.get("provider_cost_usd") or 0
+            if not provider_cost:
+                rate = _provider_rate_for_order(o, panel)
+                provider_cost = (rate * int(o.get("quantity") or 0)) / 1000 if rate else 0
+            pts = _usd_to_refund_points(provider_cost)
+            # للطلبات القديمة التي لم تكن تحفظ سعر الموقع، أبقِ الرد آمناً
+            # بدلاً من حجز طلب ملغى بلا تعويض؛ الطلبات الجديدة تحفظ provider_cost_usd.
+            if pts <= 0 and not o.get("provider_rate_usd"):
+                pts = int(o.get("cost_points") or 0)
+            settled = _settle_smm_order(
+                o["id"], o["user_id"], pts, "cancelled"
+            )
+            if not settled:
+                continue
             try:
                 await context.bot.send_message(
                     o["user_id"],
