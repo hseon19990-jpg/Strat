@@ -8,6 +8,43 @@ domain.
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
+def _login_code_delivery_note(sent) -> str:
+    """Return a user-facing explanation of where Telegram routed the code."""
+    delivery_type = type(getattr(sent, "type", None)).__name__
+    if delivery_type == "SentCodeTypeApp":
+        return (
+            "📨 تيليجرام أرسل الكود داخل تطبيق Telegram إلى جلسة مفتوحة "
+            "(محادثة Telegram الرسمية/777000)، وليس بالضرورة عبر SMS."
+        )
+    if delivery_type == "SentCodeTypeSms":
+        return "📨 تيليجرام أرسل الكود عبر SMS إلى الشريحة المرتبطة بالرقم."
+    if delivery_type == "SentCodeTypeCall":
+        return "📞 تيليجرام سيُرسل الكود عبر مكالمة صوتية."
+    return (
+        "📨 تم قبول طلب الكود. افحص تطبيق Telegram ومحادثة Telegram الرسمية "
+        "(777000)، ثم افحص SMS إذا كان الرقم يدعم ذلك."
+    )
+
+
+def _login_code_error_message(exc: Exception) -> str:
+    """Translate common Telegram auth RPC errors without hiding the cause."""
+    error_name = type(exc).__name__
+    if error_name == "PhoneNumberBannedError":
+        return "🚫 الرقم محظور من Telegram ولا يمكن إرسال كود له."
+    if error_name in {"PhoneNumberFloodError", "PhonePasswordFloodError"}:
+        return "⏳ Telegram فرض حظراً مؤقتاً بسبب كثرة المحاولات. لا تعاود الطلب الآن."
+    if error_name == "SendCodeUnavailableError":
+        return "⚠️ Telegram لا يتيح قناة إرسال كود لهذا الرقم حالياً."
+    if error_name == "SmsCodeCreateFailedError":
+        return "⚠️ فشل Telegram في إنشاء كود SMS لهذا الرقم."
+    if error_name in {"ApiIdInvalidError", "ApiIdPublishedFloodError"}:
+        return "⚠️ إعدادات TELEGRAM_API_ID/TELEGRAM_API_HASH في النشر غير صالحة أو مقيّدة."
+    return (
+        f"❌ رفض Telegram طلب الكود ({error_name}). "
+        "راجع سجل التطبيق لمعرفة التفاصيل قبل إعادة المحاولة."
+    )
+
+
 def _parse_account_name_lines(raw_text: str) -> list[str]:
     parsed = []
     for raw_line in raw_text.splitlines():
@@ -3204,13 +3241,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_own and state in {"os_await_login_phone", "os_await_raksh_login_phone"}:
         _raksh_login = state == "os_await_raksh_login_phone"
-        phone = text.strip()
+        phone = re.sub(r"\s+", "", text.strip())
         # ─── إضافة + تلقائياً إذا أرسل المالك الرقم بدونها ───
         if phone and not phone.startswith("+") and phone.isdigit():
             phone = "+" + phone
         if not phone.startswith("+") or not phone[1:].replace(" ", "").isdigit():
             await update.message.reply_text("⚠️ أرسل الرقم بصيغة دولية (مثال: `+9647701234567` أو `9647701234567`).", parse_mode=ParseMode.MARKDOWN)
             return
+        client = None
         try:
             client = TelegramClient(StringSession(), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
             await asyncio.wait_for(client.connect(), timeout=20)
@@ -3219,11 +3257,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"⚠️ عدد محاولات كبير على هذا الرقم، انتظر {e.seconds} ثانية وحاول مجدداً.")
             return
         except PhoneNumberInvalidError:
+            if client:
+                await client.disconnect()
             await update.message.reply_text("⚠️ الرقم غير صحيح. تأكد من الصيغة وأعد الإرسال.")
             return
         except Exception as e:
-            logger.error(f"❌ خطأ في إرسال كود الدخول: {e}")
-            await update.message.reply_text("❌ حدث خطأ أثناء الاتصال بتيليجرام. حاول مرة أخرى لاحقاً.")
+            logger.error(f"❌ خطأ في إرسال كود الدخول ({type(e).__name__}): {e}")
+            if client:
+                await client.disconnect()
+            await update.message.reply_text(_login_code_error_message(e))
             return
         _pending_number_logins[user.id] = {
             "client": client,
@@ -3233,7 +3275,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         }
         context.user_data["state"] = "os_await_login_code"
         await update.message.reply_text(
-            "📩 تم إرسال كود التفعيل إلى الرقم. أرسل الكود الذي وصلك (أرقام فقط):"
+            "📩 تم طلب كود الدخول.\n\n"
+            f"{_login_code_delivery_note(sent)}\n\n"
+            "أرسل آخر كود وصلك هنا (أرقام فقط). إذا لم يظهر في SMS، افتح "
+            "Telegram على أي جهاز ما زال الحساب مسجلاً عليه وابحث عن 777000."
         )
         return
 
