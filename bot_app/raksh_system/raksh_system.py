@@ -63,9 +63,6 @@ def get_raksh_service(service_type: str) -> Optional[RakshService]:
     """الحصول على الخدمة"""
     return RAKSH_SERVICES.get(service_type)
 
-_RAKSH_VERIFIED_SERVICE_TYPES = frozenset({"forced_ref_ai", "votes_ai"})
-
-
 def _is_raksh_account_or_session_failure(message: str) -> bool:
     """الفشل العام المسموح به: حساب محظور/مجمّد أو جلسة غير صالحة."""
     text = str(message or "").casefold()
@@ -103,40 +100,16 @@ def _is_raksh_account_or_session_failure(message: str) -> bool:
     return any(marker in text for marker in markers)
 
 
-def _is_raksh_verification_failure(service_type: str, message: str) -> bool:
-    """الاستثناء الوحيد: فشل حل تحقق ظهر بعد ضغط رابط الإحالة/التصويت."""
-    if service_type not in _RAKSH_VERIFIED_SERVICE_TYPES:
-        return False
-    text = str(message or "").casefold()
-    markers = (
-        "فشل التحقق",
-        "لم يكتمل تحقق",
-        "تعذر إكمال تحقق",
-        "verification failed",
-        "failed verification",
-        "captcha failed",
-    )
-    return any(marker in text for marker in markers)
-
-
 def _classify_raksh_result(
     service_type: str, phone: str, ok: bool, message: str
 ) -> Tuple[bool, str]:
-    """تطبيق سياسة النتيجة الموحدة على جميع خدمات الرشق."""
+    """تطبيق سياسة النتيجة الموحدة: الفشل لا يتحول إلى نجاح."""
     if ok:
         return True, message
-    if (
-        service_type == "send_message"
-        or _is_raksh_account_or_session_failure(message)
-        or _is_raksh_verification_failure(service_type, message)
-    ):
-        return False, message
-    logger.info(
-        "✅ لا توجد حالة فشل نهائية مسموحة للحساب %s في %s؛ تُحسب العملية ناجحة",
-        phone,
-        service_type,
-    )
-    return True, f"✅ تمت معالجة الحساب {phone}"
+    # لا يوجد fallback إلى النجاح هنا. أي نتيجة سلبية من الخدمة، بما فيها
+    # فشل التحقق أو خطأ Telegram/الشبكة/قاعدة البيانات، تبقى فشلاً.
+    # وجود دالة التصنيف مهم لتوحيد المسار، لكن لا يجوز أن تغيّر معنى النتيجة.
+    return False, message or f"❌ فشل الحساب {phone} في {service_type}"
 
 
 def get_raksh_price_config(service_type: str) -> Dict[str, int]:
