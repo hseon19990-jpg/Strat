@@ -8,6 +8,29 @@ domain.
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
+def _extract_imported_twofa(payload) -> str:
+    """Extract an imported cloud-password hint without exposing it in logs/messages."""
+    if isinstance(payload, list):
+        for item in payload:
+            value = _extract_imported_twofa(item)
+            if value:
+                return value
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    for key in (
+        "twoFA",
+        "twofa",
+        "2fa",
+        "twofa_password",
+        "two_factor_password",
+        "cloud_password",
+    ):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
 def _login_code_delivery_note(sent) -> str:
     """Return a user-facing explanation of where Telegram routed the code."""
     delivery_type = type(getattr(sent, "type", None)).__name__
@@ -602,18 +625,30 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sessions = []
         for item in raw:
             if isinstance(item, str):
-                sessions.append({"session": _maybe_convert_session(item), "phone": None})
+                sessions.append({
+                    "session": _maybe_convert_session(item),
+                    "phone": None,
+                    "twofa_password": "",
+                })
             elif isinstance(item, dict):
                 if "dc_id" in item and "auth_key" in item:
                     converted = pyrogram_json_to_telethon(item)
                     if converted:
                         p = item.get("phone") or item.get("phone_number") or None
-                        sessions.append({"session": converted, "phone": p})
+                        sessions.append({
+                            "session": converted,
+                            "phone": p,
+                            "twofa_password": _extract_imported_twofa(item),
+                        })
                     continue
                 s = (item.get("session") or item.get("session_string") or "").strip()
                 p = item.get("phone") or item.get("phone_number") or None
                 if s:
-                    sessions.append({"session": _maybe_convert_session(s), "phone": p})
+                    sessions.append({
+                        "session": _maybe_convert_session(s),
+                        "phone": p,
+                        "twofa_password": _extract_imported_twofa(item),
+                    })
         if not sessions:
             await update.message.reply_text("❌ لم أجد أي جلسة في البيانات المرسلة.")
             return
@@ -622,6 +657,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for idx, entry in enumerate(sessions):
             sess = entry["session"]
             hint_phone = entry["phone"]
+            imported_twofa = entry.get("twofa_password") or ""
             try:
                 if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
                     fail_list.append(hint_phone or f"#{idx+1}: لا توجد API credentials")
@@ -638,17 +674,43 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 with db_conn() as _c:
                     existing = _c.execute("SELECT id FROM number_stock WHERE phone_number=%s", (phone,)).fetchone()
                     if existing:
-                        _c.execute(
-                            "UPDATE number_stock SET session_string=%s, assigned_to=NULL, assigned_at=NULL,"
-                            " forced_ref_excluded=FALSE WHERE phone_number=%s",
-                            (sess, phone)
-                        )
+                        if imported_twofa:
+                            _c.execute(
+                                "UPDATE number_stock SET session_string=%s, twofa_password=%s,"
+                                " assigned_to=NULL, assigned_at=NULL, forced_ref_excluded=FALSE"
+                                " WHERE phone_number=%s",
+                                (sess, imported_twofa, phone)
+                            )
+                        else:
+                            _c.execute(
+                                "UPDATE number_stock SET session_string=%s, assigned_to=NULL, assigned_at=NULL,"
+                                " forced_ref_excluded=FALSE WHERE phone_number=%s",
+                                (sess, phone)
+                            )
                     else:
-                        _c.execute(
-                            "INSERT INTO number_stock (phone_number, session_string, forced_ref_excluded)"
-                            " VALUES (%s, %s, FALSE)",
-                            (phone, sess)
-                        )
+                        if imported_twofa:
+                            _c.execute(
+                                "INSERT INTO number_stock "
+                                "(phone_number, session_string, twofa_password, forced_ref_excluded)"
+                                " VALUES (%s, %s, %s, FALSE)",
+                                (phone, sess, imported_twofa)
+                            )
+                        else:
+                            _c.execute(
+                                "INSERT INTO number_stock (phone_number, session_string, forced_ref_excluded)"
+                                " VALUES (%s, %s, FALSE)",
+                                (phone, sess)
+                            )
+                    _row_id = _c.execute(
+                        "SELECT id FROM number_stock WHERE phone_number=%s", (phone,)
+                    ).fetchone()
+                if _row_id:
+                    await enable_2fa_for_number(
+                        phone,
+                        sess,
+                        _row_id["id"],
+                        bot=context.bot,
+                    )
                 ok_list.append(phone)
             except Exception as _be:
                 fail_list.append(hint_phone or f"#{idx+1}: {_be}")
@@ -4772,7 +4834,11 @@ async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sessions = []
     for item in data:
         if isinstance(item, str):
-            sessions.append({"session": _maybe_convert_session(item.strip()), "phone": None})
+            sessions.append({
+                "session": _maybe_convert_session(item.strip()),
+                "phone": None,
+                "twofa_password": "",
+            })
         elif isinstance(item, dict):
             if "dc_id" in item and "auth_key" in item:
                 converted = pyrogram_json_to_telethon(item)
@@ -4782,7 +4848,11 @@ async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         item.get("phone_number") or
                         item.get("mobile") or None
                     )
-                    sessions.append({"session": converted, "phone": phone})
+                    sessions.append({
+                        "session": converted,
+                        "phone": phone,
+                        "twofa_password": _extract_imported_twofa(item),
+                    })
                 continue
             sess = (
                 item.get("session_string") or
@@ -4795,7 +4865,11 @@ async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 item.get("mobile") or None
             )
             if sess:
-                sessions.append({"session": _maybe_convert_session(sess), "phone": phone})
+                sessions.append({
+                    "session": _maybe_convert_session(sess),
+                    "phone": phone,
+                    "twofa_password": _extract_imported_twofa(item),
+                })
 
     if not sessions:
         await msg.edit_text("❌ لم أجد أي جلسة صالحة في الملف. تأكد أن الملف يحتوي حقل `session_string` أو حقلي `dc_id` و`auth_key` (صيغة Pyrogram).")
@@ -4829,6 +4903,7 @@ async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for idx, entry in enumerate(sessions):
         sess  = entry["session"]
         phone_hint = entry["phone"]
+        imported_twofa = entry.get("twofa_password") or ""
         try:
             if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
                 fail_list.append(phone_hint or f"#{idx+1}")
@@ -4848,17 +4923,33 @@ async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "SELECT id FROM number_stock WHERE phone_number=%s", (phone,)
                 ).fetchone()
                 if exists:
-                    _c.execute(
-                        "UPDATE number_stock SET session_string=%s, assigned_to=NULL, assigned_at=NULL,"
-                        " forced_ref_excluded=FALSE WHERE phone_number=%s",
-                        (sess, phone)
-                    )
+                    if imported_twofa:
+                        _c.execute(
+                            "UPDATE number_stock SET session_string=%s, twofa_password=%s,"
+                            " assigned_to=NULL, assigned_at=NULL, forced_ref_excluded=FALSE"
+                            " WHERE phone_number=%s",
+                            (sess, imported_twofa, phone)
+                        )
+                    else:
+                        _c.execute(
+                            "UPDATE number_stock SET session_string=%s, assigned_to=NULL, assigned_at=NULL,"
+                            " forced_ref_excluded=FALSE WHERE phone_number=%s",
+                            (sess, phone)
+                        )
                 else:
-                    _c.execute(
-                        "INSERT INTO number_stock (phone_number, session_string, forced_ref_excluded)"
-                        " VALUES (%s,%s,FALSE)",
-                        (phone, sess)
-                    )
+                    if imported_twofa:
+                        _c.execute(
+                            "INSERT INTO number_stock "
+                            "(phone_number, session_string, twofa_password, forced_ref_excluded)"
+                            " VALUES (%s,%s,%s,FALSE)",
+                            (phone, sess, imported_twofa)
+                        )
+                    else:
+                        _c.execute(
+                            "INSERT INTO number_stock (phone_number, session_string, forced_ref_excluded)"
+                            " VALUES (%s,%s,FALSE)",
+                            (phone, sess)
+                        )
             # ── تدوير فوري: جلسة جديدة + حذف القديمة ──────────────────
             rot_ok, rot_res = await _rotate_one_session(phone, sess)
             if rot_ok:
@@ -4871,6 +4962,20 @@ async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ok_list.append(f"{phone} 🔁")
             else:
                 ok_list.append(f"{phone} ⚠️ تدوير: {rot_res}")
+            with db_conn() as _sid_db:
+                _sid_row = _sid_db.execute(
+                    "SELECT id FROM number_stock WHERE phone_number=%s", (phone,)
+                ).fetchone()
+            if _sid_row:
+                try:
+                    await enable_2fa_for_number(
+                        phone,
+                        final_sess if rot_ok else sess,
+                        _sid_row["id"],
+                        bot=context.bot,
+                    )
+                except Exception as _twofa_e:
+                    logger.warning(f"⚠️ تعذّر إكمال 2FA للاستيراد {phone}: {_twofa_e}")
         except Exception as _e:
             fail_list.append(phone_hint or f"#{idx+1}: {_e}")
 
@@ -5305,6 +5410,7 @@ async def _import_one_session_bytes(
     fname: str,
     context,
     remove_2fa_mode: bool = False,
+    source_metadata=None,
 ) -> dict:
     """
     يحاول استخراج session_string من bytes تمثّل ملف .session (SQLite) أو .json.
@@ -5318,10 +5424,13 @@ async def _import_one_session_bytes(
     import tempfile, sqlite3 as _sq3b, json as _jb, os as _osb
 
     session_string = None
+    imported_twofa = _extract_imported_twofa(source_metadata)
     detected_format = "?"
 
     try:
         data = _jb.loads(raw_bytes.decode("utf-8"))
+        if not imported_twofa:
+            imported_twofa = _extract_imported_twofa(data)
         if isinstance(data, str):
             session_string = _maybe_convert_session(data.strip())
             detected_format = "JSON/String"
@@ -5461,18 +5570,34 @@ async def _import_one_session_bytes(
             "SELECT id FROM number_stock WHERE phone_number=%s", (phone,)
         ).fetchone()
         if exists:
-            _dc.execute(
-                "UPDATE number_stock SET session_string=%s, assigned_to=NULL, assigned_at=NULL,"
-                " forced_ref_excluded=FALSE WHERE phone_number=%s",
-                (session_string, phone)
-            )
+            if imported_twofa:
+                _dc.execute(
+                    "UPDATE number_stock SET session_string=%s, twofa_password=%s,"
+                    " assigned_to=NULL, assigned_at=NULL, forced_ref_excluded=FALSE"
+                    " WHERE phone_number=%s",
+                    (session_string, imported_twofa, phone)
+                )
+            else:
+                _dc.execute(
+                    "UPDATE number_stock SET session_string=%s, assigned_to=NULL, assigned_at=NULL,"
+                    " forced_ref_excluded=FALSE WHERE phone_number=%s",
+                    (session_string, phone)
+                )
             stock_id = exists["id"]
         else:
-            _dc.execute(
-                "INSERT INTO number_stock (phone_number, session_string, forced_ref_excluded)"
-                " VALUES (%s,%s,FALSE)",
-                (phone, session_string)
-            )
+            if imported_twofa:
+                _dc.execute(
+                    "INSERT INTO number_stock "
+                    "(phone_number, session_string, twofa_password, forced_ref_excluded)"
+                    " VALUES (%s,%s,%s,FALSE)",
+                    (phone, session_string, imported_twofa)
+                )
+            else:
+                _dc.execute(
+                    "INSERT INTO number_stock (phone_number, session_string, forced_ref_excluded)"
+                    " VALUES (%s,%s,FALSE)",
+                    (phone, session_string)
+                )
             stock_id = _dc.execute(
                 "SELECT id FROM number_stock WHERE phone_number=%s", (phone,)
             ).fetchone()["id"]
@@ -5751,6 +5876,21 @@ async def handle_zip_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ تعذّر فتح ZIP:\n`{e}`", parse_mode=ParseMode.MARKDOWN)
         return
 
+    # Keep the metadata JSON paired with its same-named .session file.
+    # The old importer preferred .session and silently discarded the JSON,
+    # which is where several exporters store the existing 2FA password.
+    import json as _zip_json
+    json_metadata_by_base = {}
+    for _json_name in all_names:
+        if not _json_name.lower().endswith(".json"):
+            continue
+        try:
+            _json_payload = _zip_json.loads(zf.read(_json_name).decode("utf-8"))
+        except Exception:
+            continue
+        _json_base = _json_name.rsplit(".", 1)[0].split("/")[-1]
+        json_metadata_by_base[_json_base] = _json_payload
+
     session_bases = {
         n.rsplit(".", 1)[0].split("/")[-1]
         for n in all_names if n.lower().endswith(".session")
@@ -5806,7 +5946,14 @@ async def handle_zip_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
 
-        result = await _import_one_session_bytes(file_bytes, short, context, remove_2fa_mode)
+        entry_base = short.rsplit(".", 1)[0]
+        result = await _import_one_session_bytes(
+            file_bytes,
+            short,
+            context,
+            remove_2fa_mode,
+            source_metadata=json_metadata_by_base.get(entry_base),
+        )
         label  = result["phone"] or short
         if result["ok"]:
             ok_list.append(f"`{label}`")

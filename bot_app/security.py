@@ -14,6 +14,40 @@ def generate_2fa_password() -> str:
     """يُرجع كلمة مرور 2FA الثابتة الموحّدة لجميع الحسابات (بدل توليد كلمة عشوائية)."""
     return OWNER_FIXED_2FA_PASSWORD
 
+def _normalise_twofa_reset_date(value):
+    """Convert Telegram's reset timestamp/date values to a timezone-aware datetime."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(value, tz=timezone.utc)
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    return None
+
+async def _schedule_twofa_reset(client: TelegramClient, stock_id: int):
+    """Start Telegram's seven-day reset flow once and persist its retry date."""
+    now = datetime.now(timezone.utc)
+    with db_conn() as c:
+        row = c.execute(
+            "SELECT twofa_reset_date FROM number_stock WHERE id=%s",
+            (stock_id,),
+        ).fetchone()
+    existing = _normalise_twofa_reset_date(row["twofa_reset_date"]) if row else None
+    if existing and existing > now:
+        return existing
+
+    result = await client(ResetPasswordRequest())
+    retry_at = _normalise_twofa_reset_date(
+        getattr(result, "retry_date", None)
+        or getattr(result, "until_date", None)
+    ) or (now + timedelta(days=7))
+    with db_conn() as c:
+        c.execute(
+            "UPDATE number_stock SET twofa_reset_date=%s WHERE id=%s",
+            (retry_at, stock_id),
+        )
+    return retry_at
+
 async def verify_current_2fa_password(client: TelegramClient, password: str, phone: str | None = None) -> bool | None:
     """يتحقّق فعلياً إن كانت كلمة المرور المُعطاة هي كلمة تحقق بخطوتين الحالية للحساب،
     عبر CheckPasswordRequest (SRP) — يتحقق فقط ولا يُعدّل الكلمة أبداً.
@@ -83,7 +117,16 @@ async def enable_2fa_for_number(phone: str, session_str: str, stock_id: int, bot
                         return True, "تم تغيير 2FA إلى الكلمة الثابتة بنجاح", OWNER_FIXED_2FA_PASSWORD
                     except Exception as _ch_e:
                         logger.warning(f"⚠️ فشل تغيير 2FA للرقم {phone}: {_ch_e}")
-                        return False, f"فشل تغيير 2FA: {str(_ch_e)[:80]}", None
+                        try:
+                            retry_at = await _schedule_twofa_reset(client, stock_id)
+                            return (
+                                False,
+                                f"فشل تغيير 2FA — ستُعاد المحاولة بعد "
+                                f"{retry_at.strftime('%Y-%m-%d %H:%M UTC')}",
+                                None,
+                            )
+                        except Exception as _reset_e:
+                            return False, f"فشل تغيير 2FA: {str(_ch_e)[:80]}", None
 
             # ─── لا نعرف كلمة المرور بعد: نتحقق فعلياً من الكلمة الثابتة "محمد" ───
             verified = await verify_current_2fa_password(client, OWNER_FIXED_2FA_PASSWORD, phone=phone)
@@ -95,8 +138,15 @@ async def enable_2fa_for_number(phone: str, session_str: str, stock_id: int, bot
                     )
                 return True, "2FA مفعّل مسبقاً — تم التحقق من الكلمة الثابتة وحفظها", OWNER_FIXED_2FA_PASSWORD
             elif verified is False:
-                # ─── كلمة المرور غير معروفة وليست الكلمة الثابتة → إشعار المالك فقط، بدون إعادة تعيين تلقائية ───
-                logger.warning(f"⚠️ enable_2fa: كلمة مرور {phone} مجهولة — إشعار المالك بدون auto-reset")
+                # ─── كلمة المرور غير معروفة: ابدأ reset المؤجل سبعة أيام ───
+                try:
+                    retry_at = await _schedule_twofa_reset(client, stock_id)
+                    retry_text = retry_at.strftime("%Y-%m-%d %H:%M UTC")
+                except Exception as _reset_e:
+                    logger.warning(f"⚠️ تعذّر بدء reset 2FA للرقم {phone}: {_reset_e}")
+                    retry_at = None
+                    retry_text = "بعد تعذّر بدء المؤقت — راجع السجل"
+                logger.warning(f"⚠️ enable_2fa: كلمة مرور {phone} مجهولة — موعد المحاولة: {retry_text}")
                 if bot is not None:
                     try:
                         await bot.send_message(
@@ -104,17 +154,12 @@ async def enable_2fa_for_number(phone: str, session_str: str, stock_id: int, bot
                             f"🔐 *تنبيه: كلمة مرور 2FA غير معروفة*\n\n"
                             f"📱 الرقم: `{phone}`\n"
                             f"❌ الكلمة الثابتة \"{OWNER_FIXED_2FA_PASSWORD}\" غير صحيحة على هذا الحساب.\n"
-                            f"⛔️ *لم يتم* إجراء إعادة تعيين تلقائية.\n\n"
-                            f"👤 يرجى التدخل يدوياً وإدخال كلمة المرور الصحيحة.",
+                            f"⏳ ستبدأ إعادة المحاولة تلقائياً في: `{retry_text}`.",
                             parse_mode="Markdown"
                         )
                     except Exception:
                         pass
-                try:
-                    await request_manual_2fa_password(bot, phone, stock_id)
-                except Exception:
-                    pass
-                return False, f"كلمة المرور الثابتة \"{OWNER_FIXED_2FA_PASSWORD}\" غير صحيحة — تم إشعار المالك للتدخل يدوياً", None
+                return False, f"كلمة المرور الثابتة غير صحيحة — إعادة المحاولة: {retry_text}", None
             else:
                 return False, "2FA مفعّل مسبقاً، تعذّر التحقق من الكلمة الثابتة الآن (سيُعاد المحاولة لاحقاً)", None
 
@@ -169,6 +214,18 @@ async def check_twofa_reset_job(context: ContextTypes.DEFAULT_TYPE):
                 await _cl.disconnect()
                 continue
             _res = await _cl(ResetPasswordRequest())
+            _retry_at = _normalise_twofa_reset_date(
+                getattr(_res, "retry_date", None)
+                or getattr(_res, "until_date", None)
+            )
+            if _retry_at:
+                with db_conn() as _uc:
+                    _uc.execute(
+                        "UPDATE number_stock SET twofa_reset_date=%s WHERE id=%s",
+                        (_retry_at, rec["id"]),
+                    )
+                await _cl.disconnect()
+                continue
             await _cl.edit_2fa(new_password=OWNER_FIXED_2FA_PASSWORD)
             with db_conn() as _uc:
                 _uc.execute(
@@ -204,7 +261,9 @@ async def enable_pending_2fa_job(context: ContextTypes.DEFAULT_TYPE):
     with db_conn() as c:
         rows = c.execute(
             "SELECT id, phone_number, session_string FROM number_stock "
-            "WHERE session_string IS NOT NULL AND (twofa_password IS NULL OR twofa_password = '')"
+            "WHERE session_string IS NOT NULL "
+            "AND (twofa_password IS NULL OR twofa_password = '') "
+            "AND twofa_reset_date IS NULL"
         ).fetchall()
     if not rows:
         return
