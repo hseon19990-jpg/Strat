@@ -1283,6 +1283,62 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             await show_orders_section(update, context, offset=offset)
             return
 
+        if data == "os:member_tracking" and is_own:
+            context.user_data["state"] = "os_await_member_tracking"
+            await q.edit_message_text(
+                "👤 *تتبع عضو لدى المالك*\n\n"
+                "أرسل ID العضو أو يوزرنيمه، مع أو بدون `@`:",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")
+                ]]),
+            )
+            return
+
+        if data == "os:member_track_order" and is_own:
+            tracked_user_id = context.user_data.get("member_tracking_user_id")
+            if not tracked_user_id:
+                await q.answer("⚠️ اختر عضواً أولاً.", show_alert=True)
+                return
+            context.user_data["state"] = "os_await_member_order_number"
+            await q.edit_message_text(
+                "📦 *تتبع طلب عضو*\n\n"
+                "أرسل رقم الطلب التسلسلي لهذا العضو فقط:\n"
+                "مثال: `1` = أول طلب، `2` = ثاني طلب.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        "🔙 رجوع لملخص العضو",
+                        callback_data="os:member_tracking_back",
+                    )
+                ]]),
+            )
+            return
+
+        if data == "os:member_tracking_back" and is_own:
+            tracked_user_id = context.user_data.get("member_tracking_user_id")
+            if not tracked_user_id:
+                await q.edit_message_text(
+                    "⚠️ انتهت جلسة التتبع.",
+                    reply_markup=owner_settings_kb(),
+                )
+                return
+            summary = _get_member_tracking_summary(int(tracked_user_id))
+            tracked_user = summary.get("user")
+            if not tracked_user:
+                await q.edit_message_text(
+                    "⚠️ لم يعد العضو موجوداً.",
+                    reply_markup=owner_settings_kb(),
+                )
+                return
+            await q.edit_message_text(
+                _render_member_tracking_summary(summary),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=_member_tracking_kb(),
+            )
+            context.user_data["state"] = "main_menu"
+            return
+
         if data == "os:order_lookup" and is_own:
             context.user_data["state"] = "os_await_order_lookup"
             await q.edit_message_text("🔍 أرسل كود الطلب الذي تريد عرض تفاصيله:")

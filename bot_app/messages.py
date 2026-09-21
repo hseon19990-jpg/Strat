@@ -3855,6 +3855,81 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if is_own and state == "os_await_member_tracking":
+        target = lookup_user_by_id_or_username(text.strip())
+        if not target:
+            await update.message.reply_text(
+                "⚠️ لم يتم العثور على عضو بهذا الـ ID أو اليوزرنيم.\n"
+                "أرسل قيمة صحيحة أو اضغط /cancel للتوقف."
+            )
+            return
+        target_id = int(target["user_id"])
+        context.user_data["member_tracking_user_id"] = target_id
+        summary = _get_member_tracking_summary(target_id)
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(
+            _render_member_tracking_summary(summary),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_member_tracking_kb(),
+        )
+        return
+
+    if is_own and state == "os_await_member_order_number":
+        raw_number = text.strip().replace(",", "").replace("،", "")
+        arabic_digits = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
+        try:
+            order_number = int(raw_number.translate(arabic_digits))
+            if order_number < 1:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text(
+                "⚠️ أرسل رقم ترتيب صحيحاً أكبر من صفر، مثل 1 أو ٢."
+            )
+            return
+
+        tracked_user_id = context.user_data.get("member_tracking_user_id")
+        if not tracked_user_id:
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text(
+                "⚠️ انتهت جلسة التتبع.",
+                reply_markup=owner_settings_kb(),
+            )
+            return
+
+        order, total_orders = _get_member_order_by_number(
+            int(tracked_user_id), order_number
+        )
+        if not order:
+            await update.message.reply_text(
+                f"⚠️ لا يوجد طلب رقم {order_number} لهذا العضو.\n"
+                f"📦 إجمالي طلباته: {total_orders}",
+                reply_markup=_member_tracking_kb(),
+            )
+            context.user_data["state"] = "main_menu"
+            return
+
+        api_status = {}
+        api_order_id = str(order.get("api_order_id") or "").strip()
+        if api_order_id and order.get("svc_api_id"):
+            try:
+                api_status = await asyncio.to_thread(
+                    smm_order_status,
+                    api_order_id,
+                    panel=order.get("svc_panel") or 1,
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"تعذر جلب حالة الطلب المتتبَع {order.get('order_code')}: {exc}"
+                )
+
+        await update.message.reply_text(
+            _render_member_order_details(order, order_number, api_status),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_member_tracking_kb(),
+        )
+        context.user_data["state"] = "main_menu"
+        return
+
     if is_own and state == "os_await_cancel_order":
         code = text.strip()
         with db_conn() as c:

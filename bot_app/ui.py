@@ -529,6 +529,174 @@ def _render_order_block(o) -> str:
         f"🕒 *الوقت:* {o['created_at']}\n"
     )
 
+
+def _get_member_tracking_summary(user_id: int) -> dict:
+    """يجلب ملخص عضو من طلبات خدمات المواقع الفعلية."""
+    with db_conn() as c:
+        user = c.execute(
+            "SELECT user_id, username, full_name, points FROM users WHERE user_id=%s",
+            (user_id,),
+        ).fetchone()
+        stats = c.execute(
+            "SELECT COUNT(*) AS order_count, "
+            "COALESCE(SUM(cost_points), 0) AS spent_points "
+            "FROM orders WHERE user_id=%s",
+            (user_id,),
+        ).fetchone()
+        last_order = c.execute(
+            """SELECT o.*, s.name_ar AS s_name_ar, s.category AS s_category
+               FROM orders o
+               LEFT JOIN services s ON s.id = o.service_id
+               WHERE o.user_id=%s
+               ORDER BY o.id DESC
+               LIMIT 1""",
+            (user_id,),
+        ).fetchone()
+    return {
+        "user": dict(user) if user else None,
+        "order_count": int((stats or {}).get("order_count") or 0),
+        "spent_points": int((stats or {}).get("spent_points") or 0),
+        "last_order": dict(last_order) if last_order else None,
+    }
+
+
+def _get_member_order_by_number(user_id: int, order_number: int):
+    """يعيد طلب العضو حسب ترتيبه الزمني: 1 هو أقدم طلب."""
+    if order_number < 1:
+        return None, 0
+    with db_conn() as c:
+        total = c.execute(
+            "SELECT COUNT(*) AS cnt FROM orders WHERE user_id=%s",
+            (user_id,),
+        ).fetchone()
+        order = c.execute(
+            """SELECT o.*, s.name_ar AS s_name_ar, s.category AS s_category,
+                      s.panel AS svc_panel, s.api_service_id AS svc_api_id
+               FROM orders o
+               LEFT JOIN services s ON s.id = o.service_id
+               WHERE o.user_id=%s
+               ORDER BY o.id ASC
+               LIMIT 1 OFFSET %s""",
+            (user_id, order_number - 1),
+        ).fetchone()
+    return (dict(order) if order else None), int((total or {}).get("cnt") or 0)
+
+
+def _member_tracking_kb():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📦 تتبع طلب", callback_data="os:member_track_order")],
+        [InlineKeyboardButton("👤 تتبع عضو آخر", callback_data="os:member_tracking")],
+        [InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")],
+    ])
+
+
+def _member_tracking_user_label(user: dict) -> str:
+    username = user.get("username")
+    full_name = user.get("full_name") or "—"
+    if username:
+        return f"@{md_escape(username)}"
+    return md_escape(full_name)
+
+
+def _render_member_tracking_summary(summary: dict) -> str:
+    user = summary.get("user") or {}
+    last_order = summary.get("last_order")
+    last_text = "لا يوجد طلب سابق."
+    if last_order:
+        last_status = {
+            "pending": "⏳ قيد التنفيذ",
+            "completed": "✅ مكتمل",
+            "cancelled": "❌ ملغي",
+        }.get(
+            str(last_order.get("status") or "").lower(),
+            last_order.get("status") or "—",
+        )
+        last_text = (
+            f"رقم الطلب التسلسلي: {summary.get('order_count', 0)} — "
+            f"{md_escape(last_order.get('s_name_ar') or 'خدمة')}\n"
+            f"الكود: `{md_escape(last_order.get('order_code') or '—')}` | "
+            f"الحالة: {last_status}\n"
+            f"التكلفة: {int(last_order.get('cost_points') or 0):,} نقطة"
+        )
+    return (
+        "👤 *تتبع عضو لدى المالك*\n\n"
+        f"العضو: {_member_tracking_user_label(user)}\n"
+        f"ID: `{user.get('user_id')}`\n"
+        f"📦 عدد الطلبات: *{summary.get('order_count', 0):,}*\n"
+        f"💸 مجموع ما صرفه: *{summary.get('spent_points', 0):,} نقطة*\n"
+        f"💰 رصيده الحالي: *{int(user.get('points') or 0):,} نقطة*\n\n"
+        f"🧾 *آخر طلب:*\n{last_text}"
+    )
+
+
+def _render_member_order_details(
+    order: dict,
+    order_number: int,
+    api_status: dict | None = None,
+) -> str:
+    api_status = api_status if isinstance(api_status, dict) else {}
+    local_status = str(order.get("status") or "").strip().lower()
+    remote_status = str(api_status.get("status") or "").strip().lower()
+    status_key = remote_status or local_status
+    if (
+        not remote_status
+        and local_status == "completed"
+        and int(order.get("partial_refund_pts") or 0) > 0
+    ):
+        status_key = "partial"
+    status_label = {
+        "pending": "⏳ قيد الانتظار",
+        "processing": "🔄 قيد التنفيذ",
+        "in progress": "🔄 قيد التنفيذ",
+        "completed": "✅ مكتمل",
+        "partial": "⚠️ مكتمل جزئياً",
+        "cancelled": "❌ ملغي",
+        "canceled": "❌ ملغي",
+        "failed": "❌ فشل",
+        "error": "❌ خطأ",
+    }.get(status_key, status_key or "غير معروف")
+
+    quantity = int(order.get("quantity") or 0)
+    remains = None
+    try:
+        if api_status.get("remains") is not None:
+            remains = max(0, int(float(api_status.get("remains"))))
+    except (TypeError, ValueError):
+        remains = None
+    if remains is not None:
+        executed_text = f"{max(0, quantity - remains):,}"
+        remains_text = f"{remains:,}"
+    elif status_key == "completed":
+        executed_text = f"{quantity:,}"
+        remains_text = "0"
+    else:
+        executed_text = "غير معروف"
+        remains_text = "غير معروف"
+
+    provider_cost = order.get("provider_cost_usd")
+    provider_cost_text = ""
+    try:
+        if provider_cost and float(provider_cost) > 0:
+            provider_cost_text = f"\n🌐 تكلفة الموقع: `{float(provider_cost):.6f}` دولار"
+    except (TypeError, ValueError):
+        pass
+
+    return (
+        f"📦 *تفاصيل الطلب رقم {order_number}*\n\n"
+        f"🧾 كود الطلب: `{md_escape(order.get('order_code') or '—')}`\n"
+        f"🔹 الخدمة: {md_escape(order.get('s_name_ar') or '—')}\n"
+        f"🔗 الرابط: {md_escape(order.get('link') or '—')}\n"
+        f"💰 السعر: *{int(order.get('cost_points') or 0):,} نقطة*"
+        f"{provider_cost_text}\n"
+        f"🔢 الكمية المطلوبة: {quantity:,}\n"
+        f"✅ تم تنفيذ: {executed_text}\n"
+        f"⏳ المتبقي: {remains_text}\n"
+        f"📊 الحالة: *{status_label}*\n"
+        f"🆔 رقم API: `{md_escape(order.get('api_order_id') or '—')}`\n"
+        f"🕒 التاريخ: {md_escape(str(order.get('created_at') or '—'))}"
+    )
+
+
 async def show_orders_section(update: Update, context: ContextTypes.DEFAULT_TYPE, offset: int = 0):
     rows, total = _fetch_orders_page(offset)
     if not rows:
