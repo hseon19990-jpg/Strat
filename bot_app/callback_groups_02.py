@@ -1957,12 +1957,14 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             with db_conn() as _rc:
                 _raksh_rows = _rc.execute(
                     "SELECT id, phone_number, session_string, last_authorized "
-                    "FROM number_stock WHERE raksh_only=TRUE AND deleted_at IS NULL "
+                    "FROM number_stock "
+                    "WHERE deleted_at IS NULL AND ever_sold IS NOT TRUE "
+                    "AND raksh_excluded IS NOT TRUE "
                     "ORDER BY id ASC"
                 ).fetchall()
             _raksh_lines = [
                 f"🔥 *{_raksh_label}*\n",
-                "هذه الحسابات مخصصة لتنفيذ خدمات الرشق فقط، ولا تظهر ضمن مخزون بيع أرقام تيلغرام.\n",
+                "هذه كل الحسابات غير المباعة وغير المستبعدة يدوياً من خدمات الرشق.\n",
                 f"📦 العدد: *{len(_raksh_rows)}* حساب\n",
             ]
             if _raksh_rows:
@@ -2075,11 +2077,13 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             with db_conn() as _rc:
                 _raksh_rows = _rc.execute(
                     "SELECT id, phone_number, session_string, last_authorized "
-                    "FROM number_stock WHERE raksh_only=TRUE AND deleted_at IS NULL ORDER BY id ASC"
+                    "FROM number_stock "
+                    "WHERE deleted_at IS NULL AND ever_sold IS NOT TRUE "
+                    "AND raksh_excluded IS NOT TRUE ORDER BY id ASC"
                 ).fetchall()
             _raksh_lines = [
                 f"🔥 *{md_escape(get_raksh_accounts_label())}*\n",
-                "هذه الحسابات مخصصة لتنفيذ خدمات الرشق فقط، ولا تظهر ضمن مخزون بيع أرقام تيلغرام.\n",
+                "هذه كل الحسابات غير المباعة وغير المستبعدة يدوياً من خدمات الرشق.\n",
                 f"📦 العدد: *{len(_raksh_rows)}* حساب\n",
             ]
             if _raksh_rows:

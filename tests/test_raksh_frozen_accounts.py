@@ -28,13 +28,17 @@ class RakshFrozenAccountTests(unittest.TestCase):
         self.assertIn("AND frozen_at IS NULL", message_source)
         self.assertIn("AND deleted_at IS NULL AND frozen_at IS NULL", legendary_source)
 
-    def test_account_count_excludes_frozen_sessions(self):
+    def test_account_count_shows_all_non_sold_non_excluded_accounts(self):
         source = (ROOT / "bot_app" / "accounts.py").read_text(encoding="utf-8")
-        start = source.index("def get_referral_session_count")
+        start = source.index("def get_raksh_account_count")
         end = source.index("def get_forced_ref_account_count", start)
         count_query = source[start:end]
 
-        self.assertIn("AND frozen_at IS NULL", count_query)
+        self.assertIn("WHERE deleted_at IS NULL", count_query)
+        self.assertIn("AND ever_sold IS NOT TRUE", count_query)
+        self.assertIn("AND raksh_excluded IS NOT TRUE", count_query)
+        self.assertNotIn("frozen_at IS NULL", count_query)
+        self.assertNotIn("session_string IS NOT NULL", count_query)
 
     def test_raksh_pool_uses_all_non_frozen_sessions(self):
         common_source = (ROOT / "bot_app" / "raksh_system" / "common.py").read_text(

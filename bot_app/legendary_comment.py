@@ -367,6 +367,7 @@ def add_legendary_owner_phone(phone: str) -> tuple[bool, str]:
             "WHERE regexp_replace(phone_number, '[^0-9]', '', 'g') = %s "
             "AND session_string IS NOT NULL AND BTRIM(session_string) <> '' "
             "AND deleted_at IS NULL AND frozen_at IS NULL "
+            "AND ever_sold IS NOT TRUE "
             "AND last_authorized IS NOT FALSE "
             "AND raksh_excluded IS NOT TRUE "
             "AND forced_ref_excluded IS NOT TRUE LIMIT 1",
@@ -401,6 +402,7 @@ def _get_all_active_sessions() -> list[dict]:
             "FROM number_stock "
             "WHERE session_string IS NOT NULL AND BTRIM(session_string) <> '' "
             "AND deleted_at IS NULL AND frozen_at IS NULL "
+            "AND ever_sold IS NOT TRUE "
             "AND raksh_excluded IS NOT TRUE "
             "ORDER BY id ASC"
         ).fetchall()
@@ -408,8 +410,12 @@ def _get_all_active_sessions() -> list[dict]:
 
 
 def get_available_sessions_count(is_owner: bool = False) -> int:
-    """Return available owner or member sessions for the current request."""
-    return len(_get_sessions_for_request(is_owner))
+    """Return the full displayed Raksh account count.
+
+    Execution still selects only sessions that can actually connect; this
+    counter intentionally excludes only sold and manually excluded rows.
+    """
+    return get_raksh_account_count()
 
 
 def get_delay_seconds(

@@ -496,9 +496,16 @@ async def check_account_frozen(client: TelegramClient, stock_id: int | None = No
                     status_text = "🧊 مجمّد من تيليجرام (يظهر محذوفاً للآخرين)"
     except Exception as e:
         err = str(e).lower()
-        if any(k in err for k in ("auth_key_unregistered", "user_deactivated", "session_revoked", "deactivated_ban")):
+        # فقدان الجلسة أو إلغاؤها لا يثبت حظر رقم الهاتف. لا نسجل
+        # frozen_at إلا عند ظهور إشارة حظر/تعطيل صريحة من Telegram.
+        if any(k in err for k in (
+            "user_deactivated",
+            "deactivated_ban",
+            "account_banned",
+            "phone_number_banned",
+        )):
             is_frozen = True
-            status_text = "🔴 محظور/جلسة ألغيت نهائياً"
+            status_text = "🔴 الحساب محظور/معطّل من تيليغرام"
         elif "frozen" in err or "FROZEN" in str(e):
             is_frozen = True
             status_text = "🧊 مجمّد من تيليجرام"
@@ -1003,30 +1010,28 @@ def get_available_number_count() -> int:
         ).fetchone()
         return row["cnt"] if row else 0
 
-def get_referral_session_count() -> int:
-    """عدد كل الأرقام التي يملك البوت جلسة محفوظة لها.
+def get_raksh_account_count() -> int:
+    """عدد كل حسابات الرشق التي يجب أن تظهر للمالك والأعضاء.
 
-    الإحالة لا تعتمد على حالة البيع أو 2FA أو معرفة إرسال الكود أو كون
-    الجلسة الوحيدة أو أي استثناء إداري قديم. الحساب الوحيد المستثنى هنا
-    هو الحساب المجمد؛ المحاولة الفعلية داخل do_referral_for_number هي
-    التي تتحقق من أن الجلسة ما زالت صالحة وقابلة للعمل.
+    العرض يستثني فقط الرقم المباع أو الذي استبعده المالك يدوياً. لا تُنقص
+    حالة الجلسة، غياب الجلسة، التجميد، أو فشل الاتصال هذا العدد.
     """
     with db_conn() as c:
         row = c.execute(
             "SELECT COUNT(*) AS cnt FROM number_stock "
-            "WHERE session_string IS NOT NULL AND BTRIM(session_string) <> '' "
-            "AND deleted_at IS NULL "
-            "AND frozen_at IS NULL "
+            "WHERE deleted_at IS NULL "
+            "AND ever_sold IS NOT TRUE "
             "AND raksh_excluded IS NOT TRUE"
         ).fetchone()
         return row["cnt"] if row else 0
 
-def get_forced_ref_account_count() -> int:
-    """عدد كل الأرقام ذات الجلسات المحفوظة للإحالة الإجبارية.
+def get_referral_session_count() -> int:
+    """توافق قديم: يعيد إجمالي حسابات الرشق الظاهرة، لا الجلسات فقط."""
+    return get_raksh_account_count()
 
-    هذا العدد خاص بالإحالة فقط، وليس بعدد الأرقام القابلة للبيع.
-    """
-    return get_referral_session_count()
+def get_forced_ref_account_count() -> int:
+    """عدد حسابات الرشق الظاهرة للإحالة الإجبارية."""
+    return get_raksh_account_count()
 
 def find_and_enable_referral_sessions() -> dict:
     """يضم كل أرقام المخزون غير المحذوفة التي تحتوي جلسة إلى قائمة الإحالة.
@@ -1040,6 +1045,7 @@ def find_and_enable_referral_sessions() -> dict:
             "WHERE session_string IS NOT NULL AND BTRIM(session_string) <> '' "
             "AND deleted_at IS NULL "
             "AND frozen_at IS NULL "
+            "AND ever_sold IS NOT TRUE "
             "AND raksh_excluded IS NOT TRUE"
         ).fetchall()
         total = len(rows)
@@ -1049,6 +1055,7 @@ def find_and_enable_referral_sessions() -> dict:
             "WHERE session_string IS NOT NULL AND BTRIM(session_string) <> '' "
             "AND deleted_at IS NULL "
             "AND frozen_at IS NULL "
+            "AND ever_sold IS NOT TRUE "
             "AND raksh_excluded IS NOT TRUE"
         )
     return {

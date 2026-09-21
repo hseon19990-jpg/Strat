@@ -2106,8 +2106,22 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
         "UserDeactivated", "AccountBanned", "PhoneNumberBanned",
         "AuthKeyDuplicated",
     )
+    _TELEGRAM_BANNED_ERRORS = (
+        "UserDeactivated",
+        "AccountBanned",
+        "PhoneNumberBanned",
+    )
 
-    def _mark_session_dead(auto_delete: bool = False, reason: str = ""):
+    def _mark_session_dead(
+        auto_delete: bool = False,
+        reason: str = "",
+        telegram_banned: bool = False,
+    ):
+        """تسجيل انتهاء الجلسة دون حذف الرقم إلا عند ثبوت حظره من Telegram.
+
+        أبقينا ``auto_delete`` للتوافق مع الاستدعاءات القديمة، لكنه لم يعد
+        يحذف السجل؛ فقد تكون المشكلة في الجلسة فقط وليست حظراً للرقم.
+        """
         try:
             with db_conn() as _dc:
                 _dc.execute(
@@ -2118,8 +2132,8 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
             logger.info(f"🔴 جلسة {phone} مُعلَّمة كمنتهية في DB (force_listed أُزيل تلقائياً)")
         except Exception as _de:
             logger.debug(f"_mark_session_dead {phone}: {_de}")
-        if auto_delete and stock_id:
-            _auto_delete_number(stock_id, phone, reason or "حساب محذوف أو مجمّد")
+        if telegram_banned:
+            _mark_raksh_session_frozen(phone)
 
     if not is_telegram_api_configured():
         return False, False, "TELEGRAM_API_ID/HASH غير مضبوط"
@@ -2132,8 +2146,8 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
     try:
         await asyncio.wait_for(client.connect(), timeout=15)
         if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
-            _mark_session_dead(auto_delete=True, reason="حساب محذوف أو جلسة مُلغاة — حُذف تلقائياً")
-            return False, False, "جلسة منتهية أو مُلغاة — حُذف من المخزون"
+            _mark_session_dead(reason="جلسة منتهية أو مُلغاة")
+            return False, False, "جلسة منتهية أو مُلغاة — بقي الرقم في المخزون"
 
         steps = []
 
@@ -2387,7 +2401,10 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
         err = str(e)
         err_type = type(e).__name__
         if any(k in err_type for k in _DEAD_SESSION_ERRORS):
-            _mark_session_dead(auto_delete=True, reason=f"حساب محذوف/مجمّد ({err_type}) — حُذف تلقائياً")
+            _mark_session_dead(
+                reason=f"حساب محذوف/مجمّد ({err_type})",
+                telegram_banned=any(k in err_type for k in _TELEGRAM_BANNED_ERRORS),
+            )
         logger.error(f"❌ فشلت إحالة {phone} → {bot_username} [{err_type}]: {err[:100]}")
         return False, False, f"[{err_type}] {err[:100]}"
     finally:
@@ -2595,6 +2612,7 @@ async def _run_mansub_order(order_id, bot_user, start_p, channels, quantity, req
             " WHERE session_string IS NOT NULL AND BTRIM(session_string) <> ''"
             " AND deleted_at IS NULL"
             " AND frozen_at IS NULL"
+            " AND ever_sold IS NOT TRUE"
             " AND raksh_excluded IS NOT TRUE"
             " ORDER BY id"
         ).fetchall()
@@ -3430,6 +3448,7 @@ async def _run_forced_ref_order(order_id, bot_user, start_p, channels, quantity,
             " WHERE session_string IS NOT NULL AND BTRIM(session_string) <> ''"
             " AND deleted_at IS NULL"
             " AND frozen_at IS NULL"
+            " AND ever_sold IS NOT TRUE"
             " AND raksh_excluded IS NOT TRUE"
             " ORDER BY id"
         ).fetchall()

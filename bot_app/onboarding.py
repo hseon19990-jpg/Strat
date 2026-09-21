@@ -536,19 +536,10 @@ async def cmd_mass_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not await _client.is_user_authorized():
                 kicked_out += 1
                 with db_conn() as _cx:
-                    _es2 = _cx.execute(
-                        "SELECT ever_sold FROM number_stock WHERE id=%s", (rec["id"],)
-                    ).fetchone()
-                    if _es2 and not _es2["ever_sold"]:
-                        _cx.execute("DELETE FROM number_stock WHERE id=%s", (rec["id"],))
-                        logger.info(
-                            f"🗑️ حذف تلقائي (mass_reset): الرقم {phone} — جلسة منتهية."
-                        )
-                    else:
-                        _cx.execute(
-                            "UPDATE number_stock SET last_authorized=FALSE WHERE id=%s",
-                            (rec["id"],)
-                        )
+                    _cx.execute(
+                        "UPDATE number_stock SET last_authorized=FALSE WHERE id=%s",
+                        (rec["id"],)
+                    )
                 continue
 
             # ── طرد كل الجلسات الأخرى ─────────────────────────────────

@@ -462,17 +462,8 @@ def main():
             except Exception as e:
                 logger.warning(f"⚠️ compensate_duplicate_sales (startup): {e}")
         asyncio.create_task(_bg_startup())
-        try:
-            with db_conn() as _mc:
-                _mc.execute(
-                    "UPDATE number_stock SET deleted_at=NOW() "
-                    "WHERE session_string IS NULL AND deleted_at IS NULL"
-                )
-                _deleted_manual = _mc.rowcount
-            if _deleted_manual:
-                logger.warning(f"🗑 حُذفت {_deleted_manual} أرقام يدوية (بلا جلسة) عند الإقلاع.")
-        except Exception as e:
-            logger.warning(f"⚠️ تنظيف الأرقام اليدوية (startup): {e}")
+        # لا نحذف الأرقام بلا جلسة عند الإقلاع. فقدان الجلسة لا يثبت أن
+        # الرقم محظور من Telegram، والمالك وحده يقرر حذف الرقم يدوياً.
         # ─── حذف الأرقام المجمّدة المكتشفة مسبقاً (frozen_at IS NOT NULL) ────
         try:
             with db_conn() as _fzc:

@@ -425,18 +425,9 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
         
                     if not await asyncio.wait_for(cli.is_user_authorized(), timeout=10):
                         result["status"] = "kicked"
-                        result["note"] = "جلسة منتهية/مطرودة — حُذف تلقائياً"
+                        result["note"] = "جلسة منتهية/مطرودة — لم يُحذف الرقم"
                         with db_conn() as _c:
-                            _es = _c.execute(
-                                "SELECT ever_sold FROM number_stock WHERE id=%s", (rec["id"],)
-                            ).fetchone()
-                            if _es and not _es["ever_sold"]:
-                                _c.execute("DELETE FROM number_stock WHERE id=%s", (rec["id"],))
-                                logger.info(
-                                    f"🗑️ حذف تلقائي (فحص): الرقم {rec['phone_number']} — جلسة منتهية."
-                                )
-                            else:
-                                _c.execute("UPDATE number_stock SET last_authorized=FALSE WHERE id=%s", (rec["id"],))
+                            _c.execute("UPDATE number_stock SET last_authorized=FALSE WHERE id=%s", (rec["id"],))
                         return result
         
                     is_frz, frz_status, _ = await asyncio.wait_for(
@@ -497,15 +488,7 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
         
                 except asyncio.TimeoutError:
                     result["status"] = "timeout"
-                    result["note"] = "انتهت مهلة الاتصال (25ث) — حُذف تلقائياً"
-                    # البوت لا يستطيع فتحه → حذف نهائي
-                    with db_conn() as _c:
-                        _es = _c.execute(
-                            "SELECT ever_sold FROM number_stock WHERE id=%s", (rec["id"],)
-                        ).fetchone()
-                        if _es and not _es["ever_sold"]:
-                            _c.execute("DELETE FROM number_stock WHERE id=%s", (rec["id"],))
-                            logger.info(f"🗑️ حذف تلقائي (timeout): الرقم {rec['phone_number']}")
+                    result["note"] = "انتهت مهلة الاتصال (25ث) — لم يُحذف الرقم"
                 except Exception as e:
                     err_txt = str(e)
                     # AuthKeyUnregistered / SessionRevoked / UserDeactivated = فقدان سيطرة نهائي → حذف
@@ -515,15 +498,22 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                         "AUTH_KEY_UNREGISTERED", "SESSION_REVOKED",
                     ))
                     result["status"] = "error"
-                    result["note"] = err_txt[:100] + (" — حُذف تلقائياً" if unrecoverable else "")
+                    result["note"] = err_txt[:100] + (
+                        " — يحتاج قرار المالك" if unrecoverable else ""
+                    )
                     if unrecoverable:
-                        with db_conn() as _c:
-                            _es = _c.execute(
-                                "SELECT ever_sold FROM number_stock WHERE id=%s", (rec["id"],)
-                            ).fetchone()
-                            if _es and not _es["ever_sold"]:
-                                _c.execute("DELETE FROM number_stock WHERE id=%s", (rec["id"],))
-                                logger.info(f"🗑️ حذف تلقائي (error/{err_txt[:40]}): الرقم {rec['phone_number']}")
+                        telegram_banned = any(k in err_txt for k in (
+                            "UserDeactivated", "AccountBanned", "PhoneNumberBanned",
+                            "USER_DEACTIVATED", "ACCOUNT_BANNED", "PHONE_NUMBER_BANNED",
+                        ))
+                        if telegram_banned:
+                            _mark_raksh_session_frozen(rec["phone_number"])
+                        else:
+                            with db_conn() as _c:
+                                _c.execute(
+                                    "UPDATE number_stock SET last_authorized=FALSE WHERE id=%s",
+                                    (rec["id"],),
+                                )
                 finally:
                     try:
                         if cli:

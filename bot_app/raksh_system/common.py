@@ -5,7 +5,7 @@
 """
 
 from ..shared import *
-from ..accounts import get_forced_ref_account_count
+from ..accounts import get_forced_ref_account_count, get_raksh_account_count
 from ..database import db_conn
 from ..security import add_points, deduct_points, get_user, is_user_banned
 from ..services import get_raksh_accounts_label, md_escape
@@ -337,6 +337,7 @@ def _get_sessions_for_service(service_type: str, is_owner: bool = False) -> List
               AND BTRIM(session_string) <> ''
               AND deleted_at IS NULL
               AND frozen_at IS NULL
+              AND ever_sold IS NOT TRUE
               AND raksh_excluded IS NOT TRUE
             ORDER BY last_authorized DESC NULLS LAST, id ASC
         """
@@ -348,19 +349,27 @@ def _get_sessions_for_service(service_type: str, is_owner: bool = False) -> List
     return get_raksh_sessions_for_request(sessions, is_owner=is_owner)
 
 def get_available_sessions_count(service_type: str = None, is_owner: bool = False) -> int:
-    """عدد الجلسات المتاحة للخدمة حسب نوع الطالب."""
-    if service_type:
-        return len(_get_sessions_for_service(service_type, is_owner=is_owner))
-    return len(_get_sessions_for_service("story", is_owner=is_owner))
+    """عدد الحسابات الظاهرة في عداد الرشق.
+
+    هذا عداد عرض فقط؛ اختيار الجلسات القابلة للتنفيذ يبقى داخل
+    ``_get_sessions_for_service`` ولا يستبعد الحساب من المخزون بسبب فشل جلسة.
+    """
+    return get_raksh_account_count()
 
 def _mark_raksh_session_unauthorized(phone_number: str) -> None:
-    """تعليم جلسة غير مصرح بها"""
+    """تسجيل انتهاء صلاحية الجلسة دون إسقاط الرقم من مخزون الرشق.
+
+    ``is_user_authorized() == False`` تعني أن الجلسة الحالية لم تعد صالحة،
+    لكنها لا تثبت أن رقم الهاتف حُظر أو جُمّد من Telegram. لذلك لا نمسح
+    ``session_string`` هنا؛ الحذف/الاستبعاد التلقائي مسموح فقط لمسار البيع
+    أو بعد إثبات تجميد الحساب من Telegram.
+    """
     if not phone_number:
         return
     try:
         with db_conn() as c:
             c.execute(
-                "UPDATE number_stock SET last_authorized=FALSE, session_string=NULL "
+                "UPDATE number_stock SET last_authorized=FALSE "
                 "WHERE phone_number=%s AND deleted_at IS NULL",
                 (phone_number,)
             )
@@ -381,7 +390,7 @@ def _mark_raksh_session_frozen(phone_number: str) -> None:
                 """
                 UPDATE number_stock
                    SET frozen_at=COALESCE(frozen_at, NOW()),
-                       last_authorized=FALSE
+                       last_authorized=FALSE, session_string=NULL
                  WHERE phone_number=%s AND deleted_at IS NULL
                 """,
                 (phone_number,),
