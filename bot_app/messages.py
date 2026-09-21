@@ -5649,21 +5649,46 @@ async def _import_one_session_bytes(
             pass
         rot_note = f"⚠️ تدوير فشل: {rot_res[:40]}"
 
-    # ── تفعيل 2FA تلقائياً بعد الاستيراد ──────────────────────────────
+    # ── تحقق آمن بعد الاستيراد (قراءة فقط) ────────────────────────────
     async def _post_import_2fa(ph, ss, sid, bot_ref):
         await asyncio.sleep(3)   # انتظار استقرار الجلسة الجديدة
+        cli = None
         try:
-            ok_2fa, msg_2fa, pwd_2fa = await enable_2fa_for_number(ph, ss, sid, bot=bot_ref)
-            if ok_2fa:
-                logger.info(f"✅ post_import_2fa: تم تفعيل 2FA للرقم {ph}")
+            with db_conn() as _pc:
+                _row = _pc.execute(
+                    "SELECT twofa_password FROM number_stock WHERE id=%s",
+                    (sid,),
+                ).fetchone()
+            imported_pwd = ((_row["twofa_password"] if _row else "") or "").strip()
+            cli = TelegramClient(StringSession(ss), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+            await asyncio.wait_for(cli.connect(), timeout=20)
+            if not await asyncio.wait_for(cli.is_user_authorized(), timeout=10):
+                logger.warning(f"⚠️ post_import_2fa: الجلسة منتهية للرقم {ph}")
             else:
-                logger.warning(f"⚠️ post_import_2fa: فشل 2FA للرقم {ph}: {msg_2fa}")
-                _clear_unusable_imported_twofa(sid)
-                # تسجيل في قائمة الإصلاح التلقائي
-                _accounts_needing_fixup[sid] = {"phone": ph, "session": ss, "stock_id": sid, "retries": 0}
+                pwd_state = await asyncio.wait_for(cli(GetPasswordRequest()), timeout=12)
+                if not pwd_state.has_password:
+                    logger.info(f"ℹ️ post_import_2fa: لا يوجد 2FA للرقم {ph}")
+                elif not imported_pwd:
+                    logger.warning(f"⚠️ post_import_2fa: كلمة 2FA غير محفوظة للرقم {ph}")
+                else:
+                    verified = await asyncio.wait_for(
+                        verify_current_2fa_password(cli, imported_pwd, phone=ph),
+                        timeout=15,
+                    )
+                    logger.info(
+                        "✅ post_import_2fa: تم التحقق من كلمة 2FA للرقم %s"
+                        if verified is True
+                        else "⚠️ post_import_2fa: كلمة 2FA غير مطابقة للرقم %s",
+                        ph,
+                    )
         except Exception as _2fa_e:
             logger.warning(f"⚠️ post_import_2fa: خطأ للرقم {ph}: {_2fa_e}")
-            _accounts_needing_fixup[sid] = {"phone": ph, "session": ss, "stock_id": sid, "retries": 0}
+        finally:
+            try:
+                if cli:
+                    await cli.disconnect()
+            except Exception:
+                pass
 
     try:
         _bot_ref = getattr(context, 'bot', None)

@@ -117,23 +117,22 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                 return
             with db_conn() as _c:
                 _rows = _c.execute(
-                    "SELECT id, phone_number, session_string "
+                    "SELECT id, phone_number, session_string, twofa_password "
                     "FROM number_stock "
                     "WHERE session_string IS NOT NULL AND deleted_at IS NULL "
-                    "AND (twofa_password IS NULL OR twofa_password = '') "
-                    "AND twofa_reset_date IS NULL "
                     "AND ever_sold IS NOT TRUE "
                     "ORDER BY id ASC"
                 ).fetchall()
             if not _rows:
-                await q.answer("✅ لا توجد حسابات جديدة تحتاج قراءة 2FA.", show_alert=True)
+                await q.answer("✅ لا توجد حسابات بجلسات للفحص.", show_alert=True)
                 return
 
             context.user_data["unread_2fa_scan_running"] = True
             await q.edit_message_text(
-                f"🔐 *بدأ التحقق من 2FA*\n\n"
-                f"📦 الحسابات التي لم تُقرأ سابقاً: *{len(_rows)}*\n"
-                "سيتم فحص كل جلسة وتسجيل النتيجة عند الانتهاء.",
+                f"🔐 *بدأ التحقق الآمن من 2FA*\n\n"
+                f"📦 الحسابات المراد فحصها: *{len(_rows)}*\n"
+                "لن يتم تغيير كلمة المرور أو بدء إعادة التعيين أثناء هذا الفحص.\n"
+                "سيصلك تقرير خاص عند الانتهاء.",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton("🔙 رجوع للمخزون", callback_data="os:manage_numbers")
@@ -141,45 +140,92 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
             )
 
             async def _verify_unread_2fa_bg():
-                done, scheduled, failed = [], [], []
+                verified, missing, invalid, no_2fa, failed = [], [], [], [], []
                 try:
                     for rec in _rows:
                         phone = rec["phone_number"]
+                        saved_pwd = (rec["twofa_password"] or "").strip()
+                        cli = None
                         try:
-                            ok_2fa, result_msg, _ = await enable_2fa_for_number(
-                                phone,
-                                rec["session_string"],
-                                rec["id"],
-                                bot=context.bot,
+                            cli = TelegramClient(
+                                StringSession(rec["session_string"]),
+                                int(TELEGRAM_API_ID),
+                                TELEGRAM_API_HASH,
                             )
-                            if ok_2fa:
-                                done.append(phone)
-                            elif "إعادة المحاولة" in (result_msg or ""):
-                                scheduled.append(phone)
+                            await asyncio.wait_for(cli.connect(), timeout=20)
+                            if not await asyncio.wait_for(cli.is_user_authorized(), timeout=10):
+                                failed.append(f"{phone}: الجلسة منتهية")
+                                continue
+
+                            pwd_state = await asyncio.wait_for(
+                                cli(GetPasswordRequest()), timeout=12
+                            )
+                            if not pwd_state.has_password:
+                                no_2fa.append(phone)
+                            elif not saved_pwd:
+                                missing.append(f"{phone}: 2FA موجودة لكن الكلمة غير محفوظة")
                             else:
-                                failed.append(f"{phone}: {str(result_msg)[:90]}")
+                                result = await asyncio.wait_for(
+                                    verify_current_2fa_password(
+                                        cli, saved_pwd, phone=phone
+                                    ),
+                                    timeout=15,
+                                )
+                                if result is True:
+                                    # Verification is intentionally read-only. The
+                                    # password is sent only to the owner so it can
+                                    # be reviewed before a separate change action.
+                                    safe_pwd = saved_pwd.replace("`", "")
+                                    verified.append(f"{phone}: `{safe_pwd}`")
+                                elif result is False:
+                                    invalid.append(
+                                        f"{phone}: كلمة 2FA المحفوظة غير صحيحة"
+                                    )
+                                else:
+                                    failed.append(f"{phone}: تعذر التحقق حالياً")
                         except Exception as _scan_e:
                             failed.append(f"{phone}: {str(_scan_e)[:90]}")
+                        finally:
+                            try:
+                                if cli:
+                                    await cli.disconnect()
+                            except Exception:
+                                pass
                         await asyncio.sleep(0.8)
 
                     report = [
-                        "🔐 *اكتمل التحقق من 2FA*\n",
-                        f"📦 تمت قراءة: *{len(_rows)}*",
-                        f"✅ تم الحفظ/التفعيل: *{len(done)}*",
-                        f"⏳ مجدولة لإعادة المحاولة بعد 7 أيام: *{len(scheduled)}*",
-                        f"⚠️ فشل: *{len(failed)}*",
+                        "🔐 *اكتمل التحقق الآمن من 2FA*\n",
+                        f"📦 تمت معالجة: *{len(_rows)}*",
+                        f"✅ تحقق صحيح — لم يتغير: *{len(verified)}*",
+                        f"⚠️ كلمة غير محفوظة: *{len(missing)}*",
+                        f"❌ كلمة غير صحيحة: *{len(invalid)}*",
+                        f"ℹ️ بدون 2FA: *{len(no_2fa)}*",
+                        f"⚠️ تعذر الفحص: *{len(failed)}*",
                     ]
-                    if done:
-                        report.append("\n✅ الحسابات المكتملة:\n" + "\n".join(f"• `{p}`" for p in done[:30]))
-                    if scheduled:
+                    if verified:
                         report.append(
-                            "\n⏳ الحسابات المجهولة:\n"
-                            + "\n".join(f"• `{p}`" for p in scheduled[:30])
+                            "\n✅ الحسابات المتحقق منها وكلماتها:\n"
+                            + "\n".join(f"• {item}" for item in verified[:30])
+                        )
+                    if missing:
+                        report.append(
+                            "\n⚠️ تحتاج كلمة 2FA يدوية:\n"
+                            + "\n".join(f"• {item}" for item in missing[:30])
+                        )
+                    if invalid:
+                        report.append(
+                            "\n❌ القيم غير المطابقة — لم يتم تغييرها:\n"
+                            + "\n".join(f"• {item}" for item in invalid[:30])
+                        )
+                    if no_2fa:
+                        report.append(
+                            "\nℹ️ لا يوجد 2FA:\n"
+                            + "\n".join(f"• {item}" for item in no_2fa[:30])
                         )
                     if failed:
                         report.append(
-                            "\n⚠️ الحسابات التي تحتاج مراجعة:\n"
-                            + "\n".join(f"• {item}" for item in failed[:20])
+                            "\n⚠️ تحتاج إعادة فحص:\n"
+                            + "\n".join(f"• {item}" for item in failed[:30])
                         )
                     await context.bot.send_message(
                         OWNER_ID,
