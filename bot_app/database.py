@@ -551,7 +551,6 @@ def init_db():
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS forced_ref_excluded BOOLEAN DEFAULT FALSE",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS contributed_by BIGINT",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS contributor_share_percent INTEGER DEFAULT 50",
-               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS last_frozen_check_at TIMESTAMPTZ",
               "ALTER TABLE services ADD COLUMN IF NOT EXISTS platform TEXT DEFAULT 'tg'",
               "ALTER TABLE services ADD COLUMN IF NOT EXISTS source_name TEXT",
               "ALTER TABLE users ADD COLUMN IF NOT EXISTS banned INTEGER DEFAULT 0",

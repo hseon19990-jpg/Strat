@@ -355,12 +355,7 @@ def get_available_sessions_count(service_type: str = None, is_owner: bool = Fals
     هذا عداد عرض فقط؛ اختيار الجلسات القابلة للتنفيذ يبقى داخل
     ``_get_sessions_for_service`` ولا يستبعد الحساب من المخزون بسبب فشل جلسة.
     """
-    return len(
-        _get_sessions_for_service(
-            service_type or "story",
-            is_owner=is_owner,
-        )
-    )
+    return get_raksh_account_count()
 
 def _mark_raksh_session_unauthorized(phone_number: str) -> None:
     """تسجيل انتهاء صلاحية الجلسة دون إسقاط الرقم من مخزون الرشق.

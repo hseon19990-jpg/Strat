@@ -126,7 +126,7 @@ def _classify_raksh_result(
     if ok:
         return True, message
     if (
-        service_type in {"story", "send_message"}
+        service_type == "send_message"
         or _is_raksh_account_or_session_failure(message)
         or _is_raksh_verification_failure(service_type, message)
     ):

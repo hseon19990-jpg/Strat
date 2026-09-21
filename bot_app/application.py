@@ -6,10 +6,6 @@ domain.
 """
 from .referrals import run_referral_tasks_job
 from .reaction_operations import run_reaction_ops_job
-from .accounts import (
-    FROZEN_SCAN_INTERVAL_SECONDS,
-    scan_stale_frozen_accounts_job,
-)
 from .raksh_system.common import cleanup_expired_raksh_channel_memberships
 from types import SimpleNamespace
 from . import shared as _shared
@@ -548,15 +544,6 @@ def main():
         logger.info("🔁 تم تفعيل استئناف خدمات الرشق غير المستمرة كل دقيقة")
         app.job_queue.run_repeating(cleanup_expired_raksh_channel_memberships, interval=300, first=60)
         logger.info("👋 تم تفعيل إخراج حسابات الرشق بعد انتهاء مهلة القنوات (كل 5 دقائق)")
-        app.job_queue.run_repeating(
-            scan_stale_frozen_accounts_job,
-            interval=FROZEN_SCAN_INTERVAL_SECONDS,
-            first=120,
-        )
-        logger.info(
-            "🩺 تم تفعيل فحص الحسابات المجمّدة تدريجياً كل 5 دقائق "
-            "(مرة واحدة كحد أقصى لكل حساب خلال 24 ساعة)"
-        )
         logger.info("🤝 تم تفعيل مهام الإحالة التلقائية (كل ساعة)")
         app.job_queue.run_repeating(compensate_duplicate_sales_job, interval=21600, first=300)
         logger.info("🔁 تم تفعيل فحص البيع المكرر وتعويض المتضررين (كل 6 ساعات)")
