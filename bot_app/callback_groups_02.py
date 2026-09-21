@@ -2186,6 +2186,7 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                     [InlineKeyboardButton("🔍 فحص جاهزية الأرقام (كود + 2FA)", callback_data="os:check_readiness")],
                     [InlineKeyboardButton("🗑️ حذف الأرقام اليدوية + تعويض المشترين", callback_data="os:delete_manual_numbers")],
                     [InlineKeyboardButton("🔑 تعيين كلمة مرور 'محمد' لجميع الحسابات", callback_data="os:set_all_2fa_muhammed")],
+                    [InlineKeyboardButton("🔐 التحقق من 2Fa", callback_data="os:verify_unread_2fa")],
                     [InlineKeyboardButton("✅ التأكد من الحسابات التي تحققها محمد", callback_data="os:verify_muhammed_accounts")],
                     [InlineKeyboardButton("💥 محاولة طرد جميع الأجهزة", callback_data="os:kick_all_devices")],
                     [InlineKeyboardButton("🔓 إزالة التحقق (2FA) من ملفات جلسة", callback_data="os:remove_2fa_mode")],

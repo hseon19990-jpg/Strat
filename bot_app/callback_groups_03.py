@@ -108,6 +108,90 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
             )
             return
 
+        if data == "os:verify_unread_2fa" and is_own:
+            if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
+                await q.answer("❌ API_ID / API_HASH غير مضبوطة.", show_alert=True)
+                return
+            if context.user_data.get("unread_2fa_scan_running"):
+                await q.answer("⏳ الفحص جارٍ بالفعل.", show_alert=True)
+                return
+            with db_conn() as _c:
+                _rows = _c.execute(
+                    "SELECT id, phone_number, session_string "
+                    "FROM number_stock "
+                    "WHERE session_string IS NOT NULL AND deleted_at IS NULL "
+                    "AND (twofa_password IS NULL OR twofa_password = '') "
+                    "AND twofa_reset_date IS NULL "
+                    "AND ever_sold IS NOT TRUE "
+                    "ORDER BY id ASC"
+                ).fetchall()
+            if not _rows:
+                await q.answer("✅ لا توجد حسابات جديدة تحتاج قراءة 2FA.", show_alert=True)
+                return
+
+            context.user_data["unread_2fa_scan_running"] = True
+            await q.edit_message_text(
+                f"🔐 *بدأ التحقق من 2FA*\n\n"
+                f"📦 الحسابات التي لم تُقرأ سابقاً: *{len(_rows)}*\n"
+                "سيتم فحص كل جلسة وتسجيل النتيجة عند الانتهاء.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 رجوع للمخزون", callback_data="os:manage_numbers")
+                ]])
+            )
+
+            async def _verify_unread_2fa_bg():
+                done, scheduled, failed = [], [], []
+                try:
+                    for rec in _rows:
+                        phone = rec["phone_number"]
+                        try:
+                            ok_2fa, result_msg, _ = await enable_2fa_for_number(
+                                phone,
+                                rec["session_string"],
+                                rec["id"],
+                                bot=context.bot,
+                            )
+                            if ok_2fa:
+                                done.append(phone)
+                            elif "إعادة المحاولة" in (result_msg or ""):
+                                scheduled.append(phone)
+                            else:
+                                failed.append(f"{phone}: {str(result_msg)[:90]}")
+                        except Exception as _scan_e:
+                            failed.append(f"{phone}: {str(_scan_e)[:90]}")
+                        await asyncio.sleep(0.8)
+
+                    report = [
+                        "🔐 *اكتمل التحقق من 2FA*\n",
+                        f"📦 تمت قراءة: *{len(_rows)}*",
+                        f"✅ تم الحفظ/التفعيل: *{len(done)}*",
+                        f"⏳ مجدولة لإعادة المحاولة بعد 7 أيام: *{len(scheduled)}*",
+                        f"⚠️ فشل: *{len(failed)}*",
+                    ]
+                    if done:
+                        report.append("\n✅ الحسابات المكتملة:\n" + "\n".join(f"• `{p}`" for p in done[:30]))
+                    if scheduled:
+                        report.append(
+                            "\n⏳ الحسابات المجهولة:\n"
+                            + "\n".join(f"• `{p}`" for p in scheduled[:30])
+                        )
+                    if failed:
+                        report.append(
+                            "\n⚠️ الحسابات التي تحتاج مراجعة:\n"
+                            + "\n".join(f"• {item}" for item in failed[:20])
+                        )
+                    await context.bot.send_message(
+                        OWNER_ID,
+                        "\n".join(report),
+                        parse_mode=ParseMode.MARKDOWN,
+                    )
+                finally:
+                    context.user_data["unread_2fa_scan_running"] = False
+
+            asyncio.create_task(_verify_unread_2fa_bg())
+            return
+
         if data == "os:verify_muhammed_accounts" and is_own:
             with db_conn() as _c:
                 _rows = _c.execute(
