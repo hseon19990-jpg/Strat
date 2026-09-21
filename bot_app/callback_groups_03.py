@@ -141,8 +141,44 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
 
             async def _verify_unread_2fa_bg():
                 verified, missing, invalid, no_2fa, failed = [], [], [], [], []
-                try:
-                    for _index, rec in enumerate(_rows, start=1):
+                parallel_limit = 5
+                slots = asyncio.Semaphore(parallel_limit)
+                progress_lock = asyncio.Lock()
+                processed = 0
+
+                async def _update_progress():
+                    nonlocal processed
+                    async with progress_lock:
+                        processed += 1
+                        if processed % 5 != 0 and processed != len(_rows):
+                            return
+                        try:
+                            await context.bot.edit_message_text(
+                                chat_id=q.message.chat_id,
+                                message_id=q.message.message_id,
+                                text=(
+                                    "🔐 *التحقق الآمن من 2FA جارٍ...*\n\n"
+                                    f"📦 التقدم: *{processed}/{len(_rows)}*\n"
+                                    f"✅ صحيح: *{len(verified)}* | "
+                                    f"⚠️ غير محفوظ: *{len(missing)}*\n"
+                                    f"❌ غير مطابق: *{len(invalid)}* | "
+                                    f"ℹ️ بدون 2FA: *{len(no_2fa)}*\n\n"
+                                    f"⚡ يعمل بالتوازي ({parallel_limit} حسابات).\n"
+                                    "لن يتم تغيير أي كلمة مرور أثناء الفحص."
+                                ),
+                                parse_mode=ParseMode.MARKDOWN,
+                                reply_markup=InlineKeyboardMarkup([[
+                                    InlineKeyboardButton(
+                                        "🔙 رجوع للمخزون",
+                                        callback_data="os:manage_numbers",
+                                    )
+                                ]]),
+                            )
+                        except Exception:
+                            pass
+
+                async def _verify_one(rec):
+                    async with slots:
                         phone = rec["phone_number"]
                         saved_pwd = (rec["twofa_password"] or "").strip()
                         cli = None
@@ -155,7 +191,7 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                             await asyncio.wait_for(cli.connect(), timeout=20)
                             if not await asyncio.wait_for(cli.is_user_authorized(), timeout=10):
                                 failed.append(f"{phone}: الجلسة منتهية")
-                                continue
+                                return
 
                             pwd_state = await asyncio.wait_for(
                                 cli(GetPasswordRequest()), timeout=12
@@ -172,9 +208,6 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                                     timeout=15,
                                 )
                                 if result is True:
-                                    # Verification is intentionally read-only. The
-                                    # password is sent only to the owner so it can
-                                    # be reviewed before a separate change action.
                                     safe_pwd = saved_pwd.replace("`", "")
                                     verified.append(f"{phone}: `{safe_pwd}`")
                                 elif result is False:
@@ -191,31 +224,10 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                                     await cli.disconnect()
                             except Exception:
                                 pass
-                        if _index % 5 == 0 or _index == len(_rows):
-                            try:
-                                await context.bot.edit_message_text(
-                                    chat_id=q.message.chat_id,
-                                    message_id=q.message.message_id,
-                                    text=(
-                                        "🔐 *التحقق الآمن من 2FA جارٍ...*\n\n"
-                                        f"📦 التقدم: *{_index}/{len(_rows)}*\n"
-                                        f"✅ صحيح: *{len(verified)}* | "
-                                        f"⚠️ غير محفوظ: *{len(missing)}*\n"
-                                        f"❌ غير مطابق: *{len(invalid)}* | "
-                                        f"ℹ️ بدون 2FA: *{len(no_2fa)}*\n\n"
-                                        "لن يتم تغيير أي كلمة مرور أثناء الفحص."
-                                    ),
-                                    parse_mode=ParseMode.MARKDOWN,
-                                    reply_markup=InlineKeyboardMarkup([[
-                                        InlineKeyboardButton(
-                                            "🔙 رجوع للمخزون",
-                                            callback_data="os:manage_numbers",
-                                        )
-                                    ]]),
-                                )
-                            except Exception:
-                                pass
-                        await asyncio.sleep(0.8)
+                            await _update_progress()
+
+                try:
+                    await asyncio.gather(*(_verify_one(rec) for rec in _rows))
 
                     report = [
                         "🔐 *اكتمل التحقق الآمن من 2FA*\n",
