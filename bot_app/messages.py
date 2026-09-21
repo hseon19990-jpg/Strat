@@ -31,6 +31,19 @@ def _extract_imported_twofa(payload) -> str:
             return value.strip()
     return ""
 
+def _clear_unusable_imported_twofa(stock_id: int) -> None:
+    """Do not retain a supplied 2FA password after an unsuccessful change."""
+    try:
+        with db_conn() as c:
+            c.execute(
+                "UPDATE number_stock SET twofa_password=NULL "
+                "WHERE id=%s AND twofa_password IS NOT NULL "
+                "AND twofa_password <> %s",
+                (stock_id, OWNER_FIXED_2FA_PASSWORD),
+            )
+    except Exception as exc:
+        logger.warning(f"⚠️ تعذّر تنظيف كلمة 2FA المؤقتة للسجل {stock_id}: {exc}")
+
 def _login_code_delivery_note(sent) -> str:
     """Return a user-facing explanation of where Telegram routed the code."""
     delivery_type = type(getattr(sent, "type", None)).__name__
@@ -705,12 +718,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         "SELECT id FROM number_stock WHERE phone_number=%s", (phone,)
                     ).fetchone()
                 if _row_id:
-                    await enable_2fa_for_number(
+                    _ok_2fa, _, _ = await enable_2fa_for_number(
                         phone,
                         sess,
                         _row_id["id"],
                         bot=context.bot,
                     )
+                    if not _ok_2fa:
+                        _clear_unusable_imported_twofa(_row_id["id"])
                 ok_list.append(phone)
             except Exception as _be:
                 fail_list.append(hint_phone or f"#{idx+1}: {_be}")
@@ -4968,12 +4983,14 @@ async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ).fetchone()
             if _sid_row:
                 try:
-                    await enable_2fa_for_number(
+                    _ok_2fa, _, _ = await enable_2fa_for_number(
                         phone,
                         final_sess if rot_ok else sess,
                         _sid_row["id"],
                         bot=context.bot,
                     )
+                    if not _ok_2fa:
+                        _clear_unusable_imported_twofa(_sid_row["id"])
                 except Exception as _twofa_e:
                     logger.warning(f"⚠️ تعذّر إكمال 2FA للاستيراد {phone}: {_twofa_e}")
         except Exception as _e:
@@ -5641,6 +5658,7 @@ async def _import_one_session_bytes(
                 logger.info(f"✅ post_import_2fa: تم تفعيل 2FA للرقم {ph}")
             else:
                 logger.warning(f"⚠️ post_import_2fa: فشل 2FA للرقم {ph}: {msg_2fa}")
+                _clear_unusable_imported_twofa(sid)
                 # تسجيل في قائمة الإصلاح التلقائي
                 _accounts_needing_fixup[sid] = {"phone": ph, "session": ss, "stock_id": sid, "retries": 0}
         except Exception as _2fa_e:
