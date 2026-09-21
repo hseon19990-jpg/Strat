@@ -20,6 +20,7 @@ from telethon.tl.types import ReactionEmoji
 
 from . import shared as _shared
 from .database import db_conn
+from .raksh_system.common import _get_raksh_session_lock
 
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
@@ -192,27 +193,35 @@ def _claim_queued_posts() -> None:
 
 
 async def _run_account_action(job: dict, action: str) -> tuple[bool, str, str]:
-    async with TelegramClient(
-        StringSession(job["session_string"]),
-        int(TELEGRAM_API_ID),
-        TELEGRAM_API_HASH,
-    ) as client:
-        channel, message_id = _parse_public_post(job["telegram_url"]) or ("", 0)
-        entity = await client.get_entity(channel)
-        me = await client.get_me()
-        handle = f"@{me.username}" if getattr(me, "username", None) else f"tg:{me.id}"
-        if action == "react":
-            emoji = random.choice(_REACTION_EMOJIS)
-            await client(
-                SendReactionRequest(
-                    peer=entity,
-                    msg_id=message_id,
-                    reaction=[ReactionEmoji(emoticon=emoji)],
+    # Share the same per-account lock as the raksh services. Without this,
+    # this scheduler can open the same authorization key while the continuous
+    # campaign is using it from another task.
+    session_key = str(
+        job.get("account_handle") or f"stock:{job.get('stock_id') or ''}"
+    ).strip()
+    session_lock = _get_raksh_session_lock(session_key)
+    async with session_lock:
+        async with TelegramClient(
+            StringSession(job["session_string"]),
+            int(TELEGRAM_API_ID),
+            TELEGRAM_API_HASH,
+        ) as client:
+            channel, message_id = _parse_public_post(job["telegram_url"]) or ("", 0)
+            entity = await client.get_entity(channel)
+            me = await client.get_me()
+            handle = f"@{me.username}" if getattr(me, "username", None) else f"tg:{me.id}"
+            if action == "react":
+                emoji = random.choice(_REACTION_EMOJIS)
+                await client(
+                    SendReactionRequest(
+                        peer=entity,
+                        msg_id=message_id,
+                        reaction=[ReactionEmoji(emoticon=emoji)],
+                    )
                 )
-            )
-            return True, handle, emoji
-        await client(LeaveChannelRequest(channel=entity))
-        return True, handle, ""
+                return True, handle, emoji
+            await client(LeaveChannelRequest(channel=entity))
+            return True, handle, ""
 
 
 def _claim_job(status: str) -> dict | None:

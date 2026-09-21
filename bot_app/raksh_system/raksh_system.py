@@ -10,7 +10,7 @@ from .poll import PollService
 from .votes import VotesService
 from .votes_ai import VotesAIService
 from .premium_reaction import PremiumReactionService
-from .all_posts_reactions import AllPostsReactionsService
+from .all_posts_reactions import AllPostsReactionsService, LIVE_MONITOR_ENABLED
 from .message import (
     MessageService,
     message_confirmation_keyboard,
@@ -2879,7 +2879,7 @@ async def _run_all_posts_reactions_order(context, order: Dict, progress_msg=None
         return
 
     svc = get_raksh_service("all_posts_reactions")
-    if svc and svc.is_live_monitoring(order_id):
+    if svc and LIVE_MONITOR_ENABLED and svc.is_live_monitoring(order_id):
         _set_raksh_order_status(
             order_id,
             "pending",
@@ -2888,7 +2888,7 @@ async def _run_all_posts_reactions_order(context, order: Dict, progress_msg=None
         return
 
     persisted_monitor = params.get("live_monitor")
-    if isinstance(persisted_monitor, dict):
+    if LIVE_MONITOR_ENABLED and isinstance(persisted_monitor, dict):
         monitor_expires_at = AllPostsReactionsService._as_utc(
             persisted_monitor.get("expires_at")
         )
@@ -3002,7 +3002,7 @@ async def _run_all_posts_reactions_order(context, order: Dict, progress_msg=None
         await finish_order()
         return
 
-    if svc and success_count >= quantity:
+    if svc and LIVE_MONITOR_ENABLED and success_count >= quantity:
         successful_phones = {str(phone) for phone in success_phones}
         # قد يكون أحد الحسابات الناجحة بديلاً أُضيف داخل نفس الدفعة؛
         # أعد تحميل الجلسات حتى يدخل البديل في المستمع المباشر أيضاً.

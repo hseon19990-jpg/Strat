@@ -4,6 +4,7 @@ from .common import *
 from ..database import db_conn
 from datetime import datetime, timezone
 import json
+import os
 from telethon import events
 from telethon.tl.functions.messages import (
     GetMessagesViewsRequest,
@@ -13,6 +14,12 @@ from telethon.tl.types import ReactionCustomEmoji, ReactionEmoji
 
 
 _LIVE_MONITORS = {}
+# A persistent Telethon client keeps an authorization key open for the whole
+# campaign. Other campaign workers may use the same stock account, so the
+# default is the safer polling mode: one short-lived client per cycle.
+LIVE_MONITOR_ENABLED = os.getenv(
+    "RAKSH_LIVE_MONITOR_ENABLED", ""
+).strip().casefold() in {"1", "true", "yes", "on"}
 
 
 def _touch_live_monitor(order_id: int) -> None:
@@ -866,14 +873,14 @@ class AllPostsReactionsService(RakshService):
                     success_count += 1
 
             if not attempted_count:
-                return True, (
-                    f"✅ انضم الحساب {session.get('phone_number', '')} إلى القناة؛ "
-                    "لا توجد منشورات حالياً للتفاعل معها"
+                return False, (
+                    f"لم ينفذ الحساب {session.get('phone_number', '')} العملية: "
+                    "لا توجد منشورات جديدة للتفاعل معها"
                 )
             if not view_success_count and not reaction_success_count:
-                return True, (
-                    f"✅ انضم الحساب {session.get('phone_number', '')} إلى القناة، "
-                    "لكن تعذر تسجيل المشاهدات والتفاعلات على المنشورات الحالية"
+                return False, (
+                    f"فشل الحساب {session.get('phone_number', '')}: "
+                    "تعذر تسجيل المشاهدات والتفاعلات على المنشورات الحالية"
                 )
             return True, (
                 f"✅ تمت معالجة {success_count} من {attempted_count} منشوراً "
