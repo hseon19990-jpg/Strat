@@ -263,6 +263,23 @@ def init_db():
                updated_at    TIMESTAMPTZ DEFAULT NOW(),
                UNIQUE(order_id, phone_number)
            )""")
+          c.execute("""
+           CREATE TABLE IF NOT EXISTS raksh_contributor_earnings (
+               id               BIGSERIAL PRIMARY KEY,
+               order_id         BIGINT NOT NULL REFERENCES raksh_orders(id) ON DELETE CASCADE,
+               stock_id         BIGINT NOT NULL,
+               contributor_id   BIGINT NOT NULL,
+               payment_method   TEXT NOT NULL,
+               gross_points     INTEGER NOT NULL DEFAULT 0,
+               share_percent    INTEGER NOT NULL DEFAULT 50,
+               share_points     INTEGER NOT NULL DEFAULT 0,
+               created_at       TIMESTAMPTZ DEFAULT NOW(),
+               UNIQUE(order_id, stock_id)
+           )""")
+          c.execute("""
+           CREATE INDEX IF NOT EXISTS raksh_contributor_earnings_user_idx
+           ON raksh_contributor_earnings (contributor_id, created_at DESC)
+           """)
           # ترقية قواعد البيانات القديمة التي أنشأت جداول الرشق قبل إضافة
           # الاستئناف. CREATE TABLE IF NOT EXISTS لا يضيف الأعمدة إلى جدول
           # موجود، لذلك يجب تنفيذ هذه الترقية قبل إنشاء فهارس الاستئناف.
@@ -417,7 +434,9 @@ def init_db():
               phone_number  TEXT UNIQUE,
               assigned_to   BIGINT,
               assigned_at   TIMESTAMPTZ,
-              added_at      TIMESTAMPTZ DEFAULT NOW()
+              added_at      TIMESTAMPTZ DEFAULT NOW(),
+              contributed_by BIGINT,
+              contributor_share_percent INTEGER DEFAULT 50
           )""")
 
           # جداول لوحة «رشق تفاعل لكل المنشورات».
@@ -530,6 +549,8 @@ def init_db():
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS raksh_excluded BOOLEAN DEFAULT FALSE",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS bot_session_ip TEXT",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS forced_ref_excluded BOOLEAN DEFAULT FALSE",
+              "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS contributed_by BIGINT",
+              "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS contributor_share_percent INTEGER DEFAULT 50",
               "ALTER TABLE services ADD COLUMN IF NOT EXISTS platform TEXT DEFAULT 'tg'",
               "ALTER TABLE services ADD COLUMN IF NOT EXISTS source_name TEXT",
               "ALTER TABLE users ADD COLUMN IF NOT EXISTS banned INTEGER DEFAULT 0",

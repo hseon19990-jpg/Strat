@@ -729,7 +729,7 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """أمر عام: /cancel — يوقف أي عملية إدخال نصي معلّقة (مثل حلقة إضافة أرقام متتالية) ويرجع للقائمة."""
     user = update.effective_user
-    if user and user.id == OWNER_ID:
+    if user and (user.id == OWNER_ID or _pending_number_logins.get(user.id)):
         await _cleanup_pending_login(user.id)
     if user:
         _pending_supervisor_logins.pop(user.id, None)

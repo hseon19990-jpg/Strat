@@ -752,9 +752,37 @@ async def _finish_number_login(update: Update, context: ContextTypes.DEFAULT_TYP
             phone = ""
     if not phone:
         raise ValueError("تعذّر تحديد رقم الحساب بعد تسجيل الدخول")
+    contributor_id = pending.get("contributor_id")
     raksh_only = bool(pending.get("raksh_only"))
     try:
         session_str = client.session.save()
+        if contributor_id:
+            added, reason = add_contributor_account(
+                int(contributor_id),
+                phone,
+                session_str,
+            )
+            if not added:
+                await reply_target.reply_text(
+                    f"⚠️ لم تتم إضافة الحساب:\n{reason}\n\n"
+                    "لم يتم تغيير أي إعداد أو جلسة في الحساب.",
+                    reply_markup=main_menu_kb(False),
+                )
+                context.user_data["state"] = "main_menu"
+                return
+            await reply_target.reply_text(
+                "✅ *تمت إضافة حسابك للرشق بنجاح!*\n\n"
+                f"📱 {phone}\n"
+                "🔥 سيُستخدم لخدمات الرشق فقط.\n"
+                "🔒 لم يطرد البوت أي جلسة ولم يغيّر كلمة مرور أو إعداداً.\n"
+                "💰 ستحصل على 50٪ من نقاط الطلبات المنفذة بنجاح باستخدامه.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            await reply_target.reply_text(
+                "📲 أرسل حساباً آخر لإضافته، أو أرسل /cancel للتوقف."
+            )
+            context.user_data["state"] = "contributor_await_login_phone"
+            return
         add_number_with_session(phone, session_str, raksh_only=raksh_only)
         if raksh_only:
             # حسابات الرشق مخصصة للرشق فقط: لا تطرد الجلسات الأخرى،

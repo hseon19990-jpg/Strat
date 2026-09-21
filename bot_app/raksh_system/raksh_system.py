@@ -350,6 +350,7 @@ def _cancel_user_raksh_order(user_id: int, order_id: int) -> Dict:
     success_count = 0
     quantity = 0
     payment_method = "points"
+    contributor_credits = []
     with db_conn() as c:
         order = c.execute(
             "SELECT * FROM raksh_orders WHERE id=%s AND user_id=%s FOR UPDATE",
@@ -393,6 +394,14 @@ def _cancel_user_raksh_order(user_id: int, order_id: int) -> Dict:
             """,
             (refund, result_text, cancel_reason, order_id),
         )
+        contributor_credits = _credit_raksh_contributors(
+            c,
+            int(order_id),
+            payment_method,
+            int(order["total_cost"] or 0),
+            success_count,
+            refund,
+        )
         c.execute(
             """
             UPDATE raksh_order_items
@@ -410,6 +419,7 @@ def _cancel_user_raksh_order(user_id: int, order_id: int) -> Dict:
         "success_count": success_count,
         "quantity": quantity,
         "payment_method": payment_method,
+        "contributor_credits": contributor_credits,
     }
 
 
@@ -500,7 +510,7 @@ def _load_raksh_order_items(order_id: int) -> Dict[str, Dict]:
     with db_conn() as c:
         rows = c.execute(
             """
-            SELECT phone_number, status, result_message, last_error
+            SELECT id, stock_id, phone_number, status, result_message, last_error
             FROM raksh_order_items
             WHERE order_id=%s
             ORDER BY position ASC
@@ -508,6 +518,85 @@ def _load_raksh_order_items(order_id: int) -> Dict[str, Dict]:
             (order_id,),
         ).fetchall()
     return {str(row["phone_number"]): dict(row) for row in rows}
+
+
+def _credit_raksh_contributors(
+    connection,
+    order_id: int,
+    payment_method: str,
+    total_cost: int,
+    success_count: int,
+    refund_points: int = 0,
+) -> list[dict]:
+    """يسجل ويدفع حصة أصحاب الحسابات مرة واحدة لكل طلب وحساب.
+
+    الحصة تُحسب من المبلغ المدفوع فعلياً للحسابات الناجحة فقط. الدفع بالنجوم
+    لا يولّد نقاطاً، لذلك لا تُنشأ منه أرباح نقاط للمساهمين.
+    """
+    if payment_method != "points" or success_count <= 0:
+        return []
+    net_points = max(0, int(total_cost or 0) - int(refund_points or 0))
+    if net_points <= 0:
+        return []
+
+    rows = connection.execute(
+        """
+        SELECT i.stock_id, i.phone_number, ns.contributed_by,
+               COALESCE(ns.contributor_share_percent, 50) AS share_percent
+        FROM raksh_order_items i
+        JOIN number_stock ns ON ns.id=i.stock_id
+        WHERE i.order_id=%s AND i.status='success'
+        ORDER BY i.position ASC
+        """,
+        (order_id,),
+    ).fetchall()
+    if not rows:
+        return []
+
+    per_account, remainder = divmod(net_points, success_count)
+    credits = []
+    for index, row in enumerate(rows):
+        contributor_id = row.get("contributed_by")
+        if not contributor_id:
+            continue
+        gross = per_account + (1 if index < remainder else 0)
+        try:
+            share_percent = max(0, min(100, int(row.get("share_percent") or 50)))
+        except (TypeError, ValueError):
+            share_percent = 50
+        share_points = (gross * share_percent) // 100
+        inserted = connection.execute(
+            """
+            INSERT INTO raksh_contributor_earnings
+                (order_id, stock_id, contributor_id, payment_method,
+                 gross_points, share_percent, share_points)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (order_id, stock_id) DO NOTHING
+            RETURNING id
+            """,
+            (
+                order_id,
+                row["stock_id"],
+                contributor_id,
+                payment_method,
+                gross,
+                share_percent,
+                share_points,
+            ),
+        ).fetchone()
+        if not inserted:
+            continue
+        if share_points:
+            connection.execute(
+                "UPDATE users SET points=points+%s WHERE user_id=%s",
+                (share_points, contributor_id),
+            )
+        credits.append({
+            "user_id": int(contributor_id),
+            "phone": str(row.get("phone_number") or ""),
+            "points": share_points,
+        })
+    return credits
 
 
 def _mark_raksh_order_item_started(order_id: int, phone: str) -> bool:
@@ -1831,6 +1920,24 @@ async def _handle_raksh_callback_impl(
             message += f" تمت إعادة {result['refund']} نقطة."
         elif result["payment_method"] == "stars":
             message += " أُلغي الجزء المتبقي، والاسترداد التلقائي للنجوم غير متاح."
+        for credit in result.get("contributor_credits") or []:
+            if credit.get("points", 0) <= 0:
+                continue
+            try:
+                await context.bot.send_message(
+                    chat_id=credit["user_id"],
+                    text=(
+                        "🎉 *تمت إضافة أرباح حسابك*\n\n"
+                        f"📱 الحساب: `{credit['phone']}`\n"
+                        f"💰 حصتك من الجزء المنفذ: *{credit['points']:,} نقطة*"
+                    ),
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+            except Exception:
+                logger.warning(
+                    "تعذر إشعار صاحب حساب الرشق %s بعد الإلغاء",
+                    credit["user_id"],
+                )
         await query.answer(message, show_alert=True)
         await _render_user_raksh_orders(query, user.id)
         return
@@ -2732,8 +2839,9 @@ async def _run_all_posts_reactions_order(context, order: Dict, progress_msg=None
             f"🗓 المدة: {duration_days} يوم\n"
             "تم التفاعل مع المنشورات الجديدة بهذا العدد من الحسابات طوال مدة الطلب."
         )
+        contributor_credits = []
         with db_conn() as c:
-            c.execute(
+            completed_row = c.execute(
                 """
                 UPDATE raksh_orders
                 SET status='completed', result_text=%s, last_error=NULL,
@@ -2741,9 +2849,45 @@ async def _run_all_posts_reactions_order(context, order: Dict, progress_msg=None
                     params=COALESCE(params, '{}'::jsonb) - 'live_monitor',
                     updated_at=NOW(), completed_at=NOW()
                 WHERE id=%s AND status <> 'cancelled'
+                RETURNING id
                 """,
                 (result_text, order_id),
-            )
+            ).fetchone()
+            if completed_row:
+                success_row = c.execute(
+                    """
+                    SELECT COUNT(*) AS count
+                    FROM raksh_order_items
+                    WHERE order_id=%s AND status='success'
+                    """,
+                    (order_id,),
+                ).fetchone()
+                contributor_credits = _credit_raksh_contributors(
+                    c,
+                    order_id,
+                    order.get("payment_method") or "points",
+                    int(order.get("total_cost") or 0),
+                    int(success_row["count"] or 0) if success_row else 0,
+                    0,
+                )
+        for credit in contributor_credits:
+            if credit["points"] <= 0:
+                continue
+            try:
+                await context.bot.send_message(
+                    chat_id=credit["user_id"],
+                    text=(
+                        "🎉 *تمت إضافة أرباح حسابك*\n\n"
+                        f"📱 الحساب: `{credit['phone']}`\n"
+                        f"💰 حصتك من حملة الرشق: *{credit['points']:,} نقطة*"
+                    ),
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+            except Exception:
+                logger.warning(
+                    "تعذر إشعار صاحب حساب الرشق %s بانتهاء حملة التفاعل",
+                    credit["user_id"],
+                )
         if progress_msg:
             try:
                 await progress_msg.edit_text(result_text, reply_markup=main_menu_kb())
@@ -3063,6 +3207,7 @@ async def _run_raksh_order(
     )
     if refund > 0:
         result_text += f"💰 تم تعويضك: {refund} نقطة\n"
+    contributor_credits = []
     with db_conn() as c:
         completed_row = c.execute(
             """
@@ -3075,9 +3220,36 @@ async def _run_raksh_order(
             """,
             (refund, special_count, result_text, order_id),
         ).fetchone()
+        if completed_row:
+            contributor_credits = _credit_raksh_contributors(
+                c,
+                order_id,
+                payment_method,
+                total_cost,
+                success_count,
+                refund,
+            )
 
     if not completed_row:
         return
+    for credit in contributor_credits:
+        if credit["points"] <= 0:
+            continue
+        try:
+            await context.bot.send_message(
+                chat_id=credit["user_id"],
+                text=(
+                    "🎉 *تمت إضافة أرباح حسابك*\n\n"
+                    f"📱 الحساب: `{credit['phone']}`\n"
+                    f"💰 حصتك من طلب رشق منفذ: *{credit['points']:,} نقطة*"
+                ),
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        except Exception:
+            logger.warning(
+                "تعذر إشعار صاحب حساب الرشق %s بالأرباح",
+                credit["user_id"],
+            )
     if refund > 0:
         add_points(user_id, refund)
 

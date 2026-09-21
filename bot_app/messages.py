@@ -3267,7 +3267,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
-    if is_own and state in {"os_await_login_phone", "os_await_raksh_login_phone"}:
+    if state == "contributor_await_login_phone" or (
+        is_own and state in {"os_await_login_phone", "os_await_raksh_login_phone"}
+    ):
+        _contributor_login = state == "contributor_await_login_phone"
         _raksh_login = state == "os_await_raksh_login_phone"
         phone = re.sub(r"\s+", "", text.strip())
         # ─── إضافة + تلقائياً إذا أرسل المالك الرقم بدونها ───
@@ -3300,8 +3303,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "phone": phone,
             "phone_code_hash": sent.phone_code_hash,
             "raksh_only": _raksh_login,
+            "contributor_id": user.id if _contributor_login else None,
         }
-        context.user_data["state"] = "os_await_login_code"
+        context.user_data["state"] = (
+            "contributor_await_login_code"
+            if _contributor_login
+            else "os_await_login_code"
+        )
         await update.message.reply_text(
             "📩 تم طلب كود الدخول.\n\n"
             f"{_login_code_delivery_note(sent)}\n\n"
@@ -3316,10 +3324,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if is_own and state == "os_await_login_code":
+    if state in {"os_await_login_code", "contributor_await_login_code"} and (
+        is_own or state == "contributor_await_login_code"
+    ):
+        _contributor_login = state == "contributor_await_login_code"
         pending = _pending_number_logins.get(user.id)
         if not pending:
-            await update.message.reply_text("⚠️ انتهت الجلسة، ابدأ من جديد من قائمة إدارة الأرقام.", reply_markup=owner_settings_kb())
+            await update.message.reply_text(
+                "⚠️ انتهت الجلسة، ابدأ من جديد من قائمة الحسابات."
+                if _contributor_login
+                else "⚠️ انتهت الجلسة، ابدأ من جديد من قائمة إدارة الأرقام.",
+                reply_markup=None if _contributor_login else owner_settings_kb(),
+            )
             context.user_data["state"] = "main_menu"
             return
         client = pending["client"]
@@ -3327,7 +3343,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await client.sign_in(pending["phone"], code, phone_code_hash=pending["phone_code_hash"])
         except SessionPasswordNeededError:
-            context.user_data["state"] = "os_await_login_password"
+            context.user_data["state"] = (
+                "contributor_await_login_password"
+                if state == "contributor_await_login_code"
+                else "os_await_login_password"
+            )
             await update.message.reply_text("🔒 هذا الحساب محمي بكلمة مرور تحقق بخطوتين (2FA). أرسلها الآن:")
             return
         except (PhoneCodeInvalidError, PhoneCodeExpiredError):
@@ -3335,14 +3355,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         except Exception as e:
             logger.error(f"❌ خطأ في تسجيل الدخول: {e}")
-            await update.message.reply_text("❌ فشل تسجيل الدخول. حاول من جديد لاحقاً من قائمة إدارة الأرقام.", reply_markup=owner_settings_kb())
+            await update.message.reply_text(
+                "❌ فشل تسجيل الدخول. حاول من جديد من قائمة الحسابات."
+                if _contributor_login
+                else "❌ فشل تسجيل الدخول. حاول من جديد لاحقاً من قائمة إدارة الأرقام.",
+                reply_markup=None if _contributor_login else owner_settings_kb(),
+            )
             await _cleanup_pending_login(user.id)
             context.user_data["state"] = "main_menu"
             return
         await _finish_number_login(update, context, user.id)
         return
 
-    if is_own and state == "os_await_login_password":
+    if state in {"os_await_login_password", "contributor_await_login_password"} and (
+        is_own or state == "contributor_await_login_password"
+    ):
         pending = _pending_number_logins.get(user.id)
         if not pending:
             await update.message.reply_text("⚠️ انتهت الجلسة، ابدأ من جديد من قائمة إدارة الأرقام.", reply_markup=owner_settings_kb())
@@ -3356,7 +3383,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         except Exception as e:
             logger.error(f"❌ خطأ في تسجيل الدخول (2FA): {e}")
-            await update.message.reply_text("❌ فشل تسجيل الدخول. حاول من جديد لاحقاً من قائمة إدارة الأرقام.", reply_markup=owner_settings_kb())
+            await update.message.reply_text(
+                "❌ فشل تسجيل الدخول. حاول من جديد من قائمة الحسابات."
+                if state == "contributor_await_login_password"
+                else "❌ فشل تسجيل الدخول. حاول من جديد لاحقاً من قائمة إدارة الأرقام.",
+                reply_markup=(
+                    None
+                    if state == "contributor_await_login_password"
+                    else owner_settings_kb()
+                ),
+            )
             await _cleanup_pending_login(user.id)
             context.user_data["state"] = "main_menu"
             return

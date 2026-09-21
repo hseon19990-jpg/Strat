@@ -331,7 +331,8 @@ def _get_sessions_for_service(service_type: str, is_owner: bool = False) -> List
 
     with db_conn() as c:
         query = """
-            SELECT id, phone_number, session_string, raksh_only, last_authorized
+            SELECT id, phone_number, session_string, raksh_only, last_authorized,
+                   contributed_by, contributor_share_percent
             FROM number_stock
             WHERE session_string IS NOT NULL
               AND BTRIM(session_string) <> ''

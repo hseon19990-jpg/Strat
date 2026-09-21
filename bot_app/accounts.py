@@ -1123,6 +1123,77 @@ def add_number_with_session(phone: str, session_str: str, raksh_only: bool = Fal
         )
         return True
 
+def add_contributor_account(user_id: int, phone: str, session_str: str) -> tuple[bool, str]:
+    """يحفظ حساب مستخدم في مخزون الرشق دون المساس بجلساته أو إعداداته.
+
+    لا يسمح هذا المسار بالاستيلاء على رقم موجود في مخزون المالك أو مستخدم
+    آخر؛ الحساب يُضاف مرة واحدة ويُربط بصاحبه حتى تُنسب له أرباحه بشكل آمن.
+    """
+    phone = str(phone or "").strip()
+    session_str = str(session_str or "").strip()
+    if not phone or not session_str:
+        return False, "بيانات الحساب غير مكتملة."
+
+    with db_conn() as c:
+        existing = c.execute(
+            """
+            SELECT id, contributed_by, ever_sold
+            FROM number_stock
+            WHERE phone_number=%s
+            FOR UPDATE
+            """,
+            (phone,),
+        ).fetchone()
+        if existing:
+            if existing["contributed_by"] != user_id:
+                return False, "هذا الرقم موجود مسبقاً ولا يمكن ربطه بحساب مستخدم آخر."
+            if existing["ever_sold"]:
+                return False, "هذا الحساب استُخدم في عملية بيع سابقة ولا يمكن إعادته للرشق."
+            c.execute(
+                """
+                UPDATE number_stock
+                SET session_string=%s,
+                    deleted_at=NULL,
+                    raksh_only=TRUE,
+                    raksh_excluded=FALSE,
+                    last_authorized=TRUE
+                WHERE id=%s
+                """,
+                (session_str, existing["id"]),
+            )
+            return True, "updated"
+
+        c.execute(
+            """
+            INSERT INTO number_stock
+                (phone_number, session_string, deleted_at, raksh_only,
+                 raksh_excluded, contributed_by, contributor_share_percent)
+            VALUES (%s, %s, NULL, TRUE, FALSE, %s, 50)
+            """,
+            (phone, session_str, user_id),
+        )
+    return True, "added"
+
+def get_contributor_accounts(user_id: int) -> list[dict]:
+    """يعيد حسابات المستخدم وأرباحه المسجلة من طلبات الرشق."""
+    with db_conn() as c:
+        rows = c.execute(
+            """
+            SELECT ns.id, ns.phone_number, ns.last_authorized, ns.frozen_at,
+                   COALESCE(SUM(e.share_points), 0) AS earned_points
+            FROM number_stock ns
+            LEFT JOIN raksh_contributor_earnings e
+              ON e.stock_id=ns.id AND e.contributor_id=ns.contributed_by
+            WHERE ns.contributed_by=%s
+              AND ns.deleted_at IS NULL
+              AND ns.ever_sold IS NOT TRUE
+            GROUP BY ns.id, ns.phone_number, ns.last_authorized, ns.frozen_at
+            ORDER BY ns.id DESC
+            """,
+            (user_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
 def assign_next_number(user_id: int):
     """يسحب رقماً متاحاً من المخزون ويحجزه لهذا المستخدم بشكل ذرّي (يمنع تكرار تسليم نفس الرقم
     لشخصين عند الطلب المتزامن). يُرجع dict {phone_number, session_string} إن وُجد، أو None إن كان المخزون فارغاً."""

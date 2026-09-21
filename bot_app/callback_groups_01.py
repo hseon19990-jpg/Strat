@@ -292,6 +292,63 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             )
             return
 
+        if data == "contributor_accounts":
+            context.user_data["state"] = "contributor_accounts"
+            rows = get_contributor_accounts(user.id)
+            total_earned = sum(int(row.get("earned_points") or 0) for row in rows)
+            lines = [
+                "📱 *حساباتي للرشق*",
+                "",
+                "أضف حساباتك لاستخدامها في خدمات الرشق فقط.",
+                "لن يطرد البوت أي جلسة منها ولن يغيّر كلمة مرورها أو إعداداتها.",
+                "تحصل على *50٪ من نقاط* كل طلب نقاط يُنفّذ بنجاح باستخدام حسابك.",
+                "",
+                f"📦 الحسابات المضافة: *{len(rows)}*",
+                f"💰 أرباحك المسجلة: *{total_earned:,} نقطة*",
+            ]
+            if rows:
+                lines.append("\n*الحسابات:*")
+                for row in rows[:30]:
+                    status = "✅ جاهز" if row.get("last_authorized") is not False else "⚠️ الجلسة منتهية"
+                    lines.append(
+                        f"• `{row.get('phone_number')}` — {status} | "
+                        f"💰 {int(row.get('earned_points') or 0):,}"
+                    )
+                if len(rows) > 30:
+                    lines.append(f"_(يوجد {len(rows) - 30} حساباً إضافياً)_")
+            else:
+                lines.append("\nلا توجد حسابات مرتبطة بك بعد.")
+            await q.edit_message_text(
+                "\n".join(lines),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("➕ إضافة حساب", callback_data="contributor:add")],
+                    [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
+                ]),
+            )
+            return
+
+        if data == "contributor:add":
+            if is_user_banned(user.id):
+                await q.answer("🚫 لا يمكنك استخدام هذه الميزة.", show_alert=True)
+                return
+            if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
+                await q.answer("❌ إعدادات Telegram API غير مكتملة.", show_alert=True)
+                return
+            context.user_data["state"] = "contributor_await_login_phone"
+            await q.edit_message_text(
+                "📱 *إضافة حساب للرشق*\n\n"
+                "أرسل رقم هاتف حسابك بصيغة دولية، مثال:\n"
+                "`+9647701234567`\n\n"
+                "سيُطلب كود Telegram ثم كلمة مرور 2FA إن وُجدت. "
+                "لن أطرد أي جلسة ولن أغيّر إعدادات الحساب.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="contributor_accounts")],
+                ]),
+            )
+            return
+
         if data in {"services_menu", "services", "service_menu"}:
             context.user_data["state"] = "services_menu"
             try:
