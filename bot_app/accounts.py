@@ -737,6 +737,13 @@ async def remove_raksh_account_by_reference(reference: str) -> dict:
             "message": "الحساب لم يعد موجوداً أو تم حذفه.",
         }
 
+    # لا تنتظر خدمات الرشق انتهاء ذاكرة التخزين المؤقت حتى تستبعد الحساب فوراً.
+    try:
+        from .raksh_system.common import clear_raksh_session_cache
+        clear_raksh_session_cache()
+    except Exception as _exc:
+        logger.warning(f"تعذّر تنظيف ذاكرة حسابات الرشق بعد الإزالة: {_exc}")
+
     return {
         "status": "removed",
         "phone_number": _matched.get("phone_number"),

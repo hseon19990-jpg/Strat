@@ -2771,6 +2771,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if _c.rowcount:
                         _removed.append(_row["phone_number"])
 
+        if _removed:
+            from .raksh_system.common import clear_raksh_session_cache
+            clear_raksh_session_cache()
+
         context.user_data["state"] = "main_menu"
         _lines = [
             f"✅ تمت إزالة {len(_removed)} حساب من الرشق.",

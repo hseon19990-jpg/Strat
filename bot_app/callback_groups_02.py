@@ -2123,10 +2123,12 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             _raksh_id = data.split(":", 2)[2]
             with db_conn() as _uc:
                 _uc.execute(
-                    "UPDATE number_stock SET raksh_only=FALSE "
+                    "UPDATE number_stock SET raksh_only=FALSE, raksh_excluded=TRUE "
                     "WHERE id=%s AND deleted_at IS NULL",
                     (_raksh_id,),
                 )
+            from .raksh_system.common import clear_raksh_session_cache
+            clear_raksh_session_cache()
             await q.answer("✅ تمت إزالة التصنيف. سيعود الحساب للبيع فقط إذا استوفى شروط الجاهزية.")
             data = "os:raksh_accounts"
             # إعادة عرض القائمة بنفس المعالج في الأسفل
