@@ -231,7 +231,7 @@ async def send_raksh_message(
 
     for session in sessions:
         phone = session.get("phone_number") or "غير معروف"
-        lock = _get_raksh_session_lock(str(phone))
+        lock = _get_raksh_session_lock(session)
         async with lock:
             ok, result = await _send_message_from_session(
                 session,

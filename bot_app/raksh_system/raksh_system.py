@@ -1053,7 +1053,7 @@ async def _execute_raksh_sequential(
                 _mark_raksh_order_item_result(order_id, phone, False, msg)
             continue
 
-        session_lock = _get_raksh_session_lock(phone)
+        session_lock = _get_raksh_session_lock(session)
         if not await _wait_for_raksh_session(session_lock, phone):
             retry_counts[phone] = retry_counts.get(phone, 0) + 1
             if retry_counts[phone] < RAKSH_SESSION_RETRY_LIMIT:
@@ -1229,7 +1229,7 @@ async def _execute_raksh_parallel(
         ):
             return False, "تم تجاوز حد التنفيذ"
 
-        session_lock = _get_raksh_session_lock(phone)
+        session_lock = _get_raksh_session_lock(session)
         if not await _wait_for_raksh_session(session_lock, phone):
             return False, "تعذر تجهيز الجلسة بعد الانتظار"
 

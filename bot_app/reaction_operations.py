@@ -196,10 +196,7 @@ async def _run_account_action(job: dict, action: str) -> tuple[bool, str, str]:
     # Share the same per-account lock as the raksh services. Without this,
     # this scheduler can open the same authorization key while the continuous
     # campaign is using it from another task.
-    session_key = str(
-        job.get("account_handle") or f"stock:{job.get('stock_id') or ''}"
-    ).strip()
-    session_lock = _get_raksh_session_lock(session_key)
+    session_lock = _get_raksh_session_lock(job)
     async with session_lock:
         async with TelegramClient(
             StringSession(job["session_string"]),

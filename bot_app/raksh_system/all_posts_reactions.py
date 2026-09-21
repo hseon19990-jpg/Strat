@@ -538,7 +538,7 @@ class AllPostsReactionsService(RakshService):
             try:
                 # قد يستمع الحساب نفسه إلى عدة قنوات؛ لا نفتح طلبات Telegram
                 # متزامنة للجلسة نفسها حتى لا يتحول التفاعل إلى FloodWait.
-                session_lock = _get_raksh_session_lock(str(phone_number or ""))
+                session_lock = _get_raksh_session_lock(session)
                 async with session_lock:
                     await asyncio.wait_for(client.connect(), timeout=15)
                     if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):

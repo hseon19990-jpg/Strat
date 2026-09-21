@@ -27,6 +27,7 @@ from telethon.tl.types import ReactionEmoji, InputMediaContact
 from urllib.parse import parse_qs, urlparse
 import random
 import asyncio
+import hashlib
 import re
 import time
 from typing import Optional, List, Dict, Tuple, Any, Callable
@@ -189,9 +190,30 @@ _RAKSH_SESSION_CACHE: Dict[str, Dict] = {}
 _RAKSH_SESSION_CACHE_TIME: Dict[str, float] = {}
 _RAKSH_SESSION_CACHE_TTL = 60
 
-def _get_raksh_session_lock(phone_number: str) -> asyncio.Lock:
-    """الحصول على قفل جلسة مع إدارة الذاكرة"""
-    key = str(phone_number or "").strip()
+def _get_raksh_session_lock(session_or_phone) -> asyncio.Lock:
+    """الحصول على قفل مبني على بصمة الجلسة لا على رقم الهاتف.
+
+    يمكن للحساب نفسه امتلاك جلسات مستقلة على عدة أجهزة أو بوتات. الذي يجب
+    منعه هو فتح نفس ``auth key`` من عاملين، لا تشغيل جلسات مختلفة للحساب نفسه.
+    """
+    session_string = ""
+    fallback_key = ""
+    if isinstance(session_or_phone, dict):
+        session_string = str(session_or_phone.get("session_string") or "").strip()
+        fallback_key = str(
+            session_or_phone.get("id")
+            or session_or_phone.get("phone_number")
+            or ""
+        ).strip()
+    else:
+        fallback_key = str(session_or_phone or "").strip()
+
+    if session_string:
+        digest = hashlib.sha256(session_string.encode("utf-8")).hexdigest()
+        key = f"auth:{digest}"
+    else:
+        key = f"fallback:{fallback_key}"
+
     if key not in _RAKSH_SESSION_LOCKS:
         _RAKSH_SESSION_LOCKS[key] = asyncio.Lock()
     return _RAKSH_SESSION_LOCKS[key]
@@ -299,19 +321,13 @@ def get_raksh_daily_remaining(user_id: int) -> int:
         return RAKSH_MAX_EXECUTIONS_PER_DAY
 
 def _dedupe_raksh_sessions(sessions: List[Dict]) -> List[Dict]:
-    """Keep one usable session per account and per auth key in each pool."""
+    """Keep one row per auth key while allowing multiple sessions per account."""
     unique = []
-    seen_phones = set()
     seen_session_strings = set()
     for session in sessions:
-        phone = _normalize_raksh_account_phone(session.get("phone_number"))
         session_string = str(session.get("session_string") or "").strip()
-        if phone and phone in seen_phones:
-            continue
         if session_string and session_string in seen_session_strings:
             continue
-        if phone:
-            seen_phones.add(phone)
         if session_string:
             seen_session_strings.add(session_string)
         unique.append(session)
