@@ -18,7 +18,8 @@ def add_numbers_to_stock(numbers: list) -> int:
                 continue
             try:
                 c.execute(
-                    "INSERT INTO number_stock (phone_number) VALUES (%s) ON CONFLICT (phone_number) DO NOTHING",
+                    "INSERT INTO number_stock (phone_number, account_source) "
+                    "VALUES (%s, 'manual') ON CONFLICT (phone_number) DO NOTHING",
                     (n,)
                 )
                 if c.rowcount:
@@ -1071,6 +1072,126 @@ def get_stock_number(stock_id: int):
         ).fetchone()
         return dict(row) if row else None
 
+def get_readable_account_source_counts() -> dict[str, int]:
+    """Counts only accounts that passed the live code/message-readability check."""
+    with db_conn() as c:
+        row = c.execute(
+            """
+            SELECT
+                COUNT(*) FILTER (
+                    WHERE COALESCE(account_source, 'manual') = 'zip'
+                       OR (
+                           account_source IS NULL
+                           AND session_string IS NOT NULL
+                           AND contributed_by IS NULL
+                           AND raksh_only IS NOT TRUE
+                       )
+                ) AS zip_count,
+                COUNT(*) FILTER (
+                    WHERE COALESCE(account_source, 'manual') = 'manual'
+                       OR (
+                           account_source IS NULL
+                           AND session_string IS NULL
+                           AND raksh_only IS NOT TRUE
+                       )
+                ) AS manual_count,
+                COUNT(*) FILTER (
+                    WHERE COALESCE(account_source, 'manual') = 'file'
+                       OR (
+                           account_source IS NULL
+                           AND session_string IS NOT NULL
+                           AND contributed_by IS NOT NULL
+                           AND raksh_only IS NOT TRUE
+                       )
+                ) AS file_count,
+                COUNT(*) FILTER (
+                    WHERE COALESCE(account_source, 'manual') = 'raksh'
+                       OR (
+                           account_source IS NULL
+                           AND raksh_only IS TRUE
+                       )
+                ) AS raksh_count
+            FROM number_stock
+            WHERE assigned_to IS NULL
+              AND deleted_at IS NULL
+              AND ever_sold IS NOT TRUE
+              AND last_authorized IS NOT FALSE
+              AND session_string IS NOT NULL
+              AND can_send_code IS TRUE
+            """
+        ).fetchone()
+    return {
+        "zip": int((row or {}).get("zip_count") or 0),
+        "manual": int((row or {}).get("manual_count") or 0),
+        "file": int((row or {}).get("file_count") or 0),
+        "raksh": int((row or {}).get("raksh_count") or 0),
+    }
+
+def list_readable_accounts_by_source(source: str) -> list[dict]:
+    """Returns safe metadata for readable accounts; session secrets are never selected."""
+    source_conditions = {
+        "zip": """
+            (
+                account_source = 'zip'
+                OR (
+                    account_source IS NULL
+                    AND session_string IS NOT NULL
+                    AND contributed_by IS NULL
+                    AND raksh_only IS NOT TRUE
+                )
+            )
+        """,
+        "manual": """
+            (
+                account_source = 'manual'
+                OR (
+                    account_source IS NULL
+                    AND session_string IS NULL
+                    AND raksh_only IS NOT TRUE
+                )
+            )
+        """,
+        "file": """
+            (
+                account_source = 'file'
+                OR (
+                    account_source IS NULL
+                    AND session_string IS NOT NULL
+                    AND contributed_by IS NOT NULL
+                    AND raksh_only IS NOT TRUE
+                )
+            )
+        """,
+        "raksh": """
+            (
+                account_source = 'raksh'
+                OR (
+                    account_source IS NULL
+                    AND raksh_only IS TRUE
+                )
+            )
+        """,
+    }
+    if source not in source_conditions:
+        return []
+    with db_conn() as c:
+        rows = c.execute(
+            f"""
+            SELECT id, phone_number, added_at, last_device_count,
+                   is_solo, can_send_code, account_source, raksh_only
+            FROM number_stock
+            WHERE assigned_to IS NULL
+              AND deleted_at IS NULL
+              AND ever_sold IS NOT TRUE
+              AND last_authorized IS NOT FALSE
+              AND session_string IS NOT NULL
+              AND can_send_code IS TRUE
+              AND {source_conditions[source]}
+            ORDER BY added_at ASC NULLS LAST, id ASC
+            """,
+        ).fetchall()
+    return [dict(row) for row in rows]
+
 def soft_delete_number(stock_id: int) -> bool:
     """ينقل رقماً إلى سلة المهملات (حذف مؤقت) بدل حذفه نهائياً."""
     with db_conn() as c:
@@ -1224,13 +1345,15 @@ def add_number_with_session(phone: str, session_str: str, raksh_only: bool = Fal
     """يضيف رقماً جاهزاً (مسجّل دخول مسبقاً) مع جلسته إلى المخزون. يُرجع False إن كان الرقم موجوداً مسبقاً."""
     with db_conn() as c:
         c.execute(
-            "INSERT INTO number_stock (phone_number, session_string, deleted_at, raksh_only) "
-            "VALUES (%s,%s,NULL,%s) "
+            "INSERT INTO number_stock "
+            "(phone_number, session_string, account_source, deleted_at, raksh_only) "
+            "VALUES (%s,%s,%s,NULL,%s) "
             "ON CONFLICT (phone_number) DO UPDATE SET "
             "session_string=EXCLUDED.session_string, deleted_at=NULL, "
+            "account_source=EXCLUDED.account_source, "
             "raksh_only=number_stock.raksh_only OR EXCLUDED.raksh_only, "
             "raksh_excluded=FALSE",
-            (phone, session_str, raksh_only)
+            (phone, session_str, "raksh" if raksh_only else "file", raksh_only)
         )
         return True
 
@@ -1277,9 +1400,9 @@ def add_contributor_account(user_id: int, phone: str, session_str: str) -> tuple
         c.execute(
             """
             INSERT INTO number_stock
-                (phone_number, session_string, deleted_at, raksh_only,
+                (phone_number, session_string, account_source, deleted_at, raksh_only,
                  raksh_excluded, contributed_by, contributor_share_percent)
-            VALUES (%s, %s, NULL, TRUE, FALSE, %s, 50)
+            VALUES (%s, %s, 'raksh', NULL, TRUE, FALSE, %s, 50)
             """,
             (phone, session_str, user_id),
         )

@@ -4945,13 +4945,15 @@ async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if imported_twofa:
                         _c.execute(
                             "UPDATE number_stock SET session_string=%s, twofa_password=%s,"
+                            " account_source='file',"
                             " assigned_to=NULL, assigned_at=NULL, forced_ref_excluded=FALSE"
                             " WHERE phone_number=%s",
                             (sess, imported_twofa, phone)
                         )
                     else:
                         _c.execute(
-                            "UPDATE number_stock SET session_string=%s, assigned_to=NULL, assigned_at=NULL,"
+                            "UPDATE number_stock SET session_string=%s, account_source='file',"
+                            " assigned_to=NULL, assigned_at=NULL,"
                             " forced_ref_excluded=FALSE WHERE phone_number=%s",
                             (sess, phone)
                         )
@@ -4959,14 +4961,15 @@ async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if imported_twofa:
                         _c.execute(
                             "INSERT INTO number_stock "
-                            "(phone_number, session_string, twofa_password, forced_ref_excluded)"
-                            " VALUES (%s,%s,%s,FALSE)",
+                            "(phone_number, session_string, twofa_password, account_source, forced_ref_excluded)"
+                            " VALUES (%s,%s,%s,'file',FALSE)",
                             (phone, sess, imported_twofa)
                         )
                     else:
                         _c.execute(
-                            "INSERT INTO number_stock (phone_number, session_string, forced_ref_excluded)"
-                            " VALUES (%s,%s,FALSE)",
+                            "INSERT INTO number_stock "
+                            "(phone_number, session_string, account_source, forced_ref_excluded)"
+                            " VALUES (%s,%s,'file',FALSE)",
                             (phone, sess)
                         )
             # ── تدوير فوري: جلسة جديدة + حذف القديمة ──────────────────
@@ -5179,7 +5182,8 @@ async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE
         ).fetchone()
         if exists:
             _c.execute(
-                "UPDATE number_stock SET session_string=%s, assigned_to=NULL, assigned_at=NULL,"
+                "UPDATE number_stock SET session_string=%s, account_source='file',"
+                " assigned_to=NULL, assigned_at=NULL,"
                 " forced_ref_excluded=FALSE"
                 + (", referral_only=TRUE" if _ref_only_flag else "") +
                 " WHERE phone_number=%s",
@@ -5187,8 +5191,9 @@ async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
         else:
             _c.execute(
-                "INSERT INTO number_stock (phone_number, session_string, forced_ref_excluded, referral_only)"
-                " VALUES (%s,%s,FALSE,%s)",
+                "INSERT INTO number_stock "
+                "(phone_number, session_string, account_source, forced_ref_excluded, referral_only)"
+                " VALUES (%s,%s,'file',FALSE,%s)",
                 (phone, session_string, _ref_only_flag)
             )
 
@@ -5432,6 +5437,7 @@ async def _import_one_session_bytes(
     context,
     remove_2fa_mode: bool = False,
     source_metadata=None,
+    source_type: str = "zip",
 ) -> dict:
     """
     يحاول استخراج session_string من bytes تمثّل ملف .session (SQLite) أو .json.
@@ -5594,30 +5600,33 @@ async def _import_one_session_bytes(
             if imported_twofa:
                 _dc.execute(
                     "UPDATE number_stock SET session_string=%s, twofa_password=%s,"
+                    " account_source=%s,"
                     " assigned_to=NULL, assigned_at=NULL, forced_ref_excluded=FALSE"
                     " WHERE phone_number=%s",
-                    (session_string, imported_twofa, phone)
+                    (session_string, imported_twofa, source_type, phone)
                 )
             else:
                 _dc.execute(
-                    "UPDATE number_stock SET session_string=%s, assigned_to=NULL, assigned_at=NULL,"
+                    "UPDATE number_stock SET session_string=%s, account_source=%s,"
+                    " assigned_to=NULL, assigned_at=NULL,"
                     " forced_ref_excluded=FALSE WHERE phone_number=%s",
-                    (session_string, phone)
+                    (session_string, source_type, phone)
                 )
             stock_id = exists["id"]
         else:
             if imported_twofa:
                 _dc.execute(
                     "INSERT INTO number_stock "
-                    "(phone_number, session_string, twofa_password, forced_ref_excluded)"
-                    " VALUES (%s,%s,%s,FALSE)",
-                    (phone, session_string, imported_twofa)
+                    "(phone_number, session_string, twofa_password, account_source, forced_ref_excluded)"
+                    " VALUES (%s,%s,%s,%s,FALSE)",
+                    (phone, session_string, imported_twofa, source_type)
                 )
             else:
                 _dc.execute(
-                    "INSERT INTO number_stock (phone_number, session_string, forced_ref_excluded)"
-                    " VALUES (%s,%s,FALSE)",
-                    (phone, session_string)
+                    "INSERT INTO number_stock "
+                    "(phone_number, session_string, account_source, forced_ref_excluded)"
+                    " VALUES (%s,%s,%s,FALSE)",
+                    (phone, session_string, source_type)
                 )
             stock_id = _dc.execute(
                 "SELECT id FROM number_stock WHERE phone_number=%s", (phone,)

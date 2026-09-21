@@ -481,16 +481,104 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
         if data == "os:account_info" and is_own:
             total_accounts, session_accounts, story_available, avatar_available = _account_info_counts()
             name_count = _account_name_count()
+            _readable_total = sum(get_readable_account_source_counts().values())
             await q.edit_message_text(
                 "👤 *معلومات الحسابات*\n\n"
                 f"📦 إجمالي الحسابات: {total_accounts:,}\n"
                 f"🔐 حسابات لديها جلسة: {session_accounts:,}\n"
+                f"✅ القابلة للقراءة واستلام الكود: {_readable_total:,}\n"
                 f"🔤 أسماء محفوظة: {name_count:,}\n"
                 f"📖 المتبقي للستوري: {story_available:,}\n"
                 f"🖼️ المتبقي للأفتار: {avatar_available:,}\n\n"
-                "اختر العملية المطلوبة:",
+                "اختر تصنيف الحسابات القابلة للقراءة:",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=account_info_kb(),
+            )
+            return
+
+        if data.startswith("os:readable_accounts:") and is_own:
+            _parts = data.split(":")
+            _source = _parts[2] if len(_parts) > 2 else ""
+            try:
+                _page = max(0, int(_parts[3])) if len(_parts) > 3 else 0
+            except ValueError:
+                _page = 0
+            _source_labels = {
+                "zip": "📦 حسابات ZIP",
+                "manual": "🧾 الحسابات المضافة يدوياً",
+                "file": "📄 حسابات الملفات",
+                "raksh": "🔥 حسابات الرشق",
+            }
+            if _source not in _source_labels:
+                await q.answer("التصنيف غير صالح.", show_alert=True)
+                return
+
+            _readable_rows = list_readable_accounts_by_source(_source)
+            _page_size = 20
+            _total = len(_readable_rows)
+            _pages = max(1, (_total + _page_size - 1) // _page_size)
+            _page = min(_page, _pages - 1)
+            _page_rows = _readable_rows[_page * _page_size:(_page + 1) * _page_size]
+
+            def _readable_dt(value):
+                if value is None:
+                    return "غير مسجّل"
+                if hasattr(value, "strftime"):
+                    return value.strftime("%Y-%m-%d %H:%M")
+                return str(value)[:16]
+
+            _lines = [
+                f"{_source_labels[_source]} — القابلة للقراءة ({_total:,})",
+                "",
+                "تظهر هنا فقط الحسابات التي تملك جلسة صالحة ويستطيع البوت "
+                "قراءة الرسائل/استلام كود الدخول منها.",
+            ]
+            _rows = []
+            for _row in _page_rows:
+                _devices = _row.get("last_device_count")
+                _devices_text = str(_devices) if _devices is not None and _devices >= 0 else "؟"
+                _solo_text = "✅ الجهاز الوحيد" if _row.get("is_solo") else "📲 أجهزة متعددة/غير معروف"
+                _lines.append(
+                    f"\n📱 `{_row['phone_number']}` — {guess_country(_row['phone_number'])}\n"
+                    f"   📅 أُضيف: {_readable_dt(_row.get('added_at'))}\n"
+                    f"   💻 الأجهزة: {_devices_text} | {_solo_text}"
+                )
+                _rows.append([
+                    InlineKeyboardButton(
+                        f"📱 {_row['phone_number']}",
+                        callback_data=f"os:number_info:{_row['id']}",
+                    )
+                ])
+
+            if not _page_rows:
+                _lines.append("\nلا توجد حسابات مطابقة لهذا التصنيف حالياً.")
+            if _total > _page_size:
+                _nav = []
+                if _page > 0:
+                    _nav.append(InlineKeyboardButton(
+                        "⬅️ السابق",
+                        callback_data=f"os:readable_accounts:{_source}:{_page - 1}",
+                    ))
+                _nav.append(InlineKeyboardButton(
+                    f"📄 {_page + 1}/{_pages}",
+                    callback_data="noop",
+                ))
+                if _page < _pages - 1:
+                    _nav.append(InlineKeyboardButton(
+                        "التالي ➡️",
+                        callback_data=f"os:readable_accounts:{_source}:{_page + 1}",
+                    ))
+                _rows.append(_nav)
+            _rows.append([
+                InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")
+            ])
+            _text = "\n".join(_lines)
+            if len(_text) > 3900:
+                _text = _text[:3850] + "\n\n_(باقي القائمة في الأزرار)_"
+            await q.edit_message_text(
+                _text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup(_rows),
             )
             return
 
