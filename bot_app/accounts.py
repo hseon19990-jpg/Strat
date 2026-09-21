@@ -535,6 +535,127 @@ async def check_account_frozen(client: TelegramClient, stock_id: int | None = No
 
     return is_frozen, status_text, frozen_at_str
 
+
+FROZEN_SCAN_INTERVAL_SECONDS = 5 * 60
+FROZEN_SCAN_BATCH_SIZE = max(
+    1,
+    int(os.environ.get("FROZEN_SCAN_BATCH_SIZE", "10") or "10"),
+)
+_frozen_scan_lock = asyncio.Lock()
+
+
+async def scan_stale_frozen_accounts_job(context=None) -> dict[str, int]:
+    """فحص متدرّج للحسابات، مع عدم إعادة فحص الحساب قبل مرور 24 ساعة.
+
+    كل دورة تحجز دفعة صغيرة وتحدّث وقت الفحص قبل فتح اتصالات Telegram.
+    لذلك لا تعيد دورة لاحقة فحص الحساب نفسه إذا طال الفحص أو حدثت إعادة
+    جدولة، بينما تستمر الدورات التالية في أخذ الحسابات الأقدم فحصاً.
+    الحساب المجمّد لا يُحذف كسجل تاريخي؛ تُفرغ جلسته ويُستبعد فوراً من
+    مخزون الرشق حتى لا يُستخدم مرة أخرى.
+    """
+    if not TELEGRAM_API_ID or not TELEGRAM_API_HASH:
+        logger.warning("⚠️ فحص الحسابات المجمّدة متوقف: API_ID / API_HASH غير مضبوطين")
+        return {"checked": 0, "frozen": 0, "unavailable": 0}
+
+    if _frozen_scan_lock.locked():
+        logger.info("⏳ فحص الحسابات المجمّدة ما زال جارياً؛ تم تجاوز هذه الدورة")
+        return {"checked": 0, "frozen": 0, "unavailable": 0}
+
+    async with _frozen_scan_lock:
+        with db_conn() as c:
+            rows = c.execute(
+                """
+                SELECT id, phone_number, session_string
+                FROM number_stock
+                WHERE deleted_at IS NULL
+                  AND ever_sold IS NOT TRUE
+                  AND raksh_excluded IS NOT TRUE
+                  AND session_string IS NOT NULL
+                  AND BTRIM(session_string) <> ''
+                  AND (
+                      last_frozen_check_at IS NULL
+                      OR last_frozen_check_at <= NOW() - INTERVAL '1 day'
+                  )
+                ORDER BY last_frozen_check_at NULLS FIRST, id ASC
+                LIMIT %s
+                FOR UPDATE SKIP LOCKED
+                """,
+                (FROZEN_SCAN_BATCH_SIZE,),
+            ).fetchall()
+            selected = [dict(row) for row in rows]
+            for row in selected:
+                c.execute(
+                    """
+                    UPDATE number_stock
+                    SET last_frozen_check_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (row["id"],),
+                )
+
+        checked = frozen = unavailable = 0
+        for row in selected:
+            phone = str(row.get("phone_number") or row["id"])
+            session_string = str(row.get("session_string") or "").strip()
+            client = TelegramClient(
+                StringSession(session_string),
+                int(TELEGRAM_API_ID),
+                TELEGRAM_API_HASH,
+            )
+            checked += 1
+            try:
+                await asyncio.wait_for(client.connect(), timeout=15)
+                authorized = await asyncio.wait_for(
+                    client.is_user_authorized(),
+                    timeout=8,
+                )
+                if not authorized:
+                    unavailable += 1
+                    logger.warning("⚠️ جلسة غير مصرّح بها أثناء الفحص: %s", phone)
+                    continue
+
+                is_frozen, status_text, _ = await asyncio.wait_for(
+                    check_account_frozen(client, int(row["id"])),
+                    timeout=20,
+                )
+                if is_frozen:
+                    frozen += 1
+                    with db_conn() as c:
+                        c.execute(
+                            """
+                            UPDATE number_stock
+                            SET session_string = NULL,
+                                last_authorized = FALSE,
+                                raksh_excluded = TRUE,
+                                frozen_at = COALESCE(frozen_at, NOW())
+                            WHERE id = %s
+                            """,
+                            (row["id"],),
+                        )
+                    logger.warning("🧊 تم استبعاد الحساب المجمّد %s: %s", phone, status_text)
+            except Exception as exc:
+                unavailable += 1
+                logger.warning("⚠️ تعذّر فحص الحساب %s: %s", phone, exc)
+            finally:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+
+        if selected:
+            logger.info(
+                "🩺 فحص الحسابات المتدرّج: فُحص %s، مجمّد %s، غير متاح %s",
+                checked,
+                frozen,
+                unavailable,
+            )
+        return {
+            "checked": checked,
+            "frozen": frozen,
+            "unavailable": unavailable,
+        }
+
+
 async def scan_all_account_statuses() -> dict[str, list[dict]]:
     """يفحص كل الحسابات غير المحذوفة ويجمعها حسب حالتها الحالية.
 
