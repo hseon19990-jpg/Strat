@@ -142,7 +142,7 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
             async def _verify_unread_2fa_bg():
                 verified, missing, invalid, no_2fa, failed = [], [], [], [], []
                 try:
-                    for rec in _rows:
+                    for _index, rec in enumerate(_rows, start=1):
                         phone = rec["phone_number"]
                         saved_pwd = (rec["twofa_password"] or "").strip()
                         cli = None
@@ -189,6 +189,30 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                             try:
                                 if cli:
                                     await cli.disconnect()
+                            except Exception:
+                                pass
+                        if _index % 5 == 0 or _index == len(_rows):
+                            try:
+                                await context.bot.edit_message_text(
+                                    chat_id=q.message.chat_id,
+                                    message_id=q.message.message_id,
+                                    text=(
+                                        "🔐 *التحقق الآمن من 2FA جارٍ...*\n\n"
+                                        f"📦 التقدم: *{_index}/{len(_rows)}*\n"
+                                        f"✅ صحيح: *{len(verified)}* | "
+                                        f"⚠️ غير محفوظ: *{len(missing)}*\n"
+                                        f"❌ غير مطابق: *{len(invalid)}* | "
+                                        f"ℹ️ بدون 2FA: *{len(no_2fa)}*\n\n"
+                                        "لن يتم تغيير أي كلمة مرور أثناء الفحص."
+                                    ),
+                                    parse_mode=ParseMode.MARKDOWN,
+                                    reply_markup=InlineKeyboardMarkup([[
+                                        InlineKeyboardButton(
+                                            "🔙 رجوع للمخزون",
+                                            callback_data="os:manage_numbers",
+                                        )
+                                    ]]),
+                                )
                             except Exception:
                                 pass
                         await asyncio.sleep(0.8)
