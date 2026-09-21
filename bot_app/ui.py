@@ -865,6 +865,12 @@ def account_info_kb() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(
+                "🔍 فحص الجلسات القابلة للقراءة",
+                callback_data="os:scan_readable_accounts",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
                 "📦 تصدير جلسات الحسابات",
                 callback_data="os:export_ready_sessions",
             ),

@@ -649,6 +649,110 @@ async def scan_all_account_statuses() -> dict[str, list[dict]]:
 
     return result
 
+async def scan_readable_account_sessions() -> dict[str, list[dict]]:
+    """يفحص الجلسات فعلياً ويعيد الأرقام مرتبة من الأقدم إلى الأحدث.
+
+    نجاح ``get_me`` هو معيار أن البوت يستطيع قراءة الحساب من الجلسة الحالية.
+    الفحص للعرض والتصدير فقط ولا يغيّر أي حالة في مخزون الأرقام.
+    """
+    with db_conn() as c:
+        rows = c.execute(
+            """
+            SELECT id, phone_number, session_string, added_at
+            FROM number_stock
+            WHERE deleted_at IS NULL
+            ORDER BY added_at ASC NULLS FIRST, id ASC
+            """
+        ).fetchall()
+
+    result = {
+        "all_numbers": [],
+        "manual": [],
+        "readable": [],
+        "unreadable": [],
+    }
+
+    for raw_row in rows:
+        row = dict(raw_row)
+        phone = str(row.get("phone_number") or "").strip()
+        if not phone:
+            continue
+
+        added_at = row.get("added_at")
+        added_at_text = ""
+        if added_at is not None:
+            try:
+                added_at_text = added_at.isoformat()
+            except AttributeError:
+                added_at_text = str(added_at)
+
+        base = {
+            "stock_id": row.get("id"),
+            "phone_number": phone,
+            "added_at": added_at_text,
+        }
+        result["all_numbers"].append(base.copy())
+
+        session_string = str(row.get("session_string") or "").strip()
+        if not session_string:
+            result["manual"].append(base.copy())
+            continue
+
+        if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
+            result["unreadable"].append(
+                {**base, "reason": "إعدادات Telegram API غير مكتملة"}
+            )
+            continue
+
+        client = None
+        try:
+            client = TelegramClient(
+                StringSession(session_string),
+                int(TELEGRAM_API_ID),
+                TELEGRAM_API_HASH,
+            )
+            await asyncio.wait_for(client.connect(), timeout=15)
+            authorized = await asyncio.wait_for(
+                client.is_user_authorized(),
+                timeout=8,
+            )
+            if not authorized:
+                result["unreadable"].append(
+                    {**base, "reason": "الجلسة غير مصرّح بها"}
+                )
+                continue
+
+            me = await asyncio.wait_for(client.get_me(), timeout=10)
+            if me is None:
+                result["unreadable"].append(
+                    {**base, "reason": "لم يُرجع Telegram بيانات الحساب"}
+                )
+                continue
+
+            first_name = str(getattr(me, "first_name", "") or "").strip()
+            last_name = str(getattr(me, "last_name", "") or "").strip()
+            result["readable"].append(
+                {
+                    **base,
+                    "telegram_id": getattr(me, "id", None),
+                    "username": str(getattr(me, "username", "") or "").strip(),
+                    "name": " ".join(part for part in (first_name, last_name) if part),
+                }
+            )
+        except Exception as exc:
+            logger.warning(f"تعذّر فحص قابلية قراءة جلسة {phone}: {exc}")
+            result["unreadable"].append(
+                {**base, "reason": "تعذّر فتح الجلسة أو قراءة الحساب"}
+            )
+        finally:
+            try:
+                if client is not None:
+                    await client.disconnect()
+            except Exception:
+                pass
+
+    return result
+
 async def remove_raksh_account_by_reference(reference: str) -> dict:
     """يستثني حساباً ذا جلسة من خدمات الرشق باستخدام أي معرّف."""
     _reference = str(reference or "").strip()

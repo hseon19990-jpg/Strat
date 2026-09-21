@@ -34,8 +34,8 @@ class SendReadyAccountsTests(unittest.TestCase):
         callback_source = CALLBACKS.read_text(encoding="utf-8")
 
         self.assertIn('callback_data="os:export_ready_sessions"', ui_source)
-        start = callback_source.index('if data == "os:export_ready_sessions" and is_own:')
-        end = callback_source.index('if data == "os:account_names" and is_own:', start)
+        start = callback_source.index("async def export_ready_sessions(")
+        end = callback_source.index("async def _handle_callback_group_02", start)
         block = callback_source[start:end]
 
         self.assertNotIn("session_export_key", block)
@@ -49,6 +49,25 @@ class SendReadyAccountsTests(unittest.TestCase):
         self.assertIn(".zip", block)
         self.assertNotIn(".session.enc", block)
         self.assertNotIn("document=_export_session", block)
+
+    def test_readable_account_scan_has_oldest_first_exports(self):
+        ui_source = UI.read_text(encoding="utf-8")
+        accounts_source = (
+            ROOT / "bot_app" / "accounts.py"
+        ).read_text(encoding="utf-8")
+        callback_source = CALLBACKS.read_text(encoding="utf-8")
+
+        self.assertIn('callback_data="os:scan_readable_accounts"', ui_source)
+        self.assertIn("async def scan_readable_account_sessions()", accounts_source)
+        self.assertIn("is_user_authorized()", accounts_source)
+        self.assertIn("get_me()", accounts_source)
+        self.assertIn("ORDER BY added_at ASC NULLS FIRST, id ASC", accounts_source)
+        self.assertIn("os:readable_export:all", callback_source)
+        self.assertIn("os:readable_export:manual", callback_source)
+        self.assertIn("os:readable_export:readable", callback_source)
+        self.assertIn("all_numbers_oldest_first.txt", callback_source)
+        self.assertIn("manual_numbers_oldest_first.txt", callback_source)
+        self.assertIn("readable_accounts_oldest_first.txt", callback_source)
 
 
 if __name__ == "__main__":
