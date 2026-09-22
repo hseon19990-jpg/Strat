@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import json
 import os
 from telethon import events
+from telethon.errors import FloodWaitError
 from telethon.tl.functions.messages import (
     GetMessagesViewsRequest,
     SendReactionRequest as SendMessageReactionRequest,
@@ -528,6 +529,8 @@ class AllPostsReactionsService(RakshService):
         processing_message_ids = set()
         last_seen_message_id = 0
         last_membership_refresh = 0.0
+        view_blocked_until = 0.0
+        reaction_blocked_until = 0.0
 
         while not stop_event.is_set():
             client = TelegramClient(
@@ -562,7 +565,7 @@ class AllPostsReactionsService(RakshService):
 
                     allowed_reactions = await self._get_allowed_reactions(client, entity)
                 async def process_message(message):
-                    nonlocal last_seen_message_id
+                    nonlocal last_seen_message_id, view_blocked_until, reaction_blocked_until
                     if not getattr(message, "id", None):
                         return
                     message_id = int(message.id)
@@ -584,39 +587,69 @@ class AllPostsReactionsService(RakshService):
                         async with session_lock:
                             if not client.is_connected():
                                 await asyncio.wait_for(client.connect(), timeout=15)
-                            if not view_done:
-                                await client(
-                                    GetMessagesViewsRequest(
-                                        peer=entity,
-                                        id=[message.id],
-                                        increment=True,
+                            if not view_done and asyncio.get_running_loop().time() >= view_blocked_until:
+                                try:
+                                    await client(
+                                        GetMessagesViewsRequest(
+                                            peer=entity,
+                                            id=[message.id],
+                                            increment=True,
+                                        )
                                     )
-                                )
-                                viewed_message_ids.add(message_id)
-                                view_done = True
-                                logger.info(
-                                    "👁 مشاهدة على %s/%s من الحساب %s",
-                                    channel_ref,
-                                    message.id,
-                                    phone_number,
-                                )
-                            if allowed_reactions and not reaction_done:
+                                    viewed_message_ids.add(message_id)
+                                    view_done = True
+                                    logger.info(
+                                        "👁 مشاهدة على %s/%s من الحساب %s",
+                                        channel_ref,
+                                        message.id,
+                                        phone_number,
+                                    )
+                                except FloodWaitError as exc:
+                                    wait_seconds = max(1, int(getattr(exc, "seconds", 0) or 0))
+                                    view_blocked_until = max(
+                                        view_blocked_until,
+                                        asyncio.get_running_loop().time() + wait_seconds,
+                                    )
+                                    logger.warning(
+                                        "⏸️ Telegram طلب إيقاف المشاهدات للحساب %s لمدة %ss؛ "
+                                        "سيتم تأجيل المحاولة بدل تكرار الطلب",
+                                        phone_number,
+                                        wait_seconds,
+                                    )
+                            if (
+                                allowed_reactions
+                                and not reaction_done
+                                and asyncio.get_running_loop().time() >= reaction_blocked_until
+                            ):
                                 reaction = random.choice(allowed_reactions)
-                                await client(
-                                    SendMessageReactionRequest(
-                                        peer=entity,
-                                        msg_id=message.id,
-                                        reaction=[reaction],
+                                try:
+                                    await client(
+                                        SendMessageReactionRequest(
+                                            peer=entity,
+                                            msg_id=message.id,
+                                            reaction=[reaction],
+                                        )
                                     )
-                                )
-                                reacted_message_ids.add(message_id)
-                                reaction_done = True
-                                logger.info(
-                                    "✅ تفاعل مباشر على %s/%s من الحساب %s",
-                                    channel_ref,
-                                    message.id,
-                                    phone_number,
-                                )
+                                    reacted_message_ids.add(message_id)
+                                    reaction_done = True
+                                    logger.info(
+                                        "✅ تفاعل مباشر على %s/%s من الحساب %s",
+                                        channel_ref,
+                                        message.id,
+                                        phone_number,
+                                    )
+                                except FloodWaitError as exc:
+                                    wait_seconds = max(1, int(getattr(exc, "seconds", 0) or 0))
+                                    reaction_blocked_until = max(
+                                        reaction_blocked_until,
+                                        asyncio.get_running_loop().time() + wait_seconds,
+                                    )
+                                    logger.warning(
+                                        "⏸️ Telegram طلب إيقاف التفاعلات للحساب %s لمدة %ss؛ "
+                                        "سيتم تأجيلها بدل تكرار SendReactionRequest",
+                                        phone_number,
+                                        wait_seconds,
+                                    )
                     except Exception as exc:
                         if is_raksh_frozen_account_error(exc):
                             _mark_raksh_session_frozen(phone_number)
