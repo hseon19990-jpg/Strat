@@ -172,7 +172,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user   = update.effective_user
     text   = (update.message.text or update.message.caption or "").strip()
     state  = context.user_data.get("state", "")
-    is_own = (user.id == OWNER_ID)
+    is_own = (user.id == OWNER_ID) or (
+        user.id != OWNER_ID and is_number_admin(user.id)
+    )
 
     # يسمح للمالك بإرسال auth_key_hex:dc_id مباشرةً دون فتح أمر منفصل.
     if is_own and state != "os_import_hex":
@@ -3670,6 +3672,73 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
+    if user.id == OWNER_ID and state == "os_await_number_admin_id":
+        raw_admin_id = text.strip()
+        try:
+            number_admin_id = int(raw_admin_id)
+        except ValueError:
+            await update.message.reply_text(
+                "⚠️ أرسل ID رقمي صحيح فقط.",
+                reply_markup=owner_settings_kb(),
+            )
+            return
+        if number_admin_id <= 0 or number_admin_id == OWNER_ID:
+            await update.message.reply_text(
+                "⚠️ أرسل ID مستخدم صحيحاً، ولا يمكن منح المالك هذه الصلاحية.",
+                reply_markup=owner_settings_kb(),
+            )
+            return
+        context.user_data["number_admin_target_id"] = number_admin_id
+        context.user_data["state"] = "os_await_number_admin_numbers"
+        await update.message.reply_text(
+            f"✅ تم حفظ ID: `{number_admin_id}`\n\n"
+            "أرسل الآن أرقام الهاتف، كل رقم في سطر مستقل.\n"
+            "مثال:\n"
+            "`+9647701234567`\n"
+            "`+9647709876543`",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("🔙 إلغاء", callback_data="owner_settings")]]
+            ),
+        )
+        return
+
+    if user.id == OWNER_ID and state == "os_await_number_admin_numbers":
+        number_admin_id = context.user_data.get("number_admin_target_id")
+        if not number_admin_id:
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text(
+                "⚠️ انتهت جلسة الإضافة. ابدأ من إعدادات المالك من جديد.",
+                reply_markup=owner_settings_kb(),
+            )
+            return
+
+        raw_numbers = [
+            item
+            for chunk in text.split(",")
+            for item in chunk.splitlines()
+            if item.strip()
+        ]
+        result = assign_number_admin_numbers(number_admin_id, raw_numbers)
+        context.user_data.pop("number_admin_target_id", None)
+        context.user_data["state"] = "main_menu"
+        invalid_note = ""
+        if result["invalid"]:
+            invalid_note = (
+                "\n⚠️ صيغ غير صالحة: "
+                + ", ".join(f"`{item}`" for item in result["invalid"][:10])
+            )
+        await update.message.reply_text(
+            f"✅ تمت إضافة/ربط ادمن الأرقام `{number_admin_id}`.\n\n"
+            f"🔗 الأرقام المرتبطة الآن: *{result['linked']}*\n"
+            f"➕ أرقام أُنشئت في المخزون: *{result['created']}*\n"
+            f"♻️ أرقام مكررة: *{result['duplicates']}*"
+            f"{invalid_note}",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=owner_settings_kb(),
+        )
+        return
+
     if is_supervisor_txt and state == "sv_await_login_phone":
         phone = text.strip()
         if not phone.startswith("+"):
@@ -3754,6 +3823,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("manual_2fa_stock_id", None)
         if not stock_id:
             await update.message.reply_text("⚠️ انتهت صلاحية الطلب، افتح معلومات الرقم من جديد.")
+            return
+        if user.id != OWNER_ID and not number_admin_can_manage(user.id, stock_id=stock_id):
+            await update.message.reply_text(
+                "🚫 هذا الرقم غير مخصص لك.",
+                reply_markup=main_menu_kb(
+                    False,
+                    is_number_admin_user=is_number_admin(user.id),
+                ),
+            )
             return
         with db_conn() as c:
             rec = c.execute(
@@ -4819,7 +4897,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if handled:
             return
 
-    await update.message.reply_text("🏠 القائمة الرئيسية:", reply_markup=main_menu_kb(is_own))
+    await update.message.reply_text(
+        "🏠 القائمة الرئيسية:",
+        reply_markup=main_menu_kb(
+            user.id == OWNER_ID,
+            is_number_admin_user=(user.id != OWNER_ID and is_number_admin(user.id)),
+        ),
+    )
 
 async def handle_hex_text_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """يستقبل ملف TXT من المالك يحتوي auth_key_hex:dc_id في كل سطر."""

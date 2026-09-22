@@ -1,0 +1,232 @@
+"""Scoped administrators for Telegram number-stock accounts.
+
+Number admins are deliberately separate from the owner and from supervisors.
+They can use the existing account-management callbacks only for the stock
+numbers assigned to their Telegram user ID.
+"""
+
+from . import shared as _shared
+
+globals().update(
+    {key: value for key, value in vars(_shared).items() if not key.startswith("__")}
+)
+
+
+def is_number_admin(user_id: int) -> bool:
+    """Return whether a user has at least one assigned number."""
+    with db_conn() as c:
+        row = c.execute(
+            "SELECT 1 FROM number_admins WHERE user_id=%s LIMIT 1",
+            (user_id,),
+        ).fetchone()
+    return row is not None
+
+
+def number_admin_can_manage(
+    user_id: int,
+    stock_id: int | None = None,
+    phone_number: str | None = None,
+) -> bool:
+    """Check ownership of a stock number by a scoped number admin."""
+    if not user_id or (stock_id is None and not phone_number):
+        return False
+
+    with db_conn() as c:
+        if stock_id is not None:
+            row = c.execute(
+                "SELECT 1 FROM number_admins WHERE user_id=%s AND stock_id=%s LIMIT 1",
+                (user_id, stock_id),
+            ).fetchone()
+        else:
+            row = c.execute(
+                "SELECT 1 FROM number_admins WHERE user_id=%s AND phone_number=%s LIMIT 1",
+                (user_id, phone_number),
+            ).fetchone()
+    return row is not None
+
+
+def get_number_admin_stock_rows(user_id: int) -> list[dict]:
+    """Return active stock rows assigned to a number admin."""
+    with db_conn() as c:
+        rows = c.execute(
+            """
+            SELECT ns.*
+            FROM number_admins na
+            JOIN number_stock ns ON ns.id = na.stock_id
+            WHERE na.user_id=%s
+              AND ns.deleted_at IS NULL
+              AND ns.assigned_to IS NULL
+            ORDER BY ns.id ASC
+            """,
+            (user_id,),
+        ).fetchall() or []
+    return [dict(row) for row in rows]
+
+
+def get_number_admins() -> list[dict]:
+    """Return owners of scoped number-admin assignments with their counts."""
+    with db_conn() as c:
+        rows = c.execute(
+            """
+            SELECT na.user_id, COUNT(*) AS number_count,
+                   MAX(na.added_at) AS last_added_at
+            FROM number_admins na
+            JOIN number_stock ns ON ns.id = na.stock_id
+            WHERE ns.deleted_at IS NULL AND ns.assigned_to IS NULL
+            GROUP BY na.user_id
+            ORDER BY na.user_id
+            """
+        ).fetchall() or []
+    return [dict(row) for row in rows]
+
+
+def remove_number_admin(user_id: int) -> int:
+    """Remove all number assignments for a user and return deleted count."""
+    with db_conn() as c:
+        c.execute("DELETE FROM number_admins WHERE user_id=%s", (user_id,))
+        return c.rowcount
+
+
+def assign_number_admin_numbers(user_id: int, raw_numbers: list[str]) -> dict:
+    """Create missing stock rows and assign the submitted numbers to a user."""
+    result = {
+        "linked": 0,
+        "created": 0,
+        "duplicates": 0,
+        "invalid": [],
+    }
+    seen: set[str] = set()
+
+    with db_conn() as c:
+        for raw in raw_numbers:
+            phone = str(raw or "").strip()
+            if not phone:
+                continue
+            if phone in seen:
+                result["duplicates"] += 1
+                continue
+            seen.add(phone)
+
+            compact = phone.replace(" ", "").replace("-", "")
+            if not re.fullmatch(r"\+?\d{5,20}", compact):
+                result["invalid"].append(phone[:80])
+                continue
+            phone = compact
+
+            c.execute(
+                """
+                INSERT INTO number_stock (phone_number)
+                VALUES (%s)
+                ON CONFLICT (phone_number) DO NOTHING
+                """,
+                (phone,),
+            )
+            if c.rowcount:
+                result["created"] += 1
+
+            row = c.execute(
+                "SELECT id FROM number_stock WHERE phone_number=%s",
+                (phone,),
+            ).fetchone()
+            if not row:
+                result["invalid"].append(phone)
+                continue
+
+            c.execute(
+                """
+                INSERT INTO number_admins (user_id, stock_id, phone_number)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (user_id, stock_id) DO NOTHING
+                """,
+                (user_id, row["id"], phone),
+            )
+            if c.rowcount:
+                result["linked"] += 1
+            else:
+                result["duplicates"] += 1
+
+    return result
+
+
+def number_admin_panel_markup(rows: list[dict]) -> InlineKeyboardMarkup:
+    buttons = [
+        [
+            InlineKeyboardButton(
+                f"📱 {row['phone_number']}",
+                callback_data=f"na:number:{row['id']}",
+            )
+        ]
+        for row in rows
+    ]
+    buttons.append(
+        [InlineKeyboardButton("🔄 تحديث", callback_data="na:panel")]
+    )
+    buttons.append(
+        [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")]
+    )
+    return InlineKeyboardMarkup(buttons)
+
+
+async def render_number_admin_panel(update, context) -> None:
+    """Render the scoped number-admin panel."""
+    user = update.effective_user
+    rows = get_number_admin_stock_rows(user.id)
+    if rows:
+        lines = [
+            "📱 *لوحة ادمن الأرقام*",
+            "",
+            "يمكنك إدارة الأرقام المخصصة لك فقط باستخدام نفس إجراءات إدارة الحساب.",
+            f"📦 عدد الأرقام: *{len(rows)}*",
+            "",
+            "اختر رقماً لعرض معلوماته وإجراءاته:",
+        ]
+    else:
+        lines = [
+            "📱 *لوحة ادمن الأرقام*",
+            "",
+            "لا توجد أرقام مخصصة لك حالياً.",
+        ]
+
+    await update.callback_query.edit_message_text(
+        "\n".join(lines),
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=number_admin_panel_markup(rows),
+    )
+
+
+async def render_number_admins_for_owner(update, context, note: str = "") -> None:
+    """Render the owner's list of scoped number admins."""
+    admins = get_number_admins()
+    lines = [f"{note}\n" if note else "", "📋 *ادمن الأرقام:*", ""]
+    rows = []
+    if not admins:
+        lines.append("لا يوجد ادمن أرقام مضاف حالياً.")
+    else:
+        for item in admins:
+            user_id = item["user_id"]
+            count = item["number_count"]
+            lines.append(f"• `{user_id}` — {count} رقم")
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        f"🗑 إزالة {user_id}",
+                        callback_data=f"os:remove_number_admin:{user_id}",
+                    )
+                ]
+            )
+    rows.extend(
+        [
+            [
+                InlineKeyboardButton(
+                    "➕ إضافة ادمن الأرقام",
+                    callback_data="os:add_number_admin",
+                )
+            ],
+            [InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")],
+        ]
+    )
+    await update.callback_query.edit_message_text(
+        "\n".join(line for line in lines if line != ""),
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup(rows),
+    )

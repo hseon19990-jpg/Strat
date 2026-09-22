@@ -2578,6 +2578,46 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
             )
             return
 
+        if data == "os:add_number_admin" and is_own:
+            await q.answer()
+            context.user_data["state"] = "os_await_number_admin_id"
+            context.user_data.pop("number_admin_target_id", None)
+            await q.edit_message_text(
+                "📱 *إضافة ادمن الأرقام*\n\n"
+                "أرسل Telegram ID الخاص بالأدمن.\n"
+                "بعدها سأطلب منك أرقام الهاتف، رقماً واحداً في كل سطر.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup(
+                    [[InlineKeyboardButton("🔙 إلغاء", callback_data="owner_settings")]]
+                ),
+            )
+            return
+
+        if data == "os:list_number_admins" and is_own:
+            await q.answer()
+            await render_number_admins_for_owner(update, context)
+            return
+
+        if data.startswith("os:remove_number_admin:") and is_own:
+            await q.answer()
+            try:
+                number_admin_id = int(data.rsplit(":", 1)[-1])
+            except ValueError:
+                await q.answer("⚠️ ID غير صحيح.", show_alert=True)
+                return
+            removed_count = remove_number_admin(number_admin_id)
+            await render_number_admins_for_owner(
+                update,
+                context,
+                note=(
+                    f"✅ تمت إزالة صلاحية ادمن الأرقام عن `{number_admin_id}` "
+                    f"({removed_count} رقم)."
+                    if removed_count
+                    else f"⚠️ لم توجد أرقام مخصصة لـ `{number_admin_id}`."
+                ),
+            )
+            return
+
         if data == "os:list_supervisors" and is_own:
             await q.answer()
             svs = get_supervisors()

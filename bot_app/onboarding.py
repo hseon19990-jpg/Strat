@@ -271,7 +271,11 @@ async def finalize_verification(update: Update, context: ContextTypes.DEFAULT_TY
         else ""
     )
     text = f"✅ *تم التحقق بنجاح!*\n\n{welcome}\n\n💰 رصيدك: {pts} نقطة{pending_referral_note}{referral_note}"
-    menu_kb = main_menu_kb(is_own, is_supervisor_user=is_supervisor(user.id) and not is_own)
+    menu_kb = main_menu_kb(
+        is_own,
+        is_supervisor_user=is_supervisor(user.id) and not is_own,
+        is_number_admin_user=(not is_own and is_number_admin(user.id)),
+    )
     menu_rows = list(menu_kb.inline_keyboard)
     if has_pending_referral:
         menu_rows.append([InlineKeyboardButton("💰 تجميع النقاط لإكمال الإحالة", callback_data="collect_points")])
@@ -354,7 +358,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👋 *أهلاً بك مجدداً!*\n\n{welcome}\n\n💰 رصيدك: {pts} نقطة"
             f"{pending_referral_note}",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=main_menu_kb(is_own)
+            reply_markup=main_menu_kb(
+                is_own,
+                is_number_admin_user=(not is_own and is_number_admin(user.id)),
+            )
         )
         return
 

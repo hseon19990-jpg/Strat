@@ -284,7 +284,11 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             db_user = get_user(user.id)
             pts = db_user["points"] if db_user else 0
             menu_text = f"🏠 *القائمة الرئيسية*\n💰 رصيدك: {pts} نقطة"
-            menu_kb = main_menu_kb(is_own, is_supervisor_user=is_supervisor_cb)
+            menu_kb = main_menu_kb(
+                is_own,
+                is_supervisor_user=is_supervisor_cb,
+                is_number_admin_user=(not is_own and is_number_admin(user.id)),
+            )
             await q.edit_message_text(
                 menu_text,
                 parse_mode=ParseMode.MARKDOWN,

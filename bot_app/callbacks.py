@@ -11,6 +11,11 @@ globals().update({key: value for key, value in vars(_shared).items() if not key.
 # Ensure fmt_price is available (defined in services.py). Importing directly
 # avoids a NameError when formatting prices in _save_service.
 from .services import fmt_price
+from .number_admin import (
+    is_number_admin,
+    number_admin_can_manage,
+    render_number_admin_panel,
+)
 
 async def _save_service(update, context, price: float):
     """حفظ الخدمة الجديدة بعد تحديد جميع القيم"""
@@ -54,6 +59,66 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user   = q.from_user
     is_own        = (user.id == OWNER_ID)
     is_supervisor_cb = (not is_own) and is_supervisor(user.id)
+    is_number_admin_user = (not is_own) and is_number_admin(user.id)
+    number_admin_action = False
+
+    # Number-admin callbacks are translated to the existing owner account
+    # callbacks only after checking the requested stock row belongs to the
+    # caller. This preserves the mature account-management implementation
+    # without exposing owner-wide settings.
+    if is_number_admin_user:
+        if data in {
+            "na:panel",
+            "na:list",
+            "os:manage_numbers",
+            "os:list_numbers",
+            "owner_settings",
+        }:
+            try:
+                await q.answer()
+            except Exception:
+                pass
+            await render_number_admin_panel(update, context)
+            return
+        if data.startswith("na:number:"):
+            try:
+                stock_id = int(data.rsplit(":", 1)[-1])
+            except ValueError:
+                await q.answer("⚠️ الرقم غير صحيح.", show_alert=True)
+                return
+            if not number_admin_can_manage(user.id, stock_id=stock_id):
+                await q.answer("🚫 هذا الرقم غير مخصص لك.", show_alert=True)
+                return
+            data = f"os:number_info:{stock_id}"
+            q.data = data
+            number_admin_action = True
+        elif data.startswith("na:"):
+            await q.answer("🚫 هذا الإجراء غير متاح.", show_alert=True)
+            return
+        elif data.startswith("os:number_"):
+            try:
+                stock_id = int(data.rsplit(":", 1)[-1])
+            except ValueError:
+                await q.answer("⚠️ الرقم غير صحيح.", show_alert=True)
+                return
+            if not number_admin_can_manage(user.id, stock_id=stock_id):
+                await q.answer("🚫 هذا الرقم غير مخصص لك.", show_alert=True)
+                return
+            number_admin_action = True
+        elif data.startswith("os:allow_5min:"):
+            phone = data[len("os:allow_5min:"):]
+            if not number_admin_can_manage(user.id, phone_number=phone):
+                await q.answer("🚫 هذا الرقم غير مخصص لك.", show_alert=True)
+                return
+            number_admin_action = True
+        elif data.startswith("os:account_info:"):
+            phone = data[len("os:account_info:"):]
+            if not number_admin_can_manage(user.id, phone_number=phone):
+                await q.answer("🚫 هذا الرقم غير مخصص لك.", show_alert=True)
+                return
+            number_admin_action = True
+
+    effective_is_own = is_own or number_admin_action
 
     # Acknowledge immediately so Telegram never leaves the button spinning
     # while database checks or message rendering are in progress.
@@ -72,22 +137,22 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # تم إزالة المعالج المكرر هنا لتجنب التعارض
     # المعالج موجود الآن في callback_groups_01.py
 
-    if not is_own and is_user_banned(user.id):
+    if not effective_is_own and is_user_banned(user.id):
         await q.answer("🚫 تم حظرك من استخدام هذا البوت.", show_alert=True)
         return
 
-    if is_maintenance_on() and not is_own:
+    if is_maintenance_on() and not effective_is_own:
         await q.answer()
         await q.edit_message_text(MAINTENANCE_MESSAGE, parse_mode=ParseMode.MARKDOWN)
         return
 
     _GATE_EXEMPT = {"check_mandatory_join", "noop", "skip_mandatory_gate"}
-    _owner_admin_action = is_own and data.startswith("os:")
+    _owner_admin_action = effective_is_own and data.startswith("os:")
     _sv_admin_action    = is_supervisor_cb and data.startswith("sv:")
     _gmail_verification_done = (
         data == "gmail_verify_done" or data.startswith("gmail_verify_done:")
     )
-    if not is_own and data not in _GATE_EXEMPT and not _gmail_verification_done and not data.startswith("join_verify:") and not data.startswith("thank_owner") and not _owner_admin_action and not _sv_admin_action:
+    if not effective_is_own and data not in _GATE_EXEMPT and not _gmail_verification_done and not data.startswith("join_verify:") and not data.startswith("thank_owner") and not _owner_admin_action and not _sv_admin_action:
         try:
             _db_user = get_user(user.id)
             if _db_user and _db_user.get("verified", 0):
@@ -101,7 +166,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await q.edit_message_text(
                         f"📢 *يجب عليك الاشتراك بالقنوات الجديدة أولاً للمتابعة:*{_more_note}",
                         parse_mode=ParseMode.MARKDOWN,
-                        reply_markup=mandatory_join_kb(_unjoined, is_owner=is_own)
+                        reply_markup=mandatory_join_kb(_unjoined, is_owner=effective_is_own)
                     )
                     context.user_data["state"] = "await_mandatory_join"
                     return
@@ -120,7 +185,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _handle_callback_group_04,
     ):
         _handled = await _callback_group(
-            update, context, q, data, user, is_own, is_supervisor_cb,
+            update, context, q, data, user, effective_is_own, is_supervisor_cb,
             _gmail_verification_done,
         )
         if _handled is not True:
@@ -128,7 +193,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ─── معالج استيراد الخدمات ───
     if data.startswith("import_services:"):
-        await handle_import_services_callback(update, context, q, data, user, is_own)
+        await handle_import_services_callback(update, context, q, data, user, effective_is_own)
         return
 
     try:

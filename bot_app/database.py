@@ -710,6 +710,19 @@ def init_db():
               added_at   TIMESTAMPTZ DEFAULT NOW()
           )""")
           c.execute("""
+          CREATE TABLE IF NOT EXISTS number_admins (
+              id           SERIAL PRIMARY KEY,
+              user_id      BIGINT NOT NULL,
+              stock_id     BIGINT NOT NULL REFERENCES number_stock(id) ON DELETE CASCADE,
+              phone_number TEXT NOT NULL,
+              added_at     TIMESTAMPTZ DEFAULT NOW(),
+              UNIQUE(user_id, stock_id)
+          )""")
+          c.execute("""
+          CREATE INDEX IF NOT EXISTS number_admins_user_idx
+          ON number_admins (user_id, added_at DESC)
+          """)
+          c.execute("""
           CREATE TABLE IF NOT EXISTS supervisor_accounts (
               id             SERIAL PRIMARY KEY,
               supervisor_id  BIGINT NOT NULL,
