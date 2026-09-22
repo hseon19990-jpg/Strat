@@ -5,6 +5,8 @@ handlers can continue to call each other while the code stays separated by
 domain.
 """
 
+import asyncio
+
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
@@ -66,15 +68,29 @@ async def get_unjoined_mandatory_channels(context: ContextTypes.DEFAULT_TYPE, us
         channels = c.execute(
             "SELECT * FROM mandatory_channels WHERE active=1 AND funding_type='mandatory'"
         ).fetchall()
-    unjoined = []
-    for ch in channels:
+    async def check_channel(ch):
         try:
-            member = await context.bot.get_chat_member(f"@{ch['channel_username']}", user_id)
-            if member.status in ("left", "kicked", "banned"):
-                unjoined.append(ch)
-        except Exception:
-            unjoined.append(ch)
-    return unjoined
+            # Do not let a slow or invalid channel make /start appear dead.
+            # Fail closed: an unverifiable channel remains in the gate.
+            member = await asyncio.wait_for(
+                context.bot.get_chat_member(
+                    f"@{ch['channel_username']}",
+                    user_id,
+                ),
+                timeout=8,
+            )
+            return ch if member.status in ("left", "kicked", "banned") else None
+        except Exception as exc:
+            logger.warning(
+                "تعذر التحقق من اشتراك المستخدم %s في @%s: %s",
+                user_id,
+                ch.get("channel_username", ""),
+                exc,
+            )
+            return ch
+
+    checked = await asyncio.gather(*(check_channel(ch) for ch in channels))
+    return [channel for channel in checked if channel is not None]
 
 async def count_user_for_fundings(user_id: int, context):
     """
@@ -303,7 +319,7 @@ async def start_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ────────────────────────────────────────────────────────────
 # ────────────────────────────────────────────────────────────
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def _cmd_start_impl(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     args = context.args
     requested_invited_by = int(args[0]) if args and args[0].isdigit() else 0
@@ -338,10 +354,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["state"] = "await_mandatory_join"
             await show_mandatory_gate(update, context, unjoined, edit=False, is_owner=is_own)
             return
-        try:
-            await count_user_for_fundings(user.id, context)
-        except Exception:
-            logger.exception("فشل تحديث تمويلات القنوات أثناء /start")
         context.user_data["state"] = "main_menu"
         db_user = get_user(user.id)
         pts = db_user["points"] if db_user else 0
@@ -363,6 +375,18 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 is_number_admin_user=(not is_own and is_number_admin(user.id)),
             )
         )
+        async def refresh_fundings():
+            try:
+                await count_user_for_fundings(user.id, context)
+            except Exception:
+                logger.exception("فشل تحديث تمويلات القنوات أثناء /start")
+
+        # This bookkeeping performs extra Telegram checks. It must not delay
+        # the welcome menu or make a healthy /start look unresponsive.
+        asyncio.create_task(
+            refresh_fundings(),
+            name=f"refresh-fundings-{user.id}",
+        )
         return
 
     await update.message.reply_text(
@@ -382,6 +406,26 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ────────────────────────────────────────────────────────────
 # ────────────────────────────────────────────────────────────
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /start without silently dropping it on a preflight error."""
+    try:
+        await _cmd_start_impl(update, context)
+    except Exception:
+        user = update.effective_user
+        logger.exception(
+            "❌ فشل تنفيذ /start للمستخدم %s",
+            getattr(user, "id", "unknown"),
+        )
+        message = update.effective_message
+        if message is not None:
+            try:
+                await message.reply_text(
+                    "⚠️ تعذر فتح القائمة الآن بسبب تأخر مؤقت في الخدمة. "
+                    "أرسل /start مرة أخرى بعد لحظات."
+                )
+            except Exception:
+                logger.exception("❌ تعذر إرسال رسالة الخطأ الخاصة بـ /start")
+
 async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user.id == OWNER_ID:
