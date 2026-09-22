@@ -151,11 +151,7 @@ async def handle_owner_webapp_data(update, context):
     )
     await handle_callback(synthetic_update, context)
 
-def main_menu_kb(
-    is_owner=False,
-    is_supervisor_user=False,
-    is_number_admin_user=False,
-):
+def main_menu_kb(is_owner=False, is_supervisor_user=False):
     # المالك والأعضاء يستخدمون قائمة main نفسها وبنفس الأسماء والترتيب.
     menu_items = get_menu_items("main")
     # تغيير نص زر خدمات الرشق فقط، دون تغيير محتوى قسم الخدمات.
@@ -180,15 +176,6 @@ def main_menu_kb(
         rows.append([InlineKeyboardButton("⚙️ إعدادات المالك", callback_data="owner_settings")])
     if is_supervisor_user:
         rows.append([InlineKeyboardButton("🛡 لوحة المشرف", callback_data="sv:panel")])
-    if is_number_admin_user:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    "📱 لوحة ادمن الأرقام",
-                    callback_data="na:panel",
-                )
-            ]
-        )
     return InlineKeyboardMarkup(rows)
 
 def _render_service_list():
@@ -806,30 +793,12 @@ def owner_settings_kb():
     ])
     rows.append([InlineKeyboardButton("🛡 إضافة مشرف", callback_data="os:add_supervisor"),
                   InlineKeyboardButton("📋 إدارة المشرفين", callback_data="os:list_supervisors")])
-    rows.append(
-        [
-            InlineKeyboardButton(
-                "📱 إضافة ادمن الأرقام",
-                callback_data="os:add_number_admin",
-            ),
-            InlineKeyboardButton(
-                "📋 ادمن الأرقام",
-                callback_data="os:list_number_admins",
-            ),
-        ]
-    )
     rows.append([InlineKeyboardButton("👁 حسابات المشرفين", callback_data="os:sv_accounts")])
     rows.append([InlineKeyboardButton("👤 معلومات الحسابات", callback_data="os:account_info")])
     rows.append([
         InlineKeyboardButton(
             f"🔥 {get_raksh_accounts_label()}",
             callback_data="os:raksh_accounts",
-        )
-    ])
-    rows.append([
-        InlineKeyboardButton(
-            "🔐 إنشاء جلسة مستقلة/احتياطية",
-            callback_data="os:create_independent_session",
         )
     ])
     rows.append([

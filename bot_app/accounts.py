@@ -7,7 +7,6 @@ domain.
 
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
-import hashlib
 
 def add_numbers_to_stock(numbers: list) -> int:
     """يضيف أرقاماً جديدة لمخزون أرقام تيلغرام (يتجاهل المكرر). يُرجع عدد الأرقام المضافة فعلياً."""
@@ -738,6 +737,13 @@ async def remove_raksh_account_by_reference(reference: str) -> dict:
             "message": "الحساب لم يعد موجوداً أو تم حذفه.",
         }
 
+    # لا تنتظر خدمات الرشق انتهاء ذاكرة التخزين المؤقت حتى تستبعد الحساب فوراً.
+    try:
+        from .raksh_system.common import clear_raksh_session_cache
+        clear_raksh_session_cache()
+    except Exception as _exc:
+        logger.warning(f"تعذّر تنظيف ذاكرة حسابات الرشق بعد الإزالة: {_exc}")
+
     return {
         "status": "removed",
         "phone_number": _matched.get("phone_number"),
@@ -874,13 +880,43 @@ def list_stock_numbers(filter_type: str = "all"):
             "AND last_authorized IS NOT FALSE AND session_string IS NOT NULL "
             "AND twofa_password IS NOT NULL AND twofa_password != ''"
         )
+    elif filter_type == "source_zip":
+        sql = (
+            "SELECT id, phone_number, session_string, added_source, added_at "
+            "FROM number_stock "
+            "WHERE assigned_to IS NULL AND deleted_at IS NULL AND ever_sold IS NOT TRUE "
+            "AND raksh_only IS NOT TRUE AND added_source = 'zip'"
+        )
+    elif filter_type == "source_file":
+        # السجلات القديمة لا تملك added_source؛ الجلسة الموجودة فيها هي
+        # أقرب تصنيف موثوق للاستيراد من ملف مفرد.
+        sql = (
+            "SELECT id, phone_number, session_string, added_source, added_at "
+            "FROM number_stock "
+            "WHERE assigned_to IS NULL AND deleted_at IS NULL AND ever_sold IS NOT TRUE "
+            "AND raksh_only IS NOT TRUE AND session_string IS NOT NULL "
+            "AND COALESCE(added_source, 'file') = 'file'"
+        )
+    elif filter_type == "source_manual":
+        sql = (
+            "SELECT id, phone_number, session_string, added_source, added_at "
+            "FROM number_stock "
+            "WHERE assigned_to IS NULL AND deleted_at IS NULL AND ever_sold IS NOT TRUE "
+            "AND raksh_only IS NOT TRUE "
+            "AND (added_source = 'manual' OR session_string IS NULL)"
+        )
     else:
         sql = "SELECT id, phone_number, session_string, sessions_reset, force_listed, twofa_password, can_send_code, last_authorized, frozen_at, added_at FROM number_stock WHERE assigned_to IS NULL AND deleted_at IS NULL AND ever_sold IS NOT TRUE AND raksh_only IS NOT TRUE"
         if filter_type == "listed":
             sql += f" AND {_sellable_filter_sql()}"
         elif filter_type == "pending":
             sql += f" AND NOT ({_sellable_filter_sql()})"
-    sql += " ORDER BY kicked_at DESC NULLS LAST, id ASC" if filter_type == "kicked" else " ORDER BY id ASC"
+    if filter_type == "kicked":
+        sql += " ORDER BY kicked_at DESC NULLS LAST, id ASC"
+    elif filter_type.startswith("source_"):
+        sql += " ORDER BY added_at ASC NULLS FIRST, id ASC"
+    else:
+        sql += " ORDER BY id ASC"
     with db_conn() as c:
         rows = c.execute(sql).fetchall()
         return [dict(r) for r in rows]
@@ -898,7 +934,11 @@ def get_number_counts() -> dict:
             "COUNT(*) FILTER (WHERE is_solo IS TRUE AND can_send_code IS TRUE AND last_authorized IS NOT FALSE) AS complete, "
             "COUNT(*) FILTER (WHERE last_authorized IS NOT FALSE AND session_string IS NOT NULL "
             "  AND (is_solo IS FALSE OR is_solo IS NULL) AND (can_send_code IS FALSE OR can_send_code IS NULL)) AS unknown_verify, "
-            "COUNT(*) FILTER (WHERE last_authorized IS NOT FALSE AND last_device_count > 1) AS multi_device "
+            "COUNT(*) FILTER (WHERE last_authorized IS NOT FALSE AND last_device_count > 1) AS multi_device, "
+            "COUNT(*) FILTER (WHERE added_source = 'zip') AS source_zip, "
+            "COUNT(*) FILTER (WHERE session_string IS NOT NULL "
+            "  AND COALESCE(added_source, 'file') = 'file') AS source_file, "
+            "COUNT(*) FILTER (WHERE added_source = 'manual' OR session_string IS NULL) AS source_manual "
             "FROM number_stock WHERE assigned_to IS NULL AND deleted_at IS NULL AND ever_sold IS NOT TRUE AND raksh_only IS NOT TRUE"
         ).fetchone()
         total = row["total"] if row else 0
@@ -914,6 +954,9 @@ def get_number_counts() -> dict:
         complete       = row["complete"]       if row else 0
         unknown_verify = row["unknown_verify"] if row else 0
         multi_device   = row["multi_device"]   if row else 0
+        source_zip     = row["source_zip"] if row else 0
+        source_file    = row["source_file"] if row else 0
+        source_manual  = row["source_manual"] if row else 0
         with db_conn() as c3:
             na_row = c3.execute(
                 "SELECT COUNT(*) AS cnt FROM number_stock "
@@ -949,6 +992,7 @@ def get_number_counts() -> dict:
             "complete": complete, "unknown_verify": unknown_verify, "multi_device": multi_device,
             "no_2fa_accessible": no_2fa_accessible, "with_2fa_accessible": with_2fa_accessible,
             "accessible_full": accessible_full, "multi_device_access": multi_device_access,
+            "source_zip": source_zip, "source_file": source_file, "source_manual": source_manual,
         }
 
 def get_stock_number(stock_id: int):
@@ -1123,42 +1167,6 @@ def add_number_with_session(phone: str, session_str: str, raksh_only: bool = Fal
             (phone, session_str, raksh_only)
         )
         return True
-
-
-def save_independent_telegram_session(
-    phone: str,
-    session_str: str,
-    source_stock_id: int | None = None,
-    created_by: int | None = None,
-) -> tuple[bool, int]:
-    """يحفظ جلسة دخول مستقلة دون استبدال جلسة المخزون أو طرد جلسات الحساب."""
-    phone = str(phone or "").strip()
-    session_str = str(session_str or "").strip()
-    if not phone or not session_str:
-        return False, 0
-    session_hash = hashlib.sha256(session_str.encode("utf-8")).hexdigest()
-    with db_conn() as c:
-        row = c.execute(
-            """
-            INSERT INTO telegram_independent_sessions
-                (phone_number, source_stock_id, session_hash, session_string, created_by)
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (session_hash) DO UPDATE SET
-                active=TRUE,
-                phone_number=EXCLUDED.phone_number
-            RETURNING id
-            """,
-            (phone, source_stock_id, session_hash, session_str, created_by),
-        ).fetchone()
-        count_row = c.execute(
-            """
-            SELECT COUNT(*) AS count
-            FROM telegram_independent_sessions
-            WHERE phone_number=%s AND active=TRUE
-            """,
-            (phone,),
-        ).fetchone()
-    return True, int((count_row or {}).get("count", 0) or 0)
 
 def add_contributor_account(user_id: int, phone: str, session_str: str) -> tuple[bool, str]:
     """يحفظ حساب مستخدم في مخزون الرشق دون المساس بجلساته أو إعداداته.

@@ -435,24 +435,10 @@ def init_db():
               assigned_to   BIGINT,
               assigned_at   TIMESTAMPTZ,
               added_at      TIMESTAMPTZ DEFAULT NOW(),
+              added_source  TEXT,
               contributed_by BIGINT,
               contributor_share_percent INTEGER DEFAULT 50
           )""")
-          c.execute("""
-          CREATE TABLE IF NOT EXISTS telegram_independent_sessions (
-              id                BIGSERIAL PRIMARY KEY,
-              phone_number      TEXT NOT NULL,
-              source_stock_id   BIGINT,
-              session_hash      TEXT NOT NULL UNIQUE,
-              session_string    TEXT NOT NULL,
-              created_by        BIGINT,
-              active            BOOLEAN NOT NULL DEFAULT TRUE,
-              created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
-          )""")
-          c.execute("""
-          CREATE INDEX IF NOT EXISTS telegram_independent_sessions_phone_idx
-          ON telegram_independent_sessions (phone_number, active, created_at DESC)
-          """)
 
           # جداول لوحة «رشق تفاعل لكل المنشورات».
           # كانت هذه الجداول موجودة فقط في مخطط واجهة الويب، لذلك كان
@@ -564,6 +550,7 @@ def init_db():
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS raksh_excluded BOOLEAN DEFAULT FALSE",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS bot_session_ip TEXT",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS forced_ref_excluded BOOLEAN DEFAULT FALSE",
+              "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS added_source TEXT",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS contributed_by BIGINT",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS contributor_share_percent INTEGER DEFAULT 50",
               "ALTER TABLE services ADD COLUMN IF NOT EXISTS platform TEXT DEFAULT 'tg'",
@@ -709,19 +696,6 @@ def init_db():
               username   TEXT DEFAULT '',
               added_at   TIMESTAMPTZ DEFAULT NOW()
           )""")
-          c.execute("""
-          CREATE TABLE IF NOT EXISTS number_admins (
-              id           SERIAL PRIMARY KEY,
-              user_id      BIGINT NOT NULL,
-              stock_id     BIGINT NOT NULL REFERENCES number_stock(id) ON DELETE CASCADE,
-              phone_number TEXT NOT NULL,
-              added_at     TIMESTAMPTZ DEFAULT NOW(),
-              UNIQUE(user_id, stock_id)
-          )""")
-          c.execute("""
-          CREATE INDEX IF NOT EXISTS number_admins_user_idx
-          ON number_admins (user_id, added_at DESC)
-          """)
           c.execute("""
           CREATE TABLE IF NOT EXISTS supervisor_accounts (
               id             SERIAL PRIMARY KEY,

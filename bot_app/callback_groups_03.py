@@ -8,6 +8,30 @@ from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
 async def _handle_callback_group_03(update, context, q, data, user, is_own, is_supervisor_cb, _gmail_verification_done):
+    _numbers_admin = is_own or is_supervisor_cb
+    _read_only_number_callback = (
+        data == "os:list_numbers"
+        or data.startswith("os:nums:")
+        or data.startswith("os:number_info:")
+        or data.startswith("os:number_devices:")
+        or data.startswith("os:number_code:")
+        or data.startswith("os:number_2fa:")
+    )
+    # لو كانت لوحة الأرقام منشورة في مجموعة الأرقام، اسمح لأدمن المجموعة
+    # بفتح الرقم. لا نمنحه صلاحيات الحذف أو تسجيل الخروج أو التعديل.
+    if (
+        not _numbers_admin
+        and _read_only_number_callback
+        and NUMBERS_GROUP_ID
+        and getattr(getattr(q, "message", None), "chat_id", None) == NUMBERS_GROUP_ID
+    ):
+        try:
+            _member = await context.bot.get_chat_member(NUMBERS_GROUP_ID, user.id)
+            _member_status = getattr(_member, "status", "")
+            _numbers_admin = _member_status in {"administrator", "creator"}
+        except Exception as _member_error:
+            logger.warning("تعذّر التحقق من أدمن مجموعة الأرقام %s: %s", user.id, _member_error)
+
     if True:
         if data.startswith("os:leave_account:") and is_own:
             _phone_leave = data[len("os:leave_account:"):]
@@ -1293,12 +1317,24 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                 await q.edit_message_text(f"❌ خطأ: {_pfe}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")]]))
             return
 
-        if data == "os:list_numbers" and is_own:
+        if data == "os:list_numbers" and _numbers_admin:
             counts = get_number_counts()
             await q.edit_message_text(
                 "📋 *قائمة الأرقام*\n\nاختر التصنيف الذي تريد عرض أرقامه ومعلوماتها التفصيلية:",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton(
+                        f"📦 الأرقام المضافة عن طريق ZIP ({counts.get('source_zip', 0)})",
+                        callback_data="os:nums:source_zip"
+                    )],
+                    [InlineKeyboardButton(
+                        f"📄 الأرقام المضافة عن طريق ملفات مفردة ({counts.get('source_file', 0)})",
+                        callback_data="os:nums:source_file"
+                    )],
+                    [InlineKeyboardButton(
+                        f"✍️ الأرقام المضافة يدوياً ({counts.get('source_manual', 0)})",
+                        callback_data="os:nums:source_manual"
+                    )],
                     [InlineKeyboardButton(f"📦 جميع الأرقام ({counts['all']})", callback_data="os:nums:all")],
                     [InlineKeyboardButton(f"🚀 الأرقام المعروضة ({counts['listed']})", callback_data="os:nums:listed")],
                     [InlineKeyboardButton(f"⏳ الأرقام المنتظرة ({counts['pending']})", callback_data="os:nums:pending")],
@@ -1336,7 +1372,7 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                 )
             return
 
-        if data.startswith("os:nums:") and is_own:
+        if data.startswith("os:nums:") and _numbers_admin:
             _parts = data.split(":")
             filter_type = _parts[2]
             _page = int(_parts[3]) if len(_parts) > 3 else 0
@@ -1357,6 +1393,9 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                 "with_2fa_accessible":   "🔐 أرقام لها 2FA معلومة (يمكن للبوت وصولها)",
                 "accessible_full":       "✅ حسابات مفتوحة بالكامل (وصول + رسائل + تحكم)",
                 "multi_device_access":   "📲 أجهزة متعددة — يمكن الوصول",
+                "source_zip":            "📦 الأرقام المضافة عن طريق ZIP",
+                "source_file":           "📄 الأرقام المضافة عن طريق ملفات مفردة",
+                "source_manual":         "✍️ الأرقام المضافة يدوياً",
             }
             title   = titles.get(filter_type, "الأرقام")
             numbers = list_stock_numbers(filter_type)
@@ -1386,6 +1425,12 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                     empty_note = "✅ لا توجد حسابات مفتوحة بالكامل حالياً — تحقق من can_send_code."
                 elif filter_type == "multi_device_access":
                     empty_note = "✅ لا توجد حسابات بأجهزة متعددة مع إمكانية الوصول حالياً."
+                elif filter_type == "source_zip":
+                    empty_note = "لا توجد أرقام مستوردة من ملفات ZIP حالياً."
+                elif filter_type == "source_file":
+                    empty_note = "لا توجد أرقام مستوردة من ملفات مفردة حالياً."
+                elif filter_type == "source_manual":
+                    empty_note = "لا توجد أرقام مضافة يدوياً حالياً."
                 await q.edit_message_text(
                     f"{title}\n\n{empty_note}",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")]])
@@ -1717,9 +1762,28 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
             )
             return
 
-        if data.startswith("os:number_info:") and is_own:
-            stock_id = int(data.split(":")[-1])
-            rec = get_stock_number(stock_id)
+        if data.startswith("os:number_info:") and _numbers_admin:
+            try:
+                stock_id = int(data.split(":")[-1])
+            except (TypeError, ValueError):
+                await q.edit_message_text(
+                    "⚠️ معرّف الرقم غير صالح.",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")
+                    ]])
+                )
+                return
+            try:
+                rec = get_stock_number(stock_id)
+            except Exception as _number_db_error:
+                logger.exception("❌ تعذّر قراءة معلومات الرقم %s", stock_id)
+                await q.edit_message_text(
+                    "⚠️ تعذّر قراءة بيانات الرقم من قاعدة البيانات. حاول مرة أخرى.",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")
+                    ]])
+                )
+                return
             if not rec or (rec["assigned_to"] is not None and not rec.get("deleted_at")):
                 await q.edit_message_text(
                     "⚠️ هذا الرقم غير متاح (تم بيعه).",
@@ -1749,8 +1813,23 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                 )
                 return
             await q.edit_message_text(f"⏳ يتم جلب معلومات {rec['phone_number']}... قد يستغرق ذلك بضع ثوانٍ.")
-            client = TelegramClient(StringSession(rec["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+            client = None
             try:
+                if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
+                    await q.edit_message_text(
+                        f"⚠️ لا يمكن جلب خيارات الحساب {rec['phone_number']} حالياً.\n"
+                        "إعدادات Telegram API غير مكتملة.",
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("🗑 نقل إلى سلة المهملات", callback_data=f"os:number_delete:{stock_id}")],
+                            [InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")],
+                        ])
+                    )
+                    return
+                client = TelegramClient(
+                    StringSession(rec["session_string"]),
+                    int(TELEGRAM_API_ID),
+                    TELEGRAM_API_HASH,
+                )
                 # ─── اتصال بـ timeout صريح حتى لا يعلّق البوت على جلسات ملغية ───
                 try:
                     await asyncio.wait_for(client.connect(), timeout=15)
@@ -2052,7 +2131,7 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
             )
             return
 
-        if data.startswith("os:number_devices:") and is_own:
+        if data.startswith("os:number_devices:") and _numbers_admin:
             stock_id = int(data.split(":")[-1])
             rec = get_stock_number(stock_id)
             if not rec or not rec["session_string"]:
@@ -2154,7 +2233,7 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                     pass
             return
 
-        if data.startswith("os:number_code:") and is_own:
+        if data.startswith("os:number_code:") and _numbers_admin:
             stock_id = int(data.split(":")[-1])
             rec = get_stock_number(stock_id)
             if not rec or rec["assigned_to"] is not None or not rec["session_string"]:
@@ -2209,7 +2288,7 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                     pass
             return
 
-        if data.startswith("os:number_2fa:") and is_own:
+        if data.startswith("os:number_2fa:") and _numbers_admin:
             stock_id = int(data.split(":")[-1])
             rec = get_stock_number(stock_id)
             if not rec:
@@ -2340,24 +2419,6 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data=f"os:number_2fa:{stock_id}")]])
                 )
-            return
-
-        if data == "os:create_independent_session" and is_own:
-            await q.answer()
-            context.user_data["state"] = "os_await_independent_session_phone"
-            await q.edit_message_text(
-                "🔐 *إنشاء جلسة Telegram مستقلة*\n\n"
-                "أرسل رقمًا موجودًا في مخزون البوت بصيغة دولية، مثل:\n"
-                "`+9647701234567`\n\n"
-                "سيطلب Telegram كود الدخول وكلمة مرور 2FA إن وُجدت، "
-                "ثم تُحفظ جلسة جديدة مستقلة دون استبدال الجلسة الحالية "
-                "ودون تسجيل خروج أي جهاز آخر.\n\n"
-                "يمكنك تكرار العملية لإنشاء جلسة ثانية وثالثة احتياطية.",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🔙 إلغاء", callback_data="owner_settings")
-                ]]),
-            )
             return
 
         if data == "sv:panel" and is_supervisor_cb:
@@ -2575,46 +2636,6 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                 "أرسل يوزر المشرف (@username) أو الـ ID الخاص به:",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="owner_settings")]])
-            )
-            return
-
-        if data == "os:add_number_admin" and is_own:
-            await q.answer()
-            context.user_data["state"] = "os_await_number_admin_id"
-            context.user_data.pop("number_admin_target_id", None)
-            await q.edit_message_text(
-                "📱 *إضافة ادمن الأرقام*\n\n"
-                "أرسل Telegram ID الخاص بالأدمن.\n"
-                "بعدها سأطلب منك أرقام الهاتف، رقماً واحداً في كل سطر.",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup(
-                    [[InlineKeyboardButton("🔙 إلغاء", callback_data="owner_settings")]]
-                ),
-            )
-            return
-
-        if data == "os:list_number_admins" and is_own:
-            await q.answer()
-            await render_number_admins_for_owner(update, context)
-            return
-
-        if data.startswith("os:remove_number_admin:") and is_own:
-            await q.answer()
-            try:
-                number_admin_id = int(data.rsplit(":", 1)[-1])
-            except ValueError:
-                await q.answer("⚠️ ID غير صحيح.", show_alert=True)
-                return
-            removed_count = remove_number_admin(number_admin_id)
-            await render_number_admins_for_owner(
-                update,
-                context,
-                note=(
-                    f"✅ تمت إزالة صلاحية ادمن الأرقام عن `{number_admin_id}` "
-                    f"({removed_count} رقم)."
-                    if removed_count
-                    else f"⚠️ لم توجد أرقام مخصصة لـ `{number_admin_id}`."
-                ),
             )
             return
 
