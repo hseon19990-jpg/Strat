@@ -435,7 +435,6 @@ def init_db():
               assigned_to   BIGINT,
               assigned_at   TIMESTAMPTZ,
               added_at      TIMESTAMPTZ DEFAULT NOW(),
-              added_source  TEXT,
               contributed_by BIGINT,
               contributor_share_percent INTEGER DEFAULT 50
           )""")
@@ -546,11 +545,11 @@ def init_db():
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS twofa_reset_date TIMESTAMPTZ",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS is_solo BOOLEAN DEFAULT FALSE",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS can_send_code BOOLEAN DEFAULT FALSE",
+               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS source_type TEXT DEFAULT 'legacy'",
                "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS raksh_only BOOLEAN DEFAULT FALSE",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS raksh_excluded BOOLEAN DEFAULT FALSE",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS bot_session_ip TEXT",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS forced_ref_excluded BOOLEAN DEFAULT FALSE",
-              "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS added_source TEXT",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS contributed_by BIGINT",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS contributor_share_percent INTEGER DEFAULT 50",
               "ALTER TABLE services ADD COLUMN IF NOT EXISTS platform TEXT DEFAULT 'tg'",
@@ -586,6 +585,24 @@ def init_db():
           ]:
               try: c.execute(_alt)
               except Exception: pass
+          # السجلات القديمة لا تملك مصدر استيراد محفوظاً. نضع لها تصنيفاً
+          # آمناً قابلاً للتعديل: الرقم بلا جلسة = يدوي، والجلسة القديمة = ملف.
+          try:
+              c.execute(
+                  """
+                  UPDATE number_stock
+                  SET source_type = CASE
+                      WHEN raksh_only IS TRUE THEN 'raksh'
+                      WHEN session_string IS NULL OR BTRIM(session_string) = '' THEN 'manual'
+                      ELSE 'file'
+                  END
+                  WHERE source_type IS NULL
+                     OR BTRIM(source_type) = ''
+                     OR source_type = 'legacy'
+                  """
+              )
+          except Exception:
+              pass
           c.execute("""
           CREATE TABLE IF NOT EXISTS channel_funding_counts (
               id         SERIAL PRIMARY KEY,

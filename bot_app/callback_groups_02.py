@@ -139,6 +139,211 @@ async def export_ready_sessions(context, user_id, edit_message, requested_count=
     finally:
         _export_zip_buffer.close()
 
+def _readable_accounts_export_markup():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📦 حسابات ZIP", callback_data="os:readable_category:zip:0")],
+        [InlineKeyboardButton("🧾 حسابات مضافة يدوياً", callback_data="os:readable_category:manual:0")],
+        [InlineKeyboardButton("📄 حسابات الملفات", callback_data="os:readable_category:file:0")],
+        [InlineKeyboardButton("🔥 حسابات الرشق", callback_data="os:readable_category:raksh:0")],
+        [InlineKeyboardButton("🔄 إعادة الفحص", callback_data="os:scan_readable_accounts")],
+        [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
+    ])
+
+
+_READABLE_CATEGORY_LABELS = {
+    "zip": ("📦 حسابات ZIP", "الجلسات المستوردة من ملفات ZIP"),
+    "manual": ("🧾 حسابات مضافة يدوياً", "الحسابات التي أضيفت من خلال الإدخال اليدوي"),
+    "file": ("📄 حسابات الملفات", "الجلسات المستوردة من ملفات .session أو .json أو TXT"),
+    "raksh": ("🔥 حسابات الرشق", "الحسابات المخصصة لخدمات الرشق فقط"),
+}
+
+
+def _readable_category_dt(value) -> str:
+    if not value:
+        return "غير مسجّل"
+    if hasattr(value, "strftime"):
+        return value.strftime("%Y-%m-%d %H:%M")
+    return str(value).replace("T", " ")[:16]
+
+
+async def _show_readable_category(context, query, category: str, page: int = 0):
+    report = context.user_data.get("readable_accounts_report")
+    if not isinstance(report, dict):
+        await query.edit_message_text(
+            "⚠️ انتهت نتيجة الفحص. اضغط إعادة الفحص من جديد.",
+            reply_markup=_readable_accounts_export_markup(),
+        )
+        return
+
+    label, description = _READABLE_CATEGORY_LABELS.get(
+        category, ("الحسابات", "الحسابات القابلة للقراءة")
+    )
+    rows = list(report.get(category) or [])
+    page_size = 10
+    total = len(rows)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    page = max(0, min(int(page), total_pages - 1))
+    page_rows = rows[page * page_size:(page + 1) * page_size]
+
+    if not page_rows:
+        await query.edit_message_text(
+            f"{label}\n\n"
+            "لا توجد حسابات في هذا التصنيف ثبتت قدرة البوت على قراءة الرسائل.\n"
+            "الحساب لا يظهر هنا إلا بعد نجاح قراءة محادثة Telegram الرسمية 777000.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 تصنيفات الحسابات", callback_data="os:scan_readable_accounts")],
+                [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
+            ]),
+        )
+        return
+
+    lines = [
+        f"{label} ({total}) — صفحة {page + 1}/{total_pages}",
+        description,
+        "✅ كل رقم أدناه اجتاز اختبار قراءة الرسائل ويمكن طلب آخر كود له.",
+        "",
+    ]
+    buttons = []
+    for row in page_rows:
+        phone = str(row.get("phone_number") or "غير معروف")
+        lines.append(
+            f"📱 `{phone}`\n"
+            f"   📅 تاريخ الإضافة: {_readable_category_dt(row.get('added_at'))}"
+        )
+        buttons.append([
+            InlineKeyboardButton(
+                f"📱 {phone} — 📅 {_readable_category_dt(row.get('added_at'))}",
+                callback_data=f"os:number_info:{row['stock_id']}",
+            )
+        ])
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(
+            "⬅️ السابق",
+            callback_data=f"os:readable_category:{category}:{page - 1}",
+        ))
+    if total_pages > 1:
+        nav.append(InlineKeyboardButton(f"📄 {page + 1}/{total_pages}", callback_data="noop"))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton(
+            "التالي ➡️",
+            callback_data=f"os:readable_category:{category}:{page + 1}",
+        ))
+    if nav:
+        buttons.append(nav)
+    buttons.extend([
+        [InlineKeyboardButton("🔙 تصنيفات الحسابات", callback_data="os:scan_readable_accounts")],
+        [InlineKeyboardButton("🔙 معلومات الحسابات", callback_data="os:account_info")],
+    ])
+    text = "\n\n".join(lines)
+    await query.edit_message_text(
+        text[:4000] + ("\n\n_(النص مقتصر)_" if len(text) > 4000 else ""),
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+def _readable_account_line(row: dict) -> str:
+    phone = str(row.get("phone_number") or "").strip()
+    telegram_id = str(row.get("telegram_id") or "").strip()
+    username = str(row.get("username") or "").strip()
+    name = str(row.get("name") or "").strip()
+    details = [phone]
+    if telegram_id:
+        details.append(f"Telegram ID: {telegram_id}")
+    if username:
+        details.append(f"@{username.lstrip('@')}")
+    if name:
+        details.append(name)
+    return " | ".join(details)
+
+async def _send_readable_accounts_export(context, user_id, export_kind: str):
+    report = context.user_data.get("readable_accounts_report")
+    if not isinstance(report, dict):
+        await context.bot.send_message(
+            chat_id=user_id,
+            text="⚠️ انتهت نتيجة الفحص. اضغط زر الفحص من جديد.",
+            reply_markup=_readable_accounts_export_markup(),
+        )
+        return
+
+    import io as _readable_io
+    import zipfile as _readable_zipfile
+    from telegram import InputFile as _ReadableInputFile
+
+    if export_kind == "all":
+        _all_rows = report.get("all_numbers") or []
+        _readable_rows = report.get("readable") or []
+        _manual_rows = report.get("manual") or []
+        _unreadable_rows = report.get("unreadable") or []
+        _zip_buffer = _readable_io.BytesIO()
+        with _readable_zipfile.ZipFile(
+            _zip_buffer, "w", compression=_readable_zipfile.ZIP_DEFLATED
+        ) as _archive:
+            _archive.writestr(
+                "all_numbers_oldest_first.txt",
+                "\n".join(str(row["phone_number"]) for row in _all_rows).encode("utf-8"),
+            )
+            _archive.writestr(
+                "readable_accounts.txt",
+                "\n".join(_readable_account_line(row) for row in _readable_rows).encode("utf-8"),
+            )
+            _archive.writestr(
+                "manual_numbers.txt",
+                "\n".join(str(row["phone_number"]) for row in _manual_rows).encode("utf-8"),
+            )
+            _archive.writestr(
+                "unreadable_sessions.txt",
+                "\n".join(
+                    f"{row['phone_number']} | {row.get('reason') or 'غير معروف'}"
+                    for row in _unreadable_rows
+                ).encode("utf-8"),
+            )
+            _archive.writestr(
+                "README.txt",
+                (
+                    "تم ترتيب كل الملفات من الأقدم إلى الأحدث حسب added_at ثم رقم السجل.\n"
+                    "هذا الأرشيف لا يحتوي session_string أو كلمات مرور.\n"
+                ).encode("utf-8"),
+            )
+        _zip_buffer.seek(0)
+        try:
+            await context.bot.send_document(
+                chat_id=user_id,
+                document=_ReadableInputFile(
+                    _zip_buffer,
+                    filename=f"all_numbers_oldest_first_{int(time.time())}.zip",
+                ),
+                caption=f"📦 كل الأرقام مرتبة من الأقدم: {len(_all_rows):,} رقم.",
+            )
+        finally:
+            _zip_buffer.close()
+        return
+
+    if export_kind == "manual":
+        _rows = report.get("manual") or []
+        _filename = "manual_numbers_oldest_first.txt"
+        _caption = f"🧾 الأرقام المضافة يدوياً: {len(_rows):,}."
+        _body = "\n".join(str(row["phone_number"]) for row in _rows)
+    elif export_kind == "readable":
+        _rows = report.get("readable") or []
+        _filename = "readable_accounts_oldest_first.txt"
+        _caption = f"📄 الحسابات التي أمكن فتحها وقراءة بياناتها: {len(_rows):,}."
+        _body = "\n".join(_readable_account_line(row) for row in _rows)
+    else:
+        return
+
+    _file_buffer = _readable_io.BytesIO(_body.encode("utf-8"))
+    try:
+        await context.bot.send_document(
+            chat_id=user_id,
+            document=_ReadableInputFile(_file_buffer, filename=_filename),
+            caption=_caption,
+        )
+    finally:
+        _file_buffer.close()
+
 async def _handle_callback_group_02(update, context, q, data, user, is_own, is_supervisor_cb, _gmail_verification_done):
     if True:
         if data.startswith("my_numbers:kicked:"):
@@ -550,6 +755,46 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                     text="✅ انتهى الفحص.",
                     reply_markup=_status_markup,
                 )
+            return
+
+        if data == "os:scan_readable_accounts" and is_own:
+            await q.edit_message_text(
+                "⏳ *جاري فحص جلسات الحسابات...*\n"
+                "سيتم اختبار فتح كل جلسة وقراءة رسائل Telegram الرسمية.\n"
+                "لن يتم حذف أو تعديل أي رقم.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            context.user_data["readable_accounts_report"] = (
+                await scan_readable_account_sessions()
+            )
+            _readable_report = context.user_data["readable_accounts_report"]
+            _readable_count = len(_readable_report.get("readable") or [])
+            await q.edit_message_text(
+                "🔍 *نتيجة فحص قابلية قراءة الرسائل*\n\n"
+                f"✅ الحسابات القابلة لقراءة الرسائل والكود: *{_readable_count:,}*\n\n"
+                "لن تظهر أي جلسة هنا إلا بعد نجاح قراءة محادثة 777000.\n"
+                "اختر التصنيف لعرض الحسابات، ثم اضغط الرقم لفتح أدواته:",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=_readable_accounts_export_markup(),
+            )
+            return
+
+        if data.startswith("os:readable_category:") and is_own:
+            _parts = data.split(":")
+            _category = _parts[2] if len(_parts) > 2 else ""
+            _page = int(_parts[3]) if len(_parts) > 3 and _parts[3].isdigit() else 0
+            if _category not in _READABLE_CATEGORY_LABELS:
+                await q.answer("تصنيف غير صالح.", show_alert=True)
+                return
+            await _show_readable_category(context, q, _category, _page)
+            return
+
+        if data.startswith("os:readable_export:") and is_own:
+            _export_kind = data.split(":", 2)[2]
+            if _export_kind not in {"all", "manual", "readable"}:
+                await q.answer("نوع الملف غير صالح.", show_alert=True)
+                return
+            await _send_readable_accounts_export(context, user.id, _export_kind)
             return
 
         # ─── بايو ──────────────────────────────────────────────────────────

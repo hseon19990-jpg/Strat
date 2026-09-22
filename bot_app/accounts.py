@@ -8,17 +8,30 @@ domain.
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
+
+def _normalize_stock_phone(value: str) -> str:
+    """يوحّد الرقم حتى لا ينشأ سجل يدوي منفصل عن سجل الجلسة."""
+    raw = str(value or "").strip()
+    digits = re.sub(r"[^0-9]", "", raw)
+    if not digits:
+        return raw
+    if digits.startswith("00"):
+        digits = digits[2:]
+    return f"+{digits}"
+
+
 def add_numbers_to_stock(numbers: list) -> int:
     """يضيف أرقاماً جديدة لمخزون أرقام تيلغرام (يتجاهل المكرر). يُرجع عدد الأرقام المضافة فعلياً."""
     added = 0
     with db_conn() as c:
         for n in numbers:
-            n = n.strip()
+            n = _normalize_stock_phone(n)
             if not n:
                 continue
             try:
                 c.execute(
-                    "INSERT INTO number_stock (phone_number) VALUES (%s) ON CONFLICT (phone_number) DO NOTHING",
+                    "INSERT INTO number_stock (phone_number, source_type) "
+                    "VALUES (%s, 'manual') ON CONFLICT (phone_number) DO NOTHING",
                     (n,)
                 )
                 if c.rowcount:
@@ -649,6 +662,128 @@ async def scan_all_account_statuses() -> dict[str, list[dict]]:
 
     return result
 
+async def scan_readable_account_sessions() -> dict[str, list[dict]]:
+    """يفحص قدرة الجلسة على قراءة رسائل Telegram فعلياً.
+
+    لا يكفي ``get_me`` لإثبات أن الحساب يستطيع قراءة كود الدخول؛ لذلك نقرأ
+    محادثة Telegram الرسمية 777000. نجاح ``get_messages`` هو معيار الإدراج
+    في القوائم الجديدة. الفحص للعرض والتصدير فقط ولا يغيّر المخزون.
+    """
+    with db_conn() as c:
+        rows = c.execute(
+            """
+            SELECT id, phone_number, session_string, added_at, source_type,
+                   raksh_only, can_send_code, last_device_count, is_solo
+            FROM number_stock
+            WHERE deleted_at IS NULL
+            ORDER BY added_at ASC NULLS FIRST, id ASC
+            """
+        ).fetchall()
+
+    result = {
+        "all_numbers": [],
+        "zip": [],
+        "manual": [],
+        "file": [],
+        "raksh": [],
+        "readable": [],
+        "unreadable": [],
+    }
+
+    for raw_row in rows:
+        row = dict(raw_row)
+        phone = str(row.get("phone_number") or "").strip()
+        if not phone:
+            continue
+
+        added_at = row.get("added_at")
+        added_at_text = ""
+        if added_at is not None:
+            try:
+                added_at_text = added_at.isoformat()
+            except AttributeError:
+                added_at_text = str(added_at)
+
+        base = {
+            "stock_id": row.get("id"),
+            "phone_number": phone,
+            "added_at": added_at_text,
+            "source_type": (
+                "raksh" if row.get("raksh_only") else
+                str(row.get("source_type") or "").strip().lower() or
+                ("manual" if not row.get("session_string") else "file")
+            ),
+            "can_send_code": bool(row.get("can_send_code")),
+            "last_device_count": row.get("last_device_count"),
+            "is_solo": bool(row.get("is_solo")),
+        }
+        if base["source_type"] not in {"zip", "manual", "file", "raksh"}:
+            base["source_type"] = "file" if row.get("session_string") else "manual"
+        result["all_numbers"].append(base.copy())
+
+        session_string = str(row.get("session_string") or "").strip()
+        if not session_string:
+            continue
+
+        if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
+            result["unreadable"].append(
+                {**base, "reason": "إعدادات Telegram API غير مكتملة"}
+            )
+            continue
+
+        client = None
+        try:
+            client = TelegramClient(
+                StringSession(session_string),
+                int(TELEGRAM_API_ID),
+                TELEGRAM_API_HASH,
+            )
+            await asyncio.wait_for(client.connect(), timeout=15)
+            authorized = await asyncio.wait_for(
+                client.is_user_authorized(),
+                timeout=8,
+            )
+            if not authorized:
+                result["unreadable"].append(
+                    {**base, "reason": "الجلسة غير مصرّح بها"}
+                )
+                continue
+
+            me = await asyncio.wait_for(client.get_me(), timeout=10)
+            if me is None:
+                result["unreadable"].append(
+                    {**base, "reason": "لم يُرجع Telegram بيانات الحساب"}
+                )
+                continue
+
+            # قراءة 777000 تثبت أن الجلسة تستطيع قراءة الرسائل فعلياً.
+            # لا نشترط وجود كود جديد؛ قد لا يكون الحساب قد طلب كوداً مؤخراً.
+            await asyncio.wait_for(client.get_messages(777000, limit=1), timeout=12)
+            first_name = str(getattr(me, "first_name", "") or "").strip()
+            last_name = str(getattr(me, "last_name", "") or "").strip()
+            readable_row = {
+                **base,
+                "telegram_id": getattr(me, "id", None),
+                "username": str(getattr(me, "username", "") or "").strip(),
+                "name": " ".join(part for part in (first_name, last_name) if part),
+                "can_read_messages": True,
+            }
+            result["readable"].append(readable_row)
+            result[base["source_type"]].append(readable_row.copy())
+        except Exception as exc:
+            logger.warning(f"تعذّر فحص قابلية قراءة جلسة {phone}: {exc}")
+            result["unreadable"].append(
+                {**base, "reason": "تعذّر فتح الجلسة أو قراءة الحساب"}
+            )
+        finally:
+            try:
+                if client is not None:
+                    await client.disconnect()
+            except Exception:
+                pass
+
+    return result
+
 async def remove_raksh_account_by_reference(reference: str) -> dict:
     """يستثني حساباً ذا جلسة من خدمات الرشق باستخدام أي معرّف."""
     _reference = str(reference or "").strip()
@@ -880,43 +1015,13 @@ def list_stock_numbers(filter_type: str = "all"):
             "AND last_authorized IS NOT FALSE AND session_string IS NOT NULL "
             "AND twofa_password IS NOT NULL AND twofa_password != ''"
         )
-    elif filter_type == "source_zip":
-        sql = (
-            "SELECT id, phone_number, session_string, added_source, added_at "
-            "FROM number_stock "
-            "WHERE assigned_to IS NULL AND deleted_at IS NULL AND ever_sold IS NOT TRUE "
-            "AND raksh_only IS NOT TRUE AND added_source = 'zip'"
-        )
-    elif filter_type == "source_file":
-        # السجلات القديمة لا تملك added_source؛ الجلسة الموجودة فيها هي
-        # أقرب تصنيف موثوق للاستيراد من ملف مفرد.
-        sql = (
-            "SELECT id, phone_number, session_string, added_source, added_at "
-            "FROM number_stock "
-            "WHERE assigned_to IS NULL AND deleted_at IS NULL AND ever_sold IS NOT TRUE "
-            "AND raksh_only IS NOT TRUE AND session_string IS NOT NULL "
-            "AND COALESCE(added_source, 'file') = 'file'"
-        )
-    elif filter_type == "source_manual":
-        sql = (
-            "SELECT id, phone_number, session_string, added_source, added_at "
-            "FROM number_stock "
-            "WHERE assigned_to IS NULL AND deleted_at IS NULL AND ever_sold IS NOT TRUE "
-            "AND raksh_only IS NOT TRUE "
-            "AND (added_source = 'manual' OR session_string IS NULL)"
-        )
     else:
         sql = "SELECT id, phone_number, session_string, sessions_reset, force_listed, twofa_password, can_send_code, last_authorized, frozen_at, added_at FROM number_stock WHERE assigned_to IS NULL AND deleted_at IS NULL AND ever_sold IS NOT TRUE AND raksh_only IS NOT TRUE"
         if filter_type == "listed":
             sql += f" AND {_sellable_filter_sql()}"
         elif filter_type == "pending":
             sql += f" AND NOT ({_sellable_filter_sql()})"
-    if filter_type == "kicked":
-        sql += " ORDER BY kicked_at DESC NULLS LAST, id ASC"
-    elif filter_type.startswith("source_"):
-        sql += " ORDER BY added_at ASC NULLS FIRST, id ASC"
-    else:
-        sql += " ORDER BY id ASC"
+    sql += " ORDER BY kicked_at DESC NULLS LAST, id ASC" if filter_type == "kicked" else " ORDER BY id ASC"
     with db_conn() as c:
         rows = c.execute(sql).fetchall()
         return [dict(r) for r in rows]
@@ -934,11 +1039,7 @@ def get_number_counts() -> dict:
             "COUNT(*) FILTER (WHERE is_solo IS TRUE AND can_send_code IS TRUE AND last_authorized IS NOT FALSE) AS complete, "
             "COUNT(*) FILTER (WHERE last_authorized IS NOT FALSE AND session_string IS NOT NULL "
             "  AND (is_solo IS FALSE OR is_solo IS NULL) AND (can_send_code IS FALSE OR can_send_code IS NULL)) AS unknown_verify, "
-            "COUNT(*) FILTER (WHERE last_authorized IS NOT FALSE AND last_device_count > 1) AS multi_device, "
-            "COUNT(*) FILTER (WHERE added_source = 'zip') AS source_zip, "
-            "COUNT(*) FILTER (WHERE session_string IS NOT NULL "
-            "  AND COALESCE(added_source, 'file') = 'file') AS source_file, "
-            "COUNT(*) FILTER (WHERE added_source = 'manual' OR session_string IS NULL) AS source_manual "
+            "COUNT(*) FILTER (WHERE last_authorized IS NOT FALSE AND last_device_count > 1) AS multi_device "
             "FROM number_stock WHERE assigned_to IS NULL AND deleted_at IS NULL AND ever_sold IS NOT TRUE AND raksh_only IS NOT TRUE"
         ).fetchone()
         total = row["total"] if row else 0
@@ -954,9 +1055,6 @@ def get_number_counts() -> dict:
         complete       = row["complete"]       if row else 0
         unknown_verify = row["unknown_verify"] if row else 0
         multi_device   = row["multi_device"]   if row else 0
-        source_zip     = row["source_zip"] if row else 0
-        source_file    = row["source_file"] if row else 0
-        source_manual  = row["source_manual"] if row else 0
         with db_conn() as c3:
             na_row = c3.execute(
                 "SELECT COUNT(*) AS cnt FROM number_stock "
@@ -992,17 +1090,39 @@ def get_number_counts() -> dict:
             "complete": complete, "unknown_verify": unknown_verify, "multi_device": multi_device,
             "no_2fa_accessible": no_2fa_accessible, "with_2fa_accessible": with_2fa_accessible,
             "accessible_full": accessible_full, "multi_device_access": multi_device_access,
-            "source_zip": source_zip, "source_file": source_file, "source_manual": source_manual,
         }
 
 def get_stock_number(stock_id: int):
     with db_conn() as c:
         row = c.execute(
             "SELECT id, phone_number, session_string, assigned_to, sessions_reset, force_listed, frozen_at, "
-            "twofa_password, deleted_at, last_authorized "
+            "twofa_password, deleted_at, last_authorized, added_at, source_type, raksh_only, "
+            "can_send_code, last_device_count, is_solo "
             "FROM number_stock WHERE id=%s",
             (stock_id,)
         ).fetchone()
+        # السجلات القديمة قد تحتوي الرقم نفسه مرة مع + ومرة بدونه.
+        # إذا اختار الأدمن السجل اليدوي، استخدم جلسة السجل المطابق بدلاً
+        # من إظهار رسالة مضللة بأن الرقم بلا جلسة.
+        if row and not row.get("session_string"):
+            fallback = c.execute(
+                """
+                SELECT session_string
+                FROM number_stock
+                WHERE id <> %s
+                  AND deleted_at IS NULL
+                  AND assigned_to IS NULL
+                  AND BTRIM(COALESCE(session_string, '')) <> ''
+                  AND regexp_replace(phone_number, '[^0-9]', '', 'g')
+                      = regexp_replace(%s, '[^0-9]', '', 'g')
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (stock_id, row.get("phone_number")),
+            ).fetchone()
+            if fallback and fallback.get("session_string"):
+                row = dict(row)
+                row["session_string"] = fallback["session_string"]
         return dict(row) if row else None
 
 def soft_delete_number(stock_id: int) -> bool:
@@ -1156,15 +1276,18 @@ async def _ensure_can_send_code(phone: str, session_str: str, stock_id: int):
 
 def add_number_with_session(phone: str, session_str: str, raksh_only: bool = False) -> bool:
     """يضيف رقماً جاهزاً (مسجّل دخول مسبقاً) مع جلسته إلى المخزون. يُرجع False إن كان الرقم موجوداً مسبقاً."""
+    _source_type = "raksh" if raksh_only else "manual"
     with db_conn() as c:
         c.execute(
-            "INSERT INTO number_stock (phone_number, session_string, deleted_at, raksh_only) "
-            "VALUES (%s,%s,NULL,%s) "
+            "INSERT INTO number_stock (phone_number, session_string, deleted_at, raksh_only, source_type) "
+            "VALUES (%s,%s,NULL,%s,%s) "
             "ON CONFLICT (phone_number) DO UPDATE SET "
             "session_string=EXCLUDED.session_string, deleted_at=NULL, "
             "raksh_only=number_stock.raksh_only OR EXCLUDED.raksh_only, "
+            "source_type=CASE WHEN number_stock.raksh_only OR EXCLUDED.raksh_only "
+            "THEN 'raksh' ELSE number_stock.source_type END, "
             "raksh_excluded=FALSE",
-            (phone, session_str, raksh_only)
+            (phone, session_str, raksh_only, _source_type)
         )
         return True
 
@@ -1200,6 +1323,7 @@ def add_contributor_account(user_id: int, phone: str, session_str: str) -> tuple
                 SET session_string=%s,
                     deleted_at=NULL,
                     raksh_only=TRUE,
+                    source_type='raksh',
                     raksh_excluded=FALSE,
                     last_authorized=TRUE
                 WHERE id=%s
@@ -1212,8 +1336,8 @@ def add_contributor_account(user_id: int, phone: str, session_str: str) -> tuple
             """
             INSERT INTO number_stock
                 (phone_number, session_string, deleted_at, raksh_only,
-                 raksh_excluded, contributed_by, contributor_share_percent)
-            VALUES (%s, %s, NULL, TRUE, FALSE, %s, 50)
+                 source_type, raksh_excluded, contributed_by, contributor_share_percent)
+            VALUES (%s, %s, NULL, TRUE, 'raksh', FALSE, %s, 50)
             """,
             (phone, session_str, user_id),
         )

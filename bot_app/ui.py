@@ -151,11 +151,7 @@ async def handle_owner_webapp_data(update, context):
     )
     await handle_callback(synthetic_update, context)
 
-def main_menu_kb(
-    is_owner=False,
-    is_supervisor_user=False,
-    is_number_admin_user=False,
-):
+def main_menu_kb(is_owner=False, is_supervisor_user=False):
     # المالك والأعضاء يستخدمون قائمة main نفسها وبنفس الأسماء والترتيب.
     menu_items = get_menu_items("main")
     # تغيير نص زر خدمات الرشق فقط، دون تغيير محتوى قسم الخدمات.
@@ -175,13 +171,6 @@ def main_menu_kb(
             if item["action_value"] != "buyback:start"
         ]
     rows = build_kb_rows(menu_items)
-    if is_number_admin_user:
-        rows.append([
-            InlineKeyboardButton(
-                "📱 إدارة أرقامك",
-                callback_data="na:panel",
-            )
-        ])
     if is_owner:
         rows.append([InlineKeyboardButton("🧩 تعديل أزرار الواجهة", callback_data="mb_menu:main")])
         rows.append([InlineKeyboardButton("⚙️ إعدادات المالك", callback_data="owner_settings")])
@@ -872,6 +861,12 @@ def account_info_kb() -> InlineKeyboardMarkup:
             InlineKeyboardButton(
                 "📊 حالة كل الحسابات",
                 callback_data="os:account_statuses",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "🔍 استخراج حسابات قراءة الكود والرسائل",
+                callback_data="os:scan_readable_accounts",
             ),
         ],
         [

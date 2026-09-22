@@ -7,11 +7,6 @@ domain.
 
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
-from .number_admin import (
-    is_number_admin,
-    number_admin_can_manage,
-    render_number_admin_panel,
-)
 
 def _extract_imported_twofa(payload) -> str:
     """Extract an imported cloud-password hint without exposing it in logs/messages."""
@@ -178,7 +173,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text   = (update.message.text or update.message.caption or "").strip()
     state  = context.user_data.get("state", "")
     is_own = (user.id == OWNER_ID)
-    is_number_admin_txt = (not is_own) and is_number_admin(user.id)
 
     # يسمح للمالك بإرسال auth_key_hex:dc_id مباشرةً دون فتح أمر منفصل.
     if is_own and state != "os_import_hex":
@@ -191,24 +185,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🚫 تم حظرك من استخدام هذا البوت.")
         return
 
-    if is_maintenance_on() and not is_own and not is_number_admin_txt:
+    if is_maintenance_on() and not is_own:
         await update.message.reply_text(MAINTENANCE_MESSAGE, parse_mode=ParseMode.MARKDOWN)
         return
 
     is_supervisor_txt = (not is_own) and is_supervisor(user.id)
-    _number_admin_state = is_number_admin_txt and state.startswith("na_")
-    _number_admin_manual_2fa = (
-        is_number_admin_txt
-        and state == "os_await_manual_2fa_pwd"
-        and number_admin_can_manage(
-            user.id,
-            stock_id=context.user_data.get("manual_2fa_stock_id"),
-        )
-    )
     _owner_admin_state = is_own and (
         state.startswith("os_") or state.startswith("await_mb_")
         or state in ("confirm_cancel_order", "confirm_complete_order")
-    ) or _number_admin_state or _number_admin_manual_2fa
+    )
     _sv_admin_state = is_supervisor_txt and state.startswith("sv_")
     _thank_owner_state = state in {"thank_owner_menu", "thank_owner_ar", "thank_owner_en", "thank_owner_photo"}
     if state != "verify_math" and not _thank_owner_state and not _owner_admin_state and not _sv_admin_state:
@@ -222,18 +207,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return
         except Exception as _gate_err:
             logger.warning(f"⚠️ خطأ في فحص القنوات الإجبارية للمستخدم {user.id}: {_gate_err}")
-
-    if is_number_admin_txt and state == "na_await_search":
-        if not text:
-            await update.message.reply_text("⚠️ أرسل رقماً أو جزءاً من رقم الهاتف.")
-            return
-        context.user_data["state"] = "main_menu"
-        await render_number_admin_panel(
-            update,
-            context,
-            search_query=text,
-        )
-        return
 
     # ─── نظام الرشق يستخدم نفس مسار استقبال الرسائل لكل خطوات الطلب ───
     if context.user_data.get("raksh_step"):
@@ -620,14 +593,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     ).fetchone()
                     if exists:
                         _c.execute(
-                            "UPDATE number_stock SET session_string=%s, assigned_to=NULL, assigned_at=NULL,"
-                            " forced_ref_excluded=FALSE WHERE phone_number=%s",
+                            "UPDATE number_stock SET session_string=%s, source_type='file',"
+                            " assigned_to=NULL, assigned_at=NULL, forced_ref_excluded=FALSE "
+                            "WHERE phone_number=%s",
                             (sess, phone)
                         )
                     else:
                         _c.execute(
-                            "INSERT INTO number_stock (phone_number, session_string, forced_ref_excluded)"
-                            " VALUES (%s,%s,FALSE)",
+                            "INSERT INTO number_stock "
+                            "(phone_number, session_string, source_type, forced_ref_excluded)"
+                            " VALUES (%s,%s,'file',FALSE)",
                             (phone, sess)
                         )
                 ok_list.append(phone)
@@ -717,28 +692,31 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         if imported_twofa:
                             _c.execute(
                                 "UPDATE number_stock SET session_string=%s, twofa_password=%s,"
-                                " assigned_to=NULL, assigned_at=NULL, forced_ref_excluded=FALSE"
+                                " source_type='file', assigned_to=NULL, assigned_at=NULL,"
+                                " forced_ref_excluded=FALSE"
                                 " WHERE phone_number=%s",
                                 (sess, imported_twofa, phone)
                             )
                         else:
                             _c.execute(
-                                "UPDATE number_stock SET session_string=%s, assigned_to=NULL, assigned_at=NULL,"
-                                " forced_ref_excluded=FALSE WHERE phone_number=%s",
+                                "UPDATE number_stock SET session_string=%s, source_type='file',"
+                                " assigned_to=NULL, assigned_at=NULL, forced_ref_excluded=FALSE "
+                                "WHERE phone_number=%s",
                                 (sess, phone)
                             )
                     else:
                         if imported_twofa:
                             _c.execute(
                                 "INSERT INTO number_stock "
-                                "(phone_number, session_string, twofa_password, forced_ref_excluded)"
-                                " VALUES (%s, %s, %s, FALSE)",
+                                "(phone_number, session_string, twofa_password, source_type, forced_ref_excluded)"
+                                " VALUES (%s, %s, %s, 'file', FALSE)",
                                 (phone, sess, imported_twofa)
                             )
                         else:
                             _c.execute(
-                                "INSERT INTO number_stock (phone_number, session_string, forced_ref_excluded)"
-                                " VALUES (%s, %s, FALSE)",
+                                "INSERT INTO number_stock "
+                                "(phone_number, session_string, source_type, forced_ref_excluded)"
+                                " VALUES (%s, %s, 'file', FALSE)",
                                 (phone, sess)
                             )
                     _row_id = _c.execute(
@@ -3642,7 +3620,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _finish_supervisor_login(update, context, user.id)
         return
 
-    if (is_own or _number_admin_manual_2fa) and state == "os_await_manual_2fa_pwd":
+    if is_own and state == "os_await_manual_2fa_pwd":
         stock_id = context.user_data.get("manual_2fa_stock_id")
         pwd = text.strip()
         context.user_data["state"] = "main_menu"
@@ -4795,16 +4773,16 @@ async def handle_hex_text_file(update: Update, context: ContextTypes.DEFAULT_TYP
                 ).fetchone()
                 if existing:
                     db.execute(
-                        "UPDATE number_stock SET session_string=%s, assigned_to=NULL,"
-                        " assigned_at=NULL, forced_ref_excluded=FALSE, added_source='file' "
+                        "UPDATE number_stock SET session_string=%s, source_type='file',"
+                        " assigned_to=NULL, assigned_at=NULL, forced_ref_excluded=FALSE "
                         "WHERE phone_number=%s",
                         (session, phone),
                     )
                 else:
                     db.execute(
                         "INSERT INTO number_stock "
-                        "(phone_number, session_string, forced_ref_excluded, added_source) "
-                        "VALUES (%s,%s,FALSE,'file')",
+                        "(phone_number, session_string, source_type, forced_ref_excluded) "
+                        "VALUES (%s,%s,'file',FALSE)",
                         (phone, session),
                     )
             ok_list.append(phone)
@@ -4974,30 +4952,30 @@ async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if imported_twofa:
                         _c.execute(
                             "UPDATE number_stock SET session_string=%s, twofa_password=%s,"
-                            " assigned_to=NULL, assigned_at=NULL, forced_ref_excluded=FALSE,"
-                            " added_source='file'"
+                            " assigned_to=NULL, assigned_at=NULL, source_type='file',"
+                            " forced_ref_excluded=FALSE"
                             " WHERE phone_number=%s",
                             (sess, imported_twofa, phone)
                         )
                     else:
                         _c.execute(
                             "UPDATE number_stock SET session_string=%s, assigned_to=NULL, assigned_at=NULL,"
-                            " forced_ref_excluded=FALSE, added_source='file' WHERE phone_number=%s",
+                            " source_type='file', forced_ref_excluded=FALSE WHERE phone_number=%s",
                             (sess, phone)
                         )
                 else:
                     if imported_twofa:
                         _c.execute(
                             "INSERT INTO number_stock "
-                            "(phone_number, session_string, twofa_password, forced_ref_excluded, added_source)"
-                            " VALUES (%s,%s,%s,FALSE,'file')",
+                            "(phone_number, session_string, twofa_password, source_type, forced_ref_excluded)"
+                            " VALUES (%s,%s,%s,'file',FALSE)",
                             (phone, sess, imported_twofa)
                         )
                     else:
                         _c.execute(
                             "INSERT INTO number_stock "
-                            "(phone_number, session_string, forced_ref_excluded, added_source)"
-                            " VALUES (%s,%s,FALSE,'file')",
+                            "(phone_number, session_string, source_type, forced_ref_excluded)"
+                            " VALUES (%s,%s,'file',FALSE)",
                             (phone, sess)
                         )
             # ── تدوير فوري: جلسة جديدة + حذف القديمة ──────────────────
@@ -5211,7 +5189,7 @@ async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE
         if exists:
             _c.execute(
                 "UPDATE number_stock SET session_string=%s, assigned_to=NULL, assigned_at=NULL,"
-                " forced_ref_excluded=FALSE, added_source='file'"
+                " source_type='file', forced_ref_excluded=FALSE"
                 + (", referral_only=TRUE" if _ref_only_flag else "") +
                 " WHERE phone_number=%s",
                 (session_string, phone)
@@ -5219,8 +5197,8 @@ async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE
         else:
             _c.execute(
                 "INSERT INTO number_stock "
-                "(phone_number, session_string, forced_ref_excluded, referral_only, added_source)"
-                " VALUES (%s,%s,FALSE,%s,'file')",
+                "(phone_number, session_string, source_type, forced_ref_excluded, referral_only)"
+                " VALUES (%s,%s,'file',FALSE,%s)",
                 (phone, session_string, _ref_only_flag)
             )
 
@@ -5464,7 +5442,6 @@ async def _import_one_session_bytes(
     context,
     remove_2fa_mode: bool = False,
     source_metadata=None,
-    source_type: str = "zip",
 ) -> dict:
     """
     يحاول استخراج session_string من bytes تمثّل ملف .session (SQLite) أو .json.
@@ -5627,32 +5604,32 @@ async def _import_one_session_bytes(
             if imported_twofa:
                 _dc.execute(
                     "UPDATE number_stock SET session_string=%s, twofa_password=%s,"
-                    " assigned_to=NULL, assigned_at=NULL, forced_ref_excluded=FALSE,"
-                    " added_source=%s"
+                    " assigned_to=NULL, assigned_at=NULL, source_type='zip',"
+                    " forced_ref_excluded=FALSE"
                     " WHERE phone_number=%s",
-                    (session_string, imported_twofa, source_type, phone)
+                    (session_string, imported_twofa, phone)
                 )
             else:
                 _dc.execute(
                     "UPDATE number_stock SET session_string=%s, assigned_to=NULL, assigned_at=NULL,"
-                    " forced_ref_excluded=FALSE, added_source=%s WHERE phone_number=%s",
-                    (session_string, source_type, phone)
+                    " source_type='zip', forced_ref_excluded=FALSE WHERE phone_number=%s",
+                    (session_string, phone)
                 )
             stock_id = exists["id"]
         else:
             if imported_twofa:
                 _dc.execute(
                     "INSERT INTO number_stock "
-                    "(phone_number, session_string, twofa_password, forced_ref_excluded, added_source)"
-                    " VALUES (%s,%s,%s,FALSE,%s)",
-                    (phone, session_string, imported_twofa, source_type)
+                    "(phone_number, session_string, twofa_password, source_type, forced_ref_excluded)"
+                    " VALUES (%s,%s,%s,'zip',FALSE)",
+                    (phone, session_string, imported_twofa)
                 )
             else:
                 _dc.execute(
                     "INSERT INTO number_stock "
-                    "(phone_number, session_string, forced_ref_excluded, added_source)"
-                    " VALUES (%s,%s,FALSE,%s)",
-                    (phone, session_string, source_type)
+                    "(phone_number, session_string, source_type, forced_ref_excluded)"
+                    " VALUES (%s,%s,'zip',FALSE)",
+                    (phone, session_string)
                 )
             stock_id = _dc.execute(
                 "SELECT id FROM number_stock WHERE phone_number=%s", (phone,)
@@ -6035,7 +6012,6 @@ async def handle_zip_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context,
             remove_2fa_mode,
             source_metadata=json_metadata_by_base.get(entry_base),
-            source_type="zip",
         )
         label  = result["phone"] or short
         if result["ok"]:
