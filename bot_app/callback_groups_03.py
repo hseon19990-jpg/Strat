@@ -6,6 +6,7 @@ while the sentinel lets the dispatcher continue to the next group.
 
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
+from .number_admin import get_number_admin_stock_number, is_number_admin
 
 async def _handle_callback_group_03(update, context, q, data, user, is_own, is_supervisor_cb, _gmail_verification_done):
     _numbers_admin = is_own or is_supervisor_cb
@@ -2235,17 +2236,34 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
 
         if data.startswith("os:number_code:") and _numbers_admin:
             stock_id = int(data.split(":")[-1])
-            rec = get_stock_number(stock_id)
-            if not rec or rec["assigned_to"] is not None or not rec["session_string"]:
+            rec = (
+                get_number_admin_stock_number(user.id, stock_id)
+                if user.id != OWNER_ID and is_number_admin(user.id)
+                else get_stock_number(stock_id)
+            )
+            session_string = str((rec or {}).get("session_string") or "").strip()
+            if not rec or rec["assigned_to"] is not None or not session_string:
                 await q.edit_message_text(
                     "⚠️ هذا الرقم غير متاح الآن (تم بيعه أو لا يملك جلسة).",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")]])
                 )
                 return
             await q.edit_message_text(f"⏳ يتم جلب آخر كود لرقم {rec['phone_number']}...")
-            client = TelegramClient(StringSession(rec["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+            client = TelegramClient(StringSession(session_string), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
             try:
                 await asyncio.wait_for(client.connect(), timeout=20)
+                if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
+                    await q.edit_message_text(
+                        f"🔒 الجلسة منتهية أو أُلغيت لرقم {rec['phone_number']}، "
+                        "ولذلك لا يمكن جلب الكود.",
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton(
+                                "🔙 رجوع",
+                                callback_data=f"os:number_info:{stock_id}",
+                            )
+                        ]]),
+                    )
+                    return
                 code_msg, code_date = await fetch_last_login_code(client)
                 if code_msg:
                     import datetime as _dt

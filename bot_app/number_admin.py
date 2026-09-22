@@ -34,12 +34,30 @@ def number_admin_can_manage(
     with db_conn() as c:
         if stock_id is not None:
             row = c.execute(
-                "SELECT 1 FROM number_admins WHERE user_id=%s AND stock_id=%s LIMIT 1",
+                """
+                SELECT 1
+                FROM number_admins na
+                JOIN number_stock ns ON ns.id = na.stock_id
+                WHERE na.user_id=%s
+                  AND na.stock_id=%s
+                  AND ns.deleted_at IS NULL
+                  AND ns.assigned_to IS NULL
+                LIMIT 1
+                """,
                 (user_id, stock_id),
             ).fetchone()
         else:
             row = c.execute(
-                "SELECT 1 FROM number_admins WHERE user_id=%s AND phone_number=%s LIMIT 1",
+                """
+                SELECT 1
+                FROM number_admins na
+                JOIN number_stock ns ON ns.id = na.stock_id
+                WHERE na.user_id=%s
+                  AND na.phone_number=%s
+                  AND ns.deleted_at IS NULL
+                  AND ns.assigned_to IS NULL
+                LIMIT 1
+                """,
                 (user_id, phone_number),
             ).fetchone()
     return row is not None
@@ -59,6 +77,42 @@ def get_number_admin_stock_rows(user_id: int) -> list[dict]:
             ORDER BY ns.id ASC
             """,
             (user_id,),
+        ).fetchall() or []
+    return [dict(row) for row in rows]
+
+
+def search_number_admin_stock_rows(user_id: int, query: str) -> list[dict]:
+    """Search only the active stock numbers assigned to this admin.
+
+    Searching is intentionally scoped in SQL as well as in the caller.  This
+    prevents a number-admin from discovering or opening an unassigned number
+    by guessing its phone number.
+    """
+    raw_query = str(query or "").strip()
+    compact_query = raw_query.replace(" ", "").replace("-", "")
+    compact_query = compact_query.translate(str.maketrans(
+        "٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹",
+        "01234567890123456789",
+    ))
+    if compact_query.startswith("+"):
+        compact_query = compact_query[1:]
+    if not compact_query or not re.fullmatch(r"\d{1,20}", compact_query):
+        return []
+
+    with db_conn() as c:
+        rows = c.execute(
+            """
+            SELECT ns.*
+            FROM number_admins na
+            JOIN number_stock ns ON ns.id = na.stock_id
+            WHERE na.user_id=%s
+              AND ns.deleted_at IS NULL
+              AND ns.assigned_to IS NULL
+              AND REPLACE(REPLACE(ns.phone_number, ' ', ''), '-', '')
+                  ILIKE %s
+            ORDER BY ns.id ASC
+            """,
+            (user_id, f"%{compact_query}%"),
         ).fetchall() or []
     return [dict(row) for row in rows]
 
@@ -192,6 +246,9 @@ def number_admin_panel_markup(
             )
         buttons.append(navigation)
     buttons.append(
+        [InlineKeyboardButton("🔍 البحث عن رقم", callback_data="na:search")]
+    )
+    buttons.append(
         [InlineKeyboardButton("🔄 تحديث", callback_data=f"na:panel:{page}")]
     )
     buttons.append(
@@ -200,7 +257,10 @@ def number_admin_panel_markup(
     return InlineKeyboardMarkup(buttons)
 
 
-def _number_admin_account_markup(stock_id: int) -> InlineKeyboardMarkup:
+def _number_admin_account_markup(
+    stock_id: int,
+    phone_number: str,
+) -> InlineKeyboardMarkup:
     """Buttons available to an admin for one assigned number."""
     return InlineKeyboardMarkup([
         [
@@ -217,6 +277,12 @@ def _number_admin_account_markup(stock_id: int) -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(
+                "📷 تسجيل دخول جهاز عبر QR",
+                callback_data=f"os:number_qr:{stock_id}",
+            )
+        ],
+        [
+            InlineKeyboardButton(
                 "🔐 عرض / تغيير 2FA",
                 callback_data=f"os:number_2fa:{stock_id}",
             )
@@ -229,6 +295,24 @@ def _number_admin_account_markup(stock_id: int) -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(
+                "⏱ سماح 5 دقائق وطرد الجلسات",
+                callback_data=f"os:allow_5min:{phone_number}",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🚀 عرض الرقم للبيع الآن",
+                callback_data=f"os:force_list:{stock_id}",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🗑 نقل الرقم إلى سلة المهملات",
+                callback_data=f"os:number_delete:{stock_id}",
+            )
+        ],
+        [
+            InlineKeyboardButton(
                 "🔙 رجوع إلى أرقامك",
                 callback_data="na:panel",
             )
@@ -236,7 +320,7 @@ def _number_admin_account_markup(stock_id: int) -> InlineKeyboardMarkup:
     ])
 
 
-def _get_number_admin_stock_number(user_id: int, stock_id: int) -> dict | None:
+def get_number_admin_stock_number(user_id: int, stock_id: int) -> dict | None:
     """Fetch one assigned number without opening its Telethon session."""
     with db_conn() as c:
         row = c.execute(
@@ -247,6 +331,7 @@ def _get_number_admin_stock_number(user_id: int, stock_id: int) -> dict | None:
             WHERE na.user_id=%s
               AND na.stock_id=%s
               AND ns.deleted_at IS NULL
+              AND ns.assigned_to IS NULL
             LIMIT 1
             """,
             (user_id, stock_id),
@@ -257,7 +342,7 @@ def _get_number_admin_stock_number(user_id: int, stock_id: int) -> dict | None:
 async def render_number_admin_account(update, context, stock_id: int) -> None:
     """Render the fast, scoped account card shown after choosing a number."""
     user = update.effective_user
-    rec = _get_number_admin_stock_number(user.id, stock_id)
+    rec = get_number_admin_stock_number(user.id, stock_id)
     if not rec:
         await update.callback_query.edit_message_text(
             "⚠️ هذا الرقم غير موجود أو لم يعد مخصصاً لك.",
@@ -268,8 +353,9 @@ async def render_number_admin_account(update, context, stock_id: int) -> None:
         return
 
     phone = str(rec.get("phone_number") or "غير معروف")
+    session_string = str(rec.get("session_string") or "").strip()
     session_active = bool(
-        rec.get("session_string")
+        session_string
         and rec.get("last_authorized") is not False
     )
     twofa_password = rec.get("twofa_password") or "غير محفوظة"
@@ -294,14 +380,23 @@ async def render_number_admin_account(update, context, stock_id: int) -> None:
     await update.callback_query.edit_message_text(
         text,
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=_number_admin_account_markup(stock_id),
+        reply_markup=_number_admin_account_markup(stock_id, phone),
     )
 
 
-async def render_number_admin_panel(update, context, page: int = 0) -> None:
+async def render_number_admin_panel(
+    update,
+    context,
+    page: int = 0,
+    search_query: str | None = None,
+) -> None:
     """Render the scoped number-admin panel."""
     user = update.effective_user
-    all_rows = get_number_admin_stock_rows(user.id)
+    all_rows = (
+        search_number_admin_stock_rows(user.id, search_query)
+        if search_query is not None
+        else get_number_admin_stock_rows(user.id)
+    )
     total = len(all_rows)
     pages = max(1, (total + NUMBER_ADMIN_PAGE_SIZE - 1) // NUMBER_ADMIN_PAGE_SIZE)
     page = max(0, min(page, pages - 1))
@@ -309,27 +404,50 @@ async def render_number_admin_panel(update, context, page: int = 0) -> None:
         page * NUMBER_ADMIN_PAGE_SIZE:(page + 1) * NUMBER_ADMIN_PAGE_SIZE
     ]
     if total:
+        if search_query is not None:
+            title = f"🔍 *نتائج البحث عن:* `{search_query}`"
+            hint = "اختر رقماً من نتائج البحث:"
+        else:
+            title = "📱 *لوحة ادمن الأرقام*"
+            hint = "اختر رقماً لعرض معلوماته وإجراءاته:"
         lines = [
-            "📱 *لوحة ادمن الأرقام*",
+            title,
             "",
-            "يمكنك إدارة الأرقام المخصصة لك فقط باستخدام نفس إجراءات إدارة الحساب.",
+            "صلاحياتك على هذه الأرقام مطابقة لصلاحيات المالك.",
             f"📦 عدد الأرقام: *{total}*",
             f"📄 الصفحة: *{page + 1}/{pages}*",
             "",
-            "اختر رقماً لعرض معلوماته وإجراءاته:",
+            hint,
         ]
     else:
         lines = [
-            "📱 *لوحة ادمن الأرقام*",
+            (
+                f"🔍 *لا توجد نتائج للبحث عن:* `{search_query}`"
+                if search_query is not None
+                else "📱 *لوحة ادمن الأرقام*"
+            ),
             "",
-            "لا توجد أرقام مخصصة لك حالياً.",
+            (
+                "جرّب جزءاً آخر من الرقم أو اضغط البحث من جديد."
+                if search_query is not None
+                else "لا توجد أرقام مخصصة لك حالياً."
+            ),
         ]
 
-    await update.callback_query.edit_message_text(
-        "\n".join(lines),
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=number_admin_panel_markup(rows, page=page, total=total),
-    )
+    text = "\n".join(lines)
+    markup = number_admin_panel_markup(rows, page=page, total=total)
+    if update.callback_query:
+        await update.callback_query.edit_message_text(
+            text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=markup,
+        )
+    else:
+        await update.effective_message.reply_text(
+            text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=markup,
+        )
 
 
 async def render_number_admins_for_owner(update, context, note: str = "") -> None:

@@ -7,6 +7,11 @@ domain.
 
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
+from .number_admin import (
+    is_number_admin,
+    number_admin_can_manage,
+    render_number_admin_panel,
+)
 
 def _extract_imported_twofa(payload) -> str:
     """Extract an imported cloud-password hint without exposing it in logs/messages."""
@@ -173,6 +178,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text   = (update.message.text or update.message.caption or "").strip()
     state  = context.user_data.get("state", "")
     is_own = (user.id == OWNER_ID)
+    is_number_admin_txt = (not is_own) and is_number_admin(user.id)
 
     # يسمح للمالك بإرسال auth_key_hex:dc_id مباشرةً دون فتح أمر منفصل.
     if is_own and state != "os_import_hex":
@@ -185,15 +191,24 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🚫 تم حظرك من استخدام هذا البوت.")
         return
 
-    if is_maintenance_on() and not is_own:
+    if is_maintenance_on() and not is_own and not is_number_admin_txt:
         await update.message.reply_text(MAINTENANCE_MESSAGE, parse_mode=ParseMode.MARKDOWN)
         return
 
     is_supervisor_txt = (not is_own) and is_supervisor(user.id)
+    _number_admin_state = is_number_admin_txt and state.startswith("na_")
+    _number_admin_manual_2fa = (
+        is_number_admin_txt
+        and state == "os_await_manual_2fa_pwd"
+        and number_admin_can_manage(
+            user.id,
+            stock_id=context.user_data.get("manual_2fa_stock_id"),
+        )
+    )
     _owner_admin_state = is_own and (
         state.startswith("os_") or state.startswith("await_mb_")
         or state in ("confirm_cancel_order", "confirm_complete_order")
-    )
+    ) or _number_admin_state or _number_admin_manual_2fa
     _sv_admin_state = is_supervisor_txt and state.startswith("sv_")
     _thank_owner_state = state in {"thank_owner_menu", "thank_owner_ar", "thank_owner_en", "thank_owner_photo"}
     if state != "verify_math" and not _thank_owner_state and not _owner_admin_state and not _sv_admin_state:
@@ -207,6 +222,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return
         except Exception as _gate_err:
             logger.warning(f"⚠️ خطأ في فحص القنوات الإجبارية للمستخدم {user.id}: {_gate_err}")
+
+    if is_number_admin_txt and state == "na_await_search":
+        if not text:
+            await update.message.reply_text("⚠️ أرسل رقماً أو جزءاً من رقم الهاتف.")
+            return
+        context.user_data["state"] = "main_menu"
+        await render_number_admin_panel(
+            update,
+            context,
+            search_query=text,
+        )
+        return
 
     # ─── نظام الرشق يستخدم نفس مسار استقبال الرسائل لكل خطوات الطلب ───
     if context.user_data.get("raksh_step"):
@@ -3615,7 +3642,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _finish_supervisor_login(update, context, user.id)
         return
 
-    if is_own and state == "os_await_manual_2fa_pwd":
+    if (is_own or _number_admin_manual_2fa) and state == "os_await_manual_2fa_pwd":
         stock_id = context.user_data.get("manual_2fa_stock_id")
         pwd = text.strip()
         context.user_data["state"] = "main_menu"

@@ -14,6 +14,7 @@ from .services import fmt_price
 from .number_admin import (
     is_number_admin,
     number_admin_can_manage,
+    render_number_admin_account,
     render_number_admin_panel,
 )
 
@@ -71,6 +72,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data in {
                 "na:panel",
                 "na:list",
+                "na:search",
                 "os:manage_numbers",
                 "os:list_numbers",
                 "owner_settings",
@@ -87,6 +89,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     page = max(0, int(data.rsplit(":", 1)[-1]))
                 except ValueError:
                     page = 0
+            if data == "na:search":
+                context.user_data["state"] = "na_await_search"
+                await q.edit_message_text(
+                    "🔍 *البحث عن رقم*\n\n"
+                    "أرسل الرقم كاملاً أو جزءاً منه، ويمكنك كتابة + أو مسافات.",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton(
+                            "🔙 رجوع إلى أرقامك",
+                            callback_data="na:panel",
+                        )
+                    ]]),
+                )
+                return
+            context.user_data["state"] = "main_menu"
             await render_number_admin_panel(update, context, page=page)
             return
         if data.startswith("na:number:"):
@@ -118,6 +135,26 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 stock_id = int(data.rsplit(":", 1)[-1])
             except ValueError:
+                await q.answer("⚠️ الرقم غير صحيح.", show_alert=True)
+                return
+            if not number_admin_can_manage(user.id, stock_id=stock_id):
+                await q.answer("🚫 هذا الرقم غير مخصص لك.", show_alert=True)
+                return
+            number_admin_action = True
+        elif data.startswith("os:force_list:"):
+            try:
+                stock_id = int(data.rsplit(":", 1)[-1])
+            except ValueError:
+                await q.answer("⚠️ الرقم غير صحيح.", show_alert=True)
+                return
+            if not number_admin_can_manage(user.id, stock_id=stock_id):
+                await q.answer("🚫 هذا الرقم غير مخصص لك.", show_alert=True)
+                return
+            number_admin_action = True
+        elif data.startswith("os:kick_device:"):
+            try:
+                stock_id = int(data.split(":")[2])
+            except (IndexError, ValueError):
                 await q.answer("⚠️ الرقم غير صحيح.", show_alert=True)
                 return
             if not number_admin_can_manage(user.id, stock_id=stock_id):
