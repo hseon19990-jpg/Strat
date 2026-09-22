@@ -75,6 +75,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "na:search",
                 "os:manage_numbers",
                 "os:list_numbers",
+                "os:sold_accounts",
                 "owner_settings",
             }
             or data.startswith("na:panel:")
@@ -131,6 +132,27 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             await render_number_admin_account(update, context, stock_id)
             return
+        elif data.startswith("os:sold_detail:"):
+            try:
+                stock_id = int(data.rsplit(":", 1)[-1])
+            except ValueError:
+                await q.answer("⚠️ الرقم غير صحيح.", show_alert=True)
+                return
+            if not number_admin_can_manage(user.id, stock_id=stock_id):
+                await q.answer("🚫 هذا الرقم غير مخصص لك.", show_alert=True)
+                return
+            await render_number_admin_account(update, context, stock_id)
+            return
+        elif data.startswith("os:sold_code:"):
+            try:
+                stock_id = int(data.rsplit(":", 1)[-1])
+            except ValueError:
+                await q.answer("⚠️ الرقم غير صحيح.", show_alert=True)
+                return
+            if not number_admin_can_manage(user.id, stock_id=stock_id):
+                await q.answer("🚫 هذا الرقم غير مخصص لك.", show_alert=True)
+                return
+            number_admin_action = True
         elif data.startswith("os:number_"):
             try:
                 stock_id = int(data.rsplit(":", 1)[-1])

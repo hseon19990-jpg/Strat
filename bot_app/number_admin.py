@@ -272,7 +272,7 @@ def _number_admin_account_markup(
         [
             InlineKeyboardButton(
                 "🔑 جلب آخر كود وصل",
-                callback_data=f"os:number_code:{stock_id}",
+                callback_data=f"os:sold_code:{stock_id}",
             )
         ],
         [
