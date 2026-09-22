@@ -402,23 +402,89 @@ async def check_spam_status_detailed(client: TelegramClient) -> dict:
     """نسخة تفصيلية من فحص @SpamBot: تُرجع dict فيه restricted (True/False/None) و until (نص وقت الانتهاء إن وُجد)
     والنص الكامل الأصلي، بالإضافة إلى نص عرض جاهز display."""
     try:
-        await client.send_message("SpamBot", "/start")
-        await asyncio.sleep(3)
-        msgs = await client.get_messages("SpamBot", limit=1)
-        if not msgs or not msgs[0].message:
-            return {"restricted": None, "until": None, "raw": None,
-                     "display": "⚠️ لم يصل رد من SpamBot، حاول مجدداً"}
-        parsed = parse_spam_reply(msgs[0].message)
-        if parsed["restricted"] is False:
-            parsed["display"] = "✅ غير مقيّد (حساب سليم)"
-        elif parsed["restricted"] is True:
-            if parsed["until"]:
-                parsed["display"] = f"🚫 مقيّد من الإرسال — ينتهي القيد: {parsed['until']}"
-            else:
-                parsed["display"] = f"🚫 مقيّد من الإرسال (لم يُذكر وقت انتهاء صريح):\n{msgs[0].message[:300]}"
-        else:
-            parsed["display"] = f"ℹ️ رد SpamBot غير واضح:\n{msgs[0].message[:300]}"
-        return parsed
+        temporary_markers = (
+            "تعذر فتح القائمة",
+            "تأخر مؤقت",
+            "أرسل /start مرة أخرى",
+            "temporarily",
+            "try again later",
+            "send /start again",
+            "временно недоступ",
+        )
+
+        async def _wait_for_new_reply(sent_message, timeout_seconds: float = 12.0):
+            """ينتظر رسالة واردة جديدة، ولا يعيد استخدام رد قديم من SpamBot."""
+            sent_id = int(getattr(sent_message, "id", 0) or 0)
+            attempts = max(1, int(timeout_seconds / 1.5))
+            for _ in range(attempts):
+                messages = await client.get_messages("SpamBot", limit=8)
+                incoming = [
+                    message for message in (messages or [])
+                    if not getattr(message, "out", False)
+                    and int(getattr(message, "id", 0) or 0) > sent_id
+                    and getattr(message, "message", None)
+                ]
+                if incoming:
+                    return sorted(
+                        incoming,
+                        key=lambda message: int(getattr(message, "id", 0) or 0),
+                    )[0]
+                await asyncio.sleep(1.5)
+            return None
+
+        last_temporary_reply = None
+        # SpamBot قد يعيد رسالة تأخير مؤقت كما في الصورة؛ نعيد الطلب مرتين
+        # فقط مع انتظار رد جديد في كل مرة، حتى لا نقرأ الرسالة القديمة.
+        for attempt in range(3):
+            sent = await client.send_message("SpamBot", "/start")
+            reply = await _wait_for_new_reply(sent)
+            if reply is None or not reply.message:
+                if attempt < 2:
+                    await asyncio.sleep(2)
+                    continue
+                return {
+                    "restricted": None,
+                    "until": None,
+                    "raw": None,
+                    "display": "⚠️ لم يصل رد جديد من SpamBot بعد عدة محاولات",
+                }
+
+            raw_reply = str(reply.message).strip()
+            parsed = parse_spam_reply(raw_reply)
+            if parsed["restricted"] is False:
+                parsed["display"] = "✅ غير مقيّد (حساب سليم)"
+                return parsed
+            if parsed["restricted"] is True:
+                if parsed["until"]:
+                    parsed["display"] = (
+                        f"🚫 مقيّد من الإرسال — ينتهي القيد: {parsed['until']}"
+                    )
+                else:
+                    parsed["display"] = (
+                        "🚫 مقيّد من الإرسال (لم يُذكر وقت انتهاء صريح):\n"
+                        f"{raw_reply[:300]}"
+                    )
+                return parsed
+
+            last_temporary_reply = raw_reply
+            if not any(marker.casefold() in raw_reply.casefold()
+                       for marker in temporary_markers):
+                return {
+                    **parsed,
+                    "display": f"ℹ️ رد SpamBot غير واضح:\n{raw_reply[:300]}",
+                }
+            if attempt < 2:
+                await asyncio.sleep(2)
+
+        return {
+            "restricted": None,
+            "until": None,
+            "raw": last_temporary_reply,
+            "display": (
+                "⚠️ SpamBot متأخر مؤقتاً؛ لم يتم اعتماد الحساب للبيع.\n"
+                f"{(last_temporary_reply or '')[:300]}"
+            ),
+        }
     except Exception as e:
         logger.error(f"❌ خطأ في فحص SpamBot: {e}")
         return {"restricted": None, "until": None, "raw": None,
