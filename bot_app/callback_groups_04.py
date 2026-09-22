@@ -1836,6 +1836,78 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
         if data == "noop":
             return
 
+        if data == "os:owner_number_status" and is_own:
+            await q.edit_message_text(
+                "📊 *حالة أرقام المالك*\n\nاختر القائمة التي تريد عرضها:",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔵 الحسابات المؤجّرة", callback_data="os:rented_accounts")],
+                    [InlineKeyboardButton("🛒 الأرقام المباعة", callback_data="os:sold_accounts")],
+                    [InlineKeyboardButton("🔙 رجوع لمخزون الأرقام", callback_data="os:manage_numbers")],
+                ]),
+            )
+            return
+
+        if data == "os:rented_accounts" and is_own:
+            with db_conn() as c:
+                rented_rows = c.execute(
+                    """
+                    SELECT ns.id, ns.phone_number, ns.contributed_by,
+                           ns.contributor_share_percent, ns.last_authorized,
+                           ns.frozen_at, u.full_name AS contributor_name,
+                           COALESCE(SUM(e.share_points), 0) AS earned_points
+                    FROM number_stock ns
+                    LEFT JOIN users u ON u.user_id = ns.contributed_by
+                    LEFT JOIN raksh_contributor_earnings e
+                      ON e.stock_id = ns.id
+                     AND e.contributor_id = ns.contributed_by
+                    WHERE ns.raksh_only IS TRUE
+                      AND ns.contributed_by IS NOT NULL
+                      AND ns.deleted_at IS NULL
+                      AND ns.ever_sold IS NOT TRUE
+                    GROUP BY ns.id, ns.phone_number, ns.contributed_by,
+                             ns.contributor_share_percent, ns.last_authorized,
+                             ns.frozen_at, u.full_name
+                    ORDER BY ns.id DESC
+                    LIMIT 100
+                    """
+                ).fetchall()
+
+            lines = [
+                f"🔵 *الحسابات المؤجّرة للرشق ({len(rented_rows)})*",
+                "",
+                "هذه الحسابات مقدمة من الأعضاء، وتُحتسب أرباحها حسب نسبة العضو.",
+            ]
+            for rented in rented_rows:
+                share = int(rented["contributor_share_percent"] or 50)
+                contributor = rented["contributor_name"] or f"ID:{rented['contributed_by']}"
+                if rented["frozen_at"]:
+                    status = "🧊 مجمّد"
+                elif rented["last_authorized"] is False:
+                    status = "🚫 الجلسة منتهية"
+                else:
+                    status = "✅ نشط"
+                lines.append(
+                    f"\n🔵 `{rented['phone_number']}` — {status}\n"
+                    f"   👤 العضو: {contributor} (`{rented['contributed_by']}`)\n"
+                    f"   💵 نسبة العضو: *{share}٪* | الأرباح: *{int(rented['earned_points'] or 0):,} نقطة*"
+                )
+
+            if not rented_rows:
+                lines.append("\nلا توجد حسابات مؤجّرة حالياً.")
+            text = "\n".join(lines)
+            if len(text) > 4000:
+                text = text[:3950] + "\n\n_(قُطع لطول القائمة)_"
+            await q.edit_message_text(
+                text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 حالة الأرقام", callback_data="os:owner_number_status")],
+                    [InlineKeyboardButton("🔙 مخزون الأرقام", callback_data="os:manage_numbers")],
+                ]),
+            )
+            return
+
         if data == "os:sold_accounts" and is_own:
             with db_conn() as c:
                 active_sold = c.execute(

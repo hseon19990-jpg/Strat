@@ -607,7 +607,8 @@ async def check_account_frozen(client: TelegramClient, stock_id: int | None = No
                     is_frozen = True
                     status_text = "🧊 مجمّد من تيليجرام (يظهر محذوفاً للآخرين)"
     except Exception as e:
-        err = str(e).lower()
+        err = str(e).casefold()
+        error_type = type(e).__name__.casefold()
         # فقدان الجلسة أو إلغاؤها لا يثبت حظر رقم الهاتف. لا نسجل
         # frozen_at إلا عند ظهور إشارة حظر/تعطيل صريحة من Telegram.
         if any(k in err for k in (
@@ -615,10 +616,15 @@ async def check_account_frozen(client: TelegramClient, stock_id: int | None = No
             "deactivated_ban",
             "account_banned",
             "phone_number_banned",
+            "user has been deleted",
+            "deleted/deactivated",
+        )) or any(k in error_type for k in (
+            "userdeactivatedbanerror",
+            "phonenumberbannederror",
         )):
             is_frozen = True
             status_text = "🔴 الحساب محظور/معطّل من تيليغرام"
-        elif "frozen" in err or "FROZEN" in str(e):
+        elif "frozen" in err or "frozen" in error_type:
             is_frozen = True
             status_text = "🧊 مجمّد من تيليجرام"
         else:
@@ -1248,15 +1254,19 @@ def set_force_listed(stock_id: int) -> bool:
         return True
 
 def _sellable_filter_sql(allow_send_blocked: bool = False) -> str:
-    """شروط الحساب القابل للبيع، مع إمكانية استخدام الحسابات المقيّدة بالإرسال كخيار احتياطي.
+    """شروط الحساب القابل للبيع.
 
-    افتراضياً لا تُقبل الحسابات التي لا يملك البوت فيها قدرة إرسال الكود.
-    مسار التخصيص الفعلي يمرر allow_send_blocked=True حتى يستطيع المتابعة عند
-    نفاد الحسابات السليمة، ثم يرتّب الحسابات السليمة أولاً في الاستعلام نفسه.
+    ``allow_send_blocked`` أبقي للتوافق مع الاستدعاءات القديمة، لكن مسار
+    الشراء لا يستخدمه: الحساب الذي لا يستطيع البوت إرسال كوده لا يُسلّم
+    للمشتري كخيار احتياطي. كما أن الحسابات المحذوفة/المجمّدة، المباعة سابقاً،
+    المستثناة يدوياً، أو المرتبطة بأدمن أرقام تُستبعد هنا قبل أي حجز.
     """
     send_capability_filter = "" if allow_send_blocked else " AND can_send_code IS TRUE"
     return (
-        "session_string IS NOT NULL"
+        "deleted_at IS NULL"
+        " AND assigned_to IS NULL"
+        " AND BTRIM(COALESCE(session_string, '')) <> ''"
+        " AND session_string IS NOT NULL"
         " AND last_authorized IS NOT FALSE"
         " AND twofa_password IS NOT NULL"
         " AND twofa_password <> ''"
@@ -1579,9 +1589,10 @@ async def assign_verified_number(user_id: int, bot=None) -> dict | None:
             row = c.execute(
                 f"UPDATE number_stock SET assigned_to=%s, assigned_at=NOW(), ever_sold=TRUE "
                 f"WHERE id = (SELECT id FROM number_stock "
-                # نسمح بالحسابات المقيّدة بالإرسال كخيار احتياطي فقط؛ CASE يضمن أولوية الحسابات السليمة.
-                f"WHERE assigned_to IS NULL AND deleted_at IS NULL AND {_sellable_filter_sql(allow_send_blocked=True)} "
-                f"{excl} ORDER BY CASE WHEN can_send_code IS TRUE THEN 0 ELSE 1 END, RANDOM() LIMIT 1 FOR UPDATE SKIP LOCKED) "
+                # لا يُحجز أي حساب إلا بعد اجتياز شروط البيع الصارمة، بما فيها
+                # القدرة على إرسال الكود وعدم ارتباط الرقم بأدمن أرقام.
+                f"WHERE assigned_to IS NULL AND deleted_at IS NULL AND {_sellable_filter_sql()} "
+                f"{excl} ORDER BY RANDOM() LIMIT 1 FOR UPDATE SKIP LOCKED) "
                 f"RETURNING id, phone_number, session_string, twofa_password",
                 [user_id] + excl_vals
             ).fetchone()

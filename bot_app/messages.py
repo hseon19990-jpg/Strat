@@ -3269,7 +3269,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 rows = _sc.execute(
                     "SELECT ns.id, ns.phone_number, ns.session_string, ns.assigned_to, ns.assigned_at, "
                     "       ns.ever_sold, ns.twofa_password, ns.last_authorized, ns.deleted_at, "
-                    "       ns.frozen_at, ns.sessions_reset, "
+                    "       ns.frozen_at, ns.sessions_reset, ns.raksh_only, "
+                    "       ns.contributor_share_percent, "
                     "       pe.order_code, pe.created_at AS sale_date, pe.points_cost, "
                     "       u.full_name AS buyer_name "
                     "FROM number_stock ns "
@@ -3311,25 +3312,37 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             is_deleted  = bool(r.get("deleted_at"))
             is_frozen   = bool(r.get("frozen_at"))
             is_kicked   = r.get("last_authorized") is False
+            is_rented   = bool(r.get("raksh_only"))
             buyer_name  = r.get("buyer_name") or (f"ID:{r['assigned_to']}" if r.get("assigned_to") else "—")
             saved_2fa   = r.get("twofa_password") or "—"
             if is_deleted:
                 status_icon = "🗑 محذوف (سلة المهملات)"
+                status_marker = "🗑"
             elif is_sold_now:
                 status_icon = "🟢 مباع الآن (نشط)"
+                status_marker = "🟢"
             elif ever_sold:
                 status_icon = "⬜ مباع سابقاً (البوت غادره)"
+                status_marker = "⬜"
+            elif is_rented:
+                _share = int(r.get("contributor_share_percent") or 50)
+                status_icon = f"🔵 مؤجّر للرشق ({_share}٪ للعضو)"
+                status_marker = "🔵"
             elif is_frozen:
                 status_icon = "🧊 مجمّد"
+                status_marker = "🧊"
             elif is_kicked:
                 status_icon = "🚫 مطرود (جلسة منتهية)"
+                status_marker = "🚫"
             elif has_session:
                 status_icon = "✅ متاح للبيع"
+                status_marker = "✅"
             else:
                 status_icon = "⚠️ يدوي (بدون جلسة)"
+                status_marker = "⚠️"
             stock_id = r["id"]
             info = (
-                f"📱 *{r['phone_number']}*\n"
+                f"📱 {status_marker} *{r['phone_number']}*\n"
                 f"📌 الحالة: {status_icon}\n"
                 f"🌍 الدولة: {guess_country(r['phone_number'])}\n"
                 f"📡 جلسة البوت: {'✅' if has_session else '❌'}\n"

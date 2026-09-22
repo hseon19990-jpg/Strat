@@ -301,9 +301,9 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             rows = get_contributor_accounts(user.id)
             total_earned = sum(int(row.get("earned_points") or 0) for row in rows)
             lines = [
-                "📱 *حساباتي للرشق*",
+                "📱 *تأجير أرقامي*",
                 "",
-                "أضف حساباتك لاستخدامها في خدمات الرشق فقط.",
+                "أضف حساباتك لتأجيرها واستخدامها في خدمات الرشق فقط.",
                 "لن يطرد البوت أي جلسة منها ولن يغيّر كلمة مرورها أو إعداداتها.",
                 "تحصل على *50٪ من نقاط* كل طلب نقاط يُنفّذ بنجاح باستخدام حسابك.",
                 "",

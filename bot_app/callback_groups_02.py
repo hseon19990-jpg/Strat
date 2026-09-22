@@ -2458,7 +2458,7 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                     [InlineKeyboardButton("🔁 تدوير الجلسات (تجديد كل السيشن)", callback_data="os:rotate_sessions")],
                     [InlineKeyboardButton("🤝 مهام الإحالة التلقائية", callback_data="os:ref_tasks")],
                     [InlineKeyboardButton("🔎 بحث برقم هاتف", callback_data="os:phone_search")],
-                    [InlineKeyboardButton("🛒 الحسابات المبيوعة", callback_data="os:sold_accounts")],
+                    [InlineKeyboardButton("📊 حالة الأرقام: مباع / مؤجّر", callback_data="os:owner_number_status")],
                     [InlineKeyboardButton("⚠️ تعويض المظلومين / العمليات الفاشلة", callback_data="os:failed_deliveries")],
                     [InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")],
                 ])
@@ -2625,7 +2625,8 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                 with db_conn() as _ci:
                     _row_info = _ci.execute(
                         "SELECT phone_number, session_string, twofa_password, added_at, "
-                        "last_authorized, last_device_count, ever_sold, assigned_to "
+                        "last_authorized, last_device_count, ever_sold, assigned_to, "
+                        "raksh_only, contributor_share_percent "
                         "FROM number_stock WHERE phone_number=%s", (_phone_info,)
                     ).fetchone()
                 if not _row_info:
@@ -2633,12 +2634,21 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                     return
                 _devices_info = _row_info["last_device_count"] or "؟"
                 _auth_info    = "✅ نشطة" if _row_info["last_authorized"] else "❌ منتهية"
-                _sold_info    = "مباع" if _row_info["ever_sold"] else "غير مباع"
+                if _row_info["ever_sold"]:
+                    _sold_info = "🟢 مباع"
+                    _status_marker = "🟢"
+                elif _row_info["raksh_only"]:
+                    _share = int(_row_info["contributor_share_percent"] or 50)
+                    _sold_info = f"🔵 مؤجّر للرشق ({_share}٪ للعضو)"
+                    _status_marker = "🔵"
+                else:
+                    _sold_info = "✅ غير مباع"
+                    _status_marker = "✅"
                 _pwd_info     = f"`{_row_info['twofa_password']}`" if _row_info["twofa_password"] else "غير محفوظة"
                 _added_info   = format_account_datetime(_row_info["added_at"]) if _row_info["added_at"] else "؟"
                 text_info = (
                     f"📋 *معلومات الحساب*\n\n"
-                    f"📱 الرقم: `{_phone_info}`\n"
+                    f"📱 {_status_marker} الرقم: `{_phone_info}`\n"
                     f"🌍 الدولة: {guess_country(_phone_info)}\n"
                     f"📅 أُضيف: {_added_info}\n"
                     f"🔗 الجلسة: {_auth_info}\n"

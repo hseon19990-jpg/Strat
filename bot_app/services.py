@@ -207,7 +207,7 @@ BUILTIN_DEFAULTS = {
 "main": [
         ("🐺 خدمات", "services_menu", 2),
          ("🛍 خدمات الرشق", "raksh_menu", 2),
-        ("📱 حساباتي للرشق", "contributor_accounts", 2),
+         ("📱 تأجير أرقامي", "contributor_accounts", 2),
         ("💰 بيع حساب تيليجرام", "buyback:start", 2),
         ("👑 خدمات تيليجرام أسطورية", "legendary_services", 1),
         ("🦇 تمويل قناتك حقيقي", "fund_channel", 1),
@@ -370,7 +370,7 @@ GOTO_TARGETS = [
     ("🎟 استخدام كود", "use_promo"),
     ("ℹ️ معلوماتي", "my_info"),
     ("📱 ارقامي", "my_numbers"),
-    ("📱 حساباتي للرشق", "contributor_accounts"),
+    ("📱 تأجير أرقامي", "contributor_accounts"),
     ("📺 تمويل قناتك حقيقي", "fund_channel"),
 ] + SERVICE_PLATFORMS + [(v, f"cat:{k}") for k, v in CATEGORY_MAP.items()]
 
@@ -388,7 +388,25 @@ def seed_menu_items(menu: str):
                 f"({','.join('?' for _ in old_cats)})",
                 old_cats
             )
-        # لا نعيد تسمية أزرار القائمة الرئيسية تلقائياً هنا.
+            # إعادة تسمية الزر الافتراضي القديم فقط؛ لا نلمس الاسم الذي
+            # عدّله المالك يدوياً إلى اسم مخصص.
+            c.execute(
+                """
+                UPDATE menu_items
+                SET label=?
+                WHERE menu='main'
+                  AND action_type='builtin'
+                  AND action_value='contributor_accounts'
+                  AND label IN (?, ?, ?)
+                """,
+                (
+                    "📱 تأجير أرقامي",
+                    "📱 حساباتي للرشق",
+                    "📱 أرقامي للرشق",
+                    "📱 ارقامي للرشق",
+                ),
+            )
+        # لا نعيد تسمية بقية أزرار القائمة الرئيسية تلقائياً هنا؛
         # الاسم والإيموجي المدفوع اللذان يحددهما المالك يجب أن يبقيا محفوظين.
     if menu == "services_menu":
         with db_conn() as c:
