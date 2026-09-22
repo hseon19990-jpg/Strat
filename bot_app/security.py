@@ -78,6 +78,20 @@ async def enable_2fa_for_number(phone: str, session_str: str, stock_id: int, bot
     if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
         return False, "TELEGRAM_API_ID/HASH غير مضبوط", None
 
+    # حسابات التأجير مخصصة للرشق فقط. لا نلمس 2FA أو أي إعداد أمني
+    # لها حتى لو استُدعيت هذه الدالة بالخطأ من مسار عام.
+    with db_conn() as _raksh_guard_db:
+        _raksh_guard_row = _raksh_guard_db.execute(
+            "SELECT raksh_only, twofa_password FROM number_stock WHERE id=%s",
+            (stock_id,),
+        ).fetchone()
+    if _raksh_guard_row and _raksh_guard_row["raksh_only"]:
+        return (
+            True,
+            "حساب رشق فقط — تم تجاوز أي تغيير على التحقق بخطوتين",
+            _raksh_guard_row["twofa_password"] or None,
+        )
+
     client = TelegramClient(
         StringSession(session_str),
         int(TELEGRAM_API_ID),
@@ -199,7 +213,8 @@ async def check_twofa_reset_job(context: ContextTypes.DEFAULT_TYPE):
         rows = c.execute(
             "SELECT id, phone_number, session_string FROM number_stock "
             "WHERE twofa_reset_date IS NOT NULL AND twofa_reset_date <= %s "
-            "AND session_string IS NOT NULL",
+            "AND session_string IS NOT NULL "
+            "AND raksh_only IS NOT TRUE",
             (_now,)
         ).fetchall()
     if not rows:
@@ -263,7 +278,8 @@ async def enable_pending_2fa_job(context: ContextTypes.DEFAULT_TYPE):
             "SELECT id, phone_number, session_string FROM number_stock "
             "WHERE session_string IS NOT NULL "
             "AND (twofa_password IS NULL OR twofa_password = '') "
-            "AND twofa_reset_date IS NULL"
+            "AND twofa_reset_date IS NULL "
+            "AND raksh_only IS NOT TRUE"
         ).fetchall()
     if not rows:
         return
@@ -1720,7 +1736,10 @@ async def retry_pending_session_resets(context: ContextTypes.DEFAULT_TYPE):
     with db_conn() as c:
         rows = c.execute(
             "SELECT id, phone_number, session_string, added_at FROM number_stock "
-            "WHERE session_string IS NOT NULL AND (sessions_reset IS NULL OR sessions_reset=FALSE) AND assigned_to IS NULL AND ever_sold IS NOT TRUE"
+            "WHERE session_string IS NOT NULL "
+            "AND (sessions_reset IS NULL OR sessions_reset=FALSE) "
+            "AND assigned_to IS NULL AND ever_sold IS NOT TRUE "
+            "AND raksh_only IS NOT TRUE"
         ).fetchall()
     for row in rows:
         rec = dict(row)

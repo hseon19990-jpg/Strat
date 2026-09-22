@@ -5913,11 +5913,18 @@ async def _account_fixup_job(context=None):
             # ─── فحص حالة الحساب من DB ───
             with db_conn() as _db:
                 _row = _db.execute(
-                    "SELECT session_string, is_solo, twofa_password, auto_2fa_enabled, deleted_at "
+                    "SELECT session_string, is_solo, twofa_password, auto_2fa_enabled, "
+                    "deleted_at, raksh_only "
                     "FROM number_stock WHERE id=%s", (sid,)
                 ).fetchone()
             if not _row or _row["deleted_at"]:
                 to_remove.append(sid)
+                continue
+            # حسابات التأجير للرشق فقط: لا طرد للجلسات ولا تغيير لـ 2FA.
+            # أزلها من قائمة الإصلاح إن دخلت إليها من مسار قديم أو متزامن.
+            if _row["raksh_only"]:
+                to_remove.append(sid)
+                logger.info(f"🛡️ fixup_job: تجاوز حساب الرشق فقط {phone} دون تغيير")
                 continue
 
             # تحديث الجلسة الحالية (قد تكون تغيّرت)
