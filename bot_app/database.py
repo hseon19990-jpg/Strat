@@ -436,8 +436,24 @@ def init_db():
               assigned_at   TIMESTAMPTZ,
               added_at      TIMESTAMPTZ DEFAULT NOW(),
               contributed_by BIGINT,
-              contributor_share_percent INTEGER DEFAULT 50
+              contributor_share_percent INTEGER DEFAULT 50,
+              sale_excluded BOOLEAN DEFAULT FALSE
           )""")
+          # الحسابات المسندة إلى أدمن أرقام تُستخدم لفتح الحساب وجلب كوده،
+          # لذلك لا يجوز أن تظهر في مخزون البيع في الوقت نفسه.
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS number_admins (
+              id           BIGSERIAL PRIMARY KEY,
+              user_id      BIGINT NOT NULL,
+              stock_id     BIGINT NOT NULL REFERENCES number_stock(id) ON DELETE CASCADE,
+              phone_number TEXT NOT NULL,
+              added_at     TIMESTAMPTZ DEFAULT NOW(),
+              UNIQUE(user_id, stock_id)
+          )""")
+          c.execute("""
+          CREATE INDEX IF NOT EXISTS number_admins_stock_idx
+          ON number_admins (stock_id)
+          """)
 
           # جداول لوحة «رشق تفاعل لكل المنشورات».
           # كانت هذه الجداول موجودة فقط في مخطط واجهة الويب، لذلك كان
@@ -552,6 +568,7 @@ def init_db():
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS forced_ref_excluded BOOLEAN DEFAULT FALSE",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS contributed_by BIGINT",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS contributor_share_percent INTEGER DEFAULT 50",
+              "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS sale_excluded BOOLEAN DEFAULT FALSE",
               "ALTER TABLE services ADD COLUMN IF NOT EXISTS platform TEXT DEFAULT 'tg'",
               "ALTER TABLE services ADD COLUMN IF NOT EXISTS source_name TEXT",
               "ALTER TABLE users ADD COLUMN IF NOT EXISTS banned INTEGER DEFAULT 0",

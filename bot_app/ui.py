@@ -859,6 +859,12 @@ def account_info_kb() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(
+                "🚫 استثناء حسابات من البيع",
+                callback_data="os:exclude_sale_accounts",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
                 "📊 حالة كل الحسابات",
                 callback_data="os:account_statuses",
             ),

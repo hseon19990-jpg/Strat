@@ -2681,6 +2681,96 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]),
             )
 
+    if is_own and state == "os_await_sale_exclude_accounts":
+        _tokens = [
+            line.strip()
+            for line in text.replace("،", "\n").replace(",", "\n").splitlines()
+            if line.strip()
+        ]
+        _arabic_digits = str.maketrans(
+            "٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹",
+            "01234567890123456789",
+        )
+
+        def _sale_digits(value):
+            normalized = str(value or "").translate(_arabic_digits)
+            return "".join(ch for ch in normalized if ch.isdigit())
+
+        with db_conn() as _c:
+            _rows = [
+                dict(row)
+                for row in _c.execute(
+                    """
+                    SELECT id, phone_number, sale_excluded
+                    FROM number_stock
+                    WHERE deleted_at IS NULL
+                      AND assigned_to IS NULL
+                      AND ever_sold IS NOT TRUE
+                    ORDER BY id ASC
+                    """
+                ).fetchall()
+            ]
+
+        _by_id = {str(row["id"]): row for row in _rows}
+        _by_phone = {}
+        for _row in _rows:
+            _digits = _sale_digits(_row.get("phone_number"))
+            if _digits:
+                _by_phone[_digits] = _row
+
+        _matched = {}
+        _unresolved = []
+        for _token in _tokens:
+            _value = _token.translate(_arabic_digits).strip()
+            _row = _by_id.get(_value) if _value.isdigit() else None
+            if not _row:
+                _row = _by_phone.get(_sale_digits(_value))
+            if _row:
+                _matched[_row["id"]] = _row
+            else:
+                _unresolved.append(_token)
+
+        _excluded = []
+        with db_conn() as _c:
+            for _row in _matched.values():
+                _c.execute(
+                    """
+                    UPDATE number_stock
+                    SET sale_excluded=TRUE
+                    WHERE id=%s AND deleted_at IS NULL
+                    """,
+                    (_row["id"],),
+                )
+                if _c.rowcount:
+                    _excluded.append(_row["phone_number"])
+
+        context.user_data["state"] = "main_menu"
+        _lines = [
+            f"✅ تم استثناء {len(_excluded)} حساب من البيع.",
+            "لم يتم حذف الحسابات؛ يمكن إعادتها للبيع من قاعدة البيانات عند الحاجة.",
+        ]
+        if _excluded:
+            _lines.append(
+                "\n🚫 الحسابات المستثناة:\n"
+                + "\n".join(f"• `{phone}`" for phone in _excluded[:50])
+            )
+        if _unresolved:
+            _lines.append(
+                "\n❌ لم أجد هذه الأرقام أو أرقام المخزون:\n"
+                + "\n".join(f"• {value}" for value in _unresolved[:50])
+            )
+        await update.message.reply_text(
+            "\n".join(_lines),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "🔙 معلومات الحسابات",
+                    callback_data="os:account_info",
+                )
+            ]]),
+        )
+        return
+
     if is_own and state == "os_await_raksh_unmark_accounts":
         _tokens = [
             line.strip()

@@ -662,6 +662,24 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             )
             return
 
+        if data == "os:exclude_sale_accounts" and is_own:
+            context.user_data["state"] = "os_await_sale_exclude_accounts"
+            await q.edit_message_text(
+                "🚫 *استثناء حسابات من البيع*\n\n"
+                "أرسل رقم الحساب أو رقم المخزون، ويمكن إرسال أكثر من حساب "
+                "بوضع كل رقم في سطر مستقل.\n\n"
+                "الحساب المستثنى يبقى في المخزون ولا يُحذف، لكنه لن يظهر "
+                "في قائمة البيع ولن يتم تسليمه تلقائياً.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        "🔙 معلومات الحسابات",
+                        callback_data="os:account_info",
+                    )
+                ]]),
+            )
+            return
+
         if data == "os:account_names" and is_own:
             name_count = _account_name_count()
             context.user_data["state"] = "os_await_account_names"

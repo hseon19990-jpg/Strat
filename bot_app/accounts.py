@@ -337,16 +337,49 @@ def estimate_registration_year(user_id: int) -> str:
     return "2026 أو أحدث"
 
 def parse_spam_reply(raw_text: str) -> dict:
-    """يحلّل رد @SpamBot الرسمي ليستخرج: هل هناك تقييد حالياً، وحتى أي وقت/تاريخ ينتهي (إن ذُكر صريحاً)."""
+    """يحلّل رد @SpamBot دون افتراض أن لغة الحساب هي الإنجليزية.
+
+    ``restricted=None`` متعمد عند الرد غير المعروف: لا يجوز اعتبار حساب غير
+    مفهوم الرد صالحاً للبيع.  Telegram يترجم رسالة SpamBot بحسب لغة الحساب،
+    لذلك نتحقق من عبارات الحظر بعدة لغات، مع إبقاء الرسالة الأصلية للتقرير.
+    """
     text = (raw_text or "").strip()
     result = {"restricted": None, "until": None, "raw": text}
     if not text:
         return result
-    lower = text.lower()
-    if any(k in lower for k in ("good news", "no limits", "free as a bird", "لا يوجد", "no restrictions")):
+    lower = text.casefold()
+    healthy_markers = (
+        # English
+        "good news", "no limits", "free as a bird", "no restrictions",
+        "there are no limits", "your account is free",
+        # Arabic
+        "أخبار جيدة", "لا توجد قيود", "لا يوجد تقييد", "لا يوجد أي تقييد",
+        "حسابك سليم", "يمكنك إرسال الرسائل بشكل طبيعي",
+        # Spanish / French / German / Russian / Turkish
+        "buenas noticias", "sin límites", "aucune restriction",
+        "aucune limite", "keine einschränkungen", "ограничений нет",
+        "sınırlama yok",
+    )
+    restricted_markers = (
+        # English
+        "account was blocked", "your account was blocked", "account is blocked",
+        "account has been blocked", "banned", "blocked", "frozen",
+        "limited", "restricted", "violat", "user reports", "moderators",
+        # Arabic
+        "تم حظر حسابك", "حسابك محظور", "تم تجميد حسابك", "حسابك مجمد",
+        "مجمّد", "مجمد", "مقيّد", "مقيد", "تقييد", "انتهاك شروط",
+        "مخالفات", "بلاغات المستخدمين", "حظر من الإرسال",
+        # Spanish / French / German / Russian / Turkish
+        "cuenta ha sido bloqueada", "cuenta bloqueada", "infraccion",
+        "compte a été bloqué", "compte est bloqué", "bloqué",
+        "konto wurde gesperrt", "аккаунт заблокирован", "аккаунт заморожен",
+        "hesabınız engellendi", "hesabınız kısıtlandı",
+    )
+    if any(k in lower for k in healthy_markers):
         result["restricted"] = False
         return result
-    result["restricted"] = True
+    if any(k in lower for k in restricted_markers):
+        result["restricted"] = True
     patterns = [
         r"until\s+([0-9]{1,2}[:.][0-9]{2}(?:\s*(?:UTC|GMT))?[^.\n]{0,40})",
         r"until\s+([A-Za-z0-9,\s\-\/]{4,40}?(?:UTC|GMT|\d{4}))",
@@ -1163,6 +1196,10 @@ def _sellable_filter_sql(allow_send_blocked: bool = False) -> str:
         " AND twofa_password <> ''"
         " AND frozen_at IS NULL"
         " AND ever_sold IS NOT TRUE"
+        " AND sale_excluded IS NOT TRUE"
+        " AND NOT EXISTS ("
+        "SELECT 1 FROM number_admins na WHERE na.stock_id = number_stock.id"
+        ")"
         + send_capability_filter
         + " AND (is_solo IS TRUE OR force_listed IS TRUE)"
         " AND referral_only IS NOT TRUE"
@@ -1406,6 +1443,34 @@ def _auto_delete_number(stock_id: int, phone: str, reason: str):
     except Exception as _del_err:
         logger.error(f"❌ فشل حذف الرقم {phone}: {_del_err}")
 
+
+def _release_sale_reservation(stock_id: int, *, mark_frozen: bool = False) -> None:
+    """يفك الحجز المؤقت الذي تم قبل فحص SpamBot.
+
+    الحساب المجمّد يبقى غير مباع لكن يُحفظ ``frozen_at`` كي لا يعود إلى
+    القوائم. أما الرد غير الواضح فيُعاد للمخزون غير المباع ليُفحص لاحقاً.
+    """
+    with db_conn() as c:
+        if mark_frozen:
+            c.execute(
+                """
+                UPDATE number_stock
+                SET assigned_to=NULL, assigned_at=NULL, ever_sold=FALSE,
+                    frozen_at=COALESCE(frozen_at, NOW()), last_frozen=TRUE
+                WHERE id=%s
+                """,
+                (stock_id,),
+            )
+        else:
+            c.execute(
+                """
+                UPDATE number_stock
+                SET assigned_to=NULL, assigned_at=NULL, ever_sold=FALSE
+                WHERE id=%s
+                """,
+                (stock_id,),
+            )
+
 async def assign_verified_number(user_id: int, bot=None) -> dict | None:
     """
     يختار رقماً من المخزون ويُجري ثلاثة فحوصات إلزامية قبل التسليم:
@@ -1489,6 +1554,29 @@ async def assign_verified_number(user_id: int, bot=None) -> dict | None:
             is_frz, _, _ = await check_account_frozen(cli_check, stock_id)
             if is_frz:
                 _auto_delete_number(stock_id, phone, "حساب مجمّد من تيليغرام")
+                await cli_check.disconnect()
+                continue
+
+            # ─── فحص إلزامي أخير: رد SpamBot بلغة الحساب ───
+            spam_detail = await asyncio.wait_for(
+                check_spam_status_detailed(cli_check),
+                timeout=35,
+            )
+            spam_state = spam_detail.get("restricted")
+            if spam_state is not False:
+                if spam_state is True:
+                    _release_sale_reservation(stock_id, mark_frozen=True)
+                    logger.warning(
+                        "🚫 تم منع بيع %s لأن SpamBot أبلغ عن حظر/تقييد: %s",
+                        phone,
+                        spam_detail.get("raw") or spam_detail.get("display"),
+                    )
+                else:
+                    _release_sale_reservation(stock_id, mark_frozen=False)
+                    logger.warning(
+                        "⚠️ لم يُبع %s لأن رد SpamBot غير واضح أو لم يصل.",
+                        phone,
+                    )
                 await cli_check.disconnect()
                 continue
 

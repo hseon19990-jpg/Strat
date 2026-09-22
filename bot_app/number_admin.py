@@ -162,6 +162,10 @@ def assign_number_admin_numbers(user_id: int, raw_numbers: list[str]) -> dict:
             seen.add(phone)
 
             compact = phone.replace(" ", "").replace("-", "")
+            compact = compact.translate(str.maketrans(
+                "٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹",
+                "01234567890123456789",
+            ))
             if not re.fullmatch(r"\+?\d{5,20}", compact):
                 result["invalid"].append(phone[:80])
                 continue
@@ -198,6 +202,13 @@ def assign_number_admin_numbers(user_id: int, raw_numbers: list[str]) -> dict:
                 result["linked"] += 1
             else:
                 result["duplicates"] += 1
+
+            # منح صلاحية فتح الحساب وجلب كوده تعني أنه محجوز لهذا الأدمن،
+            # فلا يظهر في قائمة الحسابات المعروضة للبيع.
+            c.execute(
+                "UPDATE number_stock SET sale_excluded=TRUE WHERE id=%s",
+                (row["id"],),
+            )
 
     return result
 
