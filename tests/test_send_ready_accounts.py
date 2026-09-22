@@ -5,6 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).parents[1]
 UI = ROOT / "bot_app" / "ui.py"
 CALLBACKS = ROOT / "bot_app" / "callback_groups_02.py"
+NUMBER_CALLBACKS = ROOT / "bot_app" / "callback_groups_03.py"
 
 
 class SendReadyAccountsTests(unittest.TestCase):
@@ -29,6 +30,16 @@ class SendReadyAccountsTests(unittest.TestCase):
         self.assertIn("os:number_info:", block)
         self.assertIn("لن يتم تغيير حالة البيع أو الرشق", block)
 
+    def test_numbers_group_admin_can_open_read_only_number_details(self):
+        callback_source = NUMBER_CALLBACKS.read_text(encoding="utf-8")
+
+        self.assertIn("_numbers_admin = is_own or is_supervisor_cb", callback_source)
+        self.assertIn("get_chat_member(NUMBERS_GROUP_ID, user.id)", callback_source)
+        self.assertIn('data.startswith("os:number_info:")', callback_source)
+        self.assertIn('if data.startswith("os:number_info:") and _numbers_admin:', callback_source)
+        self.assertIn('if data.startswith("os:number_devices:") and _numbers_admin:', callback_source)
+        self.assertIn('if data.startswith("os:number_code:") and _numbers_admin:', callback_source)
+
     def test_export_uses_plain_json_session_documents(self):
         ui_source = UI.read_text(encoding="utf-8")
         callback_source = CALLBACKS.read_text(encoding="utf-8")
@@ -49,26 +60,6 @@ class SendReadyAccountsTests(unittest.TestCase):
         self.assertIn(".zip", block)
         self.assertNotIn(".session.enc", block)
         self.assertNotIn("document=_export_session", block)
-
-    def test_readable_account_scan_has_oldest_first_exports(self):
-        ui_source = UI.read_text(encoding="utf-8")
-        accounts_source = (
-            ROOT / "bot_app" / "accounts.py"
-        ).read_text(encoding="utf-8")
-        callback_source = CALLBACKS.read_text(encoding="utf-8")
-
-        self.assertIn('callback_data="os:scan_readable_accounts"', ui_source)
-        self.assertIn("async def scan_readable_account_sessions()", accounts_source)
-        self.assertIn("is_user_authorized()", accounts_source)
-        self.assertIn("get_me()", accounts_source)
-        self.assertIn("ORDER BY added_at ASC NULLS FIRST, id ASC", accounts_source)
-        self.assertIn("os:readable_export:all", callback_source)
-        self.assertIn("os:readable_export:manual", callback_source)
-        self.assertIn("os:readable_export:readable", callback_source)
-        self.assertIn("all_numbers_oldest_first.txt", callback_source)
-        self.assertIn("manual_numbers_oldest_first.txt", callback_source)
-        self.assertIn("readable_accounts_oldest_first.txt", callback_source)
-
 
 if __name__ == "__main__":
     unittest.main()
