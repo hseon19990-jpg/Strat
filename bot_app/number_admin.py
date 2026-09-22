@@ -200,6 +200,104 @@ def number_admin_panel_markup(
     return InlineKeyboardMarkup(buttons)
 
 
+def _number_admin_account_markup(stock_id: int) -> InlineKeyboardMarkup:
+    """Buttons available to an admin for one assigned number."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "📋 تفاصيل الأجهزة",
+                callback_data=f"os:number_devices:{stock_id}",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🔑 جلب آخر كود وصل",
+                callback_data=f"os:number_code:{stock_id}",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🔐 عرض / تغيير 2FA",
+                callback_data=f"os:number_2fa:{stock_id}",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🚪 تسجيل خروج البوت",
+                callback_data=f"os:number_logout:{stock_id}",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🔙 رجوع إلى أرقامك",
+                callback_data="na:panel",
+            )
+        ],
+    ])
+
+
+def _get_number_admin_stock_number(user_id: int, stock_id: int) -> dict | None:
+    """Fetch one assigned number without opening its Telethon session."""
+    with db_conn() as c:
+        row = c.execute(
+            """
+            SELECT ns.*
+            FROM number_admins na
+            JOIN number_stock ns ON ns.id = na.stock_id
+            WHERE na.user_id=%s
+              AND na.stock_id=%s
+              AND ns.deleted_at IS NULL
+            LIMIT 1
+            """,
+            (user_id, stock_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+async def render_number_admin_account(update, context, stock_id: int) -> None:
+    """Render the fast, scoped account card shown after choosing a number."""
+    user = update.effective_user
+    rec = _get_number_admin_stock_number(user.id, stock_id)
+    if not rec:
+        await update.callback_query.edit_message_text(
+            "⚠️ هذا الرقم غير موجود أو لم يعد مخصصاً لك.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 رجوع إلى أرقامك", callback_data="na:panel")
+            ]]),
+        )
+        return
+
+    phone = str(rec.get("phone_number") or "غير معروف")
+    session_active = bool(
+        rec.get("session_string")
+        and rec.get("last_authorized") is not False
+    )
+    twofa_password = rec.get("twofa_password") or "غير محفوظة"
+    added_at = rec.get("added_at")
+    added_text = (
+        format_account_datetime(added_at)
+        if added_at
+        else "غير معروف"
+    )
+    devices = rec.get("last_device_count")
+    device_text = str(devices) if devices is not None and int(devices) >= 0 else "غير معروف"
+    text = (
+        f"📱 *{phone}*\n\n"
+        f"🆔 رقم المخزون: `{rec.get('id')}`\n"
+        f"🌍 الدولة: {guess_country(phone)}\n"
+        f"📅 تاريخ الإضافة: {added_text}\n"
+        f"🔐 كلمة مرور 2FA: `{twofa_password}`\n"
+        f"📡 جلسة البوت: {'✅ نشطة' if session_active else '❌ غير نشطة'}\n"
+        f"💻 الأجهزة المسجلة: {device_text}\n\n"
+        "اختر الإجراء المطلوب:"
+    )
+    await update.callback_query.edit_message_text(
+        text,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=_number_admin_account_markup(stock_id),
+    )
+
+
 async def render_number_admin_panel(update, context, page: int = 0) -> None:
     """Render the scoped number-admin panel."""
     user = update.effective_user
