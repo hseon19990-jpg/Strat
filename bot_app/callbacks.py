@@ -67,18 +67,27 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # caller. This preserves the mature account-management implementation
     # without exposing owner-wide settings.
     if is_number_admin_user:
-        if data in {
-            "na:panel",
-            "na:list",
-            "os:manage_numbers",
-            "os:list_numbers",
-            "owner_settings",
-        }:
+        if (
+            data in {
+                "na:panel",
+                "na:list",
+                "os:manage_numbers",
+                "os:list_numbers",
+                "owner_settings",
+            }
+            or data.startswith("na:panel:")
+        ):
             try:
                 await q.answer()
             except Exception:
                 pass
-            await render_number_admin_panel(update, context)
+            page = 0
+            if data.startswith("na:panel:"):
+                try:
+                    page = max(0, int(data.rsplit(":", 1)[-1]))
+                except ValueError:
+                    page = 0
+            await render_number_admin_panel(update, context, page=page)
             return
         if data.startswith("na:number:"):
             try:

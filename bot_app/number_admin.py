@@ -148,7 +148,14 @@ def assign_number_admin_numbers(user_id: int, raw_numbers: list[str]) -> dict:
     return result
 
 
-def number_admin_panel_markup(rows: list[dict]) -> InlineKeyboardMarkup:
+NUMBER_ADMIN_PAGE_SIZE = 10
+
+
+def number_admin_panel_markup(
+    rows: list[dict],
+    page: int = 0,
+    total: int | None = None,
+) -> InlineKeyboardMarkup:
     buttons = [
         [
             InlineKeyboardButton(
@@ -158,8 +165,34 @@ def number_admin_panel_markup(rows: list[dict]) -> InlineKeyboardMarkup:
         ]
         for row in rows
     ]
+    total = total if total is not None else len(rows)
+    pages = max(1, (total + NUMBER_ADMIN_PAGE_SIZE - 1) // NUMBER_ADMIN_PAGE_SIZE)
+    page = max(0, min(page, pages - 1))
+    if pages > 1:
+        navigation = []
+        if page > 0:
+            navigation.append(
+                InlineKeyboardButton(
+                    "⬅️ السابق",
+                    callback_data=f"na:panel:{page - 1}",
+                )
+            )
+        navigation.append(
+            InlineKeyboardButton(
+                f"📄 {page + 1}/{pages}",
+                callback_data="noop",
+            )
+        )
+        if page < pages - 1:
+            navigation.append(
+                InlineKeyboardButton(
+                    "التالي ➡️",
+                    callback_data=f"na:panel:{page + 1}",
+                )
+            )
+        buttons.append(navigation)
     buttons.append(
-        [InlineKeyboardButton("🔄 تحديث", callback_data="na:panel")]
+        [InlineKeyboardButton("🔄 تحديث", callback_data=f"na:panel:{page}")]
     )
     buttons.append(
         [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")]
@@ -167,16 +200,23 @@ def number_admin_panel_markup(rows: list[dict]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(buttons)
 
 
-async def render_number_admin_panel(update, context) -> None:
+async def render_number_admin_panel(update, context, page: int = 0) -> None:
     """Render the scoped number-admin panel."""
     user = update.effective_user
-    rows = get_number_admin_stock_rows(user.id)
-    if rows:
+    all_rows = get_number_admin_stock_rows(user.id)
+    total = len(all_rows)
+    pages = max(1, (total + NUMBER_ADMIN_PAGE_SIZE - 1) // NUMBER_ADMIN_PAGE_SIZE)
+    page = max(0, min(page, pages - 1))
+    rows = all_rows[
+        page * NUMBER_ADMIN_PAGE_SIZE:(page + 1) * NUMBER_ADMIN_PAGE_SIZE
+    ]
+    if total:
         lines = [
             "📱 *لوحة ادمن الأرقام*",
             "",
             "يمكنك إدارة الأرقام المخصصة لك فقط باستخدام نفس إجراءات إدارة الحساب.",
-            f"📦 عدد الأرقام: *{len(rows)}*",
+            f"📦 عدد الأرقام: *{total}*",
+            f"📄 الصفحة: *{page + 1}/{pages}*",
             "",
             "اختر رقماً لعرض معلوماته وإجراءاته:",
         ]
@@ -190,7 +230,7 @@ async def render_number_admin_panel(update, context) -> None:
     await update.callback_query.edit_message_text(
         "\n".join(lines),
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=number_admin_panel_markup(rows),
+        reply_markup=number_admin_panel_markup(rows, page=page, total=total),
     )
 
 
