@@ -390,6 +390,7 @@ TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "")
 
 _pending_number_logins = {}
 _pending_supervisor_logins = {}   # supervisor_user_id -> {client, phone, phone_code_hash}
+_pending_independent_session_logins = {}  # owner_id -> independent session login state
 _buyer_received_codes = {}  # buyer_user_id -> {"code": str, "time": float} آخر كود وصل بعد البيع
 _demo_purchases = {}        # buyer_user_id -> {"phone": str, "session_str": str, "twofa": str, "purchase_time": datetime} — شراء بكود تجريبي (لا يُسجَّل في prize_exchanges)
 _pending_bulk_import  = set()  # user_ids ينتظرون إرسال JSON للاستيراد الجماعي

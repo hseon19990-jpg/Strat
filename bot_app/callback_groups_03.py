@@ -2342,6 +2342,24 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                 )
             return
 
+        if data == "os:create_independent_session" and is_own:
+            await q.answer()
+            context.user_data["state"] = "os_await_independent_session_phone"
+            await q.edit_message_text(
+                "🔐 *إنشاء جلسة Telegram مستقلة*\n\n"
+                "أرسل رقمًا موجودًا في مخزون البوت بصيغة دولية، مثل:\n"
+                "`+9647701234567`\n\n"
+                "سيطلب Telegram كود الدخول وكلمة مرور 2FA إن وُجدت، "
+                "ثم تُحفظ جلسة جديدة مستقلة دون استبدال الجلسة الحالية "
+                "ودون تسجيل خروج أي جهاز آخر.\n\n"
+                "يمكنك تكرار العملية لإنشاء جلسة ثانية وثالثة احتياطية.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 إلغاء", callback_data="owner_settings")
+                ]]),
+            )
+            return
+
         if data == "sv:panel" and is_supervisor_cb:
             await q.answer()
             await q.edit_message_text(

@@ -438,6 +438,21 @@ def init_db():
               contributed_by BIGINT,
               contributor_share_percent INTEGER DEFAULT 50
           )""")
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS telegram_independent_sessions (
+              id                BIGSERIAL PRIMARY KEY,
+              phone_number      TEXT NOT NULL,
+              source_stock_id   BIGINT,
+              session_hash      TEXT NOT NULL UNIQUE,
+              session_string    TEXT NOT NULL,
+              created_by        BIGINT,
+              active            BOOLEAN NOT NULL DEFAULT TRUE,
+              created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )""")
+          c.execute("""
+          CREATE INDEX IF NOT EXISTS telegram_independent_sessions_phone_idx
+          ON telegram_independent_sessions (phone_number, active, created_at DESC)
+          """)
 
           # جداول لوحة «رشق تفاعل لكل المنشورات».
           # كانت هذه الجداول موجودة فقط في مخطط واجهة الويب، لذلك كان
@@ -548,19 +563,7 @@ def init_db():
                "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS raksh_only BOOLEAN DEFAULT FALSE",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS raksh_excluded BOOLEAN DEFAULT FALSE",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS bot_session_ip TEXT",
-               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS forced_ref_excluded BOOLEAN DEFAULT FALSE",
-               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS account_source TEXT",
-               "ALTER TABLE number_stock ALTER COLUMN account_source SET DEFAULT NULL",
-               "UPDATE number_stock SET account_source='raksh' "
-               "WHERE raksh_only IS TRUE AND (account_source IS NULL OR account_source='manual')",
-               "UPDATE number_stock SET account_source='zip' "
-               "WHERE session_string IS NOT NULL AND raksh_only IS NOT TRUE "
-               "AND contributed_by IS NULL AND (account_source IS NULL OR account_source='manual')",
-               "UPDATE number_stock SET account_source='file' "
-               "WHERE session_string IS NOT NULL AND raksh_only IS NOT TRUE "
-               "AND contributed_by IS NOT NULL AND (account_source IS NULL OR account_source='manual')",
-               "UPDATE number_stock SET account_source='manual' "
-               "WHERE session_string IS NULL AND raksh_only IS NOT TRUE AND account_source IS NULL",
+              "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS forced_ref_excluded BOOLEAN DEFAULT FALSE",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS contributed_by BIGINT",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS contributor_share_percent INTEGER DEFAULT 50",
               "ALTER TABLE services ADD COLUMN IF NOT EXISTS platform TEXT DEFAULT 'tg'",

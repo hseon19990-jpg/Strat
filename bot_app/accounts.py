@@ -7,6 +7,7 @@ domain.
 
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
+import hashlib
 
 def add_numbers_to_stock(numbers: list) -> int:
     """يضيف أرقاماً جديدة لمخزون أرقام تيلغرام (يتجاهل المكرر). يُرجع عدد الأرقام المضافة فعلياً."""
@@ -18,8 +19,7 @@ def add_numbers_to_stock(numbers: list) -> int:
                 continue
             try:
                 c.execute(
-                    "INSERT INTO number_stock (phone_number, account_source) "
-                    "VALUES (%s, 'manual') ON CONFLICT (phone_number) DO NOTHING",
+                    "INSERT INTO number_stock (phone_number) VALUES (%s) ON CONFLICT (phone_number) DO NOTHING",
                     (n,)
                 )
                 if c.rowcount:
@@ -650,110 +650,6 @@ async def scan_all_account_statuses() -> dict[str, list[dict]]:
 
     return result
 
-async def scan_readable_account_sessions() -> dict[str, list[dict]]:
-    """يفحص الجلسات فعلياً ويعيد الأرقام مرتبة من الأقدم إلى الأحدث.
-
-    نجاح ``get_me`` هو معيار أن البوت يستطيع قراءة الحساب من الجلسة الحالية.
-    الفحص للعرض والتصدير فقط ولا يغيّر أي حالة في مخزون الأرقام.
-    """
-    with db_conn() as c:
-        rows = c.execute(
-            """
-            SELECT id, phone_number, session_string, added_at
-            FROM number_stock
-            WHERE deleted_at IS NULL
-            ORDER BY added_at ASC NULLS FIRST, id ASC
-            """
-        ).fetchall()
-
-    result = {
-        "all_numbers": [],
-        "manual": [],
-        "readable": [],
-        "unreadable": [],
-    }
-
-    for raw_row in rows:
-        row = dict(raw_row)
-        phone = str(row.get("phone_number") or "").strip()
-        if not phone:
-            continue
-
-        added_at = row.get("added_at")
-        added_at_text = ""
-        if added_at is not None:
-            try:
-                added_at_text = added_at.isoformat()
-            except AttributeError:
-                added_at_text = str(added_at)
-
-        base = {
-            "stock_id": row.get("id"),
-            "phone_number": phone,
-            "added_at": added_at_text,
-        }
-        result["all_numbers"].append(base.copy())
-
-        session_string = str(row.get("session_string") or "").strip()
-        if not session_string:
-            result["manual"].append(base.copy())
-            continue
-
-        if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
-            result["unreadable"].append(
-                {**base, "reason": "إعدادات Telegram API غير مكتملة"}
-            )
-            continue
-
-        client = None
-        try:
-            client = TelegramClient(
-                StringSession(session_string),
-                int(TELEGRAM_API_ID),
-                TELEGRAM_API_HASH,
-            )
-            await asyncio.wait_for(client.connect(), timeout=15)
-            authorized = await asyncio.wait_for(
-                client.is_user_authorized(),
-                timeout=8,
-            )
-            if not authorized:
-                result["unreadable"].append(
-                    {**base, "reason": "الجلسة غير مصرّح بها"}
-                )
-                continue
-
-            me = await asyncio.wait_for(client.get_me(), timeout=10)
-            if me is None:
-                result["unreadable"].append(
-                    {**base, "reason": "لم يُرجع Telegram بيانات الحساب"}
-                )
-                continue
-
-            first_name = str(getattr(me, "first_name", "") or "").strip()
-            last_name = str(getattr(me, "last_name", "") or "").strip()
-            result["readable"].append(
-                {
-                    **base,
-                    "telegram_id": getattr(me, "id", None),
-                    "username": str(getattr(me, "username", "") or "").strip(),
-                    "name": " ".join(part for part in (first_name, last_name) if part),
-                }
-            )
-        except Exception as exc:
-            logger.warning(f"تعذّر فحص قابلية قراءة جلسة {phone}: {exc}")
-            result["unreadable"].append(
-                {**base, "reason": "تعذّر فتح الجلسة أو قراءة الحساب"}
-            )
-        finally:
-            try:
-                if client is not None:
-                    await client.disconnect()
-            except Exception:
-                pass
-
-    return result
-
 async def remove_raksh_account_by_reference(reference: str) -> dict:
     """يستثني حساباً ذا جلسة من خدمات الرشق باستخدام أي معرّف."""
     _reference = str(reference or "").strip()
@@ -841,13 +737,6 @@ async def remove_raksh_account_by_reference(reference: str) -> dict:
             "status": "not_found",
             "message": "الحساب لم يعد موجوداً أو تم حذفه.",
         }
-
-    # لا تنتظر خدمات الرشق انتهاء ذاكرة التخزين المؤقت حتى تستبعد الحساب فوراً.
-    try:
-        from .raksh_system.common import clear_raksh_session_cache
-        clear_raksh_session_cache()
-    except Exception as _exc:
-        logger.warning(f"تعذّر تنظيف ذاكرة حسابات الرشق بعد الإزالة: {_exc}")
 
     return {
         "status": "removed",
@@ -1072,126 +961,6 @@ def get_stock_number(stock_id: int):
         ).fetchone()
         return dict(row) if row else None
 
-def get_readable_account_source_counts() -> dict[str, int]:
-    """Counts only accounts that passed the live code/message-readability check."""
-    with db_conn() as c:
-        row = c.execute(
-            """
-            SELECT
-                COUNT(*) FILTER (
-                    WHERE COALESCE(account_source, 'manual') = 'zip'
-                       OR (
-                           account_source IS NULL
-                           AND session_string IS NOT NULL
-                           AND contributed_by IS NULL
-                           AND raksh_only IS NOT TRUE
-                       )
-                ) AS zip_count,
-                COUNT(*) FILTER (
-                    WHERE COALESCE(account_source, 'manual') = 'manual'
-                       OR (
-                           account_source IS NULL
-                           AND session_string IS NULL
-                           AND raksh_only IS NOT TRUE
-                       )
-                ) AS manual_count,
-                COUNT(*) FILTER (
-                    WHERE COALESCE(account_source, 'manual') = 'file'
-                       OR (
-                           account_source IS NULL
-                           AND session_string IS NOT NULL
-                           AND contributed_by IS NOT NULL
-                           AND raksh_only IS NOT TRUE
-                       )
-                ) AS file_count,
-                COUNT(*) FILTER (
-                    WHERE COALESCE(account_source, 'manual') = 'raksh'
-                       OR (
-                           account_source IS NULL
-                           AND raksh_only IS TRUE
-                       )
-                ) AS raksh_count
-            FROM number_stock
-            WHERE assigned_to IS NULL
-              AND deleted_at IS NULL
-              AND ever_sold IS NOT TRUE
-              AND last_authorized IS NOT FALSE
-              AND session_string IS NOT NULL
-              AND can_send_code IS TRUE
-            """
-        ).fetchone()
-    return {
-        "zip": int((row or {}).get("zip_count") or 0),
-        "manual": int((row or {}).get("manual_count") or 0),
-        "file": int((row or {}).get("file_count") or 0),
-        "raksh": int((row or {}).get("raksh_count") or 0),
-    }
-
-def list_readable_accounts_by_source(source: str) -> list[dict]:
-    """Returns safe metadata for readable accounts; session secrets are never selected."""
-    source_conditions = {
-        "zip": """
-            (
-                account_source = 'zip'
-                OR (
-                    account_source IS NULL
-                    AND session_string IS NOT NULL
-                    AND contributed_by IS NULL
-                    AND raksh_only IS NOT TRUE
-                )
-            )
-        """,
-        "manual": """
-            (
-                account_source = 'manual'
-                OR (
-                    account_source IS NULL
-                    AND session_string IS NULL
-                    AND raksh_only IS NOT TRUE
-                )
-            )
-        """,
-        "file": """
-            (
-                account_source = 'file'
-                OR (
-                    account_source IS NULL
-                    AND session_string IS NOT NULL
-                    AND contributed_by IS NOT NULL
-                    AND raksh_only IS NOT TRUE
-                )
-            )
-        """,
-        "raksh": """
-            (
-                account_source = 'raksh'
-                OR (
-                    account_source IS NULL
-                    AND raksh_only IS TRUE
-                )
-            )
-        """,
-    }
-    if source not in source_conditions:
-        return []
-    with db_conn() as c:
-        rows = c.execute(
-            f"""
-            SELECT id, phone_number, added_at, last_device_count,
-                   is_solo, can_send_code, account_source, raksh_only
-            FROM number_stock
-            WHERE assigned_to IS NULL
-              AND deleted_at IS NULL
-              AND ever_sold IS NOT TRUE
-              AND last_authorized IS NOT FALSE
-              AND session_string IS NOT NULL
-              AND can_send_code IS TRUE
-              AND {source_conditions[source]}
-            ORDER BY added_at ASC NULLS LAST, id ASC
-            """,
-        ).fetchall()
-    return [dict(row) for row in rows]
-
 def soft_delete_number(stock_id: int) -> bool:
     """ينقل رقماً إلى سلة المهملات (حذف مؤقت) بدل حذفه نهائياً."""
     with db_conn() as c:
@@ -1345,17 +1114,51 @@ def add_number_with_session(phone: str, session_str: str, raksh_only: bool = Fal
     """يضيف رقماً جاهزاً (مسجّل دخول مسبقاً) مع جلسته إلى المخزون. يُرجع False إن كان الرقم موجوداً مسبقاً."""
     with db_conn() as c:
         c.execute(
-            "INSERT INTO number_stock "
-            "(phone_number, session_string, account_source, deleted_at, raksh_only) "
-            "VALUES (%s,%s,%s,NULL,%s) "
+            "INSERT INTO number_stock (phone_number, session_string, deleted_at, raksh_only) "
+            "VALUES (%s,%s,NULL,%s) "
             "ON CONFLICT (phone_number) DO UPDATE SET "
             "session_string=EXCLUDED.session_string, deleted_at=NULL, "
-            "account_source=EXCLUDED.account_source, "
             "raksh_only=number_stock.raksh_only OR EXCLUDED.raksh_only, "
             "raksh_excluded=FALSE",
-            (phone, session_str, "raksh" if raksh_only else "file", raksh_only)
+            (phone, session_str, raksh_only)
         )
         return True
+
+
+def save_independent_telegram_session(
+    phone: str,
+    session_str: str,
+    source_stock_id: int | None = None,
+    created_by: int | None = None,
+) -> tuple[bool, int]:
+    """يحفظ جلسة دخول مستقلة دون استبدال جلسة المخزون أو طرد جلسات الحساب."""
+    phone = str(phone or "").strip()
+    session_str = str(session_str or "").strip()
+    if not phone or not session_str:
+        return False, 0
+    session_hash = hashlib.sha256(session_str.encode("utf-8")).hexdigest()
+    with db_conn() as c:
+        row = c.execute(
+            """
+            INSERT INTO telegram_independent_sessions
+                (phone_number, source_stock_id, session_hash, session_string, created_by)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (session_hash) DO UPDATE SET
+                active=TRUE,
+                phone_number=EXCLUDED.phone_number
+            RETURNING id
+            """,
+            (phone, source_stock_id, session_hash, session_str, created_by),
+        ).fetchone()
+        count_row = c.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM telegram_independent_sessions
+            WHERE phone_number=%s AND active=TRUE
+            """,
+            (phone,),
+        ).fetchone()
+    return True, int((count_row or {}).get("count", 0) or 0)
 
 def add_contributor_account(user_id: int, phone: str, session_str: str) -> tuple[bool, str]:
     """يحفظ حساب مستخدم في مخزون الرشق دون المساس بجلساته أو إعداداته.
@@ -1400,9 +1203,9 @@ def add_contributor_account(user_id: int, phone: str, session_str: str) -> tuple
         c.execute(
             """
             INSERT INTO number_stock
-                (phone_number, session_string, account_source, deleted_at, raksh_only,
+                (phone_number, session_string, deleted_at, raksh_only,
                  raksh_excluded, contributed_by, contributor_share_percent)
-            VALUES (%s, %s, 'raksh', NULL, TRUE, FALSE, %s, 50)
+            VALUES (%s, %s, NULL, TRUE, FALSE, %s, 50)
             """,
             (phone, session_str, user_id),
         )

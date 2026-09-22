@@ -955,6 +955,77 @@ async def _finish_number_login(update: Update, context: ContextTypes.DEFAULT_TYP
             pass
         _pending_number_logins.pop(owner_id, None)
 
+
+async def _cleanup_independent_session_login(owner_id: int) -> None:
+    pending = _pending_independent_session_logins.pop(owner_id, None)
+    if not pending:
+        return
+    try:
+        await pending["client"].disconnect()
+    except Exception:
+        pass
+
+
+async def _finish_independent_session_login(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    owner_id: int,
+):
+    """يحفظ جلسة مستقلة جديدة دون تعديل جلسة المخزون أو جلسات Telegram الأخرى."""
+    pending = _pending_independent_session_logins.get(owner_id)
+    if not pending:
+        return
+    client = pending["client"]
+    phone = pending.get("phone") or ""
+    reply_target = getattr(update, "message", None) or getattr(
+        update, "effective_message", None
+    )
+    try:
+        me = await asyncio.wait_for(client.get_me(), timeout=15)
+        actual_phone = str(getattr(me, "phone", "") or "").strip()
+        if actual_phone:
+            actual_phone = "+" + actual_phone.lstrip("+")
+        if actual_phone and phone and actual_phone != phone:
+            await reply_target.reply_text(
+                "❌ الرقم الذي تم تسجيل الدخول إليه لا يطابق الرقم المطلوب."
+            )
+            return
+
+        session_str = client.session.save()
+        saved, session_count = save_independent_telegram_session(
+            phone or actual_phone,
+            session_str,
+            source_stock_id=pending.get("source_stock_id"),
+            created_by=owner_id,
+        )
+        if not saved:
+            raise RuntimeError("تعذّر حفظ الجلسة المستقلة")
+
+        await reply_target.reply_text(
+            "✅ *تم إنشاء جلسة مستقلة بنجاح*\n\n"
+            f"📱 الحساب: `{phone or actual_phone}`\n"
+            f"🔐 عدد الجلسات المستقلة المحفوظة لهذا الحساب: *{session_count}*\n\n"
+            "لم يتم استبدال الجلسة الأصلية، ولم يتم تسجيل خروج أي جهاز آخر.\n"
+            "يمكنك إعادة الضغط على الزر لإنشاء جلسة احتياطية ثانية أو ثالثة.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=owner_settings_kb(),
+        )
+        context.user_data["state"] = "main_menu"
+    except Exception as exc:
+        logger.error("❌ فشل حفظ الجلسة المستقلة للحساب %s: %s", phone, exc)
+        await reply_target.reply_text(
+            "❌ فشل إنشاء الجلسة المستقلة. لم يتم تغيير الجلسة الأصلية.\n"
+            "حاول مرة أخرى من زر إنشاء جلسة مستقلة.",
+            reply_markup=owner_settings_kb(),
+        )
+        context.user_data["state"] = "main_menu"
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+        _pending_independent_session_logins.pop(owner_id, None)
+
 async def _finish_supervisor_login(update, context, supervisor_id: int):
     """يستدعى بعد نجاح تسجيل دخول رقم المشرف: يحفظ الجلسة بالمخزون وينظف الحالة المؤقتة."""
     pending = _pending_supervisor_logins.get(supervisor_id)

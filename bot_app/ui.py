@@ -803,6 +803,12 @@ def owner_settings_kb():
     ])
     rows.append([
         InlineKeyboardButton(
+            "🔐 إنشاء جلسة مستقلة/احتياطية",
+            callback_data="os:create_independent_session",
+        )
+    ])
+    rows.append([
+        InlineKeyboardButton(
             "✏️ تغيير اسم خدمات تلي مميزة",
             callback_data="os:edit_raksh_label",
         )
@@ -832,40 +838,29 @@ def _account_info_counts() -> tuple[int, int, int, int]:
         return 0, 0, 0, 0
 
 def account_info_kb() -> InlineKeyboardMarkup:
-    try:
-        source_counts = get_readable_account_source_counts()
-    except Exception as exc:
-        logger.warning(f"⚠️ تعذر قراءة تصنيفات الحسابات القابلة للقراءة: {exc}")
-        source_counts = {"zip": 0, "manual": 0, "file": 0, "raksh": 0}
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton(
-                f"📦 حسابات ZIP ({source_counts['zip']:,})",
-                callback_data="os:readable_accounts:zip:0",
-            ),
+            InlineKeyboardButton("🔤 الاسم", callback_data="os:account_names"),
+        ],
+        [
+            InlineKeyboardButton("📝 البايو", callback_data="os:account_bios"),
+            InlineKeyboardButton("🔖 اليوزر", callback_data="os:account_usernames"),
+        ],
+        [
+            InlineKeyboardButton("🖼️ الأفتار", callback_data="os:avatars"),
+            InlineKeyboardButton("📊 نتائج الأفتار", callback_data="os:media_report:avatar:summary"),
+        ],
+        [
+            InlineKeyboardButton("📖 الستوري", callback_data="os:stories"),
+            InlineKeyboardButton("📊 نتائج الستوري", callback_data="os:media_report:stories:summary"),
+        ],
+        [
+            InlineKeyboardButton("🌍 جعل الستوريات عامة", callback_data="os:make_stories_public"),
         ],
         [
             InlineKeyboardButton(
-                f"🧾 مضافة يدوياً ({source_counts['manual']:,})",
-                callback_data="os:readable_accounts:manual:0",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                f"📄 حسابات الملفات ({source_counts['file']:,})",
-                callback_data="os:readable_accounts:file:0",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                f"🔥 حسابات الرشق ({source_counts['raksh']:,})",
-                callback_data="os:readable_accounts:raksh:0",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "🔍 فحص وتحديث الحسابات القابلة للقراءة",
-                callback_data="os:scan_readable_accounts",
+                "📨 حسابات غير مقيّدة من إرسال الرسائل",
+                callback_data="os:send_ready_accounts",
             ),
         ],
         [
@@ -876,26 +871,8 @@ def account_info_kb() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(
-                "🔤 الاسم",
-                callback_data="os:account_names",
-            ),
-            InlineKeyboardButton(
-                "📝 البايو",
-                callback_data="os:account_bios",
-            ),
-            InlineKeyboardButton(
-                "🔖 اليوزر",
-                callback_data="os:account_usernames",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "🖼️ الأفتار",
-                callback_data="os:avatars",
-            ),
-            InlineKeyboardButton(
-                "📖 الستوري",
-                callback_data="os:stories",
+                "📦 تصدير جلسات الحسابات",
+                callback_data="os:export_ready_sessions",
             ),
         ],
         [InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")],

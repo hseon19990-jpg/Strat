@@ -2771,10 +2771,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if _c.rowcount:
                         _removed.append(_row["phone_number"])
 
-        if _removed:
-            from .raksh_system.common import clear_raksh_session_cache
-            clear_raksh_session_cache()
-
         context.user_data["state"] = "main_menu"
         _lines = [
             f"✅ تمت إزالة {len(_removed)} حساب من الرشق.",
@@ -3346,6 +3342,142 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=owner_settings_kb()
         )
         context.user_data["state"] = "main_menu"
+        return
+
+    if is_own and state == "os_await_independent_session_phone":
+        phone = re.sub(r"\s+", "", text.strip())
+        if phone and not phone.startswith("+") and phone.isdigit():
+            phone = "+" + phone
+        if not phone.startswith("+") or not phone[1:].isdigit():
+            await update.message.reply_text(
+                "⚠️ أرسل رقمًا بصيغة دولية، مثل `+9647701234567`.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+        with db_conn() as _c:
+            source = _c.execute(
+                """
+                SELECT id, phone_number, session_string
+                FROM number_stock
+                WHERE phone_number=%s
+                  AND session_string IS NOT NULL
+                  AND BTRIM(session_string) <> ''
+                  AND deleted_at IS NULL
+                """,
+                (phone,),
+            ).fetchone()
+        if not source:
+            await update.message.reply_text(
+                "⚠️ هذا الرقم غير موجود في مخزون البوت أو لا يملك جلسة صالحة. "
+                "أرسل رقمًا موجودًا ثم حاول مجددًا.",
+            )
+            return
+
+        client = None
+        try:
+            client = TelegramClient(
+                StringSession(),
+                int(TELEGRAM_API_ID),
+                TELEGRAM_API_HASH,
+            )
+            await asyncio.wait_for(client.connect(), timeout=20)
+            sent = await client.send_code_request(phone)
+        except FloodWaitError as exc:
+            if client:
+                await client.disconnect()
+            await update.message.reply_text(
+                f"⚠️ Telegram طلب الانتظار {exc.seconds} ثانية قبل إنشاء جلسة جديدة."
+            )
+            return
+        except PhoneNumberInvalidError:
+            if client:
+                await client.disconnect()
+            await update.message.reply_text("⚠️ الرقم غير صحيح.")
+            return
+        except Exception as exc:
+            if client:
+                await client.disconnect()
+            logger.error("❌ فشل طلب كود الجلسة المستقلة: %s", exc)
+            await update.message.reply_text(
+                "❌ تعذّر طلب كود الدخول. لم تتغير الجلسة الأصلية."
+            )
+            return
+
+        _pending_independent_session_logins[user.id] = {
+            "client": client,
+            "phone": phone,
+            "phone_code_hash": sent.phone_code_hash,
+            "source_stock_id": source["id"],
+        }
+        context.user_data["state"] = "os_await_independent_session_code"
+        await update.message.reply_text(
+            "📩 تم إرسال كود الدخول إلى Telegram.\n"
+            "أرسل الكود هنا. لن يتم تسجيل خروج أي جلسة أخرى.",
+        )
+        return
+
+    if is_own and state == "os_await_independent_session_code":
+        pending = _pending_independent_session_logins.get(user.id)
+        if not pending:
+            await update.message.reply_text(
+                "⚠️ انتهت عملية إنشاء الجلسة. ابدأ من الزر من جديد.",
+                reply_markup=owner_settings_kb(),
+            )
+            context.user_data["state"] = "main_menu"
+            return
+        try:
+            await pending["client"].sign_in(
+                pending["phone"],
+                text.strip().replace(" ", ""),
+                phone_code_hash=pending["phone_code_hash"],
+            )
+        except SessionPasswordNeededError:
+            context.user_data["state"] = "os_await_independent_session_password"
+            await update.message.reply_text(
+                "🔒 الحساب محمي بكلمة مرور 2FA. أرسل كلمة المرور لإكمال إنشاء الجلسة:"
+            )
+            return
+        except (PhoneCodeInvalidError, PhoneCodeExpiredError):
+            await update.message.reply_text(
+                "⚠️ الكود غير صحيح أو منتهي الصلاحية. أرسله مجددًا."
+            )
+            return
+        except Exception as exc:
+            logger.error("❌ فشل تسجيل دخول الجلسة المستقلة: %s", exc)
+            await _cleanup_independent_session_login(user.id)
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text(
+                "❌ فشل تسجيل الدخول للجلسة الجديدة. لم تتغير الجلسة الأصلية.",
+                reply_markup=owner_settings_kb(),
+            )
+            return
+        await _finish_independent_session_login(update, context, user.id)
+        return
+
+    if is_own and state == "os_await_independent_session_password":
+        pending = _pending_independent_session_logins.get(user.id)
+        if not pending:
+            await update.message.reply_text(
+                "⚠️ انتهت عملية إنشاء الجلسة. ابدأ من الزر من جديد.",
+                reply_markup=owner_settings_kb(),
+            )
+            context.user_data["state"] = "main_menu"
+            return
+        try:
+            await pending["client"].sign_in(password=text.strip())
+        except PasswordHashInvalidError:
+            await update.message.reply_text("⚠️ كلمة مرور 2FA غير صحيحة. أرسلها مجددًا:")
+            return
+        except Exception as exc:
+            logger.error("❌ فشل 2FA للجلسة المستقلة: %s", exc)
+            await _cleanup_independent_session_login(user.id)
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text(
+                "❌ فشل إنشاء الجلسة الجديدة. لم تتغير الجلسة الأصلية.",
+                reply_markup=owner_settings_kb(),
+            )
+            return
+        await _finish_independent_session_login(update, context, user.id)
         return
 
     if state == "contributor_await_login_phone" or (
@@ -4945,15 +5077,13 @@ async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if imported_twofa:
                         _c.execute(
                             "UPDATE number_stock SET session_string=%s, twofa_password=%s,"
-                            " account_source='file',"
                             " assigned_to=NULL, assigned_at=NULL, forced_ref_excluded=FALSE"
                             " WHERE phone_number=%s",
                             (sess, imported_twofa, phone)
                         )
                     else:
                         _c.execute(
-                            "UPDATE number_stock SET session_string=%s, account_source='file',"
-                            " assigned_to=NULL, assigned_at=NULL,"
+                            "UPDATE number_stock SET session_string=%s, assigned_to=NULL, assigned_at=NULL,"
                             " forced_ref_excluded=FALSE WHERE phone_number=%s",
                             (sess, phone)
                         )
@@ -4961,15 +5091,14 @@ async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if imported_twofa:
                         _c.execute(
                             "INSERT INTO number_stock "
-                            "(phone_number, session_string, twofa_password, account_source, forced_ref_excluded)"
-                            " VALUES (%s,%s,%s,'file',FALSE)",
+                            "(phone_number, session_string, twofa_password, forced_ref_excluded)"
+                            " VALUES (%s,%s,%s,FALSE)",
                             (phone, sess, imported_twofa)
                         )
                     else:
                         _c.execute(
-                            "INSERT INTO number_stock "
-                            "(phone_number, session_string, account_source, forced_ref_excluded)"
-                            " VALUES (%s,%s,'file',FALSE)",
+                            "INSERT INTO number_stock (phone_number, session_string, forced_ref_excluded)"
+                            " VALUES (%s,%s,FALSE)",
                             (phone, sess)
                         )
             # ── تدوير فوري: جلسة جديدة + حذف القديمة ──────────────────
@@ -5182,8 +5311,7 @@ async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE
         ).fetchone()
         if exists:
             _c.execute(
-                "UPDATE number_stock SET session_string=%s, account_source='file',"
-                " assigned_to=NULL, assigned_at=NULL,"
+                "UPDATE number_stock SET session_string=%s, assigned_to=NULL, assigned_at=NULL,"
                 " forced_ref_excluded=FALSE"
                 + (", referral_only=TRUE" if _ref_only_flag else "") +
                 " WHERE phone_number=%s",
@@ -5191,9 +5319,8 @@ async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
         else:
             _c.execute(
-                "INSERT INTO number_stock "
-                "(phone_number, session_string, account_source, forced_ref_excluded, referral_only)"
-                " VALUES (%s,%s,'file',FALSE,%s)",
+                "INSERT INTO number_stock (phone_number, session_string, forced_ref_excluded, referral_only)"
+                " VALUES (%s,%s,FALSE,%s)",
                 (phone, session_string, _ref_only_flag)
             )
 
@@ -5437,7 +5564,6 @@ async def _import_one_session_bytes(
     context,
     remove_2fa_mode: bool = False,
     source_metadata=None,
-    source_type: str = "zip",
 ) -> dict:
     """
     يحاول استخراج session_string من bytes تمثّل ملف .session (SQLite) أو .json.
@@ -5600,33 +5726,30 @@ async def _import_one_session_bytes(
             if imported_twofa:
                 _dc.execute(
                     "UPDATE number_stock SET session_string=%s, twofa_password=%s,"
-                    " account_source=%s,"
                     " assigned_to=NULL, assigned_at=NULL, forced_ref_excluded=FALSE"
                     " WHERE phone_number=%s",
-                    (session_string, imported_twofa, source_type, phone)
+                    (session_string, imported_twofa, phone)
                 )
             else:
                 _dc.execute(
-                    "UPDATE number_stock SET session_string=%s, account_source=%s,"
-                    " assigned_to=NULL, assigned_at=NULL,"
+                    "UPDATE number_stock SET session_string=%s, assigned_to=NULL, assigned_at=NULL,"
                     " forced_ref_excluded=FALSE WHERE phone_number=%s",
-                    (session_string, source_type, phone)
+                    (session_string, phone)
                 )
             stock_id = exists["id"]
         else:
             if imported_twofa:
                 _dc.execute(
                     "INSERT INTO number_stock "
-                    "(phone_number, session_string, twofa_password, account_source, forced_ref_excluded)"
-                    " VALUES (%s,%s,%s,%s,FALSE)",
-                    (phone, session_string, imported_twofa, source_type)
+                    "(phone_number, session_string, twofa_password, forced_ref_excluded)"
+                    " VALUES (%s,%s,%s,FALSE)",
+                    (phone, session_string, imported_twofa)
                 )
             else:
                 _dc.execute(
-                    "INSERT INTO number_stock "
-                    "(phone_number, session_string, account_source, forced_ref_excluded)"
-                    " VALUES (%s,%s,%s,FALSE)",
-                    (phone, session_string, source_type)
+                    "INSERT INTO number_stock (phone_number, session_string, forced_ref_excluded)"
+                    " VALUES (%s,%s,FALSE)",
+                    (phone, session_string)
                 )
             stock_id = _dc.execute(
                 "SELECT id FROM number_stock WHERE phone_number=%s", (phone,)
