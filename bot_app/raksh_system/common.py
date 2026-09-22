@@ -190,11 +190,6 @@ _RAKSH_SESSION_CACHE: Dict[str, Dict] = {}
 _RAKSH_SESSION_CACHE_TIME: Dict[str, float] = {}
 _RAKSH_SESSION_CACHE_TTL = 60
 
-def clear_raksh_session_cache() -> None:
-    """إجبار خدمات الرشق على إعادة تحميل الحسابات بعد تعديل المخزون."""
-    _RAKSH_SESSION_CACHE.clear()
-    _RAKSH_SESSION_CACHE_TIME.clear()
-
 def _get_raksh_session_lock(session_or_phone) -> asyncio.Lock:
     """الحصول على قفل مبني على بصمة الجلسة لا على رقم الهاتف.
 
@@ -396,7 +391,8 @@ def _mark_raksh_session_unauthorized(phone_number: str) -> None:
                 (phone_number,)
             )
         logger.warning(f"🔒 جلسة غير مصرح بها: {phone_number}")
-        clear_raksh_session_cache()
+        _RAKSH_SESSION_CACHE.clear()
+        _RAKSH_SESSION_CACHE_TIME.clear()
     except Exception as exc:
         logger.warning(f"تعذر تحديث حالة الجلسة {phone_number}: {exc}")
 
@@ -417,7 +413,8 @@ def _mark_raksh_session_frozen(phone_number: str) -> None:
                 (phone_number,),
             )
         logger.warning(f"🧊 تم استبعاد الحساب المتجمّد من الرشق: {phone_number}")
-        clear_raksh_session_cache()
+        _RAKSH_SESSION_CACHE.clear()
+        _RAKSH_SESSION_CACHE_TIME.clear()
     except Exception as exc:
         logger.warning(f"تعذر استبعاد الحساب المتجمّد {phone_number}: {exc}")
 
@@ -446,7 +443,8 @@ async def _remove_invalid_raksh_sessions(failed_phones: List[str]) -> None:
             logger.warning(f"فشل إزالة {phone}: {e}")
 
     if removed:
-        clear_raksh_session_cache()
+        _RAKSH_SESSION_CACHE.clear()
+        _RAKSH_SESSION_CACHE_TIME.clear()
 
         if OWNER_ID:
             try:
