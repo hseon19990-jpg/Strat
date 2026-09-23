@@ -2681,6 +2681,59 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]),
             )
 
+    if is_own and state == "os_await_raksh_admin_id":
+        _arabic_digits = str.maketrans(
+            "٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹",
+            "01234567890123456789",
+        )
+        _raksh_admin_id_text = text.translate(_arabic_digits).strip()
+        if not _raksh_admin_id_text.isdigit() or int(_raksh_admin_id_text) <= 0:
+            await update.message.reply_text(
+                "⚠️ أرسل Telegram ID رقمياً فقط، مثال: `123456789`.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        context.user_data["raksh_admin_target_id"] = int(_raksh_admin_id_text)
+        context.user_data["state"] = "main_menu"
+
+        # اعرض نفس قائمة خدمات الرشق الحالية، لكن عطّل أزرارها مؤقتاً
+        # إلى أن يتم تحديد الإجراء المطلوب بعد اختيار الخدمة.
+        try:
+            from .raksh_system import raksh_menu_kb
+
+            _raksh_service_markup = raksh_menu_kb(False)
+            _raksh_service_rows = []
+            for _raksh_row in _raksh_service_markup.inline_keyboard:
+                _raksh_service_rows.append([
+                    InlineKeyboardButton(
+                        _raksh_button.text,
+                        callback_data=(
+                            "owner_settings"
+                            if _raksh_button.callback_data == "main_menu"
+                            else "noop"
+                        ),
+                    )
+                    for _raksh_button in _raksh_row
+                ])
+            _raksh_service_markup = InlineKeyboardMarkup(_raksh_service_rows)
+        except Exception:
+            logger.exception("فشل تحميل قائمة خدمات الرشق بعد إدخال ID")
+            await update.message.reply_text(
+                "✅ تم استلام ID المستخدم، لكن تعذر تحميل قائمة خدمات الرشق حالياً.",
+                reply_markup=owner_settings_kb(),
+            )
+            return
+
+        await update.message.reply_text(
+            f"✅ تم استلام ID المستخدم: `{_raksh_admin_id_text}`\n\n"
+            "🛍 *خدمات الرشق*\n"
+            "اختر الخدمة المطلوبة:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_raksh_service_markup,
+        )
+        return
+
     if is_own and state == "os_await_sale_exclude_accounts":
         _tokens = [
             line.strip()

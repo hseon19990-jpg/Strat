@@ -2318,6 +2318,20 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             )
             return
 
+        if data == "os:raksh_admins" and is_own:
+            context.user_data["state"] = "os_await_raksh_admin_id"
+            context.user_data.pop("raksh_admin_target_id", None)
+            await q.edit_message_text(
+                "👤 *ادمنية الرشق*\n\n"
+                "أرسل Telegram ID للمستخدم المطلوب.\n"
+                "أرسل أرقاماً فقط، مثال: `123456789`.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="owner_settings")]
+                ]),
+            )
+            return
+
         if data == "os:raksh_remove_account" and is_own:
             context.user_data["state"] = "os_await_raksh_remove_account"
             await q.edit_message_text(

@@ -813,6 +813,9 @@ def owner_settings_kb():
         )
     ])
     rows.append([
+        InlineKeyboardButton("ادمنية الرشق", callback_data="os:raksh_admins")
+    ])
+    rows.append([
         InlineKeyboardButton(
             "✏️ تغيير اسم خدمات تلي مميزة",
             callback_data="os:edit_raksh_label",
