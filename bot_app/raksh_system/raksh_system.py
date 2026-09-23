@@ -253,12 +253,12 @@ def _raksh_order_label(service_type: str) -> str:
     svc = get_raksh_service(service_type)
     return svc.label if svc else service_type
 
-def _get_delay_seconds(service_type: str, custom_delay: Optional[int] = None) -> int:
+def _get_delay_seconds(service_type: str, custom_delay: Optional[float] = None) -> float:
     """حساب الفاصل الزمني بين التنفيذات"""
     svc = get_raksh_service(service_type)
     if svc:
         return svc.get_delay_seconds(custom_delay)
-    return random.randint(RAKSH_MIN_DELAY_SECONDS, RAKSH_MAX_DELAY_SECONDS)
+    return RAKSH_DEFAULT_DELAY_SECONDS
 
 def _reserve_raksh_execution_slot(
     user_id: int,
@@ -978,48 +978,28 @@ async def execute_raksh_service(
     # get_sessions جهز ترتيب الأولوية للمالك والعشوائية للأعضاء.
     shuffled = sessions.copy()
 
-    # التفاعل مع جميع المنشورات يحتاج استجابة سريعة عند وصول منشور جديد.
-    # نطلق 3 حسابات كل ثانية لجميع المستخدمين بدلاً من المسار التسلسلي
-    # الذي كان يضيف 3 ثوانٍ بين كل حساب وآخر.
-    if service_type == "all_posts_reactions":
+    # كل الطلبات تستخدم نفس المجدول. القيمة محفوظة في params، لذلك يبقى
+    # الفاصل ثابتاً عند استئناف الطلب بعد إعادة التشغيل.
+    delay_seconds = svc.get_delay_seconds(params.get("delay_seconds"))
+
+    async def execute_with_selected_speed():
         return await _execute_raksh_parallel(
-            svc, shuffled, params, user_id, quantity,
-            progress_callback, service_type,
-            ALL_POSTS_REACTIONS_BATCH_SIZE,
-            ALL_POSTS_REACTIONS_BATCH_INTERVAL_SECONDS,
-            order_id,
-        )
-    # المالك فقط يعمل على دفعات من 12 حساباً مع فاصل ثانيتين بين الدفعات.
-    if user_id == OWNER_ID:
-        if service_type == "votes_ai":
-            async with _RAKSH_VOTE_FLOW_LOCK:
-                return await _execute_raksh_parallel(
-                    svc, shuffled, params, user_id, quantity,
-                    progress_callback, service_type,
-                    OWNER_FAST_BATCH_SIZE,
-                    OWNER_FAST_BATCH_INTERVAL_SECONDS,
-                    order_id,
-                )
-        return await _execute_raksh_parallel(
-            svc, shuffled, params, user_id, quantity,
-            progress_callback, service_type,
-            OWNER_FAST_BATCH_SIZE,
-            OWNER_FAST_BATCH_INTERVAL_SECONDS,
-            order_id,
+            svc,
+            shuffled,
+            params,
+            user_id,
+            quantity,
+            progress_callback,
+            service_type,
+            max_concurrent=1,
+            batch_delay_seconds=delay_seconds,
+            order_id=order_id,
         )
 
-    # الأعضاء: الخدمات الأخرى تمر عبر طابور تسلسلي واحد حتى يبقى
-    # الفاصل الحالي كما هو، ولا تتنافس جلستان على نفس الموارد.
     if service_type == "votes_ai":
         async with _RAKSH_VOTE_FLOW_LOCK:
-            return await _execute_raksh_sequential(
-                svc, shuffled, params, user_id,
-                quantity, progress_callback, service_type, order_id
-            )
-    return await _execute_raksh_sequential(
-        svc, shuffled, params, user_id,
-        quantity, progress_callback, service_type, order_id
-    )
+            return await execute_with_selected_speed()
+    return await execute_with_selected_speed()
 
 
 def _is_retryable_raksh_session_message(message: str) -> bool:
@@ -1233,10 +1213,10 @@ async def _execute_raksh_parallel(
     progress_callback,
     service_type: str,
     max_concurrent: int,
-    batch_delay_seconds: int = 0,
+    batch_delay_seconds: float = 0,
     order_id: Optional[int] = None,
 ) -> Tuple[int, List[str], List[str], List[str], List[str]]:
-    """تنفيذ دفعات سريعة للمالك مع الحفاظ على ترتيب ونتائج الطلب."""
+    """بدء الحسابات بالفاصل المحدد مع الحفاظ على ترتيب ونتائج الطلب."""
     order_items = _load_raksh_order_items(order_id) if order_id else {}
     success_phones = [
         phone for phone, item in order_items.items()
@@ -1413,9 +1393,8 @@ async def _execute_raksh_parallel(
                 len(failed_details),
             )
 
-    # Schedule the next wave every two seconds instead of waiting for the
-    # slowest account in the previous wave. This is the actual "12 every 2s"
-    # owner behavior; member requests never enter this function.
+    # جدولة كل حساب بشكل مستقل دون انتظار الحساب السابق. هكذا يبدأ الطلب
+    # فوراً، ويكون الفاصل بين بدايات الحسابات هو اختيار العضو.
     while pool and success_count < quantity and not (order_id and _is_raksh_order_cancelled(order_id)):
         planned = success_count
         scheduled = []
@@ -1434,11 +1413,12 @@ async def _execute_raksh_parallel(
 
             wave_number += 1
             logger.info(
-                "⚡ owner raksh wave=%s accounts=%s planned=%s/%s",
+                "⚡ raksh wave=%s accounts=%s planned=%s/%s delay=%ss",
                 wave_number,
                 len(wave),
                 planned,
                 quantity,
+                batch_delay_seconds,
             )
             wave_is_first = wave_number == 1 and success_count == 0
             async def gather_wave():
@@ -1671,6 +1651,42 @@ def raksh_reaction_kb(service_type: str, reactions: Optional[List[str]] = None):
     buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="raksh_menu")])
     return InlineKeyboardMarkup(buttons)
 
+def raksh_speed_kb():
+    """خيارات بدء الحسابات التي تظهر قبل تأكيد الدفع."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "⚡ الأسرع — 6 حسابات/ثانية",
+                callback_data="raksh:speed:fast",
+            )
+        ],
+        [
+            InlineKeyboardButton("⏱️ كل 1 ثانية", callback_data="raksh:speed:1"),
+            InlineKeyboardButton("⏱️ كل 3 ثوانٍ", callback_data="raksh:speed:3"),
+        ],
+        [
+            InlineKeyboardButton("⏱️ كل 5 ثوانٍ", callback_data="raksh:speed:5"),
+            InlineKeyboardButton("⏱️ كل 10 ثوانٍ", callback_data="raksh:speed:10"),
+        ],
+        [
+            InlineKeyboardButton(
+                "✏️ أريد تحديد الفاصل",
+                callback_data="raksh:speed:custom",
+            )
+        ],
+        [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")],
+    ])
+
+
+def raksh_speed_prompt_text() -> str:
+    return (
+        "🚦 *حدد سرعة بدء الحسابات*\n\n"
+        "سيبدأ الطلب فور تأكيده، ثم يبدأ كل حساب بعد الفاصل الذي تختاره.\n"
+        "⚡ الأسرع = 6 حسابات تقريباً في الثانية.\n"
+        "أو أرسل رقماً مثل: `3` ليكون الفاصل 3 ثوانٍ بين كل حساب."
+    )
+
+
 def raksh_confirm_kb(service_type: str, quantity: int, total_cost: int, payment_method: str):
     """أزرار تأكيد الطلب"""
     return InlineKeyboardMarkup([
@@ -1682,6 +1698,45 @@ def raksh_confirm_kb(service_type: str, quantity: int, total_cost: int, payment_
         ],
         [InlineKeyboardButton("❌ إلغاء", callback_data="raksh_cancel")],
     ])
+
+
+async def _show_raksh_speed_selection(query, context, payment_callback: str, service_type: str):
+    """تأجيل اختيار طريقة الدفع حتى يحدد العضو سرعة بدء الحسابات."""
+    context.user_data["raksh_pending_payment"] = payment_callback
+    context.user_data["raksh_service"] = service_type
+    context.user_data["raksh_step"] = "raksh_speed"
+    await query.edit_message_text(
+        raksh_speed_prompt_text(),
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=raksh_speed_kb(),
+    )
+
+
+async def _resume_raksh_payment_after_speed(
+    update,
+    context,
+    query,
+    user,
+    is_own: bool,
+    delay_seconds: float,
+):
+    """متابعة زر الدفع الأصلي بعد حفظ السرعة المختارة."""
+    pending_payment = context.user_data.pop("raksh_pending_payment", None)
+    if not pending_payment:
+        await query.answer("⚠️ انتهت جلسة الطلب. أعد اختيار الخدمة.", show_alert=True)
+        return
+
+    context.user_data["raksh_delay_seconds"] = float(delay_seconds)
+    # يمنع إعادة عرض شاشة السرعة عندما نعيد تمرير زر الدفع الأصلي.
+    context.user_data["_raksh_skip_speed_selection"] = True
+    await _handle_raksh_callback_impl(
+        update,
+        context,
+        query=query,
+        data=pending_payment,
+        user=user,
+        is_own=is_own,
+    )
 
 def _get_link_instruction(service_type: str) -> str:
     """تعليمات الرابط حسب الخدمة"""
@@ -1770,8 +1825,66 @@ async def _handle_raksh_callback_impl(
     data = query.data if data is None else data
     user = user or query.from_user
     is_own = (user.id == OWNER_ID) if is_own is None else is_own
+    skip_speed_selection = context.user_data.pop(
+        "_raksh_skip_speed_selection",
+        False,
+    )
     
     await query.answer("⏳ جارٍ تجهيز الطلب...")
+
+    # اختيار السرعة خطوة مشتركة لكل خدمات الرشق. الأزرار القديمة للدفع
+    # تبقى كما هي، لكن لا تُنفذ قبل أن يحدد العضو الفاصل بين الحسابات.
+    if data.startswith("raksh:speed:"):
+        speed_value = data.rsplit(":", 1)[-1]
+        if speed_value == "custom":
+            context.user_data["raksh_step"] = "raksh_speed_custom"
+            await query.edit_message_text(
+                "✏️ *أرسل الفاصل بين الحسابات بالثواني*\n\n"
+                "مثال: `3` ليبدأ حساب جديد كل 3 ثوانٍ.\n"
+                "يمكنك أيضاً استخدام رقم عشري مثل `0.5`.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 رجوع لاختيارات السرعة", callback_data="raksh:speed:back")]
+                ]),
+            )
+            return
+        if speed_value == "back":
+            context.user_data["raksh_step"] = "raksh_speed"
+            await query.edit_message_text(
+                raksh_speed_prompt_text(),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=raksh_speed_kb(),
+            )
+            return
+
+        delay_seconds = (
+            RAKSH_FAST_INTERVAL_SECONDS
+            if speed_value == "fast"
+            else _get_delay_seconds(
+                context.user_data.get("raksh_service") or "",
+                float(speed_value),
+            )
+        )
+        await _resume_raksh_payment_after_speed(
+            update,
+            context,
+            query,
+            user,
+            is_own,
+            delay_seconds,
+        )
+        return
+
+    if data.startswith("raksh:pay:") and not skip_speed_selection:
+        parts = data.split(":")
+        if len(parts) == 5:
+            await _show_raksh_speed_selection(
+                query,
+                context,
+                data,
+                parts[3],
+            )
+            return
     
     if data == "raksh:spent_stats":
         await query.answer(
@@ -2198,6 +2311,18 @@ async def _handle_raksh_callback_impl(
                     return
 
             parts = data[len(prefix):].split(":")
+            if (
+                parts
+                and parts[0] == "payment"
+                and not skip_speed_selection
+            ):
+                await _show_raksh_speed_selection(
+                    query,
+                    context,
+                    data,
+                    service_type,
+                )
+                return
             try:
                 handled = await svc.handle_callback(
                     update, context, query, parts, user, is_own
@@ -2473,6 +2598,49 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not state:
         return False
+
+    if state == "raksh_speed_custom":
+        normalized = str(text or "").strip().replace(",", ".")
+        try:
+            delay_seconds = float(normalized)
+        except (TypeError, ValueError):
+            await update.message.reply_text(
+                "⚠️ أرسل رقماً صحيحاً أو عشرياً، مثل `3` أو `0.5`.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return True
+
+        if not RAKSH_MIN_DELAY_SECONDS <= delay_seconds <= RAKSH_MAX_DELAY_SECONDS:
+            await update.message.reply_text(
+                "⚠️ الفاصل يجب أن يكون بين "
+                f"{RAKSH_MIN_DELAY_SECONDS:.2f} و {int(RAKSH_MAX_DELAY_SECONDS)} ثانية.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton(
+                        "🔙 رجوع لاختيارات السرعة",
+                        callback_data="raksh:speed:back",
+                    )]
+                ]),
+            )
+            return True
+
+        class _MessageQueryAdapter:
+            from_user = update.effective_user
+
+            async def answer(self, *args, **kwargs):
+                return None
+
+            async def edit_message_text(self, message_text, **kwargs):
+                return await update.message.reply_text(message_text, **kwargs)
+
+        await _resume_raksh_payment_after_speed(
+            update,
+            context,
+            _MessageQueryAdapter(),
+            user,
+            user.id == OWNER_ID,
+            delay_seconds,
+        )
+        return True
 
     if service_type == "send_message":
         message_data = context.user_data.setdefault("raksh_message_data", {})

@@ -55,9 +55,12 @@ RAKSH_CUSTOM_REACTION_PREFIX = "__raksh_custom_reaction__:"
 RAKSH_REACTION_LOOKUP_MAX_SESSIONS = 3
 RAKSH_REACTION_LOOKUP_TIMEOUT_SECONDS = 5
 RAKSH_REACTION_OPERATION_TIMEOUT_SECONDS = 4
-# الفاصل بين حساب وآخر في جميع خدمات الرشق.
-RAKSH_MIN_DELAY_SECONDS = 60
-RAKSH_MAX_DELAY_SECONDS = 180
+# الفاصل بين بدء حساب وآخر في جميع خدمات الرشق.
+# الوضع الأسرع يطلق ستة حسابات تقريباً في الثانية (1/6 ثانية).
+RAKSH_FAST_INTERVAL_SECONDS = 1 / 6
+RAKSH_DEFAULT_DELAY_SECONDS = RAKSH_FAST_INTERVAL_SECONDS
+RAKSH_MIN_DELAY_SECONDS = RAKSH_FAST_INTERVAL_SECONDS
+RAKSH_MAX_DELAY_SECONDS = 3600.0
 RAKSH_VOTE_DELAY_SECONDS = 60
 # لا نعتبر قفل الجلسة فشلاً فورياً؛ ننتظر تجهيزها ثم نستخدم خطة بديلة.
 RAKSH_SESSION_WAIT_TIMEOUT_SECONDS = 900
@@ -270,6 +273,8 @@ def _clear_raksh_state(context: ContextTypes.DEFAULT_TYPE) -> None:
         "raksh_comment",
         "raksh_poll_option",
         "raksh_delay_seconds",
+        "raksh_pending_payment",
+        "_raksh_skip_speed_selection",
         "raksh_quantity",
         "raksh_payment_method",
         "raksh_price_edit_service",
@@ -1440,11 +1445,11 @@ class RakshService:
 
     # ─── أدوات ───
 
-    def get_delay_seconds(self, custom_delay: Optional[int] = None) -> int:
-        # لا يسمح إعداد قديم أو قيمة مخصصة بإلغاء الفاصل الآمن بين الحسابات.
+    def get_delay_seconds(self, custom_delay: Optional[float] = None) -> float:
+        # يقبل الطلب القديم القيم الصحيحة، كما يقبل الوضع الأسرع 1/6 ثانية.
         if custom_delay is not None:
             try:
-                custom_delay = int(custom_delay)
+                custom_delay = float(custom_delay)
             except (TypeError, ValueError):
                 custom_delay = None
             if custom_delay is not None:
@@ -1452,7 +1457,7 @@ class RakshService:
                     RAKSH_MIN_DELAY_SECONDS,
                     min(custom_delay, RAKSH_MAX_DELAY_SECONDS),
                 )
-        return random.randint(RAKSH_MIN_DELAY_SECONDS, RAKSH_MAX_DELAY_SECONDS)
+        return RAKSH_DEFAULT_DELAY_SECONDS
 
     def get_execution_params(self, context) -> Dict:
         return {
@@ -1462,7 +1467,9 @@ class RakshService:
             "link": context.user_data.get("raksh_link"),
             "comment_text": context.user_data.get("raksh_comment"),
             "poll_option": context.user_data.get("raksh_poll_option"),
-            "delay_seconds": context.user_data.get("raksh_delay_seconds"),
+            "delay_seconds": self.get_delay_seconds(
+                context.user_data.get("raksh_delay_seconds")
+            ),
         }
 
 # ════════════════════════════════════════════════════════
