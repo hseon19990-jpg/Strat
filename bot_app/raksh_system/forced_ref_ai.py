@@ -505,14 +505,47 @@ class ForcedRefAIService(RakshService):
             for button in (row or [])
             if not ForcedRefAIService._is_invitation_link_button(button)
         ]
-        if buttons:
-            return True
         markers = (
             "تحقق", "verify", "captcha", "كابتشا", "human", "بشر",
             "robot", "روبوت", "أدخل", "ادخل", "اكتب", "أجب",
             "اختر", "اضغط", "code", "كود", "رمز",
         )
-        return any(marker in text for marker in markers)
+        if any(marker in text for marker in markers):
+            return True
+
+        # وجود زر وحده لا يعني وجود CAPTCHA؛ بعض البوتات ترسل زر دخول أو
+        # زر متابعة عادي بعد /start. نعتبر الزر تحققاً فقط إذا كان اسمه
+        # يحمل دلالة واضحة على التحقق.
+        button_markers = (
+            "تحقق", "verify", "captcha", "كابتشا", "human", "بشر",
+            "robot", "روبوت", "check", "continue", "التالي", "متابعة",
+        )
+        return any(
+            any(marker in (getattr(button, "text", "") or "").casefold()
+                for marker in button_markers)
+            for button in buttons
+        )
+
+    @staticmethod
+    def _fallback_button_from_messages(messages):
+        """إرجاع أول زر قابل للضغط لمسار البوتات التي لا تعرض تحققاً."""
+        ordered_messages = sorted(
+            (message for message in (messages or []) if not getattr(message, "out", False)),
+            key=lambda message: getattr(message, "id", 0),
+            reverse=True,
+        )
+        for message in ordered_messages:
+            for row in getattr(message, "buttons", None) or []:
+                for button in row or []:
+                    # لا نفتح روابط خارجية/روابط دعوة كجزء من fallback؛
+                    # المسار المطلوب يتعامل مع أزرار Telegram القابلة للنقر.
+                    if getattr(button, "url", None) and not getattr(button, "data", None):
+                        continue
+                    if isinstance(button, KeyboardButtonRequestPhone):
+                        continue
+                    if callable(getattr(button, "click", None)):
+                        return button
+        return None
 
     @staticmethod
     def _has_image_media(message) -> bool:
@@ -758,6 +791,7 @@ class ForcedRefAIService(RakshService):
         bot_entity,
         phone_number: str,
         base_id: int = 0,
+        start_param: str = "",
     ) -> bool:
         """
         حل التحقق بذكاء:
@@ -781,11 +815,13 @@ class ForcedRefAIService(RakshService):
         # ─── المرحلة 1: البحث عن طلب مشاركة رقم الهاتف ───
         contact_request_msg = None
         initial_verification_messages = None
+        last_probe_messages = []
         successful_probe = False
         for probe_index in range(MAX_INITIAL_PROBE_ATTEMPTS):
             try:
                 messages = await client.get_messages(bot_entity, limit=5)
                 successful_probe = True
+                last_probe_messages = messages
             except Exception:
                 if probe_index + 1 < MAX_INITIAL_PROBE_ATTEMPTS:
                     await asyncio.sleep(CHECK_INTERVAL)
@@ -823,26 +859,18 @@ class ForcedRefAIService(RakshService):
             if probe_index + 1 < MAX_INITIAL_PROBE_ATTEMPTS:
                 await asyncio.sleep(CHECK_INTERVAL)
 
-        # لا توجد رسالة تحقق بعد ضغط Start: النجاح هنا فوري، ولا ننتظر
-        # 30 دورة بلا فائدة كما كان يحدث سابقاً.
-        if (
-            successful_probe
-            and not contact_request_msg
-            and initial_verification_messages is None
-        ):
-            logger.info(
-                "ℹ️ لم يظهر تحقق بعد ضغط Start للحساب %s؛ تُحتسب الإحالة ناجحة",
+        # لا توجد رسالة تحقق بعد ضغط Start: نفذ fallback محدوداً. هذا يتعامل
+        # مع البوتات التي تعرض زراً عادياً فقط، ولا يدخلها في حلقة CAPTCHA
+        # لا نهائية. إذا ظهر تحقق بعد أي ضغطة، يعاد توجيهه للمحلل العام.
+        if not contact_request_msg and initial_verification_messages is None:
+            return await self._complete_without_verification(
+                client,
+                bot_entity,
                 phone_number,
+                base_id=base_id,
+                start_param=start_param,
+                initial_messages=last_probe_messages if successful_probe else None,
             )
-            return True
-        if not successful_probe and not contact_request_msg:
-            # عدم وصول رد تحقق لا يثبت فشل الحساب؛ الفشل هنا محصور
-            # في تحقق ظهر فعلاً ثم تعذر على البوت حله.
-            logger.warning(
-                "⚠️ تعذر قراءة رد البوت بعد ضغط Start للحساب %s؛ تُحسب الإحالة ناجحة",
-                phone_number,
-            )
-            return True
 
         # إذا وجدنا طلب رقم → نعالجه بطريقة جديدة
         if contact_request_msg:
@@ -963,6 +991,154 @@ class ForcedRefAIService(RakshService):
             base_id=base_id,
             initial_messages=initial_verification_messages,
         )
+
+    async def _complete_without_verification(
+        self,
+        client,
+        bot_entity,
+        phone_number: str,
+        base_id: int = 0,
+        start_param: str = "",
+        initial_messages: Optional[List] = None,
+    ) -> bool:
+        """
+        إنهاء إحالة البوتات التي لا تعرض نوع تحقق معروف.
+
+        التسلسل المقصود:
+        1. الضغط على أي زر مرة واحدة.
+        2. إذا لم يظهر تحقق، إرسال Start.
+        3. الضغط على زر أخير إن وجد.
+        إذا لم توجد أزرار من البداية، يُرسل Start فقط. بعد كل خطوة نعيد
+        الفحص؛ ظهور تحقق يحول التنفيذ فوراً إلى محلل التحقق الحقيقي.
+        """
+        async def _read_flow_messages():
+            try:
+                collected = []
+                async for message in client.iter_messages(
+                    bot_entity,
+                    min_id=base_id,
+                    reverse=True,
+                ):
+                    collected.append(message)
+                return collected
+            except Exception:
+                try:
+                    return await client.get_messages(bot_entity, limit=100)
+                except Exception:
+                    return []
+
+        async def _verification_after_action(messages=None):
+            current_messages = messages
+            if current_messages is None:
+                current_messages = await _read_flow_messages()
+
+            incoming = [
+                message for message in (current_messages or [])
+                if not getattr(message, "out", False)
+                and (not base_id or getattr(message, "id", 0) > base_id)
+            ]
+            for message in reversed(incoming):
+                text = getattr(message, "message", "") or ""
+                if self._is_verification_success_text(text):
+                    logger.info(
+                        "✅ وصلت إشارة نجاح من بوت الإحالة للحساب %s",
+                        phone_number,
+                    )
+                    return True
+
+            if any(self._looks_like_verification_message(message) for message in incoming):
+                logger.info(
+                    "🔍 ظهر تحقق بعد fallback للحساب %s؛ سيتم حله",
+                    phone_number,
+                )
+                return await self._solve_legacy_verification(
+                    client,
+                    bot_entity,
+                    phone_number,
+                    base_id=base_id,
+                    initial_messages=current_messages,
+                )
+            return None
+
+        async def _click_any_button(messages=None) -> bool:
+            current_messages = messages if messages is not None else await _read_flow_messages()
+            button = self._fallback_button_from_messages(current_messages)
+            if not button:
+                return False
+            try:
+                await button.click()
+                logger.info(
+                    "🖱️ تم الضغط على زر fallback للحساب %s: %s",
+                    phone_number,
+                    getattr(button, "text", ""),
+                )
+                return True
+            except Exception as exc:
+                logger.warning(
+                    "⚠️ تعذر الضغط على زر fallback للحساب %s: %s",
+                    phone_number,
+                    exc,
+                )
+                return False
+
+        async def _send_start():
+            try:
+                await client(StartBotRequest(
+                    bot=bot_entity,
+                    peer=bot_entity,
+                    start_param=start_param or "",
+                ))
+                logger.info("▶️ تم إرسال Start fallback للحساب %s", phone_number)
+            except Exception as exc:
+                # تنفيذ StartBotRequest الأساسي سبق أن نجح؛ فشل إعادة المحاولة
+                # هنا لا يحول بوتاً بلا تحقق إلى فشل مصطنع.
+                logger.warning(
+                    "⚠️ تعذر إرسال Start fallback للحساب %s: %s",
+                    phone_number,
+                    exc,
+                )
+
+        current_messages = (
+            initial_messages
+            if initial_messages is not None
+            else await _read_flow_messages()
+        )
+        first_button = self._fallback_button_from_messages(current_messages)
+
+        if not first_button:
+            await _send_start()
+            await asyncio.sleep(2.0)
+            result = await _verification_after_action()
+            return True if result is None else result
+
+        # الضغطة الأولى مطلوبة مرة واحدة فقط قبل إعادة فحص ظهور تحقق جديد.
+        await _click_any_button(current_messages)
+        await asyncio.sleep(2.0)
+        result = await _verification_after_action()
+        if result is not None:
+            return result
+
+        # لا تحقق: Start ثم زر أخير إن بقي زر. وبذلك يكون التسلسل الكامل
+        # عند وجود زر: زر واحد -> Start -> زر واحد.
+        await _send_start()
+        await asyncio.sleep(2.0)
+        result = await _verification_after_action()
+        if result is not None:
+            return result
+
+        current_messages = await _read_flow_messages()
+        if self._fallback_button_from_messages(current_messages):
+            await _click_any_button(current_messages)
+            await asyncio.sleep(2.0)
+            result = await _verification_after_action()
+            if result is not None:
+                return result
+
+        logger.info(
+            "✅ لم يظهر أي تحقق بعد fallback للحساب %s؛ تُحتسب الإحالة ناجحة",
+            phone_number,
+        )
+        return True
 
     async def _solve_legacy_verification(
         self,
@@ -1463,6 +1639,7 @@ class ForcedRefAIService(RakshService):
                     bot_entity,
                     session.get("phone_number"),
                     base_id=verification_base_id,
+                    start_param=start_param or "",
                 )
                 if verification_success:
                     logger.info(
