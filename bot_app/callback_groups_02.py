@@ -2332,6 +2332,53 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             )
             return
 
+        if data.startswith("os:raksh_free:") and is_own:
+            _raksh_free_parts = data.split(":", 3)
+            if len(_raksh_free_parts) != 4 or _raksh_free_parts[2] not in {"on", "off"}:
+                await q.answer("⚠️ خيار الإعفاء غير صالح.", show_alert=True)
+                return
+
+            _raksh_target_id = context.user_data.get("raksh_admin_target_id")
+            _raksh_free_service = _raksh_free_parts[3]
+            try:
+                _raksh_target_id = int(_raksh_target_id)
+            except (TypeError, ValueError):
+                await q.answer(
+                    "⚠️ انتهت جلسة الـID. افتح «ادمنية الرشق» وأرسل الـID من جديد.",
+                    show_alert=True,
+                )
+                return
+
+            from .raksh_system import (
+                RAKSH_SERVICES,
+                raksh_admin_free_kb,
+                raksh_admin_free_text,
+                set_raksh_free_access,
+            )
+
+            if _raksh_free_service not in RAKSH_SERVICES:
+                await q.answer("⚠️ خدمة الرشق غير موجودة.", show_alert=True)
+                return
+
+            _free_enabled = _raksh_free_parts[2] == "on"
+            set_raksh_free_access(
+                _raksh_target_id,
+                _raksh_free_service,
+                _free_enabled,
+            )
+            await q.edit_message_text(
+                raksh_admin_free_text(_raksh_target_id),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=raksh_admin_free_kb(_raksh_target_id),
+            )
+            await q.answer(
+                "✅ تم تفعيل المجانية."
+                if _free_enabled
+                else "✅ عادت الخدمة مدفوعة.",
+                show_alert=True,
+            )
+            return
+
         if data == "os:raksh_remove_account" and is_own:
             context.user_data["state"] = "os_await_raksh_remove_account"
             await q.edit_message_text(

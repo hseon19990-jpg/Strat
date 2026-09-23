@@ -2697,38 +2697,25 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["raksh_admin_target_id"] = int(_raksh_admin_id_text)
         context.user_data["state"] = "main_menu"
 
-        # اعرض نفس قائمة خدمات الرشق الحالية، لكن عطّل أزرارها مؤقتاً
-        # إلى أن يتم تحديد الإجراء المطلوب بعد اختيار الخدمة.
         try:
-            from .raksh_system import raksh_menu_kb
+            from .raksh_system import (
+                raksh_admin_free_kb,
+                raksh_admin_free_text,
+            )
 
-            _raksh_service_markup = raksh_menu_kb(False)
-            _raksh_service_rows = []
-            for _raksh_row in _raksh_service_markup.inline_keyboard:
-                _raksh_service_rows.append([
-                    InlineKeyboardButton(
-                        _raksh_button.text,
-                        callback_data=(
-                            "owner_settings"
-                            if _raksh_button.callback_data == "main_menu"
-                            else "noop"
-                        ),
-                    )
-                    for _raksh_button in _raksh_row
-                ])
-            _raksh_service_markup = InlineKeyboardMarkup(_raksh_service_rows)
+            _raksh_service_markup = raksh_admin_free_kb(
+                int(_raksh_admin_id_text)
+            )
         except Exception:
             logger.exception("فشل تحميل قائمة خدمات الرشق بعد إدخال ID")
             await update.message.reply_text(
-                "✅ تم استلام ID المستخدم، لكن تعذر تحميل قائمة خدمات الرشق حالياً.",
+                "✅ تم استلام ID المستخدم، لكن تعذر تحميل إعدادات خدمات الرشق حالياً.",
                 reply_markup=owner_settings_kb(),
             )
             return
 
         await update.message.reply_text(
-            f"✅ تم استلام ID المستخدم: `{_raksh_admin_id_text}`\n\n"
-            "🛍 *خدمات الرشق*\n"
-            "اختر الخدمة المطلوبة:",
+            raksh_admin_free_text(int(_raksh_admin_id_text)),
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=_raksh_service_markup,
         )

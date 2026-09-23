@@ -196,6 +196,14 @@ def init_db():
           ON raksh_execution_usage (user_id, executed_at)
           """)
           c.execute("""
+          CREATE TABLE IF NOT EXISTS raksh_free_access (
+              user_id      BIGINT NOT NULL,
+              service_type TEXT NOT NULL,
+              enabled      INTEGER NOT NULL DEFAULT 1,
+              updated_at   TIMESTAMPTZ DEFAULT NOW(),
+              PRIMARY KEY (user_id, service_type)
+          )""")
+          c.execute("""
           CREATE TABLE IF NOT EXISTS mandatory_sub_orders (
               id            SERIAL PRIMARY KEY,
               user_id       BIGINT NOT NULL,
