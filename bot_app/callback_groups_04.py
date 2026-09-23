@@ -1842,7 +1842,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔵 الحسابات المؤجّرة", callback_data="os:rented_accounts")],
-                    [InlineKeyboardButton("🛒 الأرقام المباعة", callback_data="os:sold_accounts")],
+                    [InlineKeyboardButton("💰 الحسابات التي اشتراها البوت", callback_data="os:bought_accounts")],
                     [InlineKeyboardButton("🔙 رجوع لمخزون الأرقام", callback_data="os:manage_numbers")],
                 ]),
             )
@@ -1908,41 +1908,21 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             )
             return
 
-        if data == "os:sold_accounts" and is_own:
+        # Keep the old callback value working for buttons from messages sent
+        # before this menu was renamed. The intended meaning here is accounts
+        # bought by the bot from members, not accounts sold to customers.
+        if data in ("os:bought_accounts", "os:sold_accounts") and is_own:
             with db_conn() as c:
-                active_sold = c.execute(
-                    "SELECT ns.id, ns.phone_number, ns.assigned_to, ns.assigned_at, ns.ever_sold, "
-                    "       pe.order_code, pe.created_at AS sale_date, pe.points_cost, "
-                    "       u.full_name AS buyer_name "
-                    "FROM number_stock ns "
-                    "LEFT JOIN prize_exchanges pe ON pe.prize_value = ns.phone_number "
-                    "     AND pe.status = 'completed' "
-                    "     AND pe.prize_type IN ('telegram_number','telegram_number_code','telegram_number_stars') "
-                    "LEFT JOIN users u ON u.user_id = ns.assigned_to "
-                    "WHERE ns.assigned_to IS NOT NULL AND ns.deleted_at IS NULL "
-                    "ORDER BY ns.assigned_at DESC LIMIT 50"
-                ).fetchall()
-        
-                past_sold = c.execute(
-                    "SELECT ns.id, ns.phone_number, ns.ever_sold, "
-                    "       pe.order_code, pe.created_at AS sale_date, pe.user_id AS buyer_id, "
-                    "       pe.points_cost, u.full_name AS buyer_name "
-                    "FROM number_stock ns "
-                    "LEFT JOIN prize_exchanges pe ON pe.prize_value = ns.phone_number "
-                    "     AND pe.status = 'completed' "
-                    "     AND pe.prize_type IN ('telegram_number','telegram_number_code','telegram_number_stars') "
-                    "LEFT JOIN users u ON u.user_id = pe.user_id "
-                    "WHERE ns.ever_sold IS TRUE AND ns.assigned_to IS NULL AND ns.deleted_at IS NULL "
-                    "ORDER BY pe.created_at DESC NULLS LAST LIMIT 30"
-                ).fetchall()
-        
-                dupes_check = c.execute(
-                    "SELECT prize_value, COUNT(*) AS cnt "
-                    "FROM prize_exchanges "
-                    "WHERE prize_type IN ('telegram_number','telegram_number_code','telegram_number_stars') "
-                    "  AND prize_value NOT IN ('number','manual') "
-                    "  AND status IN ('completed','duplicate_compensated') "
-                    "GROUP BY prize_value HAVING COUNT(*) > 1"
+                bought_rows = c.execute(
+                    "SELECT abo.id, abo.phone_number, abo.account_username, "
+                    "       abo.seller_user_id, abo.quoted_price, abo.paid_at, "
+                    "       u.full_name AS seller_name, ns.last_authorized, ns.frozen_at "
+                    "FROM account_buyback_offers abo "
+                    "LEFT JOIN users u ON u.user_id = abo.seller_user_id "
+                    "LEFT JOIN number_stock ns ON ns.phone_number = abo.phone_number "
+                    "     AND ns.deleted_at IS NULL "
+                    "WHERE abo.status = 'paid' "
+                    "ORDER BY abo.paid_at DESC NULLS LAST, abo.id DESC LIMIT 100"
                 ).fetchall()
         
             def _fmt_dt(v):
@@ -1950,61 +1930,39 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                 if hasattr(v, "strftime"): return v.strftime("%Y-%m-%d %H:%M")
                 return str(v)[:16]
         
-            lines = ["🛒 *الحسابات المبيوعة*\n"]
-        
-            if active_sold:
-                lines.append(f"🟢 *نشطة الآن ({len(active_sold)})*")
-                for r in active_sold:
-                    buyer_name = r["buyer_name"] or f"ID:{r['assigned_to']}"
+            lines = ["💰 *الحسابات التي اشتراها البوت*\n"]
+            if bought_rows:
+                lines.append(f"✅ *عمليات الشراء المكتملة ({len(bought_rows)})*")
+                for r in bought_rows:
+                    seller_name = r["seller_name"] or f"ID:{r['seller_user_id']}"
+                    if r["frozen_at"]:
+                        status = "🧊 مجمّد"
+                    elif r["last_authorized"] is False:
+                        status = "🚫 الجلسة منتهية"
+                    else:
+                        status = "✅ موجود في المخزون"
+                    price = f"{int(r['quoted_price']):,} نقطة" if r["quoted_price"] else "—"
+                    username = f"@{r['account_username']}" if r["account_username"] else "بدون معرف"
                     lines.append(
-                        f"📱 `{r['phone_number']}`\n"
-                        f"   👤 المشتري: {buyer_name} (`{r['assigned_to']}`)\n"
-                        f"   📅 تاريخ البيع: {_fmt_dt(r['assigned_at'])}\n"
-                        f"   📌 كود: {r['order_code'] or '—'}"
+                        f"\n📱 `{r['phone_number']}` — {status}\n"
+                        f"   🔗 المعرف: {username}\n"
+                        f"   👤 البائع السابق: {seller_name} (`{r['seller_user_id']}`)\n"
+                        f"   💵 سعر الشراء: *{price}*\n"
+                        f"   📅 تاريخ الشراء: {_fmt_dt(r['paid_at'])}"
                     )
             else:
-                lines.append("🟢 *نشطة الآن:* لا يوجد حالياً")
-        
-            lines.append("")
-        
-            if past_sold:
-                lines.append(f"⬜ *مبيوعة سابقاً — البوت غادرها ({len(past_sold)})*")
-                for r in past_sold:
-                    buyer_name = r["buyer_name"] or f"ID:{r.get('buyer_id','?')}"
-                    lines.append(
-                        f"📱 `{r['phone_number']}`\n"
-                        f"   👤 المشتري: {buyer_name}\n"
-                        f"   📅 تاريخ البيع: {_fmt_dt(r['sale_date'])}\n"
-                        f"   📌 كود: {r['order_code'] or '—'}"
-                    )
-            else:
-                lines.append("⬜ *مبيوعة سابقاً:* لا يوجد")
-        
-            if dupes_check:
-                lines.append("")
-                lines.append(f"⚠️ *حسابات بيعت أكثر من مرة ({len(dupes_check)}):*")
-                for d in dupes_check:
-                    lines.append(f"📱 `{d['prize_value']}` — بيعت {d['cnt']} مرة")
+                lines.append("لا توجد حسابات اشتراها البوت حتى الآن.")
         
             text = "\n".join(lines)
             if len(text) > 4000:
                 text = text[:3950] + "\n\n_(قُطع لطول القائمة)_"
-        
-            detail_rows = []
-            for r in active_sold:
-                detail_rows.append([InlineKeyboardButton(
-                    f"📋 {r['phone_number']}",
-                    callback_data=f"os:sold_detail:{r['id']}"
-                )])
-        
+
             await q.edit_message_text(
                 text,
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup(
-                    detail_rows + [
-                        [InlineKeyboardButton("🔍 بحث برقم", callback_data="os:sold_search"),
-                         InlineKeyboardButton("🧾 تحقق بكود", callback_data="os:sold_code_search")],
-                        [InlineKeyboardButton("⚠️ العمليات الفاشلة", callback_data="os:failed_deliveries")],
+                    [
+                        [InlineKeyboardButton("🔙 حالة الأرقام", callback_data="os:owner_number_status")],
                         [InlineKeyboardButton("🔙 رجوع للمخزون", callback_data="os:manage_numbers")],
                     ]
                 )
