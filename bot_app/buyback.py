@@ -7,6 +7,8 @@ It deliberately requires the owner to confirm the final payout manually.
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 from .accounts import check_spam_status_detailed
+import secrets
+from string import ascii_letters, digits
 
 BUYBACK_VISIBLE_KEY = "buyback_visible"
 BUYBACK_PRICE_KEY = "buyback_price"
@@ -23,6 +25,15 @@ BUYBACK_ACTIVE_STATUSES = (
 # Login clients live only for the short code/2FA hand-off flow.  Keep this
 # process-local and never persist the raw login code or 2FA password.
 _pending_buyback_logins = {}
+# Keep the seller's old 2FA password only in process memory until the
+# confirmation callback. It is never persisted in the database.
+_pending_buyback_passwords = {}
+
+
+def _generate_buyback_2fa_password() -> str:
+    """Generate a strong, readable random 2FA password for the new owner."""
+    alphabet = ascii_letters + digits + "!@#$%^&*"
+    return "".join(secrets.choice(alphabet) for _ in range(20))
 
 
 def is_buyback_visible() -> bool:
@@ -182,6 +193,7 @@ async def _finish_buyback_login(update, context, user_id: int) -> bool:
             ).fetchone()
         offer_id = int(row["id"])
         context.user_data["buyback_offer_id"] = offer_id
+        _pending_buyback_passwords[offer_id] = pending.get("current_password")
         context.user_data["state"] = "buyback_await_confirm"
         await update.message.reply_text(
             "🔎 تم الدخول إلى الحساب بنجاح.\n\n"
@@ -304,6 +316,9 @@ async def handle_buyback_text(update, context, text: str) -> bool:
             await update.message.reply_text("⚠️ انتهت جلسة التحقق. ابدأ من جديد.", reply_markup=main_menu_kb(False))
             return True
         try:
+            # Keep it only in memory until the seller confirms the sale.
+            # It is needed to replace an existing Telegram 2FA password.
+            pending["current_password"] = (text or "").strip()
             await pending["client"].sign_in(password=(text or "").strip())
         except PasswordHashInvalidError:
             await update.message.reply_text("⚠️ كلمة المرور غير صحيحة. أرسلها مجدداً.", reply_markup=_buyback_cancel_markup())
@@ -322,16 +337,48 @@ async def handle_buyback_text(update, context, text: str) -> bool:
     return False
 
 
-async def _revoke_buyback_sessions(session_string: str) -> tuple[bool, str]:
+async def _secure_buyback_account(
+    session_string: str,
+    current_password: str | None,
+) -> tuple[bool, str, str | None]:
+    """Rotate 2FA immediately, then revoke every other Telegram session.
+
+    If the seller supplied the old password, Telegram can change 2FA
+    immediately. If the account has no 2FA, a new password is created
+    directly. An account with an existing but unknown password is rejected
+    instead of being accepted without a password known by the owner.
+    """
     client = TelegramClient(StringSession(session_string), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     try:
         await asyncio.wait_for(client.connect(), timeout=20)
         if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
-            return False, "الجلسة غير مصرح بها"
+            return False, "الجلسة غير مصرح بها", None
+        password_state = await asyncio.wait_for(client(GetPasswordRequest()), timeout=15)
+        new_password = _generate_buyback_2fa_password()
+        if getattr(password_state, "has_password", False):
+            if not current_password:
+                return (
+                    False,
+                    "الحساب محمي بــ2FA لكن كلمة المرور القديمة غير متوفرة.",
+                    None,
+                )
+            await asyncio.wait_for(
+                client.edit_2fa(
+                    current_password=current_password,
+                    new_password=new_password,
+                    hint="Auto",
+                ),
+                timeout=30,
+            )
+        else:
+            await asyncio.wait_for(
+                client.edit_2fa(new_password=new_password, hint="Auto"),
+                timeout=30,
+            )
         await asyncio.wait_for(client(ResetAuthorizationsRequest()), timeout=30)
-        return True, ""
+        return True, "", new_password
     except Exception as exc:
-        return False, str(exc)[:180]
+        return False, str(exc)[:180], None
     finally:
         await _disconnect_buyback_client(client)
 
@@ -427,7 +474,8 @@ async def _notify_buyback_owner(context, offer_id: int, ready: bool = False) -> 
         return
     with db_conn() as c:
         row = c.execute(
-            "SELECT seller_user_id,phone_number,account_username,quoted_price,status FROM account_buyback_offers WHERE id=%s",
+            "SELECT seller_user_id,phone_number,account_username,quoted_price,status,twofa_password "
+            "FROM account_buyback_offers WHERE id=%s",
             (offer_id,),
         ).fetchone()
     if not row:
@@ -444,6 +492,7 @@ async def _notify_buyback_owner(context, offer_id: int, ready: bool = False) -> 
         f"📱 الرقم: <code>{html.escape(_mask_buyback_phone(row['phone_number']))}</code>\n"
         f"🔗 المعرف: @{html.escape(row['account_username'] or 'بدون معرف')}\n"
         f"💵 السعر: <b>{price}</b>\n"
+        f"🔐 كلمة 2FA الجديدة: <code>{html.escape(row['twofa_password'] or 'غير متوفرة')}</code>\n"
         f"📊 الحالة: <code>{row['status']}</code>"
     )
     await context.bot.send_message(
@@ -474,6 +523,9 @@ async def handle_buyback_callback(update, context, q, data: str, user, is_owner:
 
     if data == "buyback:begin":
         await _clear_buyback_pending(user.id)
+        old_offer_id = context.user_data.pop("buyback_offer_id", None)
+        if old_offer_id:
+            _pending_buyback_passwords.pop(int(old_offer_id), None)
         context.user_data["state"] = "buyback_await_phone"
         await q.edit_message_text("📱 أرسل رقم الحساب بصيغة دولية.", reply_markup=_buyback_cancel_markup())
         return True
@@ -515,6 +567,7 @@ async def handle_buyback_callback(update, context, q, data: str, user, is_owner:
         await _clear_buyback_pending(user.id)
         offer_id = data.rsplit(":", 1)[-1] if data.count(":") == 2 else ""
         if offer_id.isdigit():
+            _pending_buyback_passwords.pop(int(offer_id), None)
             with db_conn() as c:
                 c.execute(
                     "UPDATE account_buyback_offers SET status='cancelled', session_string=NULL, updated_at=NOW() "
@@ -544,7 +597,11 @@ async def handle_buyback_callback(update, context, q, data: str, user, is_owner:
         if not row:
             await q.edit_message_text("⚠️ الطلب غير موجود أو انتهت صلاحيته.", reply_markup=main_menu_kb(False))
             return True
-        ok, reason = await _revoke_buyback_sessions(row["session_string"])
+        old_password = _pending_buyback_passwords.pop(offer_id, None)
+        ok, reason, new_password = await _secure_buyback_account(
+            row["session_string"],
+            old_password,
+        )
         if not ok:
             with db_conn() as c:
                 c.execute(
@@ -555,8 +612,10 @@ async def handle_buyback_callback(update, context, q, data: str, user, is_owner:
             return True
         with db_conn() as c:
             c.execute(
-                "UPDATE account_buyback_offers SET status='quarantine_24h', accepted_at=NOW(), next_check_at=NOW()+INTERVAL '24 hours', updated_at=NOW() WHERE id=%s",
-                (offer_id,),
+                "UPDATE account_buyback_offers SET status='quarantine_24h', "
+                "accepted_at=NOW(), next_check_at=NOW()+INTERVAL '24 hours', "
+                "twofa_password=%s, updated_at=NOW() WHERE id=%s",
+                (new_password, offer_id),
             )
         context.user_data["state"] = "main_menu"
         await q.edit_message_text(
@@ -634,10 +693,14 @@ def mark_buyback_paid(offer_id: int) -> int | None:
         if not row:
             return None
         c.execute(
-            "INSERT INTO number_stock (phone_number,session_string,assigned_to,deleted_at,ever_sold,sessions_reset,last_authorized,can_send_code,raksh_only) "
-            "VALUES (%s,%s,NULL,NULL,FALSE,TRUE,TRUE,FALSE,FALSE) "
-            "ON CONFLICT (phone_number) DO UPDATE SET session_string=EXCLUDED.session_string, assigned_to=NULL, deleted_at=NULL, ever_sold=FALSE, sessions_reset=TRUE, last_authorized=TRUE, raksh_only=FALSE",
-            (row["phone_number"], row["session_string"]),
+            "INSERT INTO number_stock (phone_number,session_string,twofa_password,auto_2fa_enabled,"
+            "assigned_to,deleted_at,ever_sold,sessions_reset,last_authorized,can_send_code,raksh_only) "
+            "VALUES (%s,%s,%s,TRUE,NULL,NULL,FALSE,TRUE,TRUE,FALSE,FALSE) "
+            "ON CONFLICT (phone_number) DO UPDATE SET "
+            "session_string=EXCLUDED.session_string, twofa_password=EXCLUDED.twofa_password, "
+            "auto_2fa_enabled=TRUE, assigned_to=NULL, deleted_at=NULL, ever_sold=FALSE, "
+            "sessions_reset=TRUE, last_authorized=TRUE, raksh_only=FALSE",
+            (row["phone_number"], row["session_string"], row["twofa_password"]),
         )
         c.execute(
             "UPDATE account_buyback_offers SET status='paid', paid_at=NOW(), updated_at=NOW() WHERE id=%s",
