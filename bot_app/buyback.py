@@ -367,13 +367,33 @@ async def _secure_buyback_account(
                     current_password=current_password,
                     new_password=new_password,
                     hint="Auto",
+                    # An empty email explicitly removes the Telegram 2FA
+                    # recovery email instead of leaving the seller a way to
+                    # recover the account after the sale.
+                    email="",
                 ),
                 timeout=30,
             )
         else:
             await asyncio.wait_for(
-                client.edit_2fa(new_password=new_password, hint="Auto"),
+                client.edit_2fa(
+                    new_password=new_password,
+                    hint="Auto",
+                    email="",
+                ),
                 timeout=30,
+            )
+        # Fail closed: never accept the account if Telegram still reports a
+        # configured recovery method after the password rotation.
+        updated_password_state = await asyncio.wait_for(
+            client(GetPasswordRequest()),
+            timeout=15,
+        )
+        if getattr(updated_password_state, "has_recovery", False):
+            return (
+                False,
+                "تعذر حذف بريد استرداد كلمة مرور 2FA.",
+                None,
             )
         await asyncio.wait_for(client(ResetAuthorizationsRequest()), timeout=30)
         return True, "", new_password
