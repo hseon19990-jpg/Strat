@@ -127,6 +127,99 @@ def get_raksh_total(service_type: str, quantity: int, payment_method: str) -> in
     return 0
 
 
+def is_raksh_free_user(user_id: int, service_type: str) -> bool:
+    """هل يملك المستخدم إعفاءً دائماً من تكلفة خدمة رشق محددة؟"""
+    try:
+        with db_conn() as c:
+            row = c.execute(
+                """
+                SELECT 1
+                FROM raksh_free_access
+                WHERE user_id=%s AND service_type=%s AND enabled=1
+                """,
+                (int(user_id), str(service_type)),
+            ).fetchone()
+        return bool(row)
+    except Exception:
+        logger.exception(
+            "فشل فحص الإعفاء المجاني لخدمة الرشق %s للمستخدم %s",
+            service_type,
+            user_id,
+        )
+        return False
+
+
+def set_raksh_free_access(
+    target_user_id: int,
+    service_type: str,
+    enabled: bool,
+) -> None:
+    """تفعيل/إيقاف الإعفاء للمالك وصاحب الـID المحدد."""
+    user_ids = {int(target_user_id)}
+    if int(OWNER_ID) > 0:
+        user_ids.add(int(OWNER_ID))
+    with db_conn() as c:
+        for user_id in user_ids:
+            if enabled:
+                c.execute(
+                    """
+                    INSERT INTO raksh_free_access (user_id, service_type, enabled)
+                    VALUES (%s, %s, 1)
+                    ON CONFLICT (user_id, service_type)
+                    DO UPDATE SET enabled=1, updated_at=NOW()
+                    """,
+                    (user_id, str(service_type)),
+                )
+            else:
+                c.execute(
+                    """
+                    DELETE FROM raksh_free_access
+                    WHERE user_id=%s AND service_type=%s
+                    """,
+                    (user_id, str(service_type)),
+                )
+
+
+def raksh_admin_free_text(target_user_id: int) -> str:
+    """نص لوحة التحكم المجاني الخاصة بالـID المحدد."""
+    return (
+        "👤 *ادمنية الرشق*\n\n"
+        f"🆔 الـID المحدد: `{int(target_user_id)}`\n"
+        "فعّل المجانية لخدمة معينة ليستخدمها المالك وصاحب هذا الـID "
+        "بدون نقاط أو نجوم بشكل دائم.\n"
+        "عند الإيقاف تعود الخدمة مدفوعة كما كانت."
+    )
+
+
+def raksh_admin_free_kb(target_user_id: int):
+    """أزرار تفعيل/إيقاف مجانية كل خدمة رشق للمالك والـID المحدد."""
+    rows = []
+    target_user_id = int(target_user_id)
+    for service_type, svc in RAKSH_SERVICES.items():
+        free_enabled = is_raksh_free_user(target_user_id, service_type)
+        status = "🟢 مجانية" if free_enabled else "🔴 مدفوعة"
+        rows.append([
+            InlineKeyboardButton(
+                f"{svc.config.name} — {status}",
+                callback_data="noop",
+            ),
+        ])
+        rows.append([
+            InlineKeyboardButton(
+                "✅ تفعيل",
+                callback_data=f"os:raksh_free:on:{service_type}",
+            ),
+            InlineKeyboardButton(
+                "⛔ إيقاف",
+                callback_data=f"os:raksh_free:off:{service_type}",
+            ),
+        ])
+    rows.append([
+        InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
 def _get_contextual_raksh_total(
     svc,
     quantity: int,
@@ -2012,6 +2105,98 @@ async def _handle_raksh_callback_impl(
     for service_type, svc in RAKSH_SERVICES.items():
         prefix = f"raksh_{service_type}:"
         if data.startswith(prefix):
+            if is_raksh_free_user(user.id, service_type):
+                _free_parts = data[len(prefix):].split(":")
+                if _free_parts[0] == "payment" and len(_free_parts) >= 4:
+                    try:
+                        _free_quantity = int(_free_parts[2])
+                    except ValueError:
+                        await query.answer("⚠️ العدد غير صالح.", show_alert=True)
+                        return
+                    if _free_quantity > svc.get_request_limit(user.id):
+                        await query.edit_message_text(
+                            "⚠️ لا يمكن قبول هذا الطلب حالياً. حاول لاحقاً.",
+                            reply_markup=raksh_menu_kb(is_own),
+                        )
+                        return
+                    await query.edit_message_text(
+                        f"🎁 *الخدمة مجانية لهذا المستخدم بشكل دائم*\n\n"
+                        f"الخدمة: {svc.config.name}\n"
+                        f"العدد: {_free_quantity}\n"
+                        "التكلفة: 0\n\n"
+                        "اضغط تأكيد لبدء التنفيذ:",
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=InlineKeyboardMarkup([
+                            [
+                                InlineKeyboardButton(
+                                    "✅ تأكيد وتشغيل مجاناً",
+                                    callback_data=f"{prefix}free_confirm:{_free_quantity}",
+                                ),
+                                InlineKeyboardButton(
+                                    "❌ إلغاء",
+                                    callback_data="raksh_cancel",
+                                ),
+                            ]
+                        ]),
+                    )
+                    return
+
+                if _free_parts[0] == "free_confirm" and len(_free_parts) >= 2:
+                    try:
+                        _free_quantity = int(_free_parts[1])
+                    except ValueError:
+                        await query.answer("⚠️ العدد غير صالح.", show_alert=True)
+                        return
+                    if _free_quantity < 1 or _free_quantity > svc.get_request_limit(user.id):
+                        await query.edit_message_text(
+                            "⚠️ لا يمكن قبول هذا العدد حالياً.",
+                            reply_markup=raksh_menu_kb(is_own),
+                        )
+                        return
+                    await query.edit_message_text(
+                        "✅ *تم التأكيد — الخدمة مجانية*\n\n"
+                        "⏳ جاري بدء التنفيذ...",
+                        parse_mode=ParseMode.MARKDOWN,
+                    )
+                    await _start_raksh_execution(
+                        update,
+                        context,
+                        query,
+                        service_type,
+                        _free_quantity,
+                        "points",
+                        0,
+                    )
+                    return
+
+                if _free_parts[0] == "confirm" and len(_free_parts) >= 4:
+                    try:
+                        _free_quantity = int(_free_parts[2])
+                    except ValueError:
+                        await query.answer("⚠️ العدد غير صالح.", show_alert=True)
+                        return
+                    if _free_quantity < 1 or _free_quantity > svc.get_request_limit(user.id):
+                        await query.edit_message_text(
+                            "⚠️ لا يمكن قبول هذا العدد حالياً.",
+                            reply_markup=raksh_menu_kb(is_own),
+                        )
+                        return
+                    await query.edit_message_text(
+                        "✅ *تم التأكيد — الخدمة مجانية*\n\n"
+                        "⏳ جاري بدء التنفيذ...",
+                        parse_mode=ParseMode.MARKDOWN,
+                    )
+                    await _start_raksh_execution(
+                        update,
+                        context,
+                        query,
+                        service_type,
+                        _free_quantity,
+                        "points",
+                        0,
+                    )
+                    return
+
             parts = data[len(prefix):].split(":")
             try:
                 handled = await svc.handle_callback(
@@ -2031,6 +2216,42 @@ async def _handle_raksh_callback_impl(
             if handled:
                 return
     
+    if data.startswith("raksh:free_confirm:"):
+        parts = data.split(":")
+        if len(parts) != 4:
+            await query.answer("⚠️ بيانات الإعفاء غير صالحة.", show_alert=True)
+            return
+        service_type = parts[2]
+        try:
+            quantity = int(parts[3])
+        except ValueError:
+            await query.answer("⚠️ العدد غير صالح.", show_alert=True)
+            return
+        svc = RAKSH_SERVICES.get(service_type)
+        if (
+            not svc
+            or not is_raksh_free_user(user.id, service_type)
+            or quantity < 1
+            or quantity > svc.get_request_limit(user.id)
+        ):
+            await query.answer("⚠️ انتهت صلاحية الإعفاء أو الطلب غير صالح.", show_alert=True)
+            return
+        await query.edit_message_text(
+            "✅ *تم التأكيد — الخدمة مجانية*\n\n"
+            "⏳ جاري بدء التنفيذ...",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        await _start_raksh_execution(
+            update,
+            context,
+            query,
+            service_type,
+            quantity,
+            "points",
+            0,
+        )
+        return
+
     # ─── اختيار طريقة الدفع (الافتراضي) ───
     if data.startswith("raksh:pay:"):
         parts = data.split(":")
@@ -2048,6 +2269,37 @@ async def _handle_raksh_callback_impl(
         svc = RAKSH_SERVICES.get(service_type)
         if not svc or quantity < 1:
             await query.answer("⚠️ الخدمة أو العدد غير صالح.", show_alert=True)
+            return
+
+        if is_raksh_free_user(user.id, service_type):
+            if quantity > svc.get_request_limit(user.id):
+                await query.edit_message_text(
+                    "⚠️ لا يمكن قبول هذا الطلب حالياً. حاول لاحقاً.",
+                    reply_markup=raksh_menu_kb(is_own),
+                )
+                return
+            context.user_data["raksh_payment_method"] = "points"
+            context.user_data["raksh_step"] = "payment_confirm"
+            await query.edit_message_text(
+                "🎁 *الخدمة مجانية لهذا المستخدم بشكل دائم*\n\n"
+                f"الخدمة: {svc.config.name}\n"
+                f"العدد: {quantity}\n"
+                "التكلفة: 0\n\n"
+                "اضغط تأكيد لبدء التنفيذ:",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton(
+                            "✅ تأكيد وتشغيل مجاناً",
+                            callback_data=f"raksh:free_confirm:{service_type}:{quantity}",
+                        ),
+                        InlineKeyboardButton(
+                            "❌ إلغاء",
+                            callback_data="raksh_cancel",
+                        ),
+                    ]
+                ]),
+            )
             return
         
         request_limit = _get_request_limit(user.id, service_type)
