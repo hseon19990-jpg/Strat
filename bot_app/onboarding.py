@@ -68,17 +68,25 @@ async def get_unjoined_mandatory_channels(context: ContextTypes.DEFAULT_TYPE, us
         channels = c.execute(
             "SELECT * FROM mandatory_channels WHERE active=1 AND funding_type='mandatory'"
         ).fetchall()
+    # This semaphore lives in bot_data so concurrent /start requests share
+    # one limit instead of each opening up to ten Telegram API calls.
+    check_semaphore = context.bot_data.setdefault(
+        "_mandatory_channel_check_semaphore",
+        asyncio.Semaphore(10),
+    )
+
     async def check_channel(ch):
         try:
             # Do not let a slow or invalid channel make /start appear dead.
             # Fail closed: an unverifiable channel remains in the gate.
-            member = await asyncio.wait_for(
-                context.bot.get_chat_member(
-                    f"@{ch['channel_username']}",
-                    user_id,
-                ),
-                timeout=8,
-            )
+            async with check_semaphore:
+                member = await asyncio.wait_for(
+                    context.bot.get_chat_member(
+                        f"@{ch['channel_username']}",
+                        user_id,
+                    ),
+                    timeout=8,
+                )
             return ch if member.status in ("left", "kicked", "banned") else None
         except Exception as exc:
             logger.warning(

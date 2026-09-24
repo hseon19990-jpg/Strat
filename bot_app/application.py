@@ -179,7 +179,7 @@ def main():
     # API connection. Configure both request clients: get_me() and normal bot
     # calls use the default client, while long polling uses the updates client.
     telegram_request = HTTPXRequest(
-        connection_pool_size=8,
+        connection_pool_size=32,
         read_timeout=120,
         connect_timeout=60,
         write_timeout=60,
@@ -202,7 +202,9 @@ def main():
     app = (
         ApplicationBuilder()
         .updater(polling_updater)
-        .concurrent_updates(True)
+        # Bound handler concurrency so Telegram API work cannot grow far
+        # beyond the shared request pool under bursts of updates.
+        .concurrent_updates(16)
         .build()
     )
 
