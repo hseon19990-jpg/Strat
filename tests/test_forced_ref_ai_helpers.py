@@ -1,8 +1,10 @@
 import ast
+import colorsys
 import re
 import unicodedata
 import unittest
 from pathlib import Path
+from typing import Optional
 
 
 SOURCE_PATH = (
@@ -15,6 +17,15 @@ SOURCE_PATH = (
 
 def _load_helper_methods():
     tree = ast.parse(SOURCE_PATH.read_text(encoding="utf-8"))
+    emoji_hints = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "_EMOJI_IMAGE_HINTS"
+            for target in node.targets
+        )
+    )
     service = next(
         node
         for node in tree.body
@@ -23,6 +34,10 @@ def _load_helper_methods():
     selected = {
         "_is_invitation_link_button",
         "_is_verification_success_text",
+        "_is_image_emoji_captcha_text",
+        "_extract_target_number",
+        "_image_color_similarity",
+        "_emoji_image_score",
         "_normalise_captcha_label",
         "_normalise_math_text",
         "_button_label",
@@ -30,7 +45,16 @@ def _load_helper_methods():
         "_captcha_target_labels",
         "_captcha_target_custom_emoji_ids",
     }
-    namespace = {"re": re, "unicodedata": unicodedata}
+    namespace = {
+        "re": re,
+        "unicodedata": unicodedata,
+        "Optional": Optional,
+        "colorsys": colorsys,
+    }
+    exec(
+        compile(ast.Module(body=[emoji_hints], type_ignores=[]), str(SOURCE_PATH), "exec"),
+        namespace,
+    )
     methods = {}
     for node in service.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in selected:
@@ -58,6 +82,7 @@ def _load_helper_methods():
     Helper._captcha_target_custom_emoji_ids = classmethod(
         methods["_captcha_target_custom_emoji_ids"]
     )
+    Helper._emoji_image_score = classmethod(methods["_emoji_image_score"])
     return Helper
 
 
@@ -157,6 +182,49 @@ class ForcedRefAIHelperTests(unittest.TestCase):
         self.assertFalse(self.helper._is_verification_success_text("لم يتم التحقق"))
         self.assertFalse(self.helper._is_verification_success_text("غير صحيح، حاول مرة أخرى"))
         self.assertFalse(self.helper._is_verification_success_text("تم تغيير الأزرار"))
+
+    def test_image_emoji_challenge_is_not_treated_as_ocr(self):
+        self.assertTrue(
+            self.helper._is_image_emoji_captcha_text(
+                "اختر الإيموجي المطابق للصورة أعلاه لإكمال التحقق"
+            )
+        )
+        self.assertFalse(
+            self.helper._is_image_emoji_captcha_text(
+                "أدخل النص الظاهر في الصورة"
+            )
+        )
+
+    def test_numeric_button_target_from_arabic_prompt(self):
+        self.assertEqual(
+            self.helper._extract_target_number(
+                "للتأكد من أنك مستخدم حقيقي، يرجى النقر على الرقم (79) من القائمة بالأسفل."
+            ),
+            "79",
+        )
+        self.assertEqual(
+            self.helper._extract_target_number("اختر الإجابة الصحيحة: [٣٣]"),
+            "33",
+        )
+
+    def test_cow_signature_beats_pig_and_rhino(self):
+        features = {
+            "average": (185, 180, 175),
+            "dark": 0.14,
+            "gray": 0.60,
+            "pink": 0.05,
+            "red": 0.01,
+            "orange": 0.01,
+            "yellow": 0.01,
+            "green": 0.01,
+            "blue": 0.01,
+            "white": 0.42,
+        }
+        cow = self.helper._emoji_image_score("🐮", features)
+        pig = self.helper._emoji_image_score("🐷", features)
+        rhino = self.helper._emoji_image_score("🦏", features)
+        self.assertGreater(cow, pig)
+        self.assertGreater(cow, rhino)
 
     def test_math_answer_is_not_followed_by_same_message_button_click(self):
         source = SOURCE_PATH.read_text(encoding="utf-8")
