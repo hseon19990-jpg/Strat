@@ -5,7 +5,15 @@
 """
 
 from .common import *
-from telethon.tl.types import InputMediaContact, KeyboardButtonRequestPhone
+from telethon.tl.types import InputMediaContact
+try:
+    from telethon.tl.types import KeyboardButtonRequestPhone
+except ImportError:
+    KeyboardButtonRequestPhone = None
+try:
+    from telethon.tl.types import ButtonTypeRequestPhone
+except ImportError:
+    ButtonTypeRequestPhone = None
 from io import BytesIO
 import unicodedata
 import colorsys
@@ -24,6 +32,28 @@ except ImportError:
 
 
 _CAPTCHA_OCR = None
+
+
+def _is_phone_request_button(button) -> bool:
+    """Support legacy and current Telegram button representations."""
+    candidates = [button, getattr(button, "button", None)]
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        if (
+            KeyboardButtonRequestPhone is not None
+            and isinstance(candidate, KeyboardButtonRequestPhone)
+        ):
+            return True
+        button_type = getattr(candidate, "type", None)
+        if (
+            ButtonTypeRequestPhone is not None
+            and isinstance(button_type, ButtonTypeRequestPhone)
+        ):
+            return True
+        if type(button_type).__name__ == "ButtonTypeRequestPhone":
+            return True
+    return False
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -797,7 +827,7 @@ class ForcedRefAIService(RakshService):
                 for button in row or []:
                     if getattr(button, "url", None) and not getattr(button, "data", None):
                         continue
-                    if isinstance(button, KeyboardButtonRequestPhone):
+                    if _is_phone_request_button(button):
                         continue
                     if callable(getattr(button, "click", None)):
                         return button
@@ -1056,7 +1086,7 @@ class ForcedRefAIService(RakshService):
                 if msg.reply_markup:
                     for row in msg.reply_markup.rows:
                         for btn in row.buttons:
-                            if isinstance(btn, KeyboardButtonRequestPhone):
+                            if _is_phone_request_button(btn):
                                 contact_request_msg = msg
                                 break
                         if contact_request_msg:
