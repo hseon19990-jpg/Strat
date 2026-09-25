@@ -38,6 +38,7 @@ def _load_helper_methods():
         "_extract_target_number",
         "_image_color_similarity",
         "_emoji_image_score",
+        "_match_vision_answer",
         "_normalise_captcha_label",
         "_normalise_math_text",
         "_button_label",
@@ -83,6 +84,7 @@ def _load_helper_methods():
         methods["_captcha_target_custom_emoji_ids"]
     )
     Helper._emoji_image_score = classmethod(methods["_emoji_image_score"])
+    Helper._match_vision_answer = classmethod(methods["_match_vision_answer"])
     return Helper
 
 
@@ -225,6 +227,39 @@ class ForcedRefAIHelperTests(unittest.TestCase):
         rhino = self.helper._emoji_image_score("🦏", features)
         self.assertGreater(cow, pig)
         self.assertGreater(cow, rhino)
+
+    def test_rocket_signature_beats_the_other_buttons_in_image(self):
+        # Signature measured from the supplied rocket CAPTCHA: pale background
+        # with red body/fins, blue window and orange flame.
+        features = {
+            "average": (231, 208, 210),
+            "dark": 0.03,
+            "gray": 0.70,
+            "pink": 0.03,
+            "red": 0.050,
+            "orange": 0.009,
+            "yellow": 0.002,
+            "green": 0.005,
+            "blue": 0.007,
+            "white": 0.40,
+        }
+        rocket = self.helper._emoji_image_score("🚀", features)
+        alternatives = [
+            self.helper._emoji_image_score(label, features)
+            for label in ("🔑", "🍕", "🍒", "🍍", "🦋", "🥑")
+        ]
+        self.assertGreater(rocket, max(alternatives))
+
+    def test_dynamic_vision_answer_is_matched_to_candidate_button(self):
+        buttons = [FakeButton("🔑"), FakeButton("🚀"), FakeButton("🍕")]
+        self.assertIs(
+            self.helper._match_vision_answer("rocket", buttons),
+            buttons[1],
+        )
+        self.assertIs(
+            self.helper._match_vision_answer("🚀", buttons),
+            buttons[1],
+        )
 
     def test_math_answer_is_not_followed_by_same_message_button_click(self):
         source = SOURCE_PATH.read_text(encoding="utf-8")
