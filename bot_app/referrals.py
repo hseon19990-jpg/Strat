@@ -133,9 +133,13 @@ def is_deepseek_available() -> bool:
     """يتحقق من وجود مفتاح DeepSeek في البيئة."""
     return bool(os.environ.get("DEEPSEEK_API_KEY"))
 
+def is_openai_available() -> bool:
+    """يتحقق من وجود مفتاح OpenAI المحفوظ أو الموجود في البيئة."""
+    return bool(get_openai_api_key())
+
 def is_ai_available() -> bool:
-    """يتحقق من وجود مفتاح Groq أو DeepSeek."""
-    return is_groq_available() or is_deepseek_available()
+    """يتحقق من وجود مفتاح Groq أو DeepSeek أو OpenAI."""
+    return is_groq_available() or is_deepseek_available() or is_openai_available()
 
 def is_telegram_api_configured() -> bool:
     """يتحقق من وجود بيانات Telegram API."""
@@ -262,9 +266,11 @@ async def solve_captcha_with_ai(
     
     GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
     DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+    OPENAI_API_KEY = get_openai_api_key()
     
     logger.info(f"🔑 GROQ_API_KEY موجود: {bool(GROQ_API_KEY)} | طوله: {len(GROQ_API_KEY)}")
     logger.info(f"🔑 DEEPSEEK_API_KEY موجود: {bool(DEEPSEEK_API_KEY)} | طوله: {len(DEEPSEEK_API_KEY)}")
+    logger.info(f"🔑 OPENAI_API_KEY موجود: {bool(OPENAI_API_KEY)} | طوله: {len(OPENAI_API_KEY)}")
     # ════════════════════════════════════════════════════════════
 
 
@@ -274,6 +280,7 @@ async def solve_captcha_with_ai(
     provider_failures: list[str] = []
     groq_blocked = False
     deepseek_blocked = False
+    openai_blocked = False
     ai_request_attempted = False
 
     # ── كلمات دلالية ──────────────────────────────────────────
@@ -353,11 +360,11 @@ async def solve_captcha_with_ai(
                 return True
         return False
 
-    if not GROQ_API_KEY and not DEEPSEEK_API_KEY:
+    if not GROQ_API_KEY and not DEEPSEEK_API_KEY and not OPENAI_API_KEY:
         if not _messages_need_ai_verification(msgs):
             logger.info(f"ℹ️ لم يُكتشف تحقق، لا حاجة لمزود AI للرقم {phone}")
             return False, "لم يُكتشف تحقق"
-        return False, "لا يوجد مفتاح API للتحقق (Groq أو DeepSeek)"
+        return False, "لا يوجد مفتاح API للتحقق (Groq أو DeepSeek أو OpenAI)"
 
     # ── دوال مساعدة ───────────────────────────────────────────
     _AI_ANSWER_POLICY = (
@@ -413,7 +420,7 @@ async def solve_captcha_with_ai(
         في حال فشل Groq، يستخدم DeepSeek كاحتياطي.
         """
         
-        nonlocal groq_blocked, deepseek_blocked, ai_request_attempted
+        nonlocal groq_blocked, deepseek_blocked, openai_blocked, ai_request_attempted
 
         GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
         DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
@@ -585,6 +592,47 @@ async def solve_captcha_with_ai(
                 logger.info(f"🤖 DeepSeek → '{result[:30]}...'")
                 return _clean_ai_answer(result)
             logger.warning("⚠️ DeepSeek فشل أيضاً!")
+
+        # ── المحاولة 3: OpenAI (مفتاح يدار من لوحة المالك أو من البيئة) ──
+        if OPENAI_API_KEY and not openai_blocked:
+            def _openai_request():
+                nonlocal openai_blocked, ai_request_attempted
+                ai_request_attempted = True
+                try:
+                    r = requests.post(
+                        "https://api.openai.com/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {OPENAI_API_KEY}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "model": "gpt-4o-mini",
+                            "messages": [{"role": "user", "content": _strict_ai_prompt(prompt)}],
+                            "max_tokens": 64,
+                            "temperature": 0,
+                        },
+                        timeout=20,
+                    )
+                    if r.status_code == 200:
+                        data = r.json()
+                        if data.get("choices"):
+                            return data["choices"][0]["message"]["content"].strip()
+                    logger.warning("⚠️ OpenAI error: %s - %s", r.status_code, r.text[:200])
+                    if r.status_code in (401, 403):
+                        openai_blocked = True
+                        provider_failures.append("مفتاح OpenAI غير صالح أو غير مصرح")
+                    elif r.status_code == 429:
+                        openai_blocked = True
+                        provider_failures.append("تجاوز حد OpenAI")
+                except Exception as exc:
+                    logger.warning("⚠️ OpenAI exception: %s", exc)
+                return None
+
+            result = await asyncio.to_thread(_openai_request)
+            if result:
+                logger.info("🤖 OpenAI → '%s...'", result[:30])
+                return _clean_ai_answer(result)
+            logger.warning("⚠️ OpenAI فشل أيضاً!")
         
         return None
 

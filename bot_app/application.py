@@ -448,10 +448,12 @@ def main():
         # ════════════════════════════════════════════════════════════
         groq_key = os.environ.get("GROQ_API_KEY", "")
         deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "")
+        openai_key = get_openai_api_key()
         logger.info(f"🔑 GROQ_API_KEY موجود: {bool(groq_key)} | طوله: {len(groq_key)}")
         logger.info(f"🔑 DEEPSEEK_API_KEY موجود: {bool(deepseek_key)} | طوله: {len(deepseek_key)}")
-        if not groq_key and not deepseek_key:
-            logger.warning("⚠️ لا يوجد مفتاح Groq أو DeepSeek — خدمات التحقق التلقائي لن تعمل.")
+        logger.info(f"🔑 OPENAI_API_KEY موجود: {bool(openai_key)} | طوله: {len(openai_key)}")
+        if not groq_key and not deepseek_key and not openai_key:
+            logger.warning("⚠️ لا يوجد مفتاح Groq أو DeepSeek أو OpenAI — خدمات التحقق التلقائي لن تعمل.")
         # ════════════════════════════════════════════════════════════
         
         logger.info("ℹ️ Telegram command synchronization scheduled in background")
@@ -579,10 +581,12 @@ async def cmd_test_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
     DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+    OPENAI_API_KEY = get_openai_api_key()
 
     msg = "🧪 فحص مفاتيح الذكاء الاصطناعي\n\n"
     msg += f"🔑 GROQ_API_KEY: {'✅ موجود' if GROQ_API_KEY else '❌ مفقود'}\n"
     msg += f"🔑 DEEPSEEK_API_KEY: {'✅ موجود' if DEEPSEEK_API_KEY else '❌ مفقود'}\n\n"
+    msg += f"🔑 OPENAI_API_KEY: {'✅ موجود' if OPENAI_API_KEY else '❌ مفقود'}\n\n"
 
     def _http_status_message(name: str, status_code: int) -> str:
         if status_code == 200:
@@ -601,6 +605,7 @@ async def cmd_test_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ("Groq", GROQ_API_KEY, "https://api.groq.com/openai/v1/chat/completions",
          os.environ.get("GROQ_TEXT_MODEL", "llama-3.1-8b-instant")),
         ("DeepSeek", DEEPSEEK_API_KEY, "https://api.deepseek.com/chat/completions", "deepseek-chat"),
+        ("OpenAI", OPENAI_API_KEY, "https://api.openai.com/v1/chat/completions", "gpt-4o-mini"),
     ]
     for name, key, url, model in providers:
         if not key:
@@ -833,6 +838,12 @@ def _translate_service_names_with_ai(names: list[str]) -> dict[str, str]:
             os.environ.get("DEEPSEEK_API_KEY", ""),
             "https://api.deepseek.com/chat/completions",
             "deepseek-chat",
+        ),
+        (
+            "openai",
+            get_openai_api_key(),
+            "https://api.openai.com/v1/chat/completions",
+            "gpt-4o-mini",
         ),
     ]
     for start in range(0, len(unique_names), 25):

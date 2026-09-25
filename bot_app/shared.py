@@ -286,6 +286,35 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+OPENAI_API_KEY_SETTING = "openai_api_key"
+
+
+def get_openai_api_key_details() -> tuple[str, str]:
+    """Return (database_key, environment_key) without exposing either value."""
+    stored_key = ""
+    try:
+        from .users import get_setting
+        stored_key = (get_setting(OPENAI_API_KEY_SETTING) or "").strip()
+    except Exception as exc:
+        logger.warning("⚠️ تعذّر قراءة مفتاح OpenAI المحفوظ: %s", exc)
+    return stored_key, os.environ.get("OPENAI_API_KEY", "").strip()
+
+
+def get_openai_api_key() -> str:
+    """Prefer the owner-managed key, then fall back to the deployment secret."""
+    stored_key, environment_key = get_openai_api_key_details()
+    return stored_key or environment_key
+
+
+def mask_api_key(value: str) -> str:
+    """Show only a safe fingerprint of an API key in owner-facing messages."""
+    value = str(value or "").strip()
+    if not value:
+        return "غير مضبوط"
+    if len(value) <= 8:
+        return "مخفي"
+    return f"{value[:4]}…{value[-4:]}"
+
 # ────────────────────────────────────────────────────────────
 # ────────────────────────────────────────────────────────────
 import threading

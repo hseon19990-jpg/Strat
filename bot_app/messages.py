@@ -292,6 +292,34 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if state == "os_await_openai_api_key" and is_own:
+        candidate = (text or "").strip()
+        if (
+            not candidate
+            or any(char.isspace() for char in candidate)
+            or len(candidate) < 20
+            or len(candidate) > 300
+        ):
+            await update.message.reply_text(
+                "⚠️ المفتاح غير صالح. أرسله كاملاً في رسالة واحدة، بدون مسافات أو نص إضافي.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("❌ إلغاء", callback_data="os:openai_api"),
+                ]]),
+            )
+            return
+        set_setting(OPENAI_API_KEY_SETTING, candidate)
+        try:
+            await update.message.delete()
+        except Exception as exc:
+            logger.warning("⚠️ تعذّر حذف رسالة مفتاح OpenAI بعد حفظها: %s", exc)
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(
+            "✅ تم حفظ مفتاح OpenAI بنجاح.\n"
+            "يمكنك تغييره أو مسحه لاحقاً من زر «مفتاح OpenAI».",
+            reply_markup=owner_settings_kb(),
+        )
+        return
+
     if state in ("thank_owner_ar", "thank_owner_en") and not is_own:
         if not text:
             await update.message.reply_text("⚠️ أرسل رسالة نصية.")

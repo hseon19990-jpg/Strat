@@ -575,6 +575,61 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                                        reply_markup=owner_settings_kb())
             return
 
+        if data == "os:openai_api" and is_own:
+            stored_key, environment_key = get_openai_api_key_details()
+            if stored_key:
+                status = f"✅ محفوظ داخل قاعدة البيانات: `{mask_api_key(stored_key)}`"
+            elif environment_key:
+                status = f"✅ مضبوط من متغير البيئة: `{mask_api_key(environment_key)}`"
+            else:
+                status = "❌ لا يوجد مفتاح مضبوط حالياً"
+            rows = [
+                [InlineKeyboardButton("➕ إضافة/تغيير المفتاح", callback_data="os:openai_api:set")],
+            ]
+            if stored_key:
+                rows.append([
+                    InlineKeyboardButton("🗑️ مسح المفتاح المحفوظ", callback_data="os:openai_api:delete"),
+                ])
+            rows.append([InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")])
+            await q.edit_message_text(
+                "🤖 *إعداد OpenAI*\n\n"
+                f"{status}\n\n"
+                "المفتاح مخفي عن الرسائل والسجلات. يمكنك تغييره أو مسحه في أي وقت.\n"
+                "المسح يزيل المفتاح الذي أُدخل من داخل البوت فقط؛ أما مفتاح البيئة فيبقى فعالاً.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup(rows),
+            )
+            return
+
+        if data == "os:openai_api:set" and is_own:
+            reset_owner_flow(context, state="os_await_openai_api_key")
+            await q.edit_message_text(
+                "🔐 *إضافة مفتاح OpenAI*\n\n"
+                "أرسل المفتاح في رسالة واحدة فقط.\n"
+                "لن أعرضه في الرد، وسيتم حفظه للمفتاح الجديد تلقائياً.\n\n"
+                "للإلغاء اضغط الزر أدناه.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("❌ إلغاء", callback_data="os:openai_api"),
+                ]]),
+            )
+            return
+
+        if data == "os:openai_api:delete" and is_own:
+            set_setting(OPENAI_API_KEY_SETTING, "")
+            await q.answer("✅ تم مسح مفتاح OpenAI المحفوظ.", show_alert=True)
+            await q.edit_message_text(
+                "🤖 *إعداد OpenAI*\n\n"
+                "✅ تم مسح المفتاح المحفوظ داخل البوت.\n"
+                "إذا كان لديك `OPENAI_API_KEY` في متغيرات البيئة فسيبقى هو المستخدم.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("➕ إضافة/تغيير المفتاح", callback_data="os:openai_api:set"),
+                    InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings"),
+                ]]),
+            )
+            return
+
         if data == "os:account_info" and is_own:
             total_accounts, session_accounts, story_available, avatar_available = _account_info_counts()
             name_count = _account_name_count()

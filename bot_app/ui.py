@@ -758,6 +758,17 @@ def owner_settings_kb():
         f"📱 التحقق برقم الهاتف ({'مفعّل ✅' if _phone_verify_on else 'معطّل ❌'})",
         callback_data="os:toggle_phone_verification"
     )])
+    _openai_db_key, _openai_env_key = get_openai_api_key_details()
+    if _openai_db_key:
+        _openai_suffix = "محفوظ ✅"
+    elif _openai_env_key:
+        _openai_suffix = "من متغير البيئة ✅"
+    else:
+        _openai_suffix = "غير مضبوط ❌"
+    rows.append([InlineKeyboardButton(
+        f"🤖 مفتاح OpenAI ({_openai_suffix})",
+        callback_data="os:openai_api",
+    )])
     for row in rows:
         for i, btn in enumerate(row):
             if btn.callback_data == "os:toggle_maintenance":

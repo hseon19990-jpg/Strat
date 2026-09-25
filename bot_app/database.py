@@ -864,6 +864,7 @@ def init_db():
               ('forced_ref_channel_stars_ai',   '35'),    # سعر القناة بالنجوم — بتحقق
               ('forced_ref_visible',            '0'),
               ('forced_ref_ai_visible',         '0'),
+              ('openai_api_key',                ''),
               ('referral_task_delay',            '30'),  # تأخير بين الحسابات في مهام الإحالة (ثوانٍ)
               ('internal_leave_grace_hours', '24'),
               ('raksh_channel_leave_hours', '72'),
