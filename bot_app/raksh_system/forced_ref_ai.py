@@ -574,13 +574,12 @@ class ForcedRefAIService(RakshService):
     @staticmethod
     def _looks_like_verification_message(message) -> bool:
         """يميّز تحققاً جديداً عن رسالة ترحيب أو رد عادي بعد فتح البوت."""
-        text = (getattr(message, "message", "") or "").casefold()
+        text = ForcedRefAIService._message_text(message).casefold()
         if getattr(message, "photo", None) or getattr(message, "document", None):
             return True
         buttons = [
             button
-            for row in (getattr(message, "buttons", None) or [])
-            for button in (row or [])
+            for button in ForcedRefAIService._message_buttons(message)
             if not ForcedRefAIService._is_invitation_link_button(button)
         ]
         if buttons:
@@ -598,6 +597,8 @@ class ForcedRefAIService(RakshService):
         if getattr(message, "photo", None):
             return True
         media = getattr(message, "media", None)
+        if getattr(media, "photo", None):
+            return True
         document = getattr(media, "document", None) if media else None
         mime_type = getattr(document, "mime_type", "") or ""
         return mime_type.startswith("image/")
@@ -884,6 +885,40 @@ class ForcedRefAIService(RakshService):
             if label is not None and str(label) not in labels:
                 labels.append(str(label))
         return " ".join(labels)
+
+    @staticmethod
+    def _message_text(message) -> str:
+        """Read text from Telegram messages across Telethon message shapes."""
+        for attribute in ("message", "raw_text", "text"):
+            value = getattr(message, attribute, None)
+            if value:
+                return str(value)
+        return ""
+
+    @staticmethod
+    def _message_buttons(message) -> list:
+        """Flatten buttons from both Message.buttons and reply_markup.rows.
+
+        Telethon normally exposes ``Message.buttons``, but it can be empty for
+        edited photo messages or when the reply markup was received through a
+        different layer. Reading the raw markup as a fallback prevents the
+        verifier from treating a visible captcha as a message with no answer.
+        """
+        rows = getattr(message, "buttons", None) or []
+        if not rows:
+            markup = getattr(message, "reply_markup", None)
+            rows = getattr(markup, "rows", None) or []
+
+        flattened = []
+        for row in rows:
+            row_buttons = getattr(row, "buttons", None)
+            if row_buttons is None:
+                if isinstance(row, (list, tuple)):
+                    row_buttons = row
+                else:
+                    row_buttons = [row]
+            flattened.extend(button for button in (row_buttons or []) if button is not None)
+        return flattened
 
     @staticmethod
     def _custom_emoji_id_from_button(button):
@@ -1181,7 +1216,7 @@ class ForcedRefAIService(RakshService):
         vision_button = await self._ask_vision_for_emoji(
             image_bytes,
             buttons,
-            getattr(message, "message", "") or "",
+            self._message_text(message),
         )
         if vision_button is not None:
             try:
@@ -1319,14 +1354,10 @@ class ForcedRefAIService(RakshService):
                     continue
                 if base_id and msg.id <= base_id:
                     continue
-                if msg.reply_markup:
-                    for row in msg.reply_markup.rows:
-                        for btn in row.buttons:
-                            if _is_phone_request_button(btn):
-                                contact_request_msg = msg
-                                break
-                        if contact_request_msg:
-                            break
+                for btn in self._message_buttons(msg):
+                    if _is_phone_request_button(btn):
+                        contact_request_msg = msg
+                        break
                 if contact_request_msg:
                     break
             if contact_request_msg:
@@ -1407,12 +1438,10 @@ class ForcedRefAIService(RakshService):
                     if base_id and msg.id <= base_id:
                         continue
                     buttons = []
-                    if msg.reply_markup:
-                        for row in msg.reply_markup.rows:
-                            for btn in row.buttons:
-                                # لا نضغط زر رابط الدعوة، سواء كان URL أو Callback.
-                                if not self._is_invitation_link_button(btn):
-                                    buttons.append(btn)
+                    for btn in self._message_buttons(msg):
+                        # لا نضغط زر رابط الدعوة، سواء كان URL أو Callback.
+                        if not self._is_invitation_link_button(btn):
+                            buttons.append(btn)
                     # نفضل الأزرار التي تحوي كلمات مفتاحية
                     for btn in buttons:
                         btn_text = (getattr(btn, 'text', '') or '').strip().casefold()
@@ -1522,21 +1551,20 @@ class ForcedRefAIService(RakshService):
             """Return a stable fingerprint that changes when a message is edited."""
             parts = [
                 str(getattr(message, "id", "")),
-                str(getattr(message, "message", "") or ""),
+                self._message_text(message),
                 str(getattr(message, "edit_date", "") or ""),
                 "image" if self._has_image_media(message) else "no-image",
             ]
-            for row in getattr(message, "buttons", None) or []:
-                for button in row:
-                    parts.append(
-                        "|".join(
-                            [
-                                str(getattr(button, "text", "") or ""),
-                                str(getattr(button, "data", "") or ""),
-                                str(getattr(button, "url", "") or ""),
-                            ]
-                        )
+            for button in self._message_buttons(message):
+                parts.append(
+                    "|".join(
+                        [
+                            self._button_label(button),
+                            str(getattr(button, "data", "") or ""),
+                            str(getattr(button, "url", "") or ""),
+                        ]
                     )
+                )
             return "\x1f".join(parts)
 
         async def _verification_action_succeeded(message, button=None) -> bool:
@@ -1546,9 +1574,7 @@ class ForcedRefAIService(RakshService):
             # challenge.  Only an explicit success response is authoritative.
             try:
                 for item in await _read_flow_messages():
-                    if self._is_verification_success_text(
-                        getattr(item, "message", "") or getattr(item, "text", "") or ""
-                    ):
+                    if self._is_verification_success_text(self._message_text(item)):
                         return True
             except Exception:
                 pass
@@ -1598,7 +1624,7 @@ class ForcedRefAIService(RakshService):
             for msg in reversed(incoming_messages):
                 if msg.id <= base_id:
                     continue
-                success_text = (getattr(msg, "message", "") or "").strip().casefold()
+                success_text = self._message_text(msg).strip().casefold()
                 if self._is_verification_success_text(success_text):
                     logger.info(f"✅ تم تأكيد التحقق من {phone_number}: {success_text[:120]}")
                     return True
@@ -1652,19 +1678,19 @@ class ForcedRefAIService(RakshService):
                 verification_message = next(
                     (
                         msg for msg in candidate_messages
-                        if not (getattr(msg, "message", "") or "").strip().startswith("/")
+                        if not self._message_text(msg).strip().startswith("/")
                         and any(
-                            marker in (getattr(msg, "message", "") or "").casefold()
+                            marker in self._message_text(msg).casefold()
                             for marker in code_prompt_markers
                         )
-                        and _extract_code_from_text(getattr(msg, "message", "") or "")
+                        and _extract_code_from_text(self._message_text(msg))
                     ),
                     None,
                 )
 
             if verification_message is None:
                 for msg in candidate_messages:
-                    msg_text = getattr(msg, 'message', '') or ''
+                    msg_text = self._message_text(msg)
                     if msg_text.strip().startswith("/"):
                         continue
                     if any(kw in msg_text for kw in ["أرسل", "التالي", "بالضبط", "اكتب", "retype", "type", "اضغط", "اختر", "انقر"]):
@@ -1673,7 +1699,7 @@ class ForcedRefAIService(RakshService):
 
             if verification_message is None:
                 verification_message = next(
-                    (msg for msg in reversed(candidate_messages) if not getattr(msg, 'message', '').strip().startswith("/")),
+                    (msg for msg in reversed(candidate_messages) if not self._message_text(msg).strip().startswith("/")),
                     None
                 )
 
@@ -1687,7 +1713,7 @@ class ForcedRefAIService(RakshService):
                 continue
             saw_verification = True
 
-            text = getattr(verification_message, 'message', '') or ''
+            text = self._message_text(verification_message)
             image_choice_captcha = (
                 self._has_image_media(verification_message)
                 and self._is_image_emoji_captcha_text(text)
@@ -1781,12 +1807,11 @@ class ForcedRefAIService(RakshService):
             # 3. الضغط على الأزرار
             buttons = []
             invitation_buttons = []
-            for row in getattr(verification_message, 'buttons', None) or []:
-                for btn in row:
-                    if self._is_invitation_link_button(btn):
-                        invitation_buttons.append(btn)
-                    else:
-                        buttons.append(btn)
+            for btn in self._message_buttons(verification_message):
+                if self._is_invitation_link_button(btn):
+                    invitation_buttons.append(btn)
+                else:
+                    buttons.append(btn)
 
             # Numeric button challenge, for example:
             # «اختر الإجابة الصحيحة من القائمة (79)».
