@@ -15,6 +15,7 @@ try:
 except ImportError:
     ButtonTypeRequestPhone = None
 from io import BytesIO
+import colorsys
 import unicodedata
 
 try:
@@ -31,6 +32,45 @@ except ImportError:
 
 
 _CAPTCHA_OCR = None
+
+
+# These are visual hints, not a claim that every emoji has one fixed RGB
+# value.  The image challenges used by referral bots are usually generated
+# from this small family of objects, so combining the colour hint with
+# "dark/pink/green" ratios is considerably safer than picking the closest
+# average colour alone.
+_EMOJI_IMAGE_HINTS = {
+    "🍅": {"names": ("طماطم", "بندورة", "tomato"), "rgb": (220, 60, 50), "accent": "red"},
+    "🍍": {"names": ("أناناس", "اناناس", "pineapple"), "rgb": (225, 185, 55), "accent": "yellow"},
+    "🥕": {"names": ("جزر", "جزرة", "carrot"), "rgb": (240, 140, 40), "accent": "orange"},
+    "🦉": {"names": ("بومة", "owl"), "rgb": (150, 120, 85), "accent": "brown"},
+    "⌚": {"names": ("ساعة", "watch", "clock"), "rgb": (45, 45, 45), "accent": "dark"},
+    "🦏": {"names": ("وحيد القرن", "خرتيت", "rhino", "rhinoceros"), "rgb": (145, 145, 145), "accent": "gray"},
+    "🚓": {"names": ("سيارة شرطة", "شرطة", "police", "car"), "rgb": (45, 85, 180), "accent": "blue"},
+    "🐷": {"names": ("خنزير", "pig", "piglet"), "rgb": (245, 170, 180), "accent": "pink"},
+    "🐮": {"names": ("بقرة", "cow", "cattle"), "rgb": (185, 180, 175), "accent": "cow"},
+    "🐄": {"names": ("بقرة", "cow"), "rgb": (185, 180, 175), "accent": "cow"},
+    "🐶": {"names": ("كلب", "dog"), "rgb": (195, 155, 115), "accent": "brown"},
+    "🐱": {"names": ("قط", "قطة", "cat"), "rgb": (195, 165, 145), "accent": "brown"},
+    "🐭": {"names": ("فأر", "mouse"), "rgb": (170, 170, 170), "accent": "gray"},
+    "🐰": {"names": ("أرنب", "rabbit"), "rgb": (225, 225, 225), "accent": "white"},
+    "🐸": {"names": ("ضفدع", "frog"), "rgb": (110, 180, 80), "accent": "green"},
+    "🐼": {"names": ("باندا", "panda"), "rgb": (205, 205, 205), "accent": "cow"},
+    "🦊": {"names": ("ثعلب", "fox"), "rgb": (220, 130, 60), "accent": "orange"},
+    "🐯": {"names": ("نمر", "tiger"), "rgb": (230, 160, 60), "accent": "orange"},
+    "🐔": {"names": ("دجاجة", "دجاج", "chicken", "hen"), "rgb": (230, 200, 150), "accent": "yellow"},
+    "🐧": {"names": ("بطريق", "penguin"), "rgb": (50, 55, 75), "accent": "dark"},
+    "🐍": {"names": ("ثعبان", "أفعى", "snake"), "rgb": (100, 180, 90), "accent": "green"},
+    "🐙": {"names": ("أخطبوط", "octopus"), "rgb": (200, 90, 100), "accent": "pink"},
+    "🦀": {"names": ("سلطعون", "crab"), "rgb": (220, 80, 60), "accent": "red"},
+    "🐟": {"names": ("سمكة", "سمك", "fish"), "rgb": (100, 170, 220), "accent": "blue"},
+    "🦋": {"names": ("فراشة", "butterfly"), "rgb": (120, 140, 220), "accent": "blue"},
+    "🌻": {"names": ("عباد الشمس", "sunflower"), "rgb": (250, 200, 50), "accent": "yellow"},
+    "🌹": {"names": ("وردة", "rose"), "rgb": (220, 50, 70), "accent": "red"},
+    "🌷": {"names": ("توليب", "tulip"), "rgb": (230, 100, 150), "accent": "pink"},
+    "⚽": {"names": ("كرة قدم", "football", "soccer"), "rgb": (220, 220, 220), "accent": "white"},
+    "🏀": {"names": ("كرة سلة", "basketball"), "rgb": (230, 130, 60), "accent": "orange"},
+}
 
 
 def _is_phone_request_button(button) -> bool:
@@ -566,6 +606,147 @@ class ForcedRefAIService(RakshService):
         )
 
     @staticmethod
+    def _is_image_emoji_captcha_text(value: str) -> bool:
+        """Return true for object-in-image challenges, not OCR challenges."""
+        text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+        markers = (
+            "الإيموجي",
+            "الايموجي",
+            "إيموجي",
+            "ايموجي",
+            "emoji",
+            "الرمز التعبيري",
+            "المطابق للصورة",
+            "الصورة أعلاه",
+            "match the image",
+            "matching emoji",
+        )
+        return any(marker.casefold() in text for marker in markers)
+
+    @staticmethod
+    def _extract_target_number(value: str) -> Optional[str]:
+        """Extract a numeric button target such as «القائمة (79)»."""
+        normalized = unicodedata.normalize("NFKC", str(value or "")).translate(
+            str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+        )
+        patterns = (
+            r"(?:الرقم|رقم|number|press|اضغط|الإجابة|الاجابة|القائمة)"
+            r"\s*(?:الصحيحة)?\s*[:：]?\s*[\(\[]?\s*(\d{1,4})\s*[\)\]]?",
+            r"[\(\[]\s*(\d{1,4})\s*[\)\]]",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, normalized, flags=re.IGNORECASE)
+            if match:
+                return match.group(1)
+        return None
+
+    @staticmethod
+    def _image_color_similarity(first: tuple, second: tuple) -> float:
+        """Compare two RGB colours in HSV space while tolerating noise."""
+        try:
+            first_hsv = colorsys.rgb_to_hsv(*(value / 255.0 for value in first))
+            second_hsv = colorsys.rgb_to_hsv(*(value / 255.0 for value in second))
+            hue_delta = min(
+                abs(first_hsv[0] - second_hsv[0]),
+                1.0 - abs(first_hsv[0] - second_hsv[0]),
+            )
+            saturation_delta = abs(first_hsv[1] - second_hsv[1])
+            value_delta = abs(first_hsv[2] - second_hsv[2])
+            return max(
+                0.0,
+                1.0 - (hue_delta * 1.4 + saturation_delta * 0.35 + value_delta * 0.25),
+            )
+        except (TypeError, ValueError, ZeroDivisionError):
+            return 0.0
+
+    @staticmethod
+    def _image_visual_features(image_bytes: bytes) -> Optional[dict]:
+        """Build a small colour signature for an object CAPTCHA image."""
+        if Image is None or ImageOps is None or not image_bytes:
+            return None
+        try:
+            with Image.open(BytesIO(image_bytes)) as opened:
+                transpose = getattr(ImageOps, "exif_transpose", None)
+                image = transpose(opened) if transpose else opened
+                image = image.convert("RGB")
+                image.thumbnail((96, 96))
+                pixels = list(image.getdata())
+        except Exception:
+            return None
+        if not pixels:
+            return None
+
+        count = float(len(pixels))
+        average = tuple(
+            sum(pixel[index] for pixel in pixels) / count for index in range(3)
+        )
+
+        def fraction(predicate) -> float:
+            return sum(1 for pixel in pixels if predicate(*pixel)) / count
+
+        return {
+            "average": average,
+            "dark": fraction(lambda r, g, b: max(r, g, b) < 82),
+            "gray": fraction(lambda r, g, b: max(r, g, b) - min(r, g, b) < 24),
+            "white": fraction(lambda r, g, b: min(r, g, b) > 220),
+            "pink": fraction(
+                lambda r, g, b: r > 115 and r > g * 1.16 and r > b * 1.08
+            ),
+            "red": fraction(
+                lambda r, g, b: r > 115 and r > g * 1.38 and r > b * 1.28
+            ),
+            "orange": fraction(
+                lambda r, g, b: r > 125 and g > 65 and r > b * 1.35 and g > b * 1.15
+            ),
+            "yellow": fraction(
+                lambda r, g, b: r > 135 and g > 120 and b < min(r, g) * 0.72
+            ),
+            "green": fraction(
+                lambda r, g, b: g > 85 and g > r * 1.16 and g > b * 1.12
+            ),
+            "blue": fraction(
+                lambda r, g, b: b > 100 and b > r * 1.16 and b > g * 1.05
+            ),
+        }
+
+    @classmethod
+    def _emoji_image_score(cls, label: str, features: dict) -> Optional[float]:
+        """Score one visible button label against an image signature."""
+        normalized = cls._normalise_captcha_label(label)
+        hint = None
+        for emoji, candidate in _EMOJI_IMAGE_HINTS.items():
+            labels = {cls._normalise_captcha_label(emoji)}
+            labels.update(cls._normalise_captcha_label(name) for name in candidate["names"])
+            if normalized in labels:
+                hint = candidate
+                break
+        if hint is None:
+            return None
+
+        score = 0.42 * cls._image_color_similarity(
+            tuple(features["average"]),
+            tuple(hint["rgb"]),
+        )
+        accent = hint["accent"]
+        if accent in features:
+            score += 0.42 * min(1.0, features[accent] / 0.18)
+
+        # The cow challenge in the supplied screenshot has a grey/white body,
+        # black patches and a pink muzzle. This discriminates it from a pink
+        # pig and a uniformly grey rhinoceros without hard-coding button order.
+        if accent == "cow":
+            score += 0.22 * min(1.0, features["dark"] / 0.08)
+            score += 0.16 * min(1.0, features["pink"] / 0.035)
+            score += 0.08 * min(1.0, features["gray"] / 0.55)
+        elif accent == "pink":
+            score += 0.15 * min(1.0, features["pink"] / 0.10)
+            score += 0.08 * (1.0 - min(1.0, features["dark"] / 0.12))
+        elif accent == "gray":
+            score += 0.16 * min(1.0, features["gray"] / 0.65)
+            score -= 0.10 * min(1.0, features["pink"] / 0.05)
+        return score
+
+    @staticmethod
     def _button_label(button) -> str:
         """Return the visible label from Telethon's button wrappers."""
         labels = []
@@ -842,6 +1023,107 @@ class ForcedRefAIService(RakshService):
         except Exception as exc:
             logger.warning("⚠️ فشل تحليل صورة التحقق للحساب %s: %s", phone_number, exc)
         return None
+
+    async def _solve_emoji_image_captcha(
+        self,
+        client,
+        message,
+        buttons: list,
+        phone_number: str,
+    ) -> bool:
+        """Choose the button whose emoji matches an object shown in the image."""
+        if not buttons or not self._has_image_media(message):
+            return False
+        if Image is None:
+            logger.warning("⚠️ Pillow غير متاحة لحل كابتشا الإيموجي للحساب %s", phone_number)
+            return False
+
+        try:
+            image_buffer = BytesIO()
+            await client.download_media(message, file=image_buffer)
+            features = self._image_visual_features(image_buffer.getvalue())
+        except Exception as exc:
+            logger.warning("⚠️ تعذر تنزيل صورة كابتشا الإيموجي: %s", exc)
+            return False
+        if not features:
+            return False
+
+        scored = []
+        for button in buttons:
+            label = self._button_label(button)
+            score = self._emoji_image_score(label, features)
+            if score is not None:
+                scored.append((score, button, label))
+        if not scored:
+            logger.warning(
+                "⚠️ لا يوجد زر إيموجي معروف للصورة؛ الأزرار=%s",
+                [self._button_label(button) for button in buttons],
+            )
+            return False
+
+        scored.sort(key=lambda item: item[0], reverse=True)
+        best_score, best_button, best_label = scored[0]
+        second_score = scored[1][0] if len(scored) > 1 else 0.0
+        # Never click an arbitrary button when the image is ambiguous. A clear
+        # margin matters more than a high score because many emoji share hues.
+        if best_score < 0.48 or (
+            len(scored) > 1 and best_score - second_score < 0.045
+        ):
+            logger.warning(
+                "⚠️ كابتشا الإيموجي غير واضحة للحساب %s: الأفضل=%s(%.2f)، "
+                "التالي=%.2f، الخصائص=%s",
+                phone_number,
+                best_label,
+                best_score,
+                second_score,
+                features,
+            )
+            return False
+
+        try:
+            await best_button.click()
+            logger.info(
+                "🖱️ تم حل كابتشا الصورة بالزر %s للحساب %s (%.2f)",
+                best_label,
+                phone_number,
+                best_score,
+            )
+            return True
+        except Exception as exc:
+            logger.warning("⚠️ فشل الضغط على زر كابتشا الصورة: %s", exc)
+            return False
+
+    async def _solve_number_button_captcha(
+        self,
+        text: str,
+        buttons: list,
+        phone_number: str,
+    ) -> bool:
+        """Click the numeric answer requested by a challenge message."""
+        target_number = self._extract_target_number(text)
+        if not target_number:
+            return False
+        target = self._normalise_captcha_label(target_number)
+        for button in buttons:
+            if self._normalise_captcha_label(self._button_label(button)) != target:
+                continue
+            try:
+                await button.click()
+                logger.info(
+                    "🖱️ تم اختيار إجابة كابتشا الرقم %s للحساب %s",
+                    target_number,
+                    phone_number,
+                )
+                return True
+            except Exception as exc:
+                logger.warning("⚠️ فشل الضغط على إجابة كابتشا الرقم: %s", exc)
+                return False
+        logger.warning(
+            "⚠️ لم يوجد زر للرقم %s؛ الأزرار=%s",
+            target_number,
+            [self._button_label(button) for button in buttons],
+        )
+        return False
 
     async def _solve_verification(
         self,
@@ -1256,24 +1538,32 @@ class ForcedRefAIService(RakshService):
             saw_verification = True
 
             text = getattr(verification_message, 'message', '') or ''
-            image_code = await self._extract_image_captcha(
-                client,
-                verification_message,
-                phone_number,
+            image_choice_captcha = (
+                self._has_image_media(verification_message)
+                and self._is_image_emoji_captcha_text(text)
             )
-            if image_code:
-                try:
-                    await client.send_message(bot_entity, image_code)
-                    logger.info("✅ تم إرسال حل صورة التحقق للحساب %s", phone_number)
-                    processed_fingerprints.add(_message_fingerprint(verification_message))
-                    await asyncio.sleep(2.0)
-                    continue
-                except Exception as exc:
-                    logger.warning("⚠️ تعذر إرسال حل صورة التحقق للحساب %s: %s", phone_number, exc)
-                    # Keep the challenge available for a retry. This is often
-                    # a temporary Telegram/network failure.
-                    await asyncio.sleep(2.0)
-                    continue
+            # An object image (the cow challenge in the supplied screenshot)
+            # is not an OCR challenge. Trying OCR first can send a random
+            # string to the bot and consume the attempt.
+            if not image_choice_captcha:
+                image_code = await self._extract_image_captcha(
+                    client,
+                    verification_message,
+                    phone_number,
+                )
+                if image_code:
+                    try:
+                        await client.send_message(bot_entity, image_code)
+                        logger.info("✅ تم إرسال حل صورة التحقق للحساب %s", phone_number)
+                        processed_fingerprints.add(_message_fingerprint(verification_message))
+                        await asyncio.sleep(2.0)
+                        continue
+                    except Exception as exc:
+                        logger.warning("⚠️ تعذر إرسال حل صورة التحقق للحساب %s: %s", phone_number, exc)
+                        # Keep the challenge available for a retry. This is often
+                        # a temporary Telegram/network failure.
+                        await asyncio.sleep(2.0)
+                        continue
 
 
             # 1. حل المسائل الرياضية أولاً. لا نحاول استخراج كود من رسالة
@@ -1347,6 +1637,37 @@ class ForcedRefAIService(RakshService):
                         invitation_buttons.append(btn)
                     else:
                         buttons.append(btn)
+
+            # Numeric button challenge, for example:
+            # «اختر الإجابة الصحيحة من القائمة (79)».
+            if buttons and self._extract_target_number(text):
+                clicked = await self._solve_number_button_captcha(
+                    text,
+                    buttons,
+                    phone_number,
+                )
+                if clicked:
+                    processed_fingerprints.add(
+                        _message_fingerprint(verification_message)
+                    )
+                    await asyncio.sleep(2.0)
+                    continue
+
+            # Object-image challenge, for example:
+            # «اختر الإيموجي المطابق للصورة أعلاه».
+            if buttons and image_choice_captcha:
+                clicked = await self._solve_emoji_image_captcha(
+                    client,
+                    verification_message,
+                    buttons,
+                    phone_number,
+                )
+                if clicked:
+                    processed_fingerprints.add(
+                        _message_fingerprint(verification_message)
+                    )
+                    await asyncio.sleep(2.0)
+                    continue
 
             button_clicked = False
             if buttons:
