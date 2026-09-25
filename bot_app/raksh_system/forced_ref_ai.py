@@ -15,7 +15,10 @@ try:
 except ImportError:
     ButtonTypeRequestPhone = None
 from io import BytesIO
+import base64
 import colorsys
+import os
+import requests
 import unicodedata
 
 try:
@@ -40,6 +43,10 @@ _CAPTCHA_OCR = None
 # "dark/pink/green" ratios is considerably safer than picking the closest
 # average colour alone.
 _EMOJI_IMAGE_HINTS = {
+    "🔑": {"names": ("مفتاح", "key"), "rgb": (220, 180, 55), "accent": "yellow"},
+    "🚀": {"names": ("صاروخ", "rocket"), "rgb": (210, 75, 90), "accent": "rocket"},
+    "🍕": {"names": ("بيتزا", "pizza"), "rgb": (220, 135, 55), "accent": "orange"},
+    "🍒": {"names": ("كرز", "cherries", "cherry"), "rgb": (190, 35, 55), "accent": "red"},
     "🍅": {"names": ("طماطم", "بندورة", "tomato"), "rgb": (220, 60, 50), "accent": "red"},
     "🍍": {"names": ("أناناس", "اناناس", "pineapple"), "rgb": (225, 185, 55), "accent": "yellow"},
     "🥕": {"names": ("جزر", "جزرة", "carrot"), "rgb": (240, 140, 40), "accent": "orange"},
@@ -61,6 +68,7 @@ _EMOJI_IMAGE_HINTS = {
     "🐔": {"names": ("دجاجة", "دجاج", "chicken", "hen"), "rgb": (230, 200, 150), "accent": "yellow"},
     "🐧": {"names": ("بطريق", "penguin"), "rgb": (50, 55, 75), "accent": "dark"},
     "🐍": {"names": ("ثعبان", "أفعى", "snake"), "rgb": (100, 180, 90), "accent": "green"},
+    "🥑": {"names": ("أفوكادو", "افوكادو", "avocado"), "rgb": (105, 165, 80), "accent": "green"},
     "🐙": {"names": ("أخطبوط", "octopus"), "rgb": (200, 90, 100), "accent": "pink"},
     "🦀": {"names": ("سلطعون", "crab"), "rgb": (220, 80, 60), "accent": "red"},
     "🐟": {"names": ("سمكة", "سمك", "fish"), "rgb": (100, 170, 220), "accent": "blue"},
@@ -738,6 +746,15 @@ class ForcedRefAIService(RakshService):
             score += 0.22 * min(1.0, features["dark"] / 0.08)
             score += 0.16 * min(1.0, features["pink"] / 0.035)
             score += 0.08 * min(1.0, features["gray"] / 0.55)
+        elif accent == "rocket":
+            # A rocket in these challenges has three simultaneous accents:
+            # red body/fins, a blue window and an orange flame. The pale
+            # background can dominate the average colour, so this composite
+            # signature is more useful than RGB distance alone.
+            score += 0.24 * min(1.0, features["red"] / 0.035)
+            score += 0.22 * min(1.0, features["blue"] / 0.006)
+            score += 0.20 * min(1.0, features["orange"] / 0.008)
+            score += 0.10 * min(1.0, features["white"] / 0.40)
         elif accent == "pink":
             score += 0.15 * min(1.0, features["pink"] / 0.10)
             score += 0.08 * (1.0 - min(1.0, features["dark"] / 0.12))
@@ -745,6 +762,118 @@ class ForcedRefAIService(RakshService):
             score += 0.16 * min(1.0, features["gray"] / 0.65)
             score -= 0.10 * min(1.0, features["pink"] / 0.05)
         return score
+
+    @classmethod
+    def _match_vision_answer(cls, answer: str, buttons: list):
+        """Map a vision model's exact emoji/name answer to one button."""
+        answer_normalized = cls._normalise_captcha_label(
+            str(answer or "").strip("`'\"“”«»()[]{}<>،,.;:؛!?؟")
+        )
+        if not answer_normalized:
+            return None
+
+        for button in buttons:
+            label = cls._button_label(button)
+            if answer_normalized == cls._normalise_captcha_label(label):
+                return button
+
+        for emoji, hint in _EMOJI_IMAGE_HINTS.items():
+            names = {
+                cls._normalise_captcha_label(emoji),
+                *(cls._normalise_captcha_label(name) for name in hint["names"]),
+            }
+            if answer_normalized not in names:
+                continue
+            for button in buttons:
+                label = cls._normalise_captcha_label(cls._button_label(button))
+                if label in names:
+                    return button
+        return None
+
+    async def _ask_vision_for_emoji(
+        self,
+        image_bytes: bytes,
+        buttons: list,
+        prompt: str,
+    ):
+        """Use the configured Groq vision model for changing object images."""
+        api_key = os.environ.get("GROQ_API_KEY", "").strip()
+        if not api_key or not image_bytes or not buttons:
+            return None
+
+        labels = [self._button_label(button) for button in buttons]
+        candidates = ", ".join(label for label in labels if label)
+        if not candidates:
+            return None
+        vision_prompt = (
+            "This is an object-image CAPTCHA. Identify the single object shown "
+            "in the image and choose the matching candidate button. "
+            "The candidate buttons are: "
+            f"{candidates}. "
+            "Return only the exact candidate emoji or its common name, with no "
+            "explanation. Do not choose based on button position. "
+            f"Instruction text: {prompt[:300]}"
+        )
+        encoded = base64.b64encode(image_bytes).decode("ascii")
+        configured = os.environ.get("GROQ_VISION_MODEL", "").strip()
+        models = [
+            configured,
+            "meta-llama/llama-4-scout-17b-16e-instruct",
+            "meta-llama/llama-4-maverick-17b-128e-instruct",
+            "llama-3.2-90b-vision-preview",
+        ]
+        models = list(dict.fromkeys(model for model in models if model))
+
+        def request_model():
+            for model in models:
+                try:
+                    response = requests.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "model": model,
+                            "messages": [{
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": vision_prompt},
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": f"data:image/jpeg;base64,{encoded}",
+                                        },
+                                    },
+                                ],
+                            }],
+                            "max_tokens": 16,
+                            "temperature": 0,
+                        },
+                        timeout=30,
+                    )
+                    if response.status_code != 200:
+                        logger.warning(
+                            "⚠️ نموذج الرؤية %s أعاد %s: %s",
+                            model,
+                            response.status_code,
+                            response.text[:160],
+                        )
+                        continue
+                    content = (
+                        response.json()
+                        .get("choices", [{}])[0]
+                        .get("message", {})
+                        .get("content", "")
+                    )
+                    if content:
+                        return str(content).strip()
+                except Exception as exc:
+                    logger.warning("⚠️ تعذر استخدام نموذج الرؤية %s: %s", model, exc)
+            return None
+
+        answer = await asyncio.to_thread(request_model)
+        return self._match_vision_answer(answer, buttons) if answer else None
 
     @staticmethod
     def _button_label(button) -> str:
@@ -1041,10 +1170,31 @@ class ForcedRefAIService(RakshService):
         try:
             image_buffer = BytesIO()
             await client.download_media(message, file=image_buffer)
-            features = self._image_visual_features(image_buffer.getvalue())
+            image_bytes = image_buffer.getvalue()
         except Exception as exc:
             logger.warning("⚠️ تعذر تنزيل صورة كابتشا الإيموجي: %s", exc)
             return False
+
+        # The image changes on every challenge. When a vision key is
+        # configured, let the model identify the object from the actual
+        # candidate list instead of relying on a fixed colour catalogue.
+        vision_button = await self._ask_vision_for_emoji(
+            image_bytes,
+            buttons,
+            getattr(message, "message", "") or "",
+        )
+        if vision_button is not None:
+            try:
+                await vision_button.click()
+                logger.info(
+                    "🖱️ تم حل كابتشا الصورة بالرؤية الديناميكية: %s",
+                    self._button_label(vision_button),
+                )
+                return True
+            except Exception as exc:
+                logger.warning("⚠️ فشل الضغط على نتيجة الرؤية الديناميكية: %s", exc)
+
+        features = self._image_visual_features(image_bytes)
         if not features:
             return False
 
