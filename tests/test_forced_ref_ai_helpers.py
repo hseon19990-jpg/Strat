@@ -250,6 +250,48 @@ class ForcedRefAIHelperTests(unittest.TestCase):
         ]
         self.assertGreater(rocket, max(alternatives))
 
+    def test_donut_signature_beats_fire_and_fruit_buttons(self):
+        features = {
+            "average": (226, 211, 207),
+            "dark": 0.055,
+            "gray": 0.64,
+            "white": 0.46,
+            "pink": 0.015,
+            "red": 0.008,
+            "orange": 0.075,
+            "brown": 0.13,
+            "yellow": 0.004,
+            "green": 0.003,
+            "blue": 0.006,
+        }
+        donut = self.helper._emoji_image_score("🍩", features)
+        alternatives = [
+            self.helper._emoji_image_score(label, features)
+            for label in ("🔥", "🍍", "🥕", "🍕")
+        ]
+        self.assertGreater(donut, max(alternatives))
+
+    def test_fire_signature_beats_donut_and_cool_colours(self):
+        features = {
+            "average": (230, 216, 207),
+            "dark": 0.018,
+            "gray": 0.68,
+            "white": 0.50,
+            "pink": 0.01,
+            "red": 0.072,
+            "orange": 0.10,
+            "brown": 0.018,
+            "yellow": 0.045,
+            "green": 0.004,
+            "blue": 0.004,
+        }
+        fire = self.helper._emoji_image_score("🔥", features)
+        alternatives = [
+            self.helper._emoji_image_score(label, features)
+            for label in ("🍩", "🐟", "🦋", "🥑")
+        ]
+        self.assertGreater(fire, max(alternatives))
+
     def test_dynamic_vision_answer_is_matched_to_candidate_button(self):
         buttons = [FakeButton("🔑"), FakeButton("🚀"), FakeButton("🍕")]
         self.assertIs(
@@ -259,6 +301,19 @@ class ForcedRefAIHelperTests(unittest.TestCase):
         self.assertIs(
             self.helper._match_vision_answer("🚀", buttons),
             buttons[1],
+        )
+
+    def test_dynamic_vision_index_matches_unknown_object_without_catalogue(self):
+        # The object may be absent from _EMOJI_IMAGE_HINTS. The vision model
+        # can still choose it by the numbered candidate list.
+        buttons = [FakeButton("🪿"), FakeButton("🪼"), FakeButton("🦣")]
+        self.assertIs(
+            self.helper._match_vision_answer("candidate 2", buttons),
+            buttons[1],
+        )
+        self.assertIs(
+            self.helper._match_vision_answer("3", buttons),
+            buttons[2],
         )
 
     def test_math_answer_is_not_followed_by_same_message_button_click(self):
