@@ -1,7 +1,37 @@
 # votes_ai_fixed.py
 from .common import *
 from telethon.tl.functions.messages import GetBotCallbackAnswerRequest
-from telethon.tl.types import KeyboardButtonRequestPhone, InputMediaContact
+from telethon.tl.types import InputMediaContact
+try:
+    from telethon.tl.types import KeyboardButtonRequestPhone
+except ImportError:
+    KeyboardButtonRequestPhone = None
+try:
+    from telethon.tl.types import ButtonTypeRequestPhone
+except ImportError:
+    ButtonTypeRequestPhone = None
+
+
+def _is_phone_request_button(button) -> bool:
+    """Support legacy and current Telegram button representations."""
+    candidates = [button, getattr(button, "button", None)]
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        if (
+            KeyboardButtonRequestPhone is not None
+            and isinstance(candidate, KeyboardButtonRequestPhone)
+        ):
+            return True
+        button_type = getattr(candidate, "type", None)
+        if (
+            ButtonTypeRequestPhone is not None
+            and isinstance(button_type, ButtonTypeRequestPhone)
+        ):
+            return True
+        if type(button_type).__name__ == "ButtonTypeRequestPhone":
+            return True
+    return False
 
 class VotesAIService(RakshService):
     """خدمة رشق تصويت مع تحقق - كل شيء في مكان واحد (نسخة مستقلة)"""
@@ -412,7 +442,7 @@ class VotesAIService(RakshService):
                 if msg.reply_markup:
                     for row in msg.reply_markup.rows:
                         for btn in row.buttons:
-                            if isinstance(btn, KeyboardButtonRequestPhone):
+                            if _is_phone_request_button(btn):
                                 contact_request_msg = msg
                                 break
                         if contact_request_msg:
