@@ -26,7 +26,9 @@ def _load_helper_methods():
         "_normalise_captcha_label",
         "_normalise_math_text",
         "_button_label",
+        "_custom_emoji_id_from_button",
         "_captcha_target_labels",
+        "_captcha_target_custom_emoji_ids",
     }
     namespace = {"re": re, "unicodedata": unicodedata}
     methods = {}
@@ -50,21 +52,31 @@ def _load_helper_methods():
 
     for name, method in methods.items():
         setattr(Helper, name, staticmethod(method))
-    # _captcha_target_labels is a classmethod in production, but the helper
-    # method only needs the class to call _normalise_captcha_label.
+    # These target-extraction helpers are classmethods in production, but the
+    # helper methods only need the class to call normalization utilities.
     Helper._captcha_target_labels = classmethod(methods["_captcha_target_labels"])
+    Helper._captcha_target_custom_emoji_ids = classmethod(
+        methods["_captcha_target_custom_emoji_ids"]
+    )
     return Helper
 
 
 class FakeButton:
-    def __init__(self, text="", url=None):
+    def __init__(self, text="", url=None, style=None):
         self.text = text
         self.url = url
+        self.style = style
+
+
+class FakeStyle:
+    def __init__(self, icon=None):
+        self.icon = icon
 
 
 class MessageEntityCustomEmoji:
-    def __init__(self, offset):
+    def __init__(self, offset, document_id):
         self.offset = offset
+        self.document_id = document_id
 
 
 class FakeMessage:
@@ -86,7 +98,7 @@ class ForcedRefAIHelperTests(unittest.TestCase):
         marker_offset = text.index("🐙")
         # A real Telethon entity exposes this class name; this lightweight
         # object keeps the test independent of the Telegram dependencies.
-        entity = MessageEntityCustomEmoji(marker_offset)
+        entity = MessageEntityCustomEmoji(marker_offset, 987654321)
         message = FakeMessage(
             text,
             [(entity, "🐙")],
@@ -97,6 +109,28 @@ class ForcedRefAIHelperTests(unittest.TestCase):
 
         self.assertIn("🐙", normalised)
         self.assertNotIn("🤖", normalised)
+
+    def test_paid_emoji_matches_button_style_icon(self):
+        text = "🤖 للتحقق اضغط على الرمز: 🐙"
+        marker_offset = text.index("🐙")
+        message = FakeMessage(
+            text,
+            [(MessageEntityCustomEmoji(marker_offset, 987654321), "🐙")],
+        )
+        target_ids = self.helper._captcha_target_custom_emoji_ids(message, text)
+
+        matching = FakeButton("🧍", style=FakeStyle(987654321))
+        other = FakeButton("🐙", style=FakeStyle(111111111))
+
+        self.assertEqual(target_ids, {987654321})
+        self.assertEqual(
+            self.helper._custom_emoji_id_from_button(matching),
+            987654321,
+        )
+        self.assertNotEqual(
+            self.helper._custom_emoji_id_from_button(other),
+            next(iter(target_ids)),
+        )
 
     def test_invitation_detection_does_not_discard_arbitrary_url_button(self):
         self.assertFalse(
