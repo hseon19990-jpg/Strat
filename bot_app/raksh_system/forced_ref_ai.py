@@ -8,7 +8,6 @@ from .common import *
 from telethon.tl.types import InputMediaContact, KeyboardButtonRequestPhone
 from io import BytesIO
 import unicodedata
-import colorsys
 
 try:
     import ddddocr
@@ -24,71 +23,6 @@ except ImportError:
 
 
 _CAPTCHA_OCR = None
-
-
-# ═══════════════════════════════════════════════════════════════
-# خرائط مرجعية لكابتشا "اختر الإيموجي المطابق"
-# كل إيموجي → (لون سائد RGB, أسماء عربية/إنجليزية محتملة)
-# ═══════════════════════════════════════════════════════════════
-_EMOJI_COLOR_HINTS = {
-    "🍅": {"name": ["طماطم", "بندورة", "tomato"], "rgb": (220, 60, 50)},
-    "🥕": {"name": ["جزر", "جزرة", "carrot"], "rgb": (240, 140, 40)},
-    "🦇": {"name": ["خفاش", "bat"], "rgb": (80, 60, 80)},
-    "⌚": {"name": ["ساعة", "watch", "clock"], "rgb": (30, 30, 30)},
-    "🦏": {"name": ["وحيد القرن", "خرتيت", "rhino", "rhinoceros"], "rgb": (140, 140, 140)},
-    "🚓": {"name": ["سيارة شرطة", "شرطة", "police", "car"], "rgb": (40, 80, 180)},
-    "🐷": {"name": ["خنزير", "pig", "piglet"], "rgb": (250, 170, 180)},
-    "🐮": {"name": ["بقرة", "cow", "cattle"], "rgb": (240, 180, 180)},
-    "🐄": {"name": ["بقرة", "cow"], "rgb": (240, 180, 180)},
-    "🍎": {"name": ["تفاحة", "apple"], "rgb": (220, 50, 50)},
-    "🍌": {"name": ["موز", "banana"], "rgb": (250, 220, 60)},
-    "🍇": {"name": ["عنب", "grapes"], "rgb": (140, 60, 160)},
-    "🍓": {"name": ["فراولة", "strawberry"], "rgb": (220, 50, 80)},
-    "🐶": {"name": ["كلب", "dog"], "rgb": (200, 160, 120)},
-    "🐱": {"name": ["قط", "قطة", "cat"], "rgb": (200, 170, 150)},
-    "🐭": {"name": ["فأر", "mouse"], "rgb": (170, 170, 170)},
-    "🐰": {"name": ["أرنب", "rabbit"], "rgb": (230, 230, 230)},
-    "🦊": {"name": ["ثعلب", "fox"], "rgb": (220, 130, 60)},
-    "🐻": {"name": ["دب", "bear"], "rgb": (150, 100, 70)},
-    "🐼": {"name": ["باندا", "panda"], "rgb": (230, 230, 230)},
-    "🐨": {"name": ["كوالا", "koala"], "rgb": (170, 170, 170)},
-    "🐯": {"name": ["نمر", "tiger"], "rgb": (230, 160, 60)},
-    "🦁": {"name": ["أسد", "lion"], "rgb": (220, 170, 80)},
-    "🐸": {"name": ["ضفدع", "frog"], "rgb": (110, 180, 80)},
-    "🐵": {"name": ["قرد", "monkey"], "rgb": (180, 130, 90)},
-    "🐔": {"name": ["دجاجة", "دجاج", "chicken", "hen"], "rgb": (230, 200, 150)},
-    "🐧": {"name": ["بطريق", "penguin"], "rgb": (40, 40, 60)},
-    "🐦": {"name": ["طائر", "عصفور", "bird"], "rgb": (90, 160, 220)},
-    "🦆": {"name": ["بطة", "duck"], "rgb": (200, 200, 180)},
-    "🦉": {"name": ["بومة", "owl"], "rgb": (170, 140, 100)},
-    "🐴": {"name": ["حصان", "horse"], "rgb": (170, 120, 80)},
-    "🦄": {"name": ["يونيكورن", "unicorn"], "rgb": (240, 180, 220)},
-    "🐝": {"name": ["نحلة", "bee"], "rgb": (240, 200, 60)},
-    "🦋": {"name": ["فراشة", "butterfly"], "rgb": (120, 140, 220)},
-    "🐢": {"name": ["سلحفاة", "turtle"], "rgb": (100, 150, 90)},
-    "🐍": {"name": ["ثعبان", "أفعى", "snake"], "rgb": (100, 180, 90)},
-    "🐙": {"name": ["أخطبوط", "octopus"], "rgb": (200, 90, 100)},
-    "🦀": {"name": ["سلطعون", "crab"], "rgb": (220, 80, 60)},
-    "🐟": {"name": ["سمكة", "سمك", "fish"], "rgb": (100, 170, 220)},
-    "🐬": {"name": ["دلفين", "dolphin"], "rgb": (90, 150, 210)},
-    "🐳": {"name": ["حوت", "whale"], "rgb": (80, 140, 220)},
-    "🌻": {"name": ["عباد الشمس", "sunflower"], "rgb": (250, 200, 50)},
-    "🌹": {"name": ["وردة", "rose"], "rgb": (220, 50, 70)},
-    "🌷": {"name": ["توليب", "tulip"], "rgb": (230, 100, 150)},
-    "🌳": {"name": ["شجرة", "tree"], "rgb": (90, 160, 80)},
-    "⚽": {"name": ["كرة قدم", "football", "soccer"], "rgb": (240, 240, 240)},
-    "🏀": {"name": ["كرة سلة", "basketball"], "rgb": (230, 130, 60)},
-    "🎈": {"name": ["بالون", "balloon"], "rgb": (220, 80, 80)},
-    "🎁": {"name": ["هدية", "gift"], "rgb": (220, 80, 100)},
-    "💎": {"name": ["ماسة", "الماس", "diamond"], "rgb": (120, 200, 230)},
-    "⭐": {"name": ["نجمة", "star"], "rgb": (250, 210, 70)},
-    "🔥": {"name": ["نار", "لهب", "fire"], "rgb": (240, 120, 50)},
-    "💧": {"name": ["ماء", "قطرة", "water", "drop"], "rgb": (100, 170, 230)},
-    "🌙": {"name": ["قمر", "moon"], "rgb": (230, 220, 170)},
-    "☀️": {"name": ["شمس", "sun"], "rgb": (250, 200, 60)},
-    "⚡": {"name": ["برق", "صاعقة", "lightning"], "rgb": (250, 210, 60)},
-    "❄️": {"name": ["ثلج", "snow"], "rgb": (170, 220, 240)},
-}
 
 
 class ForcedRefAIService(RakshService):
@@ -173,220 +107,6 @@ class ForcedRefAIService(RakshService):
                 "أو: t.me/BotUsername?start=123"
             )
         return None
-
-    # ═══════════════════════════════════════════════════════════
-    # دوال مساعدة جديدة لحل كابتشا الأرقام والإيموجي
-    # ═══════════════════════════════════════════════════════════
-
-    @staticmethod
-    def _extract_target_number(text: str) -> Optional[str]:
-        """
-        يستخرج الرقم المطلوب الضغط عليه من نص مثل:
-        - "اضغط على الرقم (79)"
-        - "الرقم 79"
-        - "Press the number (79)"
-        - "رقم: 79"
-        """
-        normalized = unicodedata.normalize("NFKC", str(text or "")).translate(
-            str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
-        )
-        patterns = [
-            r"(?:الرقم|رقم|number|press|اضغط)\s*[\(\[]?\s*(\d{1,4})\s*[\)\]]?",
-            r"[\(\[]\s*(\d{1,4})\s*[\)\]]",
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, normalized, flags=re.IGNORECASE)
-            if match:
-                return match.group(1)
-        return None
-
-    @staticmethod
-    def _extract_dominant_color(image_bytes: bytes) -> Optional[tuple]:
-        """يستخرج اللون السائد من صورة (يتجاهل الأبيض/الأسود/الرمادي)."""
-        if Image is None:
-            return None
-        try:
-            with Image.open(BytesIO(image_bytes)) as img:
-                img = img.convert("RGB")
-                img.thumbnail((100, 100))
-                pixels = list(img.getdata())
-                filtered = []
-                for r, g, b in pixels:
-                    mx, mn = max(r, g, b), min(r, g, b)
-                    if mx - mn < 25:
-                        continue
-                    if r > 240 and g > 240 and b > 240:
-                        continue
-                    filtered.append((r, g, b))
-                if not filtered:
-                    filtered = pixels
-                n = len(filtered)
-                avg = (
-                    sum(p[0] for p in filtered) // n,
-                    sum(p[1] for p in filtered) // n,
-                    sum(p[2] for p in filtered) // n,
-                )
-                return avg
-        except Exception:
-            return None
-
-    @staticmethod
-    def _color_similarity(c1: tuple, c2: tuple) -> float:
-        """تشابه لوني بين لونين (0..1)."""
-        try:
-            r1, g1, b1 = [x / 255.0 for x in c1]
-            r2, g2, b2 = [x / 255.0 for x in c2]
-            h1, s1, v1 = colorsys.rgb_to_hsv(r1, g1, b1)
-            h2, s2, v2 = colorsys.rgb_to_hsv(r2, g2, b2)
-            dh = min(abs(h1 - h2), 1 - abs(h1 - h2)) * 2.0
-            ds = abs(s1 - s2)
-            dv = abs(v1 - v2)
-            diff = (dh * 0.6) + (ds * 0.2) + (dv * 0.2)
-            return max(0.0, 1.0 - diff)
-        except Exception:
-            return 0.0
-
-    async def _solve_emoji_captcha(
-        self,
-        client,
-        bot_entity,
-        verification_message,
-        text: str,
-        buttons: list,
-        phone_number: str,
-    ) -> bool:
-        """يحل كابتشا "اختر الإيموجي المطابق للصورة"."""
-        if not self._has_image_media(verification_message):
-            return False
-        if Image is None:
-            return False
-
-        try:
-            buf = BytesIO()
-            await client.download_media(verification_message, file=buf)
-            image_bytes = buf.getvalue()
-            if not image_bytes:
-                return False
-        except Exception as exc:
-            logger.debug("فشل تحميل صورة كابتشا الإيموجي: %s", exc)
-            return False
-
-        dominant = self._extract_dominant_color(image_bytes)
-        if not dominant:
-            return False
-
-        logger.info(
-            "🎨 لون كابتشا الإيموجي السائد للحساب %s: RGB%s",
-            phone_number,
-            dominant,
-        )
-
-        best_emoji = None
-        best_score = 0.0
-        for emoji, info in _EMOJI_COLOR_HINTS.items():
-            score = self._color_similarity(dominant, info["rgb"])
-            if score > best_score:
-                best_score = score
-                best_emoji = (emoji, info)
-
-        if not best_emoji or best_score < 0.55:
-            logger.warning(
-                "⚠️ لم أتعرف على الإيموجي (أفضل تطابق=%s, درجة=%.2f)",
-                best_emoji[0] if best_emoji else None,
-                best_score,
-            )
-            return False
-
-        target_emoji, target_info = best_emoji
-        logger.info(
-            "🎯 الإيموجي المتوقع: %s (%s) بدرجة تشابه %.2f",
-            target_emoji,
-            target_info["name"][0],
-            best_score,
-        )
-
-        target_labels = set()
-        for n in target_info["name"]:
-            target_labels.add(self._normalise_captcha_label(n))
-        target_labels.add(self._normalise_captcha_label(target_emoji))
-
-        for btn in buttons:
-            label = self._normalise_captcha_label(self._button_label(btn))
-            if not label:
-                continue
-            if label in target_labels:
-                try:
-                    await btn.click()
-                    logger.info(
-                        "🖱️ ضغط على إيموجي الكابتشا: %s للحساب %s",
-                        getattr(btn, "text", ""),
-                        phone_number,
-                    )
-                    return True
-                except Exception as exc:
-                    logger.warning("⚠️ فشل الضغط على زر الإيموجي: %s", exc)
-                    return False
-
-        for btn in buttons:
-            label = self._normalise_captcha_label(self._button_label(btn))
-            if any(t in label or label in t for t in target_labels if t):
-                try:
-                    await btn.click()
-                    logger.info(
-                        "🖱️ ضغط على إيموجي (مطابقة جزئية): %s",
-                        getattr(btn, "text", ""),
-                    )
-                    return True
-                except Exception:
-                    return False
-
-        logger.warning(
-            "⚠️ لم أجد زراً مطابقاً للإيموجي %s. الأزرار: %s",
-            target_emoji,
-            [getattr(b, "text", "") for b in buttons],
-        )
-        return False
-
-    async def _solve_number_captcha(
-        self,
-        bot_entity,
-        text: str,
-        buttons: list,
-        phone_number: str,
-    ) -> bool:
-        """يحل كابتشا "اضغط على الرقم (XX)"."""
-        target_number = self._extract_target_number(text)
-        if not target_number:
-            return False
-
-        logger.info(
-            "🔢 كابتشا الرقم: المطلوب الضغط على %s للحساب %s",
-            target_number,
-            phone_number,
-        )
-
-        target_norm = self._normalise_captcha_label(target_number)
-        for btn in buttons:
-            label = self._normalise_captcha_label(self._button_label(btn))
-            if label == target_norm:
-                try:
-                    await btn.click()
-                    logger.info(
-                        "🖱️ ضغط على الرقم %s للحساب %s",
-                        target_number,
-                        phone_number,
-                    )
-                    return True
-                except Exception as exc:
-                    logger.warning("⚠️ فشل الضغط على زر الرقم: %s", exc)
-                    return False
-
-        logger.warning(
-            "⚠️ لم أجد زراً مطابقاً للرقم %s. الأزرار: %s",
-            target_number,
-            [getattr(b, "text", "") for b in buttons],
-        )
-        return False
 
     # ─── 2. معالجة النصوص ───
 
@@ -683,6 +403,9 @@ class ForcedRefAIService(RakshService):
         if not button_url:
             return False
 
+        # A URL alone is not enough to classify a button as an invitation.
+        # Verification bots can use URL buttons for an actual challenge, so
+        # only ignore Telegram invite URLs here.
         normalized_url = str(button_url).casefold()
         return bool(re.search(
             r"(?:https?://)?(?:t\.me|telegram\.me)/(?:\+|joinchat/)",
@@ -696,6 +419,8 @@ class ForcedRefAIService(RakshService):
         if not text:
             return False
 
+        # يجب فحص النفي أولاً؛ فعبارات مثل «لم ينجح التحقق» تحتوي حرفياً
+        # على كلمة «نجح» ولا يجوز اعتبارها نجاحاً.
         failure_markers = (
             "لم ينجح",
             "لم يتم",
@@ -780,42 +505,14 @@ class ForcedRefAIService(RakshService):
             for button in (row or [])
             if not ForcedRefAIService._is_invitation_link_button(button)
         ]
+        if buttons:
+            return True
         markers = (
             "تحقق", "verify", "captcha", "كابتشا", "human", "بشر",
             "robot", "روبوت", "أدخل", "ادخل", "اكتب", "أجب",
             "اختر", "اضغط", "code", "كود", "رمز",
         )
-        if any(marker in text for marker in markers):
-            return True
-
-        button_markers = (
-            "تحقق", "verify", "captcha", "كابتشا", "human", "بشر",
-            "robot", "روبوت", "check", "continue", "التالي", "متابعة",
-        )
-        return any(
-            any(marker in (getattr(button, "text", "") or "").casefold()
-                for marker in button_markers)
-            for button in buttons
-        )
-
-    @staticmethod
-    def _fallback_button_from_messages(messages):
-        """إرجاع أول زر قابل للضغط لمسار البوتات التي لا تعرض تحققاً."""
-        ordered_messages = sorted(
-            (message for message in (messages or []) if not getattr(message, "out", False)),
-            key=lambda message: getattr(message, "id", 0),
-            reverse=True,
-        )
-        for message in ordered_messages:
-            for row in getattr(message, "buttons", None) or []:
-                for button in row or []:
-                    if getattr(button, "url", None) and not getattr(button, "data", None):
-                        continue
-                    if isinstance(button, KeyboardButtonRequestPhone):
-                        continue
-                    if callable(getattr(button, "click", None)):
-                        return button
-        return None
+        return any(marker in text for marker in markers)
 
     @staticmethod
     def _has_image_media(message) -> bool:
@@ -860,7 +557,7 @@ class ForcedRefAIService(RakshService):
         )
 
     @classmethod
-    def _captcha_target_labels(cls, message, text: str) -> list:
+    def _captcha_target_labels(cls, message, text: str) -> list[str]:
         """Extract normal and Telegram custom-emoji targets from a challenge."""
         labels = []
 
@@ -873,6 +570,8 @@ class ForcedRefAIService(RakshService):
             target_marker_match.start(1) if target_marker_match else None
         )
 
+        # Prefer the value after «اضغط على الرمز» so the robot emoji in a
+        # heading cannot be mistaken for the captcha target.
         if target_marker_match:
             labels.append(target_marker_match.group(1))
         else:
@@ -881,6 +580,9 @@ class ForcedRefAIService(RakshService):
                 text,
             ))
 
+        # Custom emoji are represented by an entity and may not match the
+        # Unicode emoji ranges above. Their visible text is still available
+        # through Telethon's entity iterator and normally matches the button.
         try:
             get_entities_text = getattr(message, "get_entities_text", None)
             if get_entities_text:
@@ -896,13 +598,22 @@ class ForcedRefAIService(RakshService):
         except Exception:
             pass
 
+        # Some captcha bots use a word or a non-standard symbol after
+        # "اضغط على الرمز:" instead of a regular Unicode emoji.
         return [
             label for label in labels
             if cls._normalise_captcha_label(label)
         ]
 
     async def _extract_image_captcha(self, client, message, phone_number: str) -> Optional[str]:
-        """Download and recognize noisy numeric/alphanumeric image CAPTCHAs."""
+        """Download and recognize noisy numeric/alphanumeric image CAPTCHAs.
+
+        The image CAPTCHAs used by referral bots are often deliberately noisy:
+        thin lines cross the characters, the background contains speckles, and
+        the glyphs can be colored.  Running ddddocr only once on the original
+        JPEG is unreliable, so use a small set of deterministic PIL variants
+        and accept the result that OCR reaches repeatedly.
+        """
         if not self._has_image_media(message):
             return None
         if ddddocr is None:
@@ -922,6 +633,8 @@ class ForcedRefAIService(RakshService):
                 _CAPTCHA_OCR = ddddocr.DdddOcr(show_ad=False, beta=True)
 
             def _normalise_ocr_result(raw_result) -> str:
+                # OCR occasionally returns spaces, punctuation, or Arabic-Indic
+                # digits around the actual answer.
                 translated = str(raw_result or "").translate(
                     str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
                 )
@@ -932,8 +645,9 @@ class ForcedRefAIService(RakshService):
                 image.save(output, format="PNG", optimize=True)
                 return output.getvalue()
 
-            def _build_variants() -> list:
-                variants = [("original", image_bytes)]
+            def _build_variants() -> list[tuple[str, bytes]]:
+                # Keep the original as the first and highest-priority attempt.
+                variants: list[tuple[str, bytes]] = [("original", image_bytes)]
                 if Image is None or ImageOps is None:
                     return variants
 
@@ -941,6 +655,9 @@ class ForcedRefAIService(RakshService):
                     source = ImageOps.exif_transpose(opened).convert("RGB")
                     width, height = source.size
 
+                    # Small Telegram thumbnails lose character edges. Upscale
+                    # before thresholding, but cap the size to avoid expensive
+                    # OCR calls on unusually large documents.
                     scale = min(4.0, max(1.0, 720.0 / max(width, height, 1)))
                     if scale > 1.0:
                         source = source.resize(
@@ -956,6 +673,9 @@ class ForcedRefAIService(RakshService):
                         _encode_png(gray.filter(ImageFilter.MedianFilter(size=3))),
                     ))
 
+                    # Captcha characters are frequently green, purple, or
+                    # black while the noise is lighter. OCR each RGB channel
+                    # separately so one noisy channel does not dominate.
                     for channel_name, channel in (
                         ("red", source.getchannel("R")),
                         ("green", source.getchannel("G")),
@@ -964,6 +684,7 @@ class ForcedRefAIService(RakshService):
                         channel = ImageOps.autocontrast(channel, cutoff=1)
                         variants.append((channel_name, _encode_png(channel)))
 
+                    # Multiple thresholds handle both pale and dark glyphs.
                     for threshold in (110, 145, 180, 210):
                         binary = gray.point(
                             lambda value, limit=threshold:
@@ -974,7 +695,7 @@ class ForcedRefAIService(RakshService):
                 return variants
 
             variants = _build_variants()
-            candidates = []
+            candidates: list[tuple[str, str, int]] = []
             for index, (variant_name, variant_bytes) in enumerate(variants):
                 try:
                     raw_result = await asyncio.to_thread(
@@ -995,6 +716,8 @@ class ForcedRefAIService(RakshService):
                     candidates.append((code, variant_name, index))
 
             if candidates:
+                # Prefer agreement across variants; ties go to the earlier
+                # (less destructive) image variant.
                 counts = {}
                 for code, _variant_name, _index in candidates:
                     counts[code] = counts.get(code, 0) + 1
@@ -1035,12 +758,19 @@ class ForcedRefAIService(RakshService):
         bot_entity,
         phone_number: str,
         base_id: int = 0,
-        start_param: str = "",
     ) -> bool:
-        """حل التحقق بذكاء."""
+        """
+        حل التحقق بذكاء:
+        1. إذا طلب البوت مشاركة رقم الهاتف (زر KeyboardButtonRequestPhone) – نرسل الرقم ونضغط متابعة.
+        2. وإلا نستخدم المنطق القديم: استخراج الكود، حل المسائل، الضغط على الأزرار العادية.
+        """
         MAX_INITIAL_PROBE_ATTEMPTS = 2
+        # Verification bots often answer asynchronously. Poll at a stable
+        # two-second interval instead of giving up after one quick read.
         CHECK_INTERVAL = 2.0
 
+        # base_id هو آخر معرف رسالة قبل ضغط رابط الإحالة. كل الرسائل القديمة
+        # قبله خارج عملية التحقق ويجب ألا تؤثر على اختيار المرحلة الحالية.
         if not base_id:
             try:
                 latest_messages = await client.get_messages(bot_entity, limit=1)
@@ -1048,15 +778,14 @@ class ForcedRefAIService(RakshService):
             except Exception:
                 base_id = 0
 
+        # ─── المرحلة 1: البحث عن طلب مشاركة رقم الهاتف ───
         contact_request_msg = None
         initial_verification_messages = None
-        last_probe_messages = []
         successful_probe = False
         for probe_index in range(MAX_INITIAL_PROBE_ATTEMPTS):
             try:
                 messages = await client.get_messages(bot_entity, limit=5)
                 successful_probe = True
-                last_probe_messages = messages
             except Exception:
                 if probe_index + 1 < MAX_INITIAL_PROBE_ATTEMPTS:
                     await asyncio.sleep(CHECK_INTERVAL)
@@ -1080,6 +809,8 @@ class ForcedRefAIService(RakshService):
             if contact_request_msg:
                 break
 
+            # ظهور صورة/زر/نص تحقق يعني أن العملية دخلت مرحلة التحقق؛
+            # نمرر الرسائل نفسها للمحلل حتى لا تضيع أول مرحلة.
             incoming = [
                 msg for msg in messages
                 if not getattr(msg, "out", False)
@@ -1092,19 +823,32 @@ class ForcedRefAIService(RakshService):
             if probe_index + 1 < MAX_INITIAL_PROBE_ATTEMPTS:
                 await asyncio.sleep(CHECK_INTERVAL)
 
-        if not contact_request_msg and initial_verification_messages is None:
-            return await self._complete_without_verification(
-                client,
-                bot_entity,
+        # لا توجد رسالة تحقق بعد ضغط Start: النجاح هنا فوري، ولا ننتظر
+        # 30 دورة بلا فائدة كما كان يحدث سابقاً.
+        if (
+            successful_probe
+            and not contact_request_msg
+            and initial_verification_messages is None
+        ):
+            logger.info(
+                "ℹ️ لم يظهر تحقق بعد ضغط Start للحساب %s؛ تُحتسب الإحالة ناجحة",
                 phone_number,
-                base_id=base_id,
-                start_param=start_param,
-                initial_messages=last_probe_messages if successful_probe else None,
             )
+            return True
+        if not successful_probe and not contact_request_msg:
+            # عدم وصول رد تحقق لا يثبت فشل الحساب؛ الفشل هنا محصور
+            # في تحقق ظهر فعلاً ثم تعذر على البوت حله.
+            logger.warning(
+                "⚠️ تعذر قراءة رد البوت بعد ضغط Start للحساب %s؛ تُحسب الإحالة ناجحة",
+                phone_number,
+            )
+            return True
 
+        # إذا وجدنا طلب رقم → نعالجه بطريقة جديدة
         if contact_request_msg:
             logger.info(f"📱 تم اكتشاف طلب رقم هاتف من {phone_number}")
 
+            # إرسال جهة الاتصال
             try:
                 me = await client.get_me()
                 if not me or not me.phone:
@@ -1125,6 +869,7 @@ class ForcedRefAIService(RakshService):
                 logger.error(f"❌ فشل إرسال جهة الاتصال: {e}")
                 return False
 
+            # انتظار زر متابعة
             proceed_button = None
             for _ in range(MAX_WAIT):
                 try:
@@ -1142,8 +887,10 @@ class ForcedRefAIService(RakshService):
                     if msg.reply_markup:
                         for row in msg.reply_markup.rows:
                             for btn in row.buttons:
+                                # لا نضغط زر رابط الدعوة، سواء كان URL أو Callback.
                                 if not self._is_invitation_link_button(btn):
                                     buttons.append(btn)
+                    # نفضل الأزرار التي تحوي كلمات مفتاحية
                     for btn in buttons:
                         btn_text = (getattr(btn, 'text', '') or '').strip().casefold()
                         if any(kw in btn_text for kw in ['متابعة', 'التالي', 'ابدأ', 'تحقق', 'continue', 'next', 'start', 'verify']):
@@ -1163,6 +910,9 @@ class ForcedRefAIService(RakshService):
                     logger.warning(f"⚠️ فشل الضغط على زر المتابعة: {e}")
                     return False
             else:
+                # قد يرسل البوت زر «مشاركة رابط الدعوة» بدلاً من زر متابعة.
+                # لا نضغطه ولا نفشل العملية؛ ننتقل للمنطق العام ليعيد قراءة
+                # كل الرسائل الجديدة منذ لحظة ضغط رابط الإحالة.
                 logger.info(
                     f"⏭️ تم تجاهل زر رابط الدعوة بعد مشاركة الرقم من {phone_number} "
                     "وسنواصل قراءة الرسائل الجديدة"
@@ -1176,6 +926,8 @@ class ForcedRefAIService(RakshService):
                 )
 
             try:
+                # بعد الضغط على الزر الأول ننتظر ثم نعيد قراءة كامل محادثة
+                # التحقق منذ لحظة ضغط رابط الإحالة حتى آخر رسالة.
                 await asyncio.sleep(2.0)
                 followup_messages = []
                 async for msg in client.iter_messages(
@@ -1199,7 +951,11 @@ class ForcedRefAIService(RakshService):
                 logger.warning(f"⚠️ تعذر قراءة المرحلة الثانية للتحقق: {e}")
                 return False
 
+        # ─── المرحلة 2: لم يطلب الرقم → استخدم المنطق القديم ───
         logger.info(f"🔍 لم يطلب البوت رقم هاتف، ننتقل إلى المنطق القديم لـ {phone_number}")
+
+        # المنطق القديم (مستند على _solve_forced_ref_verification من common.py)
+        # ولكن سنعيد تنفيذه هنا لتكامل الملف
         return await self._solve_legacy_verification(
             client,
             bot_entity,
@@ -1208,150 +964,21 @@ class ForcedRefAIService(RakshService):
             initial_messages=initial_verification_messages,
         )
 
-    async def _complete_without_verification(
-        self,
-        client,
-        bot_entity,
-        phone_number: str,
-        base_id: int = 0,
-        start_param: str = "",
-        initial_messages: Optional[list] = None,
-    ) -> bool:
-        """إنهاء إحالة البوتات التي لا تعرض نوع تحقق معروف."""
-
-        async def _read_flow_messages():
-            try:
-                collected = []
-                async for message in client.iter_messages(
-                    bot_entity,
-                    min_id=base_id,
-                    reverse=True,
-                ):
-                    collected.append(message)
-                return collected
-            except Exception:
-                try:
-                    return await client.get_messages(bot_entity, limit=100)
-                except Exception:
-                    return []
-
-        async def _verification_after_action(messages=None):
-            current_messages = messages
-            if current_messages is None:
-                current_messages = await _read_flow_messages()
-
-            incoming = [
-                message for message in (current_messages or [])
-                if not getattr(message, "out", False)
-                and (not base_id or getattr(message, "id", 0) > base_id)
-            ]
-            for message in reversed(incoming):
-                text = getattr(message, "message", "") or ""
-                if self._is_verification_success_text(text):
-                    logger.info(
-                        "✅ وصلت إشارة نجاح من بوت الإحالة للحساب %s",
-                        phone_number,
-                    )
-                    return True
-
-            if any(self._looks_like_verification_message(message) for message in incoming):
-                logger.info(
-                    "🔍 ظهر تحقق بعد fallback للحساب %s؛ سيتم حله",
-                    phone_number,
-                )
-                return await self._solve_legacy_verification(
-                    client,
-                    bot_entity,
-                    phone_number,
-                    base_id=base_id,
-                    initial_messages=current_messages,
-                )
-            return None
-
-        async def _click_any_button(messages=None) -> bool:
-            current_messages = messages if messages is not None else await _read_flow_messages()
-            button = self._fallback_button_from_messages(current_messages)
-            if not button:
-                return False
-            try:
-                await button.click()
-                logger.info(
-                    "🖱️ تم الضغط على زر fallback للحساب %s: %s",
-                    phone_number,
-                    getattr(button, "text", ""),
-                )
-                return True
-            except Exception as exc:
-                logger.warning(
-                    "⚠️ تعذر الضغط على زر fallback للحساب %s: %s",
-                    phone_number,
-                    exc,
-                )
-                return False
-
-        async def _send_start():
-            try:
-                await client(StartBotRequest(
-                    bot=bot_entity,
-                    peer=bot_entity,
-                    start_param=start_param or "",
-                ))
-                logger.info("▶️ تم إرسال Start fallback للحساب %s", phone_number)
-            except Exception as exc:
-                logger.warning(
-                    "⚠️ تعذر إرسال Start fallback للحساب %s: %s",
-                    phone_number,
-                    exc,
-                )
-
-        current_messages = (
-            initial_messages
-            if initial_messages is not None
-            else await _read_flow_messages()
-        )
-        first_button = self._fallback_button_from_messages(current_messages)
-
-        if not first_button:
-            await _send_start()
-            await asyncio.sleep(2.0)
-            result = await _verification_after_action()
-            return True if result is None else result
-
-        await _click_any_button(current_messages)
-        await asyncio.sleep(2.0)
-        result = await _verification_after_action()
-        if result is not None:
-            return result
-
-        await _send_start()
-        await asyncio.sleep(2.0)
-        result = await _verification_after_action()
-        if result is not None:
-            return result
-
-        current_messages = await _read_flow_messages()
-        if self._fallback_button_from_messages(current_messages):
-            await _click_any_button(current_messages)
-            await asyncio.sleep(2.0)
-            result = await _verification_after_action()
-            if result is not None:
-                return result
-
-        logger.info(
-            "✅ لم يظهر أي تحقق بعد fallback للحساب %s؛ تُحتسب الإحالة ناجحة",
-            phone_number,
-        )
-        return True
-
     async def _solve_legacy_verification(
         self,
         client,
         bot_entity,
         phone_number: str,
         base_id: int = 0,
-        initial_messages: Optional[list] = None,
+        initial_messages: Optional[List] = None,
     ) -> bool:
-        """المنطق القديم + كابتشا الأرقام والإيموجي."""
+        """
+        المنطق القديم: استخراج الكود، حل المسائل، الضغط على الأزرار
+        (نسخة محسنة من _solve_forced_ref_verification في common.py)
+        """
+        # Do not use message ids as the processed key. Many verification bots
+        # edit the same Telegram message to show the next challenge, so the
+        # id stays the same while the text/buttons change.
         processed_fingerprints = set()
 
         if not base_id:
@@ -1369,6 +996,7 @@ class ForcedRefAIService(RakshService):
         quiet_attempts = 0
 
         def _message_fingerprint(message) -> str:
+            """Return a stable fingerprint that changes when a message is edited."""
             parts = [
                 str(getattr(message, "id", "")),
                 str(getattr(message, "message", "") or ""),
@@ -1389,6 +1017,10 @@ class ForcedRefAIService(RakshService):
             return "\x1f".join(parts)
 
         async def _verification_action_succeeded(message, button=None) -> bool:
+            """يتحقق من وصول رسالة نجاح صريحة بعد الضغط."""
+            # Removing or editing the clicked button is not proof of success:
+            # several captcha bots replace the same message with the next
+            # challenge.  Only an explicit success response is authoritative.
             try:
                 for item in await _read_flow_messages():
                     if self._is_verification_success_text(
@@ -1400,6 +1032,7 @@ class ForcedRefAIService(RakshService):
             return False
 
         async def _read_flow_messages():
+            """إعادة قراءة كل رسائل المحادثة منذ بداية عملية التحقق."""
             try:
                 collected = []
                 async for msg in client.iter_messages(
@@ -1410,13 +1043,14 @@ class ForcedRefAIService(RakshService):
                     collected.append(msg)
                 return collected
             except Exception:
-                try:
-                    return await client.get_messages(
-                        bot_entity, limit=100, min_id=base_id
-                    )
-                except Exception:
-                    return []
+                return await client.get_messages(
+                    bot_entity, limit=100, min_id=base_id
+                )
 
+        # Keep waiting after a challenge has appeared. A fixed attempt limit
+        # made slower accounts fail even though the verification bot was still
+        # processing the previous answer. The loop stops only on explicit
+        # success or a permanent session error.
         while True:
             try:
                 if initial_messages is not None:
@@ -1435,6 +1069,9 @@ class ForcedRefAIService(RakshService):
             incoming_messages = [msg for msg in messages if not msg.out]
             incoming_messages.sort(key=lambda m: m.id)
 
+            # Check every current message, including messages already handled.
+            # This catches a success response delivered by editing the same
+            # message that contained the challenge.
             for msg in reversed(incoming_messages):
                 if msg.id <= base_id:
                     continue
@@ -1450,6 +1087,9 @@ class ForcedRefAIService(RakshService):
             ]
             if not new_messages:
                 quiet_attempts += 1
+                # No challenge means this bot does not require verification.
+                # Once a challenge was seen, keep polling indefinitely until
+                # its success marker arrives.
                 if not saw_verification and quiet_attempts >= 30:
                     logger.info(
                         "ℹ️ لم يصل تحقق جديد بعد ضغط الرابط للحساب %s؛ تُحتسب الإحالة ناجحة",
@@ -1460,8 +1100,13 @@ class ForcedRefAIService(RakshService):
                 continue
             quiet_attempts = 0
 
+            # النجاح لا يعتمد على اختفاء الأزرار أو مجرد إرسال إجابة.
+            # بعد كل إجابة أو زر، نعيد قراءة الرسالة نفسها إذا عدّلها البوت.
             candidate_messages = new_messages
 
+            # أعطِ رسالة الكود أولوية صريحة. بعض البوتات ترسل رسالة ترحيب
+            # ثم رسالة «النص التالي» في نفس الدفعة، لذلك لا نعتمد على أول
+            # رسالة عامة تصلح كمرحلة تحقق.
             code_prompt_markers = (
                 "النص التالي",
                 "أرسل النص",
@@ -1534,9 +1179,14 @@ class ForcedRefAIService(RakshService):
                     continue
                 except Exception as exc:
                     logger.warning("⚠️ تعذر إرسال حل صورة التحقق للحساب %s: %s", phone_number, exc)
+                    # Keep the challenge available for a retry. This is often
+                    # a temporary Telegram/network failure.
                     await asyncio.sleep(2.0)
                     continue
 
+
+            # 1. حل المسائل الرياضية أولاً. لا نحاول استخراج كود من رسالة
+            # حسابية، ولا نضغط أزرارها بعد إرسال الناتج.
             math_text = self._normalise_math_text(text)
             math_match = re.search(
                 r"(?<!\d)(\d{1,9})\s*([+\-*/])\s*(\d{1,9})"
@@ -1578,6 +1228,7 @@ class ForcedRefAIService(RakshService):
                 except Exception:
                     logger.warning("⚠️ تعذر حل المسألة الحسابية: %r", text[:160])
 
+            # 2. استخراج الكود بعد استبعاد المسألة الحسابية.
             send_text = _extract_code_from_text(text)
             if send_text:
                 try:
@@ -1590,6 +1241,9 @@ class ForcedRefAIService(RakshService):
                     await asyncio.sleep(2.0)
                     continue
 
+            # Do not click a button from the old challenge after submitting
+            # an answer. The next Telegram message contains the result or the
+            # next verification stage.
             if math_match:
                 continue
 
@@ -1603,51 +1257,9 @@ class ForcedRefAIService(RakshService):
                     else:
                         buttons.append(btn)
 
-            # ═══════════════════════════════════════════════════
-            # 3أ. كابتشا "اضغط على الرقم (XX)"
-            # ═══════════════════════════════════════════════════
-            if buttons and self._extract_target_number(text):
-                clicked = await self._solve_number_captcha(
-                    bot_entity, text, buttons, phone_number
-                )
-                if clicked:
-                    processed_fingerprints.add(
-                        _message_fingerprint(verification_message)
-                    )
-                    await asyncio.sleep(2.0)
-                    continue
-
-            # ═══════════════════════════════════════════════════
-            # 3ب. كابتشا "اختر الإيموجي المطابق للصورة"
-            # ═══════════════════════════════════════════════════
-            emoji_markers = ("إيموجي", "ايموجي", "الإيموجي", "الايموجي",
-                             "emoji", "الرمز التعبيري", "الصورة أعلاه",
-                             "المطابق للصورة", "اختر")
-            if (
-                buttons
-                and self._has_image_media(verification_message)
-                and any(m in text for m in emoji_markers)
-            ):
-                clicked = await self._solve_emoji_captcha(
-                    client,
-                    bot_entity,
-                    verification_message,
-                    text,
-                    buttons,
-                    phone_number,
-                )
-                if clicked:
-                    processed_fingerprints.add(
-                        _message_fingerprint(verification_message)
-                    )
-                    await asyncio.sleep(2.0)
-                    continue
-
-            # ═══════════════════════════════════════════════════
-            # 3ج. المنطق القديم
-            # ═══════════════════════════════════════════════════
             button_clicked = False
             if buttons:
+                # ترتيب الأزرار حسب الأولوية
                 prioritized = []
                 target_labels = {
                     self._normalise_captcha_label(label)
@@ -1663,6 +1275,8 @@ class ForcedRefAIService(RakshService):
                     for button in buttons
                 }
 
+                # First prefer an exact match. This handles both ordinary
+                # emoji and the custom emoji shown in the attached captcha.
                 exact = [
                     button for button in buttons
                     if button_labels.get(id(button)) in target_labels
@@ -1670,12 +1284,14 @@ class ForcedRefAIService(RakshService):
                 ]
                 prioritized.extend(exact)
 
+                # If the target is a word (for example "شاهد"), accept a
+                # matching label mentioned after "اضغط على الرمز:".
                 target_tail = text.casefold()
                 marker_positions = [
                     target_tail.rfind(marker)
                     for marker in ("الرمز", "العلامة", "symbol", "emoji", "icon")
                 ]
-                marker_position = max(marker_positions) if marker_positions else -1
+                marker_position = max(marker_positions)
                 if marker_position >= 0:
                     target_tail = target_tail[marker_position:]
                 tail_matches = [
@@ -1687,6 +1303,8 @@ class ForcedRefAIService(RakshService):
                 ]
                 prioritized.extend(tail_matches)
 
+                # Keep the partial match for emoji sequences with variation
+                # selectors or skin-tone modifiers.
                 for target_label in target_labels:
                     prioritized.extend(
                         button for button in buttons
@@ -1717,6 +1335,8 @@ class ForcedRefAIService(RakshService):
                         [getattr(button, "text", "") for button in buttons],
                         sorted(target_labels),
                     )
+                    # لا نضغط أول زر عشوائياً. نحفظ بصمة هذه النسخة فقط؛
+                    # إذا عدّل البوت نفس الرسالة فستُقرأ من جديد كبصمة جديدة.
                     processed_fingerprints.add(_message_fingerprint(verification_message))
                     if invitation_buttons:
                         logger.info(
@@ -1750,22 +1370,29 @@ class ForcedRefAIService(RakshService):
                                 phone_number,
                             )
                             return True
+                        # لم يثبت النجاح بعد؛ نعيد قراءة المرحلة التالية.
                         button_clicked = True
                         break
                     except Exception:
+                        # فشل الضغط قد يكون مؤقتاً؛ أعد قراءة نفس المرحلة
+                        # بعد ثانيتين بدلاً من إسقاط الحساب مباشرة.
                         await asyncio.sleep(2.0)
                         continue
 
             if button_clicked:
+                # انتهى انتظار الزر (ثانيتان)؛ تبدأ الدورة التالية
+                # بإعادة القراءة مباشرة دون تأخير إضافي.
                 continue
 
+            # الرسالة لا تحتوي على إجابة أو زر تحقق قابل للتنفيذ. نحفظ
+            # بصمتها فقط، ونقرأها مجدداً إذا عدّلها البوت.
             processed_fingerprints.add(_message_fingerprint(verification_message))
             await asyncio.sleep(2.0)
 
     # ─── 5. التنفيذ الرئيسي ───
 
     async def execute(self, session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
-        """تنفيذ إحالة بوت إجباري مع تحقق شامل."""
+        """تنفيذ إحالة بوت إجباري مع تحقق شامل (يدعم جميع الأنواع)"""
         client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
         await asyncio.wait_for(client.connect(), timeout=20)
         try:
@@ -1773,6 +1400,7 @@ class ForcedRefAIService(RakshService):
                 _mark_raksh_session_unauthorized(session.get("phone_number"))
                 return False, "الجلسة غير مصرح بها"
 
+            # الانضمام للقنوات إذا كانت موجودة
             channels = params.get("channel_ref") or []
             if channels:
                 for channel_ref in channels:
@@ -1782,6 +1410,7 @@ class ForcedRefAIService(RakshService):
                     except Exception as e:
                         logger.warning(f"فشل الانضمام للقناة {channel_ref}: {e}")
 
+            # تحليل رابط البوت
             bot_username, start_param = _parse_bot_link(params["link"])
             if not bot_username:
                 return False, "رابط البوت غير صحيح"
@@ -1794,6 +1423,8 @@ class ForcedRefAIService(RakshService):
             resolved = await client(ResolveUsernameRequest(clean_username))
             bot_entity = resolved.users[0] if resolved.users else resolved.chats[0]
 
+            # حفظ نقطة البداية قبل ضغط رابط الإحالة. سيعيد محلّل التحقق قراءة
+            # كل الرسائل التي تظهر بعد هذه النقطة، لا آخر رسالة فقط.
             verification_base_id = 0
             try:
                 latest_messages = await client.get_messages(bot_entity, limit=1)
@@ -1801,6 +1432,7 @@ class ForcedRefAIService(RakshService):
             except Exception as e:
                 logger.warning(f"تعذر تحديد نقطة بداية رابط الإحالة: {e}")
 
+            # بدء البوت
             try:
                 latest_messages = await client.get_messages(bot_entity, limit=1)
                 activation_base_id = latest_messages[0].id if latest_messages else 0
@@ -1822,13 +1454,15 @@ class ForcedRefAIService(RakshService):
                     f"بعد فتحه للحساب {session['phone_number']}"
                 )
 
+            # فتح البوت هو معيار نجاح الإحالة. نستمر بمحاولة حل التحقق
+            # بالكامل، لكن نتيجة CAPTCHA لا تجعل العملية فاشلة؛ فقد تم
+            # تنفيذ StartBotRequest بنجاح بالفعل.
             try:
                 verification_success = await self._solve_verification(
                     client,
                     bot_entity,
                     session.get("phone_number"),
                     base_id=verification_base_id,
-                    start_param=start_param or "",
                 )
                 if verification_success:
                     logger.info(
