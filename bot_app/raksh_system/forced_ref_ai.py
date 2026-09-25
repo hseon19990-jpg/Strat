@@ -50,6 +50,8 @@ _EMOJI_IMAGE_HINTS = {
     "🍅": {"names": ("طماطم", "بندورة", "tomato"), "rgb": (220, 60, 50), "accent": "red"},
     "🍍": {"names": ("أناناس", "اناناس", "pineapple"), "rgb": (225, 185, 55), "accent": "yellow"},
     "🥕": {"names": ("جزر", "جزرة", "carrot"), "rgb": (240, 140, 40), "accent": "orange"},
+    "🍩": {"names": ("دونات", "دوناتة", "donut", "doughnut"), "rgb": (155, 85, 55), "accent": "donut"},
+    "🔥": {"names": ("نار", "لهب", "fire", "flame"), "rgb": (240, 95, 35), "accent": "fire"},
     "🦉": {"names": ("بومة", "owl"), "rgb": (150, 120, 85), "accent": "brown"},
     "⌚": {"names": ("ساعة", "watch", "clock"), "rgb": (45, 45, 45), "accent": "dark"},
     "🦏": {"names": ("وحيد القرن", "خرتيت", "rhino", "rhinoceros"), "rgb": (145, 145, 145), "accent": "gray"},
@@ -707,6 +709,12 @@ class ForcedRefAIService(RakshService):
             "orange": fraction(
                 lambda r, g, b: r > 125 and g > 65 and r > b * 1.35 and g > b * 1.15
             ),
+            "brown": fraction(
+                lambda r, g, b: (
+                    r > 55 and r > g * 1.08 and g > b * 1.04
+                    and r < 205 and g < 175 and b < 145
+                )
+            ),
             "yellow": fraction(
                 lambda r, g, b: r > 135 and g > 120 and b < min(r, g) * 0.72
             ),
@@ -759,6 +767,20 @@ class ForcedRefAIService(RakshService):
         elif accent == "pink":
             score += 0.15 * min(1.0, features["pink"] / 0.10)
             score += 0.08 * (1.0 - min(1.0, features["dark"] / 0.12))
+        elif accent == "donut":
+            # Donut challenges have a brown/orange ring and a dark hole.
+            # The noisy pale background makes the overall average colour
+            # unreliable, so prefer the object-specific colour fractions.
+            score += 0.30 * min(1.0, features["brown"] / 0.10)
+            score += 0.18 * min(1.0, features["orange"] / 0.08)
+            score += 0.16 * min(1.0, features["dark"] / 0.05)
+        elif accent == "fire":
+            # Fire is usually a compact red/orange/yellow object on a pale
+            # noisy background. Combine the warm-channel signature instead
+            # of matching the pale average colour.
+            score += 0.28 * min(1.0, features["orange"] / 0.08)
+            score += 0.22 * min(1.0, features["red"] / 0.05)
+            score += 0.14 * min(1.0, features["yellow"] / 0.04)
         elif accent == "gray":
             score += 0.16 * min(1.0, features["gray"] / 0.65)
             score -= 0.10 * min(1.0, features["pink"] / 0.05)
@@ -766,9 +788,29 @@ class ForcedRefAIService(RakshService):
 
     @classmethod
     def _match_vision_answer(cls, answer: str, buttons: list):
-        """Map a vision model's exact emoji/name answer to one button."""
+        """Map a vision model's index, emoji, or name answer to one button.
+
+        The index path is the important one for arbitrary/new emoji. It lets
+        the vision model choose from the buttons in the current challenge
+        without requiring a built-in catalogue of object names or images.
+        """
+        answer_text = str(answer or "").strip()
+        index_patterns = (
+            r"^\s*(?:candidate|option|choice|button|index|"
+            r"المرشح|الخيار|الزر|الاختيار|الفهرس)?\s*[:#=\-]?\s*(\d{1,3})\s*$",
+            r"(?i)(?:candidate|option|choice|button|index|"
+            r"المرشح|الخيار|الزر|الاختيار|الفهرس)\s*(?:number|رقم)?"
+            r"\s*[:#=\-]?\s*(\d{1,3})\b",
+        )
+        for pattern in index_patterns:
+            match = re.search(pattern, answer_text, flags=re.IGNORECASE)
+            if match:
+                index = int(match.group(1))
+                if 1 <= index <= len(buttons):
+                    return buttons[index - 1]
+
         answer_normalized = cls._normalise_captcha_label(
-            str(answer or "").strip("`'\"“”«»()[]{}<>،,.;:؛!?؟")
+            answer_text.strip("`'\"“”«»()[]{}<>،,.;:؛!?؟")
         )
         if not answer_normalized:
             return None
@@ -806,23 +848,64 @@ class ForcedRefAIService(RakshService):
         candidates = ", ".join(label for label in labels if label)
         if not candidates:
             return None
+        numbered_candidates = "\n".join(
+            f"{index}. {label}"
+            for index, label in enumerate(labels, start=1)
+            if label
+        )
         vision_prompt = (
-            "This is an object-image CAPTCHA. Identify the single object shown "
-            "in the image and choose the matching candidate button. "
-            "The candidate buttons are: "
-            f"{candidates}. "
-            "Return only the exact candidate emoji or its common name, with no "
-            "explanation. Do not choose based on button position. "
+            "You are solving a live object-image CAPTCHA. The image can contain "
+            "any object; do not rely on a fixed list of known images. Identify "
+            "the main object in the image, compare it with the candidate emoji "
+            "buttons below, and select the button whose emoji represents the "
+            "same object.\n\n"
+            "Candidates are numbered in their exact button order:\n"
+            f"{numbered_candidates}\n\n"
+            "Return ONLY the integer number of the correct candidate (1-based). "
+            "Never return a button position guessed from the layout; use the "
+            "number printed next to the matching candidate. "
             f"Instruction text: {prompt[:300]}"
         )
         encoded = base64.b64encode(image_bytes).decode("ascii")
         configured = os.environ.get("GROQ_VISION_MODEL", "").strip()
-        models = [
-            configured,
+        preferred = [
             "meta-llama/llama-4-scout-17b-16e-instruct",
             "meta-llama/llama-4-maverick-17b-128e-instruct",
             "llama-3.2-90b-vision-preview",
+            "llama-3.2-11b-vision-preview",
         ]
+
+        # Groq retires and renames models over time. Discover the models
+        # currently enabled for this key so a stale hard-coded name does not
+        # make an otherwise healthy vision key look broken.
+        discovered = []
+        try:
+            model_response = requests.get(
+                "https://api.groq.com/openai/v1/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=10,
+            )
+            if model_response.status_code == 200:
+                discovered = [
+                    item.get("id", "")
+                    for item in model_response.json().get("data", [])
+                    if item.get("id")
+                ]
+        except Exception as exc:
+            logger.debug("تعذر اكتشاف نماذج Groq Vision: %s", exc)
+
+        if discovered:
+            discovered_set = set(discovered)
+            available_vision = [
+                model for model in discovered
+                if any(token in model.lower() for token in ("vision", "scout", "maverick"))
+            ]
+            models = [
+                model for model in [configured] + preferred + available_vision
+                if model and (model == configured or model in discovered_set)
+            ]
+        else:
+            models = [model for model in [configured] + preferred if model]
         models = list(dict.fromkeys(model for model in models if model))
 
         def request_model():
@@ -1198,9 +1281,6 @@ class ForcedRefAIService(RakshService):
         """Choose the button whose emoji matches an object shown in the image."""
         if not buttons or not self._has_image_media(message):
             return False
-        if Image is None:
-            logger.warning("⚠️ Pillow غير متاحة لحل كابتشا الإيموجي للحساب %s", phone_number)
-            return False
 
         try:
             image_buffer = BytesIO()
@@ -1228,6 +1308,16 @@ class ForcedRefAIService(RakshService):
                 return True
             except Exception as exc:
                 logger.warning("⚠️ فشل الضغط على نتيجة الرؤية الديناميكية: %s", exc)
+
+        # The generic vision path above does not need Pillow. Pillow is only
+        # required for the deliberately limited local fallback below.
+        if Image is None:
+            logger.warning(
+                "⚠️ Pillow غير متاحة، وتعذر حل كابتشا الإيموجي بالرؤية العامة "
+                "للحساب %s",
+                phone_number,
+            )
+            return False
 
         features = self._image_visual_features(image_bytes)
         if not features:
