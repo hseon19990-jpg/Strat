@@ -1,0 +1,5 @@
+استبدل الملفات مع الحفاظ على المسارات:
+bot_app/raksh_system/forced_ref_ai.py
+requirements.txt
+
+تم تحديث Telethon إلى 1.45.0 لدعم style.icon الخاص بالإيموجي المدفوع.
