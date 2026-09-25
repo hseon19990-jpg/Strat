@@ -546,6 +546,31 @@ class ForcedRefAIService(RakshService):
         return " ".join(labels)
 
     @staticmethod
+    def _custom_emoji_id_from_button(button):
+        """Return a paid/custom emoji id exposed by Telegram button styles."""
+        candidates = [button, getattr(button, "button", None)]
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            style = getattr(candidate, "style", None)
+            for source in (style, candidate):
+                if source is None:
+                    continue
+                for attribute in (
+                    "icon",
+                    "icon_custom_emoji_id",
+                    "custom_emoji_id",
+                    "document_id",
+                ):
+                    value = getattr(source, attribute, None)
+                    if value not in (None, "", 0, False):
+                        try:
+                            return int(value)
+                        except (TypeError, ValueError):
+                            continue
+        return None
+
+    @staticmethod
     def _normalise_math_text(value: str) -> str:
         """Normalize Arabic-Indic digits and common Unicode operators."""
         translation = str.maketrans(
@@ -604,6 +629,42 @@ class ForcedRefAIService(RakshService):
             label for label in labels
             if cls._normalise_captcha_label(label)
         ]
+
+    @classmethod
+    def _captcha_target_custom_emoji_ids(cls, message, text: str) -> set[int]:
+        """Extract the paid/custom emoji id requested by the challenge."""
+        target_marker_match = re.search(
+            r"(?:الرمز|العلامة|symbol|emoji|icon)\s*[:：-]?\s*([^\s،,.!?؟]+)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        target_offset = (
+            target_marker_match.start(1) if target_marker_match else None
+        )
+        ids = set()
+
+        try:
+            get_entities_text = getattr(message, "get_entities_text", None)
+            entity_items = get_entities_text() if get_entities_text else []
+            for entity, _entity_text in entity_items:
+                if entity.__class__.__name__ != "MessageEntityCustomEmoji":
+                    continue
+                if (
+                    target_offset is not None
+                    and getattr(entity, "offset", 0) < target_offset
+                ):
+                    continue
+                document_id = getattr(entity, "document_id", None)
+                if document_id not in (None, "", 0, False):
+                    ids.add(int(document_id))
+        except (TypeError, ValueError):
+            pass
+        except Exception:
+            # A malformed entity must not prevent the normal text matcher
+            # from handling older Telegram messages.
+            pass
+
+        return ids
 
     async def _extract_image_captcha(self, client, message, phone_number: str) -> Optional[str]:
         """Download and recognize noisy numeric/alphanumeric image CAPTCHAs.
@@ -1268,19 +1329,43 @@ class ForcedRefAIService(RakshService):
                         text,
                     )
                 }
+                target_custom_emoji_ids = self._captcha_target_custom_emoji_ids(
+                    verification_message,
+                    text,
+                )
                 button_labels = {
                     id(button): self._normalise_captcha_label(
                         self._button_label(button)
                     )
                     for button in buttons
                 }
+                button_custom_emoji_ids = {
+                    id(button): self._custom_emoji_id_from_button(button)
+                    for button in buttons
+                }
 
-                # First prefer an exact match. This handles both ordinary
-                # emoji and the custom emoji shown in the attached captcha.
+                # First prefer an exact custom-emoji document match. The
+                # visible fallback character is not reliable for Premium
+                # emoji because different custom emoji can share an alt text.
+                exact_custom_emoji = [
+                    button for button in buttons
+                    if (
+                        button_custom_emoji_ids.get(id(button)) is not None
+                        and button_custom_emoji_ids.get(id(button))
+                        in target_custom_emoji_ids
+                    )
+                ]
+                prioritized.extend(exact_custom_emoji)
+
+                # Keep the text/emoji fallback for old Telegram layers and
+                # ordinary Unicode emoji.
                 exact = [
                     button for button in buttons
-                    if button_labels.get(id(button)) in target_labels
-                    and button_labels.get(id(button))
+                    if (
+                        button not in prioritized
+                        and button_labels.get(id(button)) in target_labels
+                        and button_labels.get(id(button))
+                    )
                 ]
                 prioritized.extend(exact)
 
