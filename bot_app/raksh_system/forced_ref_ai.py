@@ -540,9 +540,16 @@ class ForcedRefAIService(RakshService):
         markers = (
             "تحقق", "verify", "captcha", "كابتشا", "human", "بشر",
             "robot", "روبوت", "أدخل", "ادخل", "اكتب", "أجب",
-            "اختر", "اضغط", "code", "كود", "رمز",
+            "اختر", "اضغط", "code", "كود", "رمز", "أرسل النص",
+            "ارسل النص", "أعد إرسال", "اعد ارسال", "resend",
+            "retype", "send the text", "type the text",
         )
-        return any(marker in text for marker in markers)
+        if any(marker.casefold() in text for marker in markers):
+            return True
+        return (
+            ForcedRefAIService._extract_math_answer(text) is not None
+            or bool(re.search(r"\d\s*[=؟?]\s*$", text))
+        )
 
     @staticmethod
     def _has_image_media(message) -> bool:
@@ -610,6 +617,94 @@ class ForcedRefAIService(RakshService):
         return unicodedata.normalize("NFKC", str(value or "")).translate(
             translation
         )
+
+    @classmethod
+    def _extract_math_answer(cls, value: str) -> Optional[str]:
+        """Extract and solve the short arithmetic challenges used by bots."""
+        text = cls._normalise_math_text(value)
+        if not text:
+            return None
+
+        # Some bots write the operation in words instead of using symbols.
+        for words, operator in (
+            (("زائد", "جمع", "plus"), "+"),
+            (("ناقص", "minus"), "-"),
+            (("ضرب", "في", "times", "multiply"), "*"),
+            (("قسمة", "على", "divide", "divided by"), "/"),
+        ):
+            for word in words:
+                text = re.sub(
+                    rf"(?<!\w){re.escape(word)}(?!\w)",
+                    f" {operator} ",
+                    text,
+                    flags=re.IGNORECASE,
+                )
+
+        # Normalize multiplication variants that are commonly sent as x.
+        text = re.sub(r"(?<=\d)\s*[xX]\s*(?=-?\d)", " * ", text)
+
+        match = re.search(
+            r"(?<!\d)(-?\d{1,9})\s*([+\-*/])\s*(-?\d{1,9})"
+            r"(?=\s*(?:=|[?؟]|$|[^\d]))",
+            text,
+        )
+        if not match:
+            return None
+
+        first = int(match.group(1))
+        operator = match.group(2)
+        second = int(match.group(3))
+        if operator == "+":
+            result = first + second
+        elif operator == "-":
+            result = first - second
+        elif operator == "*":
+            result = first * second
+        elif second:
+            quotient = first / second
+            result = int(quotient) if quotient.is_integer() else quotient
+        else:
+            return None
+        return str(result)
+
+    @staticmethod
+    def _extract_retype_text(value: str) -> Optional[str]:
+        """Extract the exact text a verification bot asks the account to resend."""
+        source = unicodedata.normalize("NFKC", str(value or "")).strip()
+        if not source:
+            return None
+
+        prompt = (
+            r"(?:أرسل|ارسل|أعد\s+إرسال|اعد\s+ارسال|إعادة\s+إرسال|"
+            r"اعادة\s+ارسال|اكتب|أدخل|ادخل|send|resend|retype|type|enter)"
+            r"\s+(?:(?:هذا|ذلك|the|this|following|التالي|الموجود|أدناه|"
+            r"بالضبط|following|below|exactly)\s+)*"
+            r"(?:النص|الكود|الرمز|text|code)"
+            r"(?:\s+(?:التالي|الموجود|أدناه|بالضبط|following|below|exactly))*"
+            r"\s*[:：\-]\s*"
+        )
+        match = re.search(
+            prompt + r"(?P<answer>.+)",
+            source,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not match:
+            return None
+
+        # The requested value is normally on the first non-empty line after
+        # the marker. This prevents appending the bot's follow-up instructions.
+        answer = next(
+            (line.strip() for line in match.group("answer").splitlines() if line.strip()),
+            "",
+        )
+        if not answer:
+            return None
+
+        # Preserve spaces and punctuation inside the answer, while removing
+        # only presentation wrappers used by Markdown or quoted prompts.
+        if len(answer) >= 2 and answer[0] == answer[-1] and answer[0] in "`'\"“”«»":
+            answer = answer[1:-1].strip()
+        return answer or None
 
     @classmethod
     def _captcha_target_labels(cls, message, text: str) -> list[str]:
@@ -1204,8 +1299,13 @@ class ForcedRefAIService(RakshService):
                 "ارسل النص",
                 "أرسل الكود",
                 "ارسل الكود",
+                "أعد إرسال",
+                "اعد ارسال",
+                "إعادة إرسال",
+                "اعادة ارسال",
                 "send the text",
                 "send the code",
+                "resend",
                 "retype",
                 "type",
             )
@@ -1225,7 +1325,10 @@ class ForcedRefAIService(RakshService):
                             marker in (getattr(msg, "message", "") or "").casefold()
                             for marker in code_prompt_markers
                         )
-                        and _extract_code_from_text(getattr(msg, "message", "") or "")
+                        and (
+                            self._extract_retype_text(getattr(msg, "message", "") or "")
+                            or _extract_code_from_text(getattr(msg, "message", "") or "")
+                        )
                     ),
                     None,
                 )
@@ -1278,49 +1381,23 @@ class ForcedRefAIService(RakshService):
 
             # 1. حل المسائل الرياضية أولاً. لا نحاول استخراج كود من رسالة
             # حسابية، ولا نضغط أزرارها بعد إرسال الناتج.
-            math_text = self._normalise_math_text(text)
-            math_match = re.search(
-                r"(?<!\d)(\d{1,9})\s*([+\-*/])\s*(\d{1,9})"
-                r"\s*=\s*[?؟]?",
-                math_text,
-            )
-            if math_match:
+            math_answer = self._extract_math_answer(text)
+            if math_answer is not None:
                 try:
-                    a = int(math_match.group(1))
-                    op = math_match.group(2)
-                    b = int(math_match.group(3))
-                    if op == "+":
-                        result = str(a + b)
-                    elif op == "-":
-                        result = str(a - b)
-                    elif op == "*":
-                        result = str(a * b)
-                    elif b == 0:
-                        result = None
-                    else:
-                        quotient = a / b
-                        result = (
-                            str(int(quotient))
-                            if quotient.is_integer()
-                            else str(quotient)
-                        )
-                    if result is not None:
-                        await client.send_message(bot_entity, result)
-                        logger.info(
-                            "✅ تم حل المسألة: %s %s %s = %s",
-                            a,
-                            op,
-                            b,
-                            result,
-                        )
-                        processed_fingerprints.add(_message_fingerprint(verification_message))
-                        await asyncio.sleep(2.0)
-                        continue
+                    await client.send_message(bot_entity, math_answer)
+                    logger.info(
+                        "✅ تم إرسال حل المسألة الحسابية للحساب %s: %s",
+                        phone_number,
+                        math_answer,
+                    )
+                    processed_fingerprints.add(_message_fingerprint(verification_message))
+                    await asyncio.sleep(2.0)
+                    continue
                 except Exception:
-                    logger.warning("⚠️ تعذر حل المسألة الحسابية: %r", text[:160])
+                    logger.warning("⚠️ تعذر إرسال حل المسألة الحسابية: %r", text[:160])
 
             # 2. استخراج الكود بعد استبعاد المسألة الحسابية.
-            send_text = _extract_code_from_text(text)
+            send_text = self._extract_retype_text(text) or _extract_code_from_text(text)
             if send_text:
                 try:
                     await client.send_message(bot_entity, send_text)
@@ -1335,7 +1412,7 @@ class ForcedRefAIService(RakshService):
             # Do not click a button from the old challenge after submitting
             # an answer. The next Telegram message contains the result or the
             # next verification stage.
-            if math_match:
+            if math_answer is not None:
                 continue
 
             # 3. الضغط على الأزرار
