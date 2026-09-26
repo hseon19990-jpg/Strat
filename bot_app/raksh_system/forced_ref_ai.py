@@ -5,21 +5,14 @@
 """
 
 from .common import *
-from telethon.tl.types import InputMediaContact
-try:
-    from telethon.tl.types import KeyboardButtonRequestPhone
-except ImportError:
-    KeyboardButtonRequestPhone = None
-try:
-    from telethon.tl.types import ButtonTypeRequestPhone
-except ImportError:
-    ButtonTypeRequestPhone = None
+from telethon.tl.types import InputMediaContact, KeyboardButtonRequestPhone
 from io import BytesIO
 import base64
-import colorsys
-import os
-import requests
+import json
 import unicodedata
+import colorsys
+import urllib.error
+import urllib.request
 
 try:
     import ddddocr
@@ -37,73 +30,69 @@ except ImportError:
 _CAPTCHA_OCR = None
 
 
-# These are visual hints, not a claim that every emoji has one fixed RGB
-# value.  The image challenges used by referral bots are usually generated
-# from this small family of objects, so combining the colour hint with
-# "dark/pink/green" ratios is considerably safer than picking the closest
-# average colour alone.
-_EMOJI_IMAGE_HINTS = {
-    "🔑": {"names": ("مفتاح", "key"), "rgb": (220, 180, 55), "accent": "yellow"},
-    "🚀": {"names": ("صاروخ", "rocket"), "rgb": (210, 75, 90), "accent": "rocket"},
-    "🍕": {"names": ("بيتزا", "pizza"), "rgb": (220, 135, 55), "accent": "orange"},
-    "🍒": {"names": ("كرز", "cherries", "cherry"), "rgb": (190, 35, 55), "accent": "red"},
-    "🍅": {"names": ("طماطم", "بندورة", "tomato"), "rgb": (220, 60, 50), "accent": "red"},
-    "🍍": {"names": ("أناناس", "اناناس", "pineapple"), "rgb": (225, 185, 55), "accent": "yellow"},
-    "🥕": {"names": ("جزر", "جزرة", "carrot"), "rgb": (240, 140, 40), "accent": "orange"},
-    "🍩": {"names": ("دونات", "دوناتة", "donut", "doughnut"), "rgb": (155, 85, 55), "accent": "donut"},
-    "🔥": {"names": ("نار", "لهب", "fire", "flame"), "rgb": (240, 95, 35), "accent": "fire"},
-    "🦉": {"names": ("بومة", "owl"), "rgb": (150, 120, 85), "accent": "brown"},
-    "⌚": {"names": ("ساعة", "watch", "clock"), "rgb": (45, 45, 45), "accent": "dark"},
-    "🦏": {"names": ("وحيد القرن", "خرتيت", "rhino", "rhinoceros"), "rgb": (145, 145, 145), "accent": "gray"},
-    "🚓": {"names": ("سيارة شرطة", "شرطة", "police", "car"), "rgb": (45, 85, 180), "accent": "blue"},
-    "🐷": {"names": ("خنزير", "pig", "piglet"), "rgb": (245, 170, 180), "accent": "pink"},
-    "🐮": {"names": ("بقرة", "cow", "cattle"), "rgb": (185, 180, 175), "accent": "cow"},
-    "🐄": {"names": ("بقرة", "cow"), "rgb": (185, 180, 175), "accent": "cow"},
-    "🐶": {"names": ("كلب", "dog"), "rgb": (195, 155, 115), "accent": "brown"},
-    "🐱": {"names": ("قط", "قطة", "cat"), "rgb": (195, 165, 145), "accent": "brown"},
-    "🐭": {"names": ("فأر", "mouse"), "rgb": (170, 170, 170), "accent": "gray"},
-    "🐰": {"names": ("أرنب", "rabbit"), "rgb": (225, 225, 225), "accent": "white"},
-    "🐸": {"names": ("ضفدع", "frog"), "rgb": (110, 180, 80), "accent": "green"},
-    "🐼": {"names": ("باندا", "panda"), "rgb": (205, 205, 205), "accent": "cow"},
-    "🦊": {"names": ("ثعلب", "fox"), "rgb": (220, 130, 60), "accent": "orange"},
-    "🐯": {"names": ("نمر", "tiger"), "rgb": (230, 160, 60), "accent": "orange"},
-    "🐔": {"names": ("دجاجة", "دجاج", "chicken", "hen"), "rgb": (230, 200, 150), "accent": "yellow"},
-    "🐧": {"names": ("بطريق", "penguin"), "rgb": (50, 55, 75), "accent": "dark"},
-    "🐍": {"names": ("ثعبان", "أفعى", "snake"), "rgb": (100, 180, 90), "accent": "green"},
-    "🥑": {"names": ("أفوكادو", "افوكادو", "avocado"), "rgb": (105, 165, 80), "accent": "green"},
-    "🐙": {"names": ("أخطبوط", "octopus"), "rgb": (200, 90, 100), "accent": "pink"},
-    "🦀": {"names": ("سلطعون", "crab"), "rgb": (220, 80, 60), "accent": "red"},
-    "🐟": {"names": ("سمكة", "سمك", "fish"), "rgb": (100, 170, 220), "accent": "blue"},
-    "🦋": {"names": ("فراشة", "butterfly"), "rgb": (120, 140, 220), "accent": "blue"},
-    "🎯": {"names": ("هدف", "نشّاب", "نشاب", "target", "bullseye"), "rgb": (210, 70, 75), "accent": "target"},
-    "🌻": {"names": ("عباد الشمس", "sunflower"), "rgb": (250, 200, 50), "accent": "yellow"},
-    "🌹": {"names": ("وردة", "rose"), "rgb": (220, 50, 70), "accent": "red"},
-    "🌷": {"names": ("توليب", "tulip"), "rgb": (230, 100, 150), "accent": "pink"},
-    "⚽": {"names": ("كرة قدم", "football", "soccer"), "rgb": (220, 220, 220), "accent": "white"},
-    "🏀": {"names": ("كرة سلة", "basketball"), "rgb": (230, 130, 60), "accent": "orange"},
+# ═══════════════════════════════════════════════════════════════
+# خرائط مرجعية لكابتشا "اختر الإيموجي المطابق"
+# كل إيموجي → (لون سائد RGB, أسماء عربية/إنجليزية محتملة)
+# ═══════════════════════════════════════════════════════════════
+_EMOJI_COLOR_HINTS = {
+    "🍅": {"name": ["طماطم", "بندورة", "tomato"], "rgb": (220, 60, 50)},
+    "🥕": {"name": ["جزر", "جزرة", "carrot"], "rgb": (240, 140, 40)},
+    "🦇": {"name": ["خفاش", "bat"], "rgb": (80, 60, 80)},
+    "⌚": {"name": ["ساعة", "watch", "clock"], "rgb": (30, 30, 30)},
+    "🦏": {"name": ["وحيد القرن", "خرتيت", "rhino", "rhinoceros"], "rgb": (140, 140, 140)},
+    "🚓": {"name": ["سيارة شرطة", "شرطة", "police", "car"], "rgb": (40, 80, 180)},
+    "🐷": {"name": ["خنزير", "pig", "piglet"], "rgb": (250, 170, 180)},
+    "🐮": {"name": ["بقرة", "cow", "cattle"], "rgb": (240, 180, 180)},
+    "🐄": {"name": ["بقرة", "cow"], "rgb": (240, 180, 180)},
+    "🍎": {"name": ["تفاحة", "apple"], "rgb": (220, 50, 50)},
+    "🍌": {"name": ["موز", "banana"], "rgb": (250, 220, 60)},
+    "🍇": {"name": ["عنب", "grapes"], "rgb": (140, 60, 160)},
+    "🍓": {"name": ["فراولة", "strawberry"], "rgb": (220, 50, 80)},
+    "🐶": {"name": ["كلب", "dog"], "rgb": (200, 160, 120)},
+    "🐱": {"name": ["قط", "قطة", "cat"], "rgb": (200, 170, 150)},
+    "🐭": {"name": ["فأر", "mouse"], "rgb": (170, 170, 170)},
+    "🐰": {"name": ["أرنب", "rabbit"], "rgb": (230, 230, 230)},
+    "🦊": {"name": ["ثعلب", "fox"], "rgb": (220, 130, 60)},
+    "🐻": {"name": ["دب", "bear"], "rgb": (150, 100, 70)},
+    "🐼": {"name": ["باندا", "panda"], "rgb": (230, 230, 230)},
+    "🐨": {"name": ["كوالا", "koala"], "rgb": (170, 170, 170)},
+    "🐯": {"name": ["نمر", "tiger"], "rgb": (230, 160, 60)},
+    "🦁": {"name": ["أسد", "lion"], "rgb": (220, 170, 80)},
+    "🐸": {"name": ["ضفدع", "frog"], "rgb": (110, 180, 80)},
+    "🐵": {"name": ["قرد", "monkey"], "rgb": (180, 130, 90)},
+    "🐔": {"name": ["دجاجة", "دجاج", "chicken", "hen"], "rgb": (230, 200, 150)},
+    "🐧": {"name": ["بطريق", "penguin"], "rgb": (40, 40, 60)},
+    "🐦": {"name": ["طائر", "عصفور", "bird"], "rgb": (90, 160, 220)},
+    "🦆": {"name": ["بطة", "duck"], "rgb": (200, 200, 180)},
+    "🦉": {"name": ["بومة", "owl"], "rgb": (170, 140, 100)},
+    "🐴": {"name": ["حصان", "horse"], "rgb": (170, 120, 80)},
+    "🦄": {"name": ["يونيكورن", "unicorn"], "rgb": (240, 180, 220)},
+    "🐝": {"name": ["نحلة", "bee"], "rgb": (240, 200, 60)},
+    "🦋": {"name": ["فراشة", "butterfly"], "rgb": (120, 140, 220)},
+    "🐢": {"name": ["سلحفاة", "turtle"], "rgb": (100, 150, 90)},
+    "🐍": {"name": ["ثعبان", "أفعى", "snake"], "rgb": (100, 180, 90)},
+    "🐙": {"name": ["أخطبوط", "octopus"], "rgb": (200, 90, 100)},
+    "🦀": {"name": ["سلطعون", "crab"], "rgb": (220, 80, 60)},
+    "🐟": {"name": ["سمكة", "سمك", "fish"], "rgb": (100, 170, 220)},
+    "🐬": {"name": ["دلفين", "dolphin"], "rgb": (90, 150, 210)},
+    "🐳": {"name": ["حوت", "whale"], "rgb": (80, 140, 220)},
+    "🌻": {"name": ["عباد الشمس", "sunflower"], "rgb": (250, 200, 50)},
+    "🌹": {"name": ["وردة", "rose"], "rgb": (220, 50, 70)},
+    "🌷": {"name": ["توليب", "tulip"], "rgb": (230, 100, 150)},
+    "🌳": {"name": ["شجرة", "tree"], "rgb": (90, 160, 80)},
+    "⚽": {"name": ["كرة قدم", "football", "soccer"], "rgb": (240, 240, 240)},
+    "🏀": {"name": ["كرة سلة", "basketball"], "rgb": (230, 130, 60)},
+    "🎈": {"name": ["بالون", "balloon"], "rgb": (220, 80, 80)},
+    "🎁": {"name": ["هدية", "gift"], "rgb": (220, 80, 100)},
+    "💎": {"name": ["ماسة", "الماس", "diamond"], "rgb": (120, 200, 230)},
+    "⭐": {"name": ["نجمة", "star"], "rgb": (250, 210, 70)},
+    "🔥": {"name": ["نار", "لهب", "fire"], "rgb": (240, 120, 50)},
+    "💧": {"name": ["ماء", "قطرة", "water", "drop"], "rgb": (100, 170, 230)},
+    "🌙": {"name": ["قمر", "moon"], "rgb": (230, 220, 170)},
+    "☀️": {"name": ["شمس", "sun"], "rgb": (250, 200, 60)},
+    "⚡": {"name": ["برق", "صاعقة", "lightning"], "rgb": (250, 210, 60)},
+    "❄️": {"name": ["ثلج", "snow"], "rgb": (170, 220, 240)},
 }
-
-
-def _is_phone_request_button(button) -> bool:
-    """Support legacy and current Telegram button representations."""
-    candidates = [button, getattr(button, "button", None)]
-    for candidate in candidates:
-        if candidate is None:
-            continue
-        if (
-            KeyboardButtonRequestPhone is not None
-            and isinstance(candidate, KeyboardButtonRequestPhone)
-        ):
-            return True
-        button_type = getattr(candidate, "type", None)
-        if (
-            ButtonTypeRequestPhone is not None
-            and isinstance(button_type, ButtonTypeRequestPhone)
-        ):
-            return True
-        if type(button_type).__name__ == "ButtonTypeRequestPhone":
-            return True
-    return False
 
 
 class ForcedRefAIService(RakshService):
@@ -188,6 +177,300 @@ class ForcedRefAIService(RakshService):
                 "أو: t.me/BotUsername?start=123"
             )
         return None
+
+    # ═══════════════════════════════════════════════════════════
+    # دوال مساعدة جديدة لحل كابتشا الأرقام والإيموجي
+    # ═══════════════════════════════════════════════════════════
+
+    @staticmethod
+    def _extract_target_number(text: str) -> Optional[str]:
+        """
+        يستخرج الرقم المطلوب الضغط عليه من نص مثل:
+        - "اضغط على الرقم (79)"
+        - "الرقم 79"
+        - "Press the number (79)"
+        - "رقم: 79"
+        """
+        normalized = unicodedata.normalize("NFKC", str(text or "")).translate(
+            str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+        )
+        patterns = [
+            r"(?:الرقم|رقم|number|press|اضغط)\s*[\(\[]?\s*(\d{1,4})\s*[\)\]]?",
+            r"[\(\[]\s*(\d{1,4})\s*[\)\]]",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, normalized, flags=re.IGNORECASE)
+            if match:
+                return match.group(1)
+        return None
+
+    @staticmethod
+    def _extract_dominant_color(image_bytes: bytes) -> Optional[tuple]:
+        """يستخرج اللون السائد من صورة (يتجاهل الأبيض/الأسود/الرمادي)."""
+        if Image is None:
+            return None
+        try:
+            with Image.open(BytesIO(image_bytes)) as img:
+                img = img.convert("RGB")
+                img.thumbnail((100, 100))
+                pixels = list(img.getdata())
+                filtered = []
+                for r, g, b in pixels:
+                    mx, mn = max(r, g, b), min(r, g, b)
+                    if mx - mn < 25:
+                        continue
+                    if r > 240 and g > 240 and b > 240:
+                        continue
+                    filtered.append((r, g, b))
+                if not filtered:
+                    filtered = pixels
+                n = len(filtered)
+                avg = (
+                    sum(p[0] for p in filtered) // n,
+                    sum(p[1] for p in filtered) // n,
+                    sum(p[2] for p in filtered) // n,
+                )
+                return avg
+        except Exception:
+            return None
+
+    @staticmethod
+    def _color_similarity(c1: tuple, c2: tuple) -> float:
+        """تشابه لوني بين لونين (0..1)."""
+        try:
+            r1, g1, b1 = [x / 255.0 for x in c1]
+            r2, g2, b2 = [x / 255.0 for x in c2]
+            h1, s1, v1 = colorsys.rgb_to_hsv(r1, g1, b1)
+            h2, s2, v2 = colorsys.rgb_to_hsv(r2, g2, b2)
+            dh = min(abs(h1 - h2), 1 - abs(h1 - h2)) * 2.0
+            ds = abs(s1 - s2)
+            dv = abs(v1 - v2)
+            diff = (dh * 0.6) + (ds * 0.2) + (dv * 0.2)
+            return max(0.0, 1.0 - diff)
+        except Exception:
+            return 0.0
+
+    async def _solve_emoji_captcha(
+        self,
+        client,
+        bot_entity,
+        verification_message,
+        text: str,
+        buttons: list,
+        phone_number: str,
+    ) -> bool:
+        """حل كابتشا الإيموجي بالرؤية، مع مطابقة صارمة لأزرار Telegram."""
+        if not self._has_image_media(verification_message):
+            return False
+
+        try:
+            image_buffer = BytesIO()
+            await client.download_media(verification_message, file=image_buffer)
+            image_bytes = image_buffer.getvalue()
+        except Exception as exc:
+            logger.warning("⚠️ تعذر تنزيل صورة كابتشا الإيموجي: %s", exc)
+            return False
+        if not image_bytes:
+            return False
+
+        candidate_labels = []
+        for button in buttons:
+            label = self._button_label(button).strip()
+            if label and label not in candidate_labels:
+                candidate_labels.append(label)
+        if not candidate_labels:
+            return False
+
+        selected_label = await self._vision_select_button(
+            image_bytes=image_bytes,
+            challenge_text=text,
+            candidate_labels=candidate_labels,
+            phone_number=phone_number,
+        )
+        if not selected_label:
+            logger.warning(
+                "⚠️ لم يتم التعرف بثقة على إيموجي كابتشا الحساب %s؛ "
+                "لن يتم الضغط عشوائياً",
+                phone_number,
+            )
+            return False
+
+        selected_normalized = self._normalise_captcha_label(selected_label)
+        matching_button = next(
+            (
+                button for button in buttons
+                if self._normalise_captcha_label(self._button_label(button))
+                == selected_normalized
+            ),
+            None,
+        )
+        if matching_button is None:
+            logger.warning(
+                "⚠️ النموذج أعاد خياراً غير موجود ضمن أزرار Telegram: %r",
+                selected_label,
+            )
+            return False
+
+        try:
+            await matching_button.click()
+            logger.info(
+                "✅ تم اختيار إيموجي الكابتشا %s للحساب %s",
+                selected_label,
+                phone_number,
+            )
+            return True
+        except Exception as exc:
+            logger.warning("⚠️ تعذر الضغط على إيموجي الكابتشا: %s", exc)
+            return False
+
+    async def _vision_select_button(
+        self,
+        image_bytes: bytes,
+        challenge_text: str,
+        candidate_labels: list,
+        phone_number: str,
+    ) -> Optional[str]:
+        """يستعمل واجهة OpenAI-compatible ويقبل إجابة مطابقة حرفياً لأحد الأزرار."""
+        api_key = (
+            os.getenv("GPT_API_KEY")
+            or os.getenv("OPENAI_API_KEY")
+            or os.getenv("OPENAI_TOKEN")
+        )
+        if not api_key:
+            logger.error(
+                "❌ لا يوجد GPT_API_KEY أو OPENAI_API_KEY؛ "
+                "لا يمكن حل كابتشا الإيموجي للحساب %s",
+                phone_number,
+            )
+            return None
+
+        endpoint = (
+            os.getenv("GPT_VISION_ENDPOINT")
+            or os.getenv("OPENAI_CHAT_COMPLETIONS_URL")
+            or "https://api.openai.com/v1/chat/completions"
+        )
+        model = (
+            os.getenv("GPT_VISION_MODEL")
+            or os.getenv("OPENAI_VISION_MODEL")
+            or "gpt-4o-mini"
+        )
+        encoded_image = base64.b64encode(image_bytes).decode("ascii")
+        options_json = json.dumps(candidate_labels, ensure_ascii=False)
+        prompt = (
+            "You solve a Telegram visual emoji captcha. Inspect the attached image "
+            "and choose the Telegram button label that matches the requested object. "
+            f"Available labels are exactly: {options_json}. "
+            f"Challenge text: {challenge_text!r}. "
+            'Return JSON only: {"label":"one exact label"} or {"label":null} '
+            "when unclear. Never invent a label or add an explanation."
+        )
+        payload = {
+            "model": model,
+            "temperature": 0,
+            "max_tokens": 80,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{encoded_image}",
+                            "detail": "high",
+                        },
+                    },
+                ],
+            }],
+        }
+
+        def _request():
+            request = urllib.request.Request(
+                endpoint,
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=25) as response:
+                return response.read().decode("utf-8")
+
+        try:
+            raw_response = await asyncio.to_thread(_request)
+            response = json.loads(raw_response)
+            content = (
+                response.get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+            )
+            if isinstance(content, list):
+                content = "".join(
+                    item.get("text", "") for item in content
+                    if isinstance(item, dict)
+                )
+            result = json.loads(str(content).strip())
+            label = result.get("label") if isinstance(result, dict) else None
+            if not isinstance(label, str):
+                return None
+            normalized = self._normalise_captcha_label(label)
+            for candidate in candidate_labels:
+                if self._normalise_captcha_label(candidate) == normalized:
+                    return candidate
+        except urllib.error.HTTPError as exc:
+            logger.error(
+                "❌ فشل GPT Vision للحساب %s: HTTP %s",
+                phone_number,
+                exc.code,
+            )
+        except Exception as exc:
+            logger.warning(
+                "⚠️ تعذر تحليل كابتشا الإيموجي عبر GPT Vision للحساب %s: %s",
+                phone_number,
+                exc,
+            )
+        return None
+
+    async def _solve_number_captcha(
+        self,
+        bot_entity,
+        text: str,
+        buttons: list,
+        phone_number: str,
+    ) -> bool:
+        """يحل كابتشا "اضغط على الرقم (XX)"."""
+        target_number = self._extract_target_number(text)
+        if not target_number:
+            return False
+
+        logger.info(
+            "🔢 كابتشا الرقم: المطلوب الضغط على %s للحساب %s",
+            target_number,
+            phone_number,
+        )
+
+        target_norm = self._normalise_captcha_label(target_number)
+        for btn in buttons:
+            label = self._normalise_captcha_label(self._button_label(btn))
+            if label == target_norm:
+                try:
+                    await btn.click()
+                    logger.info(
+                        "🖱️ ضغط على الرقم %s للحساب %s",
+                        target_number,
+                        phone_number,
+                    )
+                    return True
+                except Exception as exc:
+                    logger.warning("⚠️ فشل الضغط على زر الرقم: %s", exc)
+                    return False
+
+        logger.warning(
+            "⚠️ لم أجد زراً مطابقاً للرقم %s. الأزرار: %s",
+            target_number,
+            [getattr(b, "text", "") for b in buttons],
+        )
+        return False
 
     # ─── 2. معالجة النصوص ───
 
@@ -484,9 +767,6 @@ class ForcedRefAIService(RakshService):
         if not button_url:
             return False
 
-        # A URL alone is not enough to classify a button as an invitation.
-        # Verification bots can use URL buttons for an actual challenge, so
-        # only ignore Telegram invite URLs here.
         normalized_url = str(button_url).casefold()
         return bool(re.search(
             r"(?:https?://)?(?:t\.me|telegram\.me)/(?:\+|joinchat/)",
@@ -500,8 +780,6 @@ class ForcedRefAIService(RakshService):
         if not text:
             return False
 
-        # يجب فحص النفي أولاً؛ فعبارات مثل «لم ينجح التحقق» تحتوي حرفياً
-        # على كلمة «نجح» ولا يجوز اعتبارها نجاحاً.
         failure_markers = (
             "لم ينجح",
             "لم يتم",
@@ -555,44 +833,59 @@ class ForcedRefAIService(RakshService):
             "you are verified",
             "access granted",
             "welcome to the group",
-            "passed",
-            "correct",
-            "صح",
-            "صحيح",
-            "نجاح",
-            "نجح",
-            "success",
         )
         if any(marker.casefold() in text for marker in success_markers):
             return True
-        normalized = text.strip(" !؟?.,،")
-        return normalized in {
-            "✅", "✓", "✔", "☑",
-            "تم", "نجح", "نجاح", "صح", "صحيح",
-            "success", "ok", "passed", "correct",
-            "تم فقط", "نجح فقط",
-            "أنت بشري", "انت بشري",
-        }
+        return False
 
     @staticmethod
     def _looks_like_verification_message(message) -> bool:
         """يميّز تحققاً جديداً عن رسالة ترحيب أو رد عادي بعد فتح البوت."""
-        text = ForcedRefAIService._message_text(message).casefold()
+        text = (getattr(message, "message", "") or "").casefold()
         if getattr(message, "photo", None) or getattr(message, "document", None):
             return True
         buttons = [
             button
-            for button in ForcedRefAIService._message_buttons(message)
+            for row in (getattr(message, "buttons", None) or [])
+            for button in (row or [])
             if not ForcedRefAIService._is_invitation_link_button(button)
         ]
-        if buttons:
-            return True
         markers = (
             "تحقق", "verify", "captcha", "كابتشا", "human", "بشر",
             "robot", "روبوت", "أدخل", "ادخل", "اكتب", "أجب",
             "اختر", "اضغط", "code", "كود", "رمز",
         )
-        return any(marker in text for marker in markers)
+        if any(marker in text for marker in markers):
+            return True
+
+        button_markers = (
+            "تحقق", "verify", "captcha", "كابتشا", "human", "بشر",
+            "robot", "روبوت", "check", "continue", "التالي", "متابعة",
+        )
+        return any(
+            any(marker in (getattr(button, "text", "") or "").casefold()
+                for marker in button_markers)
+            for button in buttons
+        )
+
+    @staticmethod
+    def _fallback_button_from_messages(messages):
+        """إرجاع أول زر قابل للضغط لمسار البوتات التي لا تعرض تحققاً."""
+        ordered_messages = sorted(
+            (message for message in (messages or []) if not getattr(message, "out", False)),
+            key=lambda message: getattr(message, "id", 0),
+            reverse=True,
+        )
+        for message in ordered_messages:
+            for row in getattr(message, "buttons", None) or []:
+                for button in row or []:
+                    if getattr(button, "url", None) and not getattr(button, "data", None):
+                        continue
+                    if isinstance(button, KeyboardButtonRequestPhone):
+                        continue
+                    if callable(getattr(button, "click", None)):
+                        return button
+        return None
 
     @staticmethod
     def _has_image_media(message) -> bool:
@@ -600,8 +893,6 @@ class ForcedRefAIService(RakshService):
         if getattr(message, "photo", None):
             return True
         media = getattr(message, "media", None)
-        if getattr(media, "photo", None):
-            return True
         document = getattr(media, "document", None) if media else None
         mime_type = getattr(document, "mime_type", "") or ""
         return mime_type.startswith("image/")
@@ -618,357 +909,6 @@ class ForcedRefAIService(RakshService):
         )
 
     @staticmethod
-    def _is_image_emoji_captcha_text(value: str) -> bool:
-        """Return true for object-in-image challenges, not OCR challenges."""
-        text = unicodedata.normalize("NFKC", str(value or "")).casefold()
-        markers = (
-            "الإيموجي",
-            "الايموجي",
-            "إيموجي",
-            "ايموجي",
-            "emoji",
-            "الرمز التعبيري",
-            "المطابق للصورة",
-            "الصورة أعلاه",
-            "match the image",
-            "matching emoji",
-        )
-        return any(marker.casefold() in text for marker in markers)
-
-    @staticmethod
-    def _extract_target_number(value: str) -> Optional[str]:
-        """Extract a numeric button target such as «القائمة (79)»."""
-        normalized = unicodedata.normalize("NFKC", str(value or "")).translate(
-            str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
-        )
-        patterns = (
-            r"(?:الرقم|رقم|number|press|اضغط|الإجابة|الاجابة|القائمة)"
-            r"\s*(?:الصحيحة)?\s*[:：]?\s*[\(\[]?\s*(\d{1,4})\s*[\)\]]?",
-            r"[\(\[]\s*(\d{1,4})\s*[\)\]]",
-        )
-        for pattern in patterns:
-            match = re.search(pattern, normalized, flags=re.IGNORECASE)
-            if match:
-                return match.group(1)
-        return None
-
-    @staticmethod
-    def _image_color_similarity(first: tuple, second: tuple) -> float:
-        """Compare two RGB colours in HSV space while tolerating noise."""
-        try:
-            first_hsv = colorsys.rgb_to_hsv(*(value / 255.0 for value in first))
-            second_hsv = colorsys.rgb_to_hsv(*(value / 255.0 for value in second))
-            hue_delta = min(
-                abs(first_hsv[0] - second_hsv[0]),
-                1.0 - abs(first_hsv[0] - second_hsv[0]),
-            )
-            saturation_delta = abs(first_hsv[1] - second_hsv[1])
-            value_delta = abs(first_hsv[2] - second_hsv[2])
-            return max(
-                0.0,
-                1.0 - (hue_delta * 1.4 + saturation_delta * 0.35 + value_delta * 0.25),
-            )
-        except (TypeError, ValueError, ZeroDivisionError):
-            return 0.0
-
-    @staticmethod
-    def _image_visual_features(image_bytes: bytes) -> Optional[dict]:
-        """Build a small colour signature for an object CAPTCHA image."""
-        if Image is None or ImageOps is None or not image_bytes:
-            return None
-        try:
-            with Image.open(BytesIO(image_bytes)) as opened:
-                transpose = getattr(ImageOps, "exif_transpose", None)
-                image = transpose(opened) if transpose else opened
-                image = image.convert("RGB")
-                image.thumbnail((96, 96))
-                pixels = list(image.getdata())
-        except Exception:
-            return None
-        if not pixels:
-            return None
-
-        count = float(len(pixels))
-        average = tuple(
-            sum(pixel[index] for pixel in pixels) / count for index in range(3)
-        )
-
-        def fraction(predicate) -> float:
-            return sum(1 for pixel in pixels if predicate(*pixel)) / count
-
-        return {
-            "average": average,
-            "dark": fraction(lambda r, g, b: max(r, g, b) < 82),
-            "gray": fraction(lambda r, g, b: max(r, g, b) - min(r, g, b) < 24),
-            "white": fraction(lambda r, g, b: min(r, g, b) > 220),
-            "pink": fraction(
-                lambda r, g, b: r > 115 and r > g * 1.16 and r > b * 1.08
-            ),
-            "red": fraction(
-                lambda r, g, b: r > 115 and r > g * 1.38 and r > b * 1.28
-            ),
-            "orange": fraction(
-                lambda r, g, b: r > 125 and g > 65 and r > b * 1.35 and g > b * 1.15
-            ),
-            "brown": fraction(
-                lambda r, g, b: (
-                    r > 55 and r > g * 1.08 and g > b * 1.04
-                    and r < 205 and g < 175 and b < 145
-                )
-            ),
-            "yellow": fraction(
-                lambda r, g, b: r > 135 and g > 120 and b < min(r, g) * 0.72
-            ),
-            "green": fraction(
-                lambda r, g, b: g > 85 and g > r * 1.16 and g > b * 1.12
-            ),
-            "blue": fraction(
-                lambda r, g, b: b > 100 and b > r * 1.16 and b > g * 1.05
-            ),
-        }
-
-    @classmethod
-    def _emoji_image_score(cls, label: str, features: dict) -> Optional[float]:
-        """Score one visible button label against an image signature."""
-        normalized = cls._normalise_captcha_label(label)
-        hint = None
-        for emoji, candidate in _EMOJI_IMAGE_HINTS.items():
-            labels = {cls._normalise_captcha_label(emoji)}
-            labels.update(cls._normalise_captcha_label(name) for name in candidate["names"])
-            if normalized in labels:
-                hint = candidate
-                break
-        if hint is None:
-            return None
-
-        score = 0.42 * cls._image_color_similarity(
-            tuple(features["average"]),
-            tuple(hint["rgb"]),
-        )
-        accent = hint["accent"]
-        if accent in features:
-            score += 0.42 * min(1.0, features[accent] / 0.18)
-
-        # The cow challenge in the supplied screenshot has a grey/white body,
-        # black patches and a pink muzzle. This discriminates it from a pink
-        # pig and a uniformly grey rhinoceros without hard-coding button order.
-        if accent == "cow":
-            score += 0.22 * min(1.0, features["dark"] / 0.08)
-            score += 0.16 * min(1.0, features["pink"] / 0.035)
-            score += 0.08 * min(1.0, features["gray"] / 0.55)
-        elif accent == "rocket":
-            # A rocket in these challenges has three simultaneous accents:
-            # red body/fins, a blue window and an orange flame. The pale
-            # background can dominate the average colour, so this composite
-            # signature is more useful than RGB distance alone.
-            score += 0.24 * min(1.0, features["red"] / 0.035)
-            score += 0.22 * min(1.0, features["blue"] / 0.006)
-            score += 0.20 * min(1.0, features["orange"] / 0.008)
-            score += 0.10 * min(1.0, features["white"] / 0.40)
-        elif accent == "target":
-            # Target challenges contain a red bullseye and commonly a blue
-            # dart. The pale/noisy background makes average RGB unreliable,
-            # so require the two object colours together instead of choosing
-            # another red emoji such as 🐙 or 🌹.
-            score += 0.34 * min(1.0, features["red"] / 0.045)
-            score += 0.30 * min(1.0, features["blue"] / 0.008)
-            score += 0.12 * min(1.0, features["white"] / 0.40)
-        elif accent == "pink":
-            score += 0.15 * min(1.0, features["pink"] / 0.10)
-            score += 0.08 * (1.0 - min(1.0, features["dark"] / 0.12))
-        elif accent == "donut":
-            # Donut challenges have a brown/orange ring and a dark hole.
-            # The noisy pale background makes the overall average colour
-            # unreliable, so prefer the object-specific colour fractions.
-            score += 0.30 * min(1.0, features["brown"] / 0.10)
-            score += 0.18 * min(1.0, features["orange"] / 0.08)
-            score += 0.16 * min(1.0, features["dark"] / 0.05)
-        elif accent == "fire":
-            # Fire is usually a compact red/orange/yellow object on a pale
-            # noisy background. Combine the warm-channel signature instead
-            # of matching the pale average colour.
-            score += 0.28 * min(1.0, features["orange"] / 0.08)
-            score += 0.22 * min(1.0, features["red"] / 0.05)
-            score += 0.14 * min(1.0, features["yellow"] / 0.04)
-        elif accent == "gray":
-            score += 0.16 * min(1.0, features["gray"] / 0.65)
-            score -= 0.10 * min(1.0, features["pink"] / 0.05)
-        return score
-
-    @classmethod
-    def _match_vision_answer(cls, answer: str, buttons: list):
-        """Map a vision model's index, emoji, or name answer to one button.
-
-        The index path is the important one for arbitrary/new emoji. It lets
-        the vision model choose from the buttons in the current challenge
-        without requiring a built-in catalogue of object names or images.
-        """
-        answer_text = str(answer or "").strip()
-        index_patterns = (
-            r"^\s*(?:candidate|option|choice|button|index|"
-            r"المرشح|الخيار|الزر|الاختيار|الفهرس)?\s*[:#=\-]?\s*(\d{1,3})\s*$",
-            r"(?i)(?:candidate|option|choice|button|index|"
-            r"المرشح|الخيار|الزر|الاختيار|الفهرس)\s*(?:number|رقم)?"
-            r"\s*[:#=\-]?\s*(\d{1,3})\b",
-        )
-        for pattern in index_patterns:
-            match = re.search(pattern, answer_text, flags=re.IGNORECASE)
-            if match:
-                index = int(match.group(1))
-                if 1 <= index <= len(buttons):
-                    return buttons[index - 1]
-
-        answer_normalized = cls._normalise_captcha_label(
-            answer_text.strip("`'\"“”«»()[]{}<>،,.;:؛!?؟")
-        )
-        if not answer_normalized:
-            return None
-
-        for button in buttons:
-            label = cls._button_label(button)
-            if answer_normalized == cls._normalise_captcha_label(label):
-                return button
-
-        for emoji, hint in _EMOJI_IMAGE_HINTS.items():
-            names = {
-                cls._normalise_captcha_label(emoji),
-                *(cls._normalise_captcha_label(name) for name in hint["names"]),
-            }
-            if answer_normalized not in names:
-                continue
-            for button in buttons:
-                label = cls._normalise_captcha_label(cls._button_label(button))
-                if label in names:
-                    return button
-        return None
-
-    async def _ask_vision_for_emoji(
-        self,
-        image_bytes: bytes,
-        buttons: list,
-        prompt: str,
-    ):
-        """Use the configured Groq vision model for changing object images."""
-        api_key = os.environ.get("GROQ_API_KEY", "").strip()
-        if not api_key or not image_bytes or not buttons:
-            return None
-
-        labels = [self._button_label(button) for button in buttons]
-        candidates = ", ".join(label for label in labels if label)
-        if not candidates:
-            return None
-        numbered_candidates = "\n".join(
-            f"{index}. {label}"
-            for index, label in enumerate(labels, start=1)
-            if label
-        )
-        vision_prompt = (
-            "You are solving a live object-image CAPTCHA. The image can contain "
-            "any object; do not rely on a fixed list of known images. Identify "
-            "the main object in the image, compare it with the candidate emoji "
-            "buttons below, and select the button whose emoji represents the "
-            "same object.\n\n"
-            "Candidates are numbered in their exact button order:\n"
-            f"{numbered_candidates}\n\n"
-            "Return ONLY the integer number of the correct candidate (1-based). "
-            "Never return a button position guessed from the layout; use the "
-            "number printed next to the matching candidate. "
-            f"Instruction text: {prompt[:300]}"
-        )
-        encoded = base64.b64encode(image_bytes).decode("ascii")
-        configured = os.environ.get("GROQ_VISION_MODEL", "").strip()
-        preferred = [
-            "meta-llama/llama-4-scout-17b-16e-instruct",
-            "meta-llama/llama-4-maverick-17b-128e-instruct",
-            "llama-3.2-90b-vision-preview",
-            "llama-3.2-11b-vision-preview",
-        ]
-
-        # Groq retires and renames models over time. Discover the models
-        # currently enabled for this key so a stale hard-coded name does not
-        # make an otherwise healthy vision key look broken.
-        discovered = []
-        try:
-            model_response = requests.get(
-                "https://api.groq.com/openai/v1/models",
-                headers={"Authorization": f"Bearer {api_key}"},
-                timeout=10,
-            )
-            if model_response.status_code == 200:
-                discovered = [
-                    item.get("id", "")
-                    for item in model_response.json().get("data", [])
-                    if item.get("id")
-                ]
-        except Exception as exc:
-            logger.debug("تعذر اكتشاف نماذج Groq Vision: %s", exc)
-
-        if discovered:
-            discovered_set = set(discovered)
-            available_vision = [
-                model for model in discovered
-                if any(token in model.lower() for token in ("vision", "scout", "maverick"))
-            ]
-            models = [
-                model for model in [configured] + preferred + available_vision
-                if model and (model == configured or model in discovered_set)
-            ]
-        else:
-            models = [model for model in [configured] + preferred if model]
-        models = list(dict.fromkeys(model for model in models if model))
-
-        def request_model():
-            for model in models:
-                try:
-                    response = requests.post(
-                        "https://api.groq.com/openai/v1/chat/completions",
-                        headers={
-                            "Authorization": f"Bearer {api_key}",
-                            "Content-Type": "application/json",
-                        },
-                        json={
-                            "model": model,
-                            "messages": [{
-                                "role": "user",
-                                "content": [
-                                    {"type": "text", "text": vision_prompt},
-                                    {
-                                        "type": "image_url",
-                                        "image_url": {
-                                            "url": f"data:image/jpeg;base64,{encoded}",
-                                        },
-                                    },
-                                ],
-                            }],
-                            "max_tokens": 16,
-                            "temperature": 0,
-                        },
-                        timeout=30,
-                    )
-                    if response.status_code != 200:
-                        logger.warning(
-                            "⚠️ نموذج الرؤية %s أعاد %s: %s",
-                            model,
-                            response.status_code,
-                            response.text[:160],
-                        )
-                        continue
-                    content = (
-                        response.json()
-                        .get("choices", [{}])[0]
-                        .get("message", {})
-                        .get("content", "")
-                    )
-                    if content:
-                        return str(content).strip()
-                except Exception as exc:
-                    logger.warning("⚠️ تعذر استخدام نموذج الرؤية %s: %s", model, exc)
-            return None
-
-        answer = await asyncio.to_thread(request_model)
-        return self._match_vision_answer(answer, buttons) if answer else None
-
-    @staticmethod
     def _button_label(button) -> str:
         """Return the visible label from Telethon's button wrappers."""
         labels = []
@@ -977,65 +917,6 @@ class ForcedRefAIService(RakshService):
             if label is not None and str(label) not in labels:
                 labels.append(str(label))
         return " ".join(labels)
-
-    @staticmethod
-    def _message_text(message) -> str:
-        """Read text from Telegram messages across Telethon message shapes."""
-        for attribute in ("message", "raw_text", "text"):
-            value = getattr(message, attribute, None)
-            if value:
-                return str(value)
-        return ""
-
-    @staticmethod
-    def _message_buttons(message) -> list:
-        """Flatten buttons from both Message.buttons and reply_markup.rows.
-
-        Telethon normally exposes ``Message.buttons``, but it can be empty for
-        edited photo messages or when the reply markup was received through a
-        different layer. Reading the raw markup as a fallback prevents the
-        verifier from treating a visible captcha as a message with no answer.
-        """
-        rows = getattr(message, "buttons", None) or []
-        if not rows:
-            markup = getattr(message, "reply_markup", None)
-            rows = getattr(markup, "rows", None) or []
-
-        flattened = []
-        for row in rows:
-            row_buttons = getattr(row, "buttons", None)
-            if row_buttons is None:
-                if isinstance(row, (list, tuple)):
-                    row_buttons = row
-                else:
-                    row_buttons = [row]
-            flattened.extend(button for button in (row_buttons or []) if button is not None)
-        return flattened
-
-    @staticmethod
-    def _custom_emoji_id_from_button(button):
-        """Return a paid/custom emoji id exposed by Telegram button styles."""
-        candidates = [button, getattr(button, "button", None)]
-        for candidate in candidates:
-            if candidate is None:
-                continue
-            style = getattr(candidate, "style", None)
-            for source in (style, candidate):
-                if source is None:
-                    continue
-                for attribute in (
-                    "icon",
-                    "icon_custom_emoji_id",
-                    "custom_emoji_id",
-                    "document_id",
-                ):
-                    value = getattr(source, attribute, None)
-                    if value not in (None, "", 0, False):
-                        try:
-                            return int(value)
-                        except (TypeError, ValueError):
-                            continue
-        return None
 
     @staticmethod
     def _normalise_math_text(value: str) -> str:
@@ -1049,7 +930,7 @@ class ForcedRefAIService(RakshService):
         )
 
     @classmethod
-    def _captcha_target_labels(cls, message, text: str) -> list[str]:
+    def _captcha_target_labels(cls, message, text: str) -> list:
         """Extract normal and Telegram custom-emoji targets from a challenge."""
         labels = []
 
@@ -1062,8 +943,6 @@ class ForcedRefAIService(RakshService):
             target_marker_match.start(1) if target_marker_match else None
         )
 
-        # Prefer the value after «اضغط على الرمز» so the robot emoji in a
-        # heading cannot be mistaken for the captcha target.
         if target_marker_match:
             labels.append(target_marker_match.group(1))
         else:
@@ -1072,9 +951,6 @@ class ForcedRefAIService(RakshService):
                 text,
             ))
 
-        # Custom emoji are represented by an entity and may not match the
-        # Unicode emoji ranges above. Their visible text is still available
-        # through Telethon's entity iterator and normally matches the button.
         try:
             get_entities_text = getattr(message, "get_entities_text", None)
             if get_entities_text:
@@ -1090,58 +966,13 @@ class ForcedRefAIService(RakshService):
         except Exception:
             pass
 
-        # Some captcha bots use a word or a non-standard symbol after
-        # "اضغط على الرمز:" instead of a regular Unicode emoji.
         return [
             label for label in labels
             if cls._normalise_captcha_label(label)
         ]
 
-    @classmethod
-    def _captcha_target_custom_emoji_ids(cls, message, text: str) -> set[int]:
-        """Extract the paid/custom emoji id requested by the challenge."""
-        target_marker_match = re.search(
-            r"(?:الرمز|العلامة|symbol|emoji|icon)\s*[:：-]?\s*([^\s،,.!?؟]+)",
-            text,
-            flags=re.IGNORECASE,
-        )
-        target_offset = (
-            target_marker_match.start(1) if target_marker_match else None
-        )
-        ids = set()
-
-        try:
-            get_entities_text = getattr(message, "get_entities_text", None)
-            entity_items = get_entities_text() if get_entities_text else []
-            for entity, _entity_text in entity_items:
-                if entity.__class__.__name__ != "MessageEntityCustomEmoji":
-                    continue
-                if (
-                    target_offset is not None
-                    and getattr(entity, "offset", 0) < target_offset
-                ):
-                    continue
-                document_id = getattr(entity, "document_id", None)
-                if document_id not in (None, "", 0, False):
-                    ids.add(int(document_id))
-        except (TypeError, ValueError):
-            pass
-        except Exception:
-            # A malformed entity must not prevent the normal text matcher
-            # from handling older Telegram messages.
-            pass
-
-        return ids
-
     async def _extract_image_captcha(self, client, message, phone_number: str) -> Optional[str]:
-        """Download and recognize noisy numeric/alphanumeric image CAPTCHAs.
-
-        The image CAPTCHAs used by referral bots are often deliberately noisy:
-        thin lines cross the characters, the background contains speckles, and
-        the glyphs can be colored.  Running ddddocr only once on the original
-        JPEG is unreliable, so use a small set of deterministic PIL variants
-        and accept the result that OCR reaches repeatedly.
-        """
+        """Download and recognize noisy numeric/alphanumeric image CAPTCHAs."""
         if not self._has_image_media(message):
             return None
         if ddddocr is None:
@@ -1161,8 +992,6 @@ class ForcedRefAIService(RakshService):
                 _CAPTCHA_OCR = ddddocr.DdddOcr(show_ad=False, beta=True)
 
             def _normalise_ocr_result(raw_result) -> str:
-                # OCR occasionally returns spaces, punctuation, or Arabic-Indic
-                # digits around the actual answer.
                 translated = str(raw_result or "").translate(
                     str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
                 )
@@ -1173,9 +1002,8 @@ class ForcedRefAIService(RakshService):
                 image.save(output, format="PNG", optimize=True)
                 return output.getvalue()
 
-            def _build_variants() -> list[tuple[str, bytes]]:
-                # Keep the original as the first and highest-priority attempt.
-                variants: list[tuple[str, bytes]] = [("original", image_bytes)]
+            def _build_variants() -> list:
+                variants = [("original", image_bytes)]
                 if Image is None or ImageOps is None:
                     return variants
 
@@ -1183,9 +1011,6 @@ class ForcedRefAIService(RakshService):
                     source = ImageOps.exif_transpose(opened).convert("RGB")
                     width, height = source.size
 
-                    # Small Telegram thumbnails lose character edges. Upscale
-                    # before thresholding, but cap the size to avoid expensive
-                    # OCR calls on unusually large documents.
                     scale = min(4.0, max(1.0, 720.0 / max(width, height, 1)))
                     if scale > 1.0:
                         source = source.resize(
@@ -1201,9 +1026,6 @@ class ForcedRefAIService(RakshService):
                         _encode_png(gray.filter(ImageFilter.MedianFilter(size=3))),
                     ))
 
-                    # Captcha characters are frequently green, purple, or
-                    # black while the noise is lighter. OCR each RGB channel
-                    # separately so one noisy channel does not dominate.
                     for channel_name, channel in (
                         ("red", source.getchannel("R")),
                         ("green", source.getchannel("G")),
@@ -1212,7 +1034,6 @@ class ForcedRefAIService(RakshService):
                         channel = ImageOps.autocontrast(channel, cutoff=1)
                         variants.append((channel_name, _encode_png(channel)))
 
-                    # Multiple thresholds handle both pale and dark glyphs.
                     for threshold in (110, 145, 180, 210):
                         binary = gray.point(
                             lambda value, limit=threshold:
@@ -1223,7 +1044,7 @@ class ForcedRefAIService(RakshService):
                 return variants
 
             variants = _build_variants()
-            candidates: list[tuple[str, str, int]] = []
+            candidates = []
             for index, (variant_name, variant_bytes) in enumerate(variants):
                 try:
                     raw_result = await asyncio.to_thread(
@@ -1244,8 +1065,6 @@ class ForcedRefAIService(RakshService):
                     candidates.append((code, variant_name, index))
 
             if candidates:
-                # Prefer agreement across variants; ties go to the earlier
-                # (less destructive) image variant.
                 counts = {}
                 for code, _variant_name, _index in candidates:
                     counts[code] = counts.get(code, 0) + 1
@@ -1280,154 +1099,18 @@ class ForcedRefAIService(RakshService):
             logger.warning("⚠️ فشل تحليل صورة التحقق للحساب %s: %s", phone_number, exc)
         return None
 
-    async def _solve_emoji_image_captcha(
-        self,
-        client,
-        message,
-        buttons: list,
-        phone_number: str,
-    ) -> bool:
-        """Choose the button whose emoji matches an object shown in the image."""
-        if not buttons or not self._has_image_media(message):
-            return False
-
-        try:
-            image_buffer = BytesIO()
-            await client.download_media(message, file=image_buffer)
-            image_bytes = image_buffer.getvalue()
-        except Exception as exc:
-            logger.warning("⚠️ تعذر تنزيل صورة كابتشا الإيموجي: %s", exc)
-            return False
-
-        # The image changes on every challenge. When a vision key is
-        # configured, let the model identify the object from the actual
-        # candidate list instead of relying on a fixed colour catalogue.
-        vision_button = await self._ask_vision_for_emoji(
-            image_bytes,
-            buttons,
-            self._message_text(message),
-        )
-        if vision_button is not None:
-            try:
-                await vision_button.click()
-                logger.info(
-                    "🖱️ تم حل كابتشا الصورة بالرؤية الديناميكية: %s",
-                    self._button_label(vision_button),
-                )
-                return True
-            except Exception as exc:
-                logger.warning("⚠️ فشل الضغط على نتيجة الرؤية الديناميكية: %s", exc)
-
-        # The generic vision path above does not need Pillow. Pillow is only
-        # required for the deliberately limited local fallback below.
-        if Image is None:
-            logger.warning(
-                "⚠️ Pillow غير متاحة، وتعذر حل كابتشا الإيموجي بالرؤية العامة "
-                "للحساب %s",
-                phone_number,
-            )
-            return False
-
-        features = self._image_visual_features(image_bytes)
-        if not features:
-            return False
-
-        scored = []
-        for button in buttons:
-            label = self._button_label(button)
-            score = self._emoji_image_score(label, features)
-            if score is not None:
-                scored.append((score, button, label))
-        if not scored:
-            logger.warning(
-                "⚠️ لا يوجد زر إيموجي معروف للصورة؛ الأزرار=%s",
-                [self._button_label(button) for button in buttons],
-            )
-            return False
-
-        scored.sort(key=lambda item: item[0], reverse=True)
-        best_score, best_button, best_label = scored[0]
-        second_score = scored[1][0] if len(scored) > 1 else 0.0
-        # Never click an arbitrary button when the image is ambiguous. A clear
-        # margin matters more than a high score because many emoji share hues.
-        if best_score < 0.48 or (
-            len(scored) > 1 and best_score - second_score < 0.045
-        ):
-            logger.warning(
-                "⚠️ كابتشا الإيموجي غير واضحة للحساب %s: الأفضل=%s(%.2f)، "
-                "التالي=%.2f، الخصائص=%s",
-                phone_number,
-                best_label,
-                best_score,
-                second_score,
-                features,
-            )
-            return False
-
-        try:
-            await best_button.click()
-            logger.info(
-                "🖱️ تم حل كابتشا الصورة بالزر %s للحساب %s (%.2f)",
-                best_label,
-                phone_number,
-                best_score,
-            )
-            return True
-        except Exception as exc:
-            logger.warning("⚠️ فشل الضغط على زر كابتشا الصورة: %s", exc)
-            return False
-
-    async def _solve_number_button_captcha(
-        self,
-        text: str,
-        buttons: list,
-        phone_number: str,
-    ) -> bool:
-        """Click the numeric answer requested by a challenge message."""
-        target_number = self._extract_target_number(text)
-        if not target_number:
-            return False
-        target = self._normalise_captcha_label(target_number)
-        for button in buttons:
-            if self._normalise_captcha_label(self._button_label(button)) != target:
-                continue
-            try:
-                await button.click()
-                logger.info(
-                    "🖱️ تم اختيار إجابة كابتشا الرقم %s للحساب %s",
-                    target_number,
-                    phone_number,
-                )
-                return True
-            except Exception as exc:
-                logger.warning("⚠️ فشل الضغط على إجابة كابتشا الرقم: %s", exc)
-                return False
-        logger.warning(
-            "⚠️ لم يوجد زر للرقم %s؛ الأزرار=%s",
-            target_number,
-            [self._button_label(button) for button in buttons],
-        )
-        return False
-
     async def _solve_verification(
         self,
         client,
         bot_entity,
         phone_number: str,
         base_id: int = 0,
+        start_param: str = "",
     ) -> bool:
-        """
-        حل التحقق بذكاء:
-        1. إذا طلب البوت مشاركة رقم الهاتف (زر KeyboardButtonRequestPhone) – نرسل الرقم ونضغط متابعة.
-        2. وإلا نستخدم المنطق القديم: استخراج الكود، حل المسائل، الضغط على الأزرار العادية.
-        """
+        """حل التحقق بذكاء."""
         MAX_INITIAL_PROBE_ATTEMPTS = 2
-        # Verification bots often answer asynchronously. Poll at a stable
-        # two-second interval instead of giving up after one quick read.
         CHECK_INTERVAL = 2.0
 
-        # base_id هو آخر معرف رسالة قبل ضغط رابط الإحالة. كل الرسائل القديمة
-        # قبله خارج عملية التحقق ويجب ألا تؤثر على اختيار المرحلة الحالية.
         if not base_id:
             try:
                 latest_messages = await client.get_messages(bot_entity, limit=1)
@@ -1435,14 +1118,15 @@ class ForcedRefAIService(RakshService):
             except Exception:
                 base_id = 0
 
-        # ─── المرحلة 1: البحث عن طلب مشاركة رقم الهاتف ───
         contact_request_msg = None
         initial_verification_messages = None
+        last_probe_messages = []
         successful_probe = False
         for probe_index in range(MAX_INITIAL_PROBE_ATTEMPTS):
             try:
                 messages = await client.get_messages(bot_entity, limit=5)
                 successful_probe = True
+                last_probe_messages = messages
             except Exception:
                 if probe_index + 1 < MAX_INITIAL_PROBE_ATTEMPTS:
                     await asyncio.sleep(CHECK_INTERVAL)
@@ -1453,17 +1137,19 @@ class ForcedRefAIService(RakshService):
                     continue
                 if base_id and msg.id <= base_id:
                     continue
-                for btn in self._message_buttons(msg):
-                    if _is_phone_request_button(btn):
-                        contact_request_msg = msg
-                        break
+                if msg.reply_markup:
+                    for row in msg.reply_markup.rows:
+                        for btn in row.buttons:
+                            if isinstance(btn, KeyboardButtonRequestPhone):
+                                contact_request_msg = msg
+                                break
+                        if contact_request_msg:
+                            break
                 if contact_request_msg:
                     break
             if contact_request_msg:
                 break
 
-            # ظهور صورة/زر/نص تحقق يعني أن العملية دخلت مرحلة التحقق؛
-            # نمرر الرسائل نفسها للمحلل حتى لا تضيع أول مرحلة.
             incoming = [
                 msg for msg in messages
                 if not getattr(msg, "out", False)
@@ -1476,32 +1162,19 @@ class ForcedRefAIService(RakshService):
             if probe_index + 1 < MAX_INITIAL_PROBE_ATTEMPTS:
                 await asyncio.sleep(CHECK_INTERVAL)
 
-        # لا توجد رسالة تحقق بعد ضغط Start: النجاح هنا فوري، ولا ننتظر
-        # 30 دورة بلا فائدة كما كان يحدث سابقاً.
-        if (
-            successful_probe
-            and not contact_request_msg
-            and initial_verification_messages is None
-        ):
-            logger.info(
-                "ℹ️ لم يظهر تحقق بعد ضغط Start للحساب %s؛ تُحتسب الإحالة ناجحة",
+        if not contact_request_msg and initial_verification_messages is None:
+            return await self._complete_without_verification(
+                client,
+                bot_entity,
                 phone_number,
+                base_id=base_id,
+                start_param=start_param,
+                initial_messages=last_probe_messages if successful_probe else None,
             )
-            return True
-        if not successful_probe and not contact_request_msg:
-            # عدم وصول رد تحقق لا يثبت فشل الحساب؛ الفشل هنا محصور
-            # في تحقق ظهر فعلاً ثم تعذر على البوت حله.
-            logger.warning(
-                "⚠️ تعذر قراءة رد البوت بعد ضغط Start للحساب %s؛ تُحسب الإحالة ناجحة",
-                phone_number,
-            )
-            return True
 
-        # إذا وجدنا طلب رقم → نعالجه بطريقة جديدة
         if contact_request_msg:
             logger.info(f"📱 تم اكتشاف طلب رقم هاتف من {phone_number}")
 
-            # إرسال جهة الاتصال
             try:
                 me = await client.get_me()
                 if not me or not me.phone:
@@ -1522,7 +1195,6 @@ class ForcedRefAIService(RakshService):
                 logger.error(f"❌ فشل إرسال جهة الاتصال: {e}")
                 return False
 
-            # انتظار زر متابعة
             proceed_button = None
             for _ in range(MAX_WAIT):
                 try:
@@ -1537,11 +1209,11 @@ class ForcedRefAIService(RakshService):
                     if base_id and msg.id <= base_id:
                         continue
                     buttons = []
-                    for btn in self._message_buttons(msg):
-                        # لا نضغط زر رابط الدعوة، سواء كان URL أو Callback.
-                        if not self._is_invitation_link_button(btn):
-                            buttons.append(btn)
-                    # نفضل الأزرار التي تحوي كلمات مفتاحية
+                    if msg.reply_markup:
+                        for row in msg.reply_markup.rows:
+                            for btn in row.buttons:
+                                if not self._is_invitation_link_button(btn):
+                                    buttons.append(btn)
                     for btn in buttons:
                         btn_text = (getattr(btn, 'text', '') or '').strip().casefold()
                         if any(kw in btn_text for kw in ['متابعة', 'التالي', 'ابدأ', 'تحقق', 'continue', 'next', 'start', 'verify']):
@@ -1561,9 +1233,6 @@ class ForcedRefAIService(RakshService):
                     logger.warning(f"⚠️ فشل الضغط على زر المتابعة: {e}")
                     return False
             else:
-                # قد يرسل البوت زر «مشاركة رابط الدعوة» بدلاً من زر متابعة.
-                # لا نضغطه ولا نفشل العملية؛ ننتقل للمنطق العام ليعيد قراءة
-                # كل الرسائل الجديدة منذ لحظة ضغط رابط الإحالة.
                 logger.info(
                     f"⏭️ تم تجاهل زر رابط الدعوة بعد مشاركة الرقم من {phone_number} "
                     "وسنواصل قراءة الرسائل الجديدة"
@@ -1577,8 +1246,6 @@ class ForcedRefAIService(RakshService):
                 )
 
             try:
-                # بعد الضغط على الزر الأول ننتظر ثم نعيد قراءة كامل محادثة
-                # التحقق منذ لحظة ضغط رابط الإحالة حتى آخر رسالة.
                 await asyncio.sleep(2.0)
                 followup_messages = []
                 async for msg in client.iter_messages(
@@ -1602,11 +1269,7 @@ class ForcedRefAIService(RakshService):
                 logger.warning(f"⚠️ تعذر قراءة المرحلة الثانية للتحقق: {e}")
                 return False
 
-        # ─── المرحلة 2: لم يطلب الرقم → استخدم المنطق القديم ───
         logger.info(f"🔍 لم يطلب البوت رقم هاتف، ننتقل إلى المنطق القديم لـ {phone_number}")
-
-        # المنطق القديم (مستند على _solve_forced_ref_verification من common.py)
-        # ولكن سنعيد تنفيذه هنا لتكامل الملف
         return await self._solve_legacy_verification(
             client,
             bot_entity,
@@ -1615,23 +1278,151 @@ class ForcedRefAIService(RakshService):
             initial_messages=initial_verification_messages,
         )
 
+    async def _complete_without_verification(
+        self,
+        client,
+        bot_entity,
+        phone_number: str,
+        base_id: int = 0,
+        start_param: str = "",
+        initial_messages: Optional[list] = None,
+    ) -> bool:
+        """إنهاء إحالة البوتات التي لا تعرض نوع تحقق معروف."""
+
+        async def _read_flow_messages():
+            try:
+                collected = []
+                async for message in client.iter_messages(
+                    bot_entity,
+                    min_id=base_id,
+                    reverse=True,
+                ):
+                    collected.append(message)
+                return collected
+            except Exception:
+                try:
+                    return await client.get_messages(bot_entity, limit=100)
+                except Exception:
+                    return []
+
+        async def _verification_after_action(messages=None):
+            current_messages = messages
+            if current_messages is None:
+                current_messages = await _read_flow_messages()
+
+            incoming = [
+                message for message in (current_messages or [])
+                if not getattr(message, "out", False)
+                and (not base_id or getattr(message, "id", 0) > base_id)
+            ]
+            for message in reversed(incoming):
+                text = getattr(message, "message", "") or ""
+                if self._is_verification_success_text(text):
+                    logger.info(
+                        "✅ وصلت إشارة نجاح من بوت الإحالة للحساب %s",
+                        phone_number,
+                    )
+                    return True
+
+            if any(self._looks_like_verification_message(message) for message in incoming):
+                logger.info(
+                    "🔍 ظهر تحقق بعد fallback للحساب %s؛ سيتم حله",
+                    phone_number,
+                )
+                return await self._solve_legacy_verification(
+                    client,
+                    bot_entity,
+                    phone_number,
+                    base_id=base_id,
+                    initial_messages=current_messages,
+                )
+            return None
+
+        async def _click_any_button(messages=None) -> bool:
+            current_messages = messages if messages is not None else await _read_flow_messages()
+            button = self._fallback_button_from_messages(current_messages)
+            if not button:
+                return False
+            try:
+                await button.click()
+                logger.info(
+                    "🖱️ تم الضغط على زر fallback للحساب %s: %s",
+                    phone_number,
+                    getattr(button, "text", ""),
+                )
+                return True
+            except Exception as exc:
+                logger.warning(
+                    "⚠️ تعذر الضغط على زر fallback للحساب %s: %s",
+                    phone_number,
+                    exc,
+                )
+                return False
+
+        async def _send_start():
+            try:
+                await client(StartBotRequest(
+                    bot=bot_entity,
+                    peer=bot_entity,
+                    start_param=start_param or "",
+                ))
+                logger.info("▶️ تم إرسال Start fallback للحساب %s", phone_number)
+            except Exception as exc:
+                logger.warning(
+                    "⚠️ تعذر إرسال Start fallback للحساب %s: %s",
+                    phone_number,
+                    exc,
+                )
+
+        current_messages = (
+            initial_messages
+            if initial_messages is not None
+            else await _read_flow_messages()
+        )
+        first_button = self._fallback_button_from_messages(current_messages)
+
+        if not first_button:
+            await _send_start()
+            await asyncio.sleep(2.0)
+            result = await _verification_after_action()
+            return True if result is None else result
+
+        await _click_any_button(current_messages)
+        await asyncio.sleep(2.0)
+        result = await _verification_after_action()
+        if result is not None:
+            return result
+
+        await _send_start()
+        await asyncio.sleep(2.0)
+        result = await _verification_after_action()
+        if result is not None:
+            return result
+
+        current_messages = await _read_flow_messages()
+        if self._fallback_button_from_messages(current_messages):
+            await _click_any_button(current_messages)
+            await asyncio.sleep(2.0)
+            result = await _verification_after_action()
+            if result is not None:
+                return result
+
+        logger.info(
+            "✅ لم يظهر أي تحقق بعد fallback للحساب %s؛ تُحتسب الإحالة ناجحة",
+            phone_number,
+        )
+        return True
+
     async def _solve_legacy_verification(
         self,
         client,
         bot_entity,
         phone_number: str,
         base_id: int = 0,
-        initial_messages: Optional[List] = None,
+        initial_messages: Optional[list] = None,
     ) -> bool:
-        """
-        المنطق القديم: استخراج الكود، حل المسائل، الضغط على الأزرار
-        (نسخة محسنة من _solve_forced_ref_verification في common.py)
-        """
-        # Do not use message ids as the processed key. Many verification bots
-        # edit the same Telegram message to show the next challenge, so the
-        # id stays the same while the text/buttons change.
+        """المنطق القديم + كابتشا الأرقام والإيموجي."""
         processed_fingerprints = set()
-        image_captcha_failures = {}
 
         if not base_id:
             try:
@@ -1646,42 +1437,42 @@ class ForcedRefAIService(RakshService):
 
         saw_verification = False
         quiet_attempts = 0
+        verification_started_at = None
+        max_verification_seconds = 180.0
+        loop = asyncio.get_running_loop()
 
         def _message_fingerprint(message) -> str:
-            """Return a stable fingerprint that changes when a message is edited."""
             parts = [
                 str(getattr(message, "id", "")),
-                self._message_text(message),
+                str(getattr(message, "message", "") or ""),
                 str(getattr(message, "edit_date", "") or ""),
                 "image" if self._has_image_media(message) else "no-image",
             ]
-            for button in self._message_buttons(message):
-                parts.append(
-                    "|".join(
-                        [
-                            self._button_label(button),
-                            str(getattr(button, "data", "") or ""),
-                            str(getattr(button, "url", "") or ""),
-                        ]
+            for row in getattr(message, "buttons", None) or []:
+                for button in row:
+                    parts.append(
+                        "|".join(
+                            [
+                                str(getattr(button, "text", "") or ""),
+                                str(getattr(button, "data", "") or ""),
+                                str(getattr(button, "url", "") or ""),
+                            ]
+                        )
                     )
-                )
             return "\x1f".join(parts)
 
         async def _verification_action_succeeded(message, button=None) -> bool:
-            """يتحقق من وصول رسالة نجاح صريحة بعد الضغط."""
-            # Removing or editing the clicked button is not proof of success:
-            # several captcha bots replace the same message with the next
-            # challenge.  Only an explicit success response is authoritative.
             try:
                 for item in await _read_flow_messages():
-                    if self._is_verification_success_text(self._message_text(item)):
+                    if self._is_verification_success_text(
+                        getattr(item, "message", "") or getattr(item, "text", "") or ""
+                    ):
                         return True
             except Exception:
                 pass
             return False
 
         async def _read_flow_messages():
-            """إعادة قراءة كل رسائل المحادثة منذ بداية عملية التحقق."""
             try:
                 collected = []
                 async for msg in client.iter_messages(
@@ -1692,15 +1483,24 @@ class ForcedRefAIService(RakshService):
                     collected.append(msg)
                 return collected
             except Exception:
-                return await client.get_messages(
-                    bot_entity, limit=100, min_id=base_id
-                )
+                try:
+                    return await client.get_messages(
+                        bot_entity, limit=100, min_id=base_id
+                    )
+                except Exception:
+                    return []
 
-        # Keep waiting after a challenge has appeared. A fixed attempt limit
-        # made slower accounts fail even though the verification bot was still
-        # processing the previous answer. The loop stops only on explicit
-        # success or a permanent session error.
         while True:
+            if (
+                verification_started_at is not None
+                and loop.time() - verification_started_at >= max_verification_seconds
+            ):
+                logger.warning(
+                    "⏱️ انتهت مهلة التحقق للحساب %s بعد %.0f ثانية",
+                    phone_number,
+                    max_verification_seconds,
+                )
+                return False
             try:
                 if initial_messages is not None:
                     messages = initial_messages
@@ -1718,13 +1518,10 @@ class ForcedRefAIService(RakshService):
             incoming_messages = [msg for msg in messages if not msg.out]
             incoming_messages.sort(key=lambda m: m.id)
 
-            # Check every current message, including messages already handled.
-            # This catches a success response delivered by editing the same
-            # message that contained the challenge.
             for msg in reversed(incoming_messages):
                 if msg.id <= base_id:
                     continue
-                success_text = self._message_text(msg).strip().casefold()
+                success_text = (getattr(msg, "message", "") or "").strip().casefold()
                 if self._is_verification_success_text(success_text):
                     logger.info(f"✅ تم تأكيد التحقق من {phone_number}: {success_text[:120]}")
                     return True
@@ -1736,9 +1533,6 @@ class ForcedRefAIService(RakshService):
             ]
             if not new_messages:
                 quiet_attempts += 1
-                # No challenge means this bot does not require verification.
-                # Once a challenge was seen, keep polling indefinitely until
-                # its success marker arrives.
                 if not saw_verification and quiet_attempts >= 30:
                     logger.info(
                         "ℹ️ لم يصل تحقق جديد بعد ضغط الرابط للحساب %s؛ تُحتسب الإحالة ناجحة",
@@ -1749,13 +1543,8 @@ class ForcedRefAIService(RakshService):
                 continue
             quiet_attempts = 0
 
-            # النجاح لا يعتمد على اختفاء الأزرار أو مجرد إرسال إجابة.
-            # بعد كل إجابة أو زر، نعيد قراءة الرسالة نفسها إذا عدّلها البوت.
             candidate_messages = new_messages
 
-            # أعطِ رسالة الكود أولوية صريحة. بعض البوتات ترسل رسالة ترحيب
-            # ثم رسالة «النص التالي» في نفس الدفعة، لذلك لا نعتمد على أول
-            # رسالة عامة تصلح كمرحلة تحقق.
             code_prompt_markers = (
                 "النص التالي",
                 "أرسل النص",
@@ -1778,19 +1567,19 @@ class ForcedRefAIService(RakshService):
                 verification_message = next(
                     (
                         msg for msg in candidate_messages
-                        if not self._message_text(msg).strip().startswith("/")
+                        if not (getattr(msg, "message", "") or "").strip().startswith("/")
                         and any(
-                            marker in self._message_text(msg).casefold()
+                            marker in (getattr(msg, "message", "") or "").casefold()
                             for marker in code_prompt_markers
                         )
-                        and _extract_code_from_text(self._message_text(msg))
+                        and _extract_code_from_text(getattr(msg, "message", "") or "")
                     ),
                     None,
                 )
 
             if verification_message is None:
                 for msg in candidate_messages:
-                    msg_text = self._message_text(msg)
+                    msg_text = getattr(msg, 'message', '') or ''
                     if msg_text.strip().startswith("/"):
                         continue
                     if any(kw in msg_text for kw in ["أرسل", "التالي", "بالضبط", "اكتب", "retype", "type", "اضغط", "اختر", "انقر"]):
@@ -1799,7 +1588,7 @@ class ForcedRefAIService(RakshService):
 
             if verification_message is None:
                 verification_message = next(
-                    (msg for msg in reversed(candidate_messages) if not self._message_text(msg).strip().startswith("/")),
+                    (msg for msg in reversed(candidate_messages) if not getattr(msg, 'message', '').strip().startswith("/")),
                     None
                 )
 
@@ -1812,38 +1601,27 @@ class ForcedRefAIService(RakshService):
                 await asyncio.sleep(2.0)
                 continue
             saw_verification = True
+            if verification_started_at is None:
+                verification_started_at = loop.time()
 
-            text = self._message_text(verification_message)
-            image_choice_captcha = (
-                self._has_image_media(verification_message)
-                and self._is_image_emoji_captcha_text(text)
+            text = getattr(verification_message, 'message', '') or ''
+            image_code = await self._extract_image_captcha(
+                client,
+                verification_message,
+                phone_number,
             )
-            # An object image (the cow challenge in the supplied screenshot)
-            # is not an OCR challenge. Trying OCR first can send a random
-            # string to the bot and consume the attempt.
-            if not image_choice_captcha:
-                image_code = await self._extract_image_captcha(
-                    client,
-                    verification_message,
-                    phone_number,
-                )
-                if image_code:
-                    try:
-                        await client.send_message(bot_entity, image_code)
-                        logger.info("✅ تم إرسال حل صورة التحقق للحساب %s", phone_number)
-                        processed_fingerprints.add(_message_fingerprint(verification_message))
-                        await asyncio.sleep(2.0)
-                        continue
-                    except Exception as exc:
-                        logger.warning("⚠️ تعذر إرسال حل صورة التحقق للحساب %s: %s", phone_number, exc)
-                        # Keep the challenge available for a retry. This is often
-                        # a temporary Telegram/network failure.
-                        await asyncio.sleep(2.0)
-                        continue
+            if image_code:
+                try:
+                    await client.send_message(bot_entity, image_code)
+                    logger.info("✅ تم إرسال حل صورة التحقق للحساب %s", phone_number)
+                    processed_fingerprints.add(_message_fingerprint(verification_message))
+                    await asyncio.sleep(2.0)
+                    continue
+                except Exception as exc:
+                    logger.warning("⚠️ تعذر إرسال حل صورة التحقق للحساب %s: %s", phone_number, exc)
+                    await asyncio.sleep(2.0)
+                    continue
 
-
-            # 1. حل المسائل الرياضية أولاً. لا نحاول استخراج كود من رسالة
-            # حسابية، ولا نضغط أزرارها بعد إرسال الناتج.
             math_text = self._normalise_math_text(text)
             math_match = re.search(
                 r"(?<!\d)(\d{1,9})\s*([+\-*/])\s*(\d{1,9})"
@@ -1885,7 +1663,6 @@ class ForcedRefAIService(RakshService):
                 except Exception:
                     logger.warning("⚠️ تعذر حل المسألة الحسابية: %r", text[:160])
 
-            # 2. استخراج الكود بعد استبعاد المسألة الحسابية.
             send_text = _extract_code_from_text(text)
             if send_text:
                 try:
@@ -1898,25 +1675,48 @@ class ForcedRefAIService(RakshService):
                     await asyncio.sleep(2.0)
                     continue
 
-            # Do not click a button from the old challenge after submitting
-            # an answer. The next Telegram message contains the result or the
-            # next verification stage.
             if math_match:
                 continue
 
             # 3. الضغط على الأزرار
             buttons = []
             invitation_buttons = []
-            for btn in self._message_buttons(verification_message):
-                if self._is_invitation_link_button(btn):
-                    invitation_buttons.append(btn)
-                else:
-                    buttons.append(btn)
+            for row in getattr(verification_message, 'buttons', None) or []:
+                for btn in row:
+                    if self._is_invitation_link_button(btn):
+                        invitation_buttons.append(btn)
+                    else:
+                        buttons.append(btn)
 
-            # Numeric button challenge, for example:
-            # «اختر الإجابة الصحيحة من القائمة (79)».
+            # ═══════════════════════════════════════════════════
+            # 3أ. كابتشا "اضغط على الرقم (XX)"
+            # ═══════════════════════════════════════════════════
             if buttons and self._extract_target_number(text):
-                clicked = await self._solve_number_button_captcha(
+                clicked = await self._solve_number_captcha(
+                    bot_entity, text, buttons, phone_number
+                )
+                if clicked:
+                    processed_fingerprints.add(
+                        _message_fingerprint(verification_message)
+                    )
+                    await asyncio.sleep(2.0)
+                    continue
+
+            # ═══════════════════════════════════════════════════
+            # 3ب. كابتشا "اختر الإيموجي المطابق للصورة"
+            # ═══════════════════════════════════════════════════
+            emoji_markers = ("إيموجي", "ايموجي", "الإيموجي", "الايموجي",
+                             "emoji", "الرمز التعبيري", "الصورة أعلاه",
+                             "المطابق للصورة", "اختر")
+            if (
+                buttons
+                and self._has_image_media(verification_message)
+                and any(m in text for m in emoji_markers)
+            ):
+                clicked = await self._solve_emoji_captcha(
+                    client,
+                    bot_entity,
+                    verification_message,
                     text,
                     buttons,
                     phone_number,
@@ -1928,38 +1728,11 @@ class ForcedRefAIService(RakshService):
                     await asyncio.sleep(2.0)
                     continue
 
-            # Object-image challenge, for example:
-            # «اختر الإيموجي المطابق للصورة أعلاه».
-            if buttons and image_choice_captcha:
-                clicked = await self._solve_emoji_image_captcha(
-                    client,
-                    verification_message,
-                    buttons,
-                    phone_number,
-                )
-                if clicked:
-                    processed_fingerprints.add(
-                        _message_fingerprint(verification_message)
-                    )
-                    await asyncio.sleep(2.0)
-                    continue
-                challenge_key = _message_fingerprint(verification_message)
-                image_captcha_failures[challenge_key] = (
-                    image_captcha_failures.get(challenge_key, 0) + 1
-                )
-                if image_captcha_failures[challenge_key] >= 3:
-                    logger.warning(
-                        "⚠️ تعذر حل كابتشا الإيموجي بعد 3 محاولات للحساب %s؛ "
-                        "تحقق من GROQ_API_KEY أو دعم رمز الكابتشا.",
-                        phone_number,
-                    )
-                    return False
-                await asyncio.sleep(2.0)
-                continue
-
+            # ═══════════════════════════════════════════════════
+            # 3ج. المنطق القديم
+            # ═══════════════════════════════════════════════════
             button_clicked = False
             if buttons:
-                # ترتيب الأزرار حسب الأولوية
                 prioritized = []
                 target_labels = {
                     self._normalise_captcha_label(label)
@@ -1968,54 +1741,26 @@ class ForcedRefAIService(RakshService):
                         text,
                     )
                 }
-                target_custom_emoji_ids = self._captcha_target_custom_emoji_ids(
-                    verification_message,
-                    text,
-                )
                 button_labels = {
                     id(button): self._normalise_captcha_label(
                         self._button_label(button)
                     )
                     for button in buttons
                 }
-                button_custom_emoji_ids = {
-                    id(button): self._custom_emoji_id_from_button(button)
-                    for button in buttons
-                }
 
-                # First prefer an exact custom-emoji document match. The
-                # visible fallback character is not reliable for Premium
-                # emoji because different custom emoji can share an alt text.
-                exact_custom_emoji = [
-                    button for button in buttons
-                    if (
-                        button_custom_emoji_ids.get(id(button)) is not None
-                        and button_custom_emoji_ids.get(id(button))
-                        in target_custom_emoji_ids
-                    )
-                ]
-                prioritized.extend(exact_custom_emoji)
-
-                # Keep the text/emoji fallback for old Telegram layers and
-                # ordinary Unicode emoji.
                 exact = [
                     button for button in buttons
-                    if (
-                        button not in prioritized
-                        and button_labels.get(id(button)) in target_labels
-                        and button_labels.get(id(button))
-                    )
+                    if button_labels.get(id(button)) in target_labels
+                    and button_labels.get(id(button))
                 ]
                 prioritized.extend(exact)
 
-                # If the target is a word (for example "شاهد"), accept a
-                # matching label mentioned after "اضغط على الرمز:".
                 target_tail = text.casefold()
                 marker_positions = [
                     target_tail.rfind(marker)
                     for marker in ("الرمز", "العلامة", "symbol", "emoji", "icon")
                 ]
-                marker_position = max(marker_positions)
+                marker_position = max(marker_positions) if marker_positions else -1
                 if marker_position >= 0:
                     target_tail = target_tail[marker_position:]
                 tail_matches = [
@@ -2027,8 +1772,6 @@ class ForcedRefAIService(RakshService):
                 ]
                 prioritized.extend(tail_matches)
 
-                # Keep the partial match for emoji sequences with variation
-                # selectors or skin-tone modifiers.
                 for target_label in target_labels:
                     prioritized.extend(
                         button for button in buttons
@@ -2059,8 +1802,6 @@ class ForcedRefAIService(RakshService):
                         [getattr(button, "text", "") for button in buttons],
                         sorted(target_labels),
                     )
-                    # لا نضغط أول زر عشوائياً. نحفظ بصمة هذه النسخة فقط؛
-                    # إذا عدّل البوت نفس الرسالة فستُقرأ من جديد كبصمة جديدة.
                     processed_fingerprints.add(_message_fingerprint(verification_message))
                     if invitation_buttons:
                         logger.info(
@@ -2094,29 +1835,22 @@ class ForcedRefAIService(RakshService):
                                 phone_number,
                             )
                             return True
-                        # لم يثبت النجاح بعد؛ نعيد قراءة المرحلة التالية.
                         button_clicked = True
                         break
                     except Exception:
-                        # فشل الضغط قد يكون مؤقتاً؛ أعد قراءة نفس المرحلة
-                        # بعد ثانيتين بدلاً من إسقاط الحساب مباشرة.
                         await asyncio.sleep(2.0)
                         continue
 
             if button_clicked:
-                # انتهى انتظار الزر (ثانيتان)؛ تبدأ الدورة التالية
-                # بإعادة القراءة مباشرة دون تأخير إضافي.
                 continue
 
-            # الرسالة لا تحتوي على إجابة أو زر تحقق قابل للتنفيذ. نحفظ
-            # بصمتها فقط، ونقرأها مجدداً إذا عدّلها البوت.
             processed_fingerprints.add(_message_fingerprint(verification_message))
             await asyncio.sleep(2.0)
 
     # ─── 5. التنفيذ الرئيسي ───
 
     async def execute(self, session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
-        """تنفيذ إحالة بوت إجباري مع تحقق شامل (يدعم جميع الأنواع)"""
+        """تنفيذ إحالة بوت إجباري مع تحقق شامل."""
         client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
         await asyncio.wait_for(client.connect(), timeout=20)
         try:
@@ -2124,7 +1858,6 @@ class ForcedRefAIService(RakshService):
                 _mark_raksh_session_unauthorized(session.get("phone_number"))
                 return False, "الجلسة غير مصرح بها"
 
-            # الانضمام للقنوات إذا كانت موجودة
             channels = params.get("channel_ref") or []
             if channels:
                 for channel_ref in channels:
@@ -2134,7 +1867,6 @@ class ForcedRefAIService(RakshService):
                     except Exception as e:
                         logger.warning(f"فشل الانضمام للقناة {channel_ref}: {e}")
 
-            # تحليل رابط البوت
             bot_username, start_param = _parse_bot_link(params["link"])
             if not bot_username:
                 return False, "رابط البوت غير صحيح"
@@ -2147,8 +1879,6 @@ class ForcedRefAIService(RakshService):
             resolved = await client(ResolveUsernameRequest(clean_username))
             bot_entity = resolved.users[0] if resolved.users else resolved.chats[0]
 
-            # حفظ نقطة البداية قبل ضغط رابط الإحالة. سيعيد محلّل التحقق قراءة
-            # كل الرسائل التي تظهر بعد هذه النقطة، لا آخر رسالة فقط.
             verification_base_id = 0
             try:
                 latest_messages = await client.get_messages(bot_entity, limit=1)
@@ -2156,7 +1886,6 @@ class ForcedRefAIService(RakshService):
             except Exception as e:
                 logger.warning(f"تعذر تحديد نقطة بداية رابط الإحالة: {e}")
 
-            # بدء البوت
             try:
                 latest_messages = await client.get_messages(bot_entity, limit=1)
                 activation_base_id = latest_messages[0].id if latest_messages else 0
@@ -2178,15 +1907,13 @@ class ForcedRefAIService(RakshService):
                     f"بعد فتحه للحساب {session['phone_number']}"
                 )
 
-            # فتح البوت هو معيار نجاح الإحالة. نستمر بمحاولة حل التحقق
-            # بالكامل، لكن نتيجة CAPTCHA لا تجعل العملية فاشلة؛ فقد تم
-            # تنفيذ StartBotRequest بنجاح بالفعل.
             try:
                 verification_success = await self._solve_verification(
                     client,
                     bot_entity,
                     session.get("phone_number"),
                     base_id=verification_base_id,
+                    start_param=start_param or "",
                 )
                 if verification_success:
                     logger.info(
