@@ -5,7 +5,12 @@
 """
 
 from .common import *
-from telethon.tl.types import InputMediaContact, KeyboardButtonRequestPhone
+from telethon.tl.types import InputMediaContact
+try:
+    from telethon.tl.types import KeyboardButtonRequestPhone
+except ImportError:
+    # بعض إصدارات Telethon لا تصدّر هذا النوع؛ نكتفي بفحص اسم النوع لاحقاً.
+    KeyboardButtonRequestPhone = None
 from io import BytesIO
 import base64
 import json
@@ -881,7 +886,10 @@ class ForcedRefAIService(RakshService):
                 for button in row or []:
                     if getattr(button, "url", None) and not getattr(button, "data", None):
                         continue
-                    if isinstance(button, KeyboardButtonRequestPhone):
+                    if (
+                        KeyboardButtonRequestPhone is not None
+                        and isinstance(button, KeyboardButtonRequestPhone)
+                    ) or button.__class__.__name__ == "KeyboardButtonRequestPhone":
                         continue
                     if callable(getattr(button, "click", None)):
                         return button
@@ -1140,7 +1148,10 @@ class ForcedRefAIService(RakshService):
                 if msg.reply_markup:
                     for row in msg.reply_markup.rows:
                         for btn in row.buttons:
-                            if isinstance(btn, KeyboardButtonRequestPhone):
+                            if (
+                                KeyboardButtonRequestPhone is not None
+                                and isinstance(btn, KeyboardButtonRequestPhone)
+                            ) or btn.__class__.__name__ == "KeyboardButtonRequestPhone":
                                 contact_request_msg = msg
                                 break
                         if contact_request_msg:
