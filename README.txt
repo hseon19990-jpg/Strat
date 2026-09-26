@@ -1,5 +1,5 @@
-ضع الملف مكان bot_app/raksh_system/forced_ref_ai.py.
+استبدل الملف bot_app/raksh_system/forced_ref_ai.py بهذا الملف.
 
-مهم: أضف GPT_API_KEY أو OPENAI_API_KEY في متغيرات Railway. اختياريًا أضف GPT_VISION_MODEL وGPT_VISION_ENDPOINT.
-
-النسخة لا تختار الإيموجي باللون ولا تضغط زرًا غير موجود ضمن الخيارات. احتفظ بنسخة احتياطية قبل الاستبدال.
+هذه النسخة تصلح خطأ ImportError الخاص بـ KeyboardButtonRequestPhone في إصدارات Telethon المختلفة.
+وتحتوي كذلك على محلل رؤية لكابتشا الإيموجي. أضف GPT_API_KEY أو OPENAI_API_KEY في Railway قبل الاختبار.
+احتفظ بنسخة احتياطية من الملف القديم ثم أعد النشر.
