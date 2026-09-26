@@ -16,6 +16,7 @@ except ImportError:
     ButtonTypeRequestPhone = None
 from io import BytesIO
 import unicodedata
+import uuid
 
 try:
     import ddddocr
@@ -31,6 +32,59 @@ except ImportError:
 
 
 _CAPTCHA_OCR = None
+
+# طلبات التحقق اليدوي التي تنتظر اختيار الطالب من رسالة البوت الرئيسي.
+# هذه الذاكرة مؤقتة عمداً؛ عند إعادة تشغيل البوت سيعاد تشغيل الطلب المحفوظ
+# ويُرسل تحدٍ جديد للطالب.
+_MANUAL_VERIFICATION_WAITERS: Dict[str, Dict] = {}
+
+
+async def handle_forced_ref_manual_callback(
+    update,
+    context,
+    query=None,
+    data=None,
+) -> bool:
+    """استقبال اختيار الطالب وإعادته إلى جلسة Telethon المنتظرة."""
+    query = query or update.callback_query
+    data = data or getattr(query, "data", "") or ""
+    parts = data.split(":")
+    if len(parts) != 3 or parts[0] != "raksh_manual_verify":
+        return False
+
+    token = parts[1]
+    try:
+        button_index = int(parts[2])
+    except (TypeError, ValueError):
+        await query.answer("⚠️ اختيار التحقق غير صالح.", show_alert=True)
+        return True
+
+    waiter = _MANUAL_VERIFICATION_WAITERS.get(token)
+    if not waiter:
+        await query.answer(
+            "⌛ انتهت مهلة هذا التحقق. سيُستخدم حساب آخر.",
+            show_alert=True,
+        )
+        return True
+
+    user = getattr(query, "from_user", None)
+    if not user or int(user.id) != int(waiter["user_id"]):
+        await query.answer("⚠️ هذا التحقق مرتبط بطالب آخر.", show_alert=True)
+        return True
+
+    if button_index < 0 or button_index >= int(waiter["button_count"]):
+        await query.answer("⚠️ اختيار التحقق غير صالح.", show_alert=True)
+        return True
+
+    future = waiter["future"]
+    if not future.done():
+        future.set_result(button_index)
+    await query.answer("✅ تم إرسال اختيارك للحساب.")
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    return True
 
 
 def _is_phone_request_button(button) -> bool:
@@ -504,22 +558,18 @@ class ForcedRefAIService(RakshService):
             "you are verified",
             "access granted",
             "welcome to the group",
-            "passed",
-            "correct",
-            "صح",
-            "صحيح",
-            "نجاح",
-            "نجح",
-            "success",
         )
         if any(marker.casefold() in text for marker in success_markers):
             return True
+        # كلمات مثل «صحيح / correct / passed» تظهر داخل سؤال الكابتشا
+        # («اختر الإجابة الصحيحة»). لا تعتبر نجاحاً إلا إذا كانت الرسالة
+        # نفسها عبارة قصيرة مستقلة.
         normalized = text.strip(" !؟?.,،")
         return normalized in {
             "✅", "✓", "✔", "☑",
-            "تم", "نجح", "نجاح", "صح", "صحيح",
+            "تم",
             "success", "ok", "passed", "correct",
-            "تم فقط", "نجح فقط",
+            "تم فقط",
             "أنت بشري", "انت بشري",
         }
 
@@ -938,21 +988,149 @@ class ForcedRefAIService(RakshService):
             logger.warning("⚠️ فشل تحليل صورة التحقق للحساب %s: %s", phone_number, exc)
         return None
 
+    @staticmethod
+    def _is_manual_image_captcha(message, text: str, buttons: List) -> bool:
+        """تمييز كابتشا الصورة التي يجب أن يحلها الطالب يدوياً."""
+        if not buttons or not ForcedRefAIService._has_image_media(message):
+            return False
+        normalized = str(text or "").casefold()
+        markers = (
+            "اختر الإيموجي",
+            "اختر الايموجي",
+            "الإيموجي المطابق",
+            "الايموجي المطابق",
+            "الصورة أعلاه",
+            "الصوره اعلاه",
+            "match the image",
+            "matching emoji",
+        )
+        return any(marker.casefold() in normalized for marker in markers)
+
+    async def _delegate_manual_image_verification(
+        self,
+        client,
+        verification_message,
+        phone_number: str,
+        buttons: List,
+        params: Dict,
+        deadline: Optional[float],
+    ):
+        """إرسال صورة الكابتشا للطالب وانتظار اختيار الزر منه."""
+        runtime_bot = params.get("_runtime_bot") if params else None
+        requester_id = params.get("requester_id") if params else None
+        try:
+            requester_id = int(requester_id)
+        except (TypeError, ValueError):
+            requester_id = 0
+        if not runtime_bot or not requester_id:
+            logger.warning(
+                "⚠️ لا يمكن إرسال الكابتشا للطالب؛ لا توجد هوية الطلب أو بوت التشغيل"
+            )
+            return None
+
+        token = uuid.uuid4().hex[:16]
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        _MANUAL_VERIFICATION_WAITERS[token] = {
+            "future": future,
+            "user_id": requester_id,
+            "button_count": len(buttons),
+        }
+
+        keyboard = []
+        flat_index = 0
+        for row in getattr(verification_message, "buttons", None) or []:
+            keyboard_row = []
+            for button in row:
+                if self._is_invitation_link_button(button):
+                    continue
+                label = self._button_label(button) or "اختيار"
+                keyboard_row.append(
+                    InlineKeyboardButton(
+                        label[:32],
+                        callback_data=(
+                            f"raksh_manual_verify:{token}:{flat_index}"
+                        ),
+                    )
+                )
+                flat_index += 1
+            if keyboard_row:
+                keyboard.append(keyboard_row)
+
+        if not keyboard or flat_index != len(buttons):
+            _MANUAL_VERIFICATION_WAITERS.pop(token, None)
+            logger.warning("⚠️ تعذر تجهيز أزرار الكابتشا اليدوية للحساب %s", phone_number)
+            return None
+
+        image_buffer = BytesIO()
+        try:
+            await verification_message.download_media(file=image_buffer)
+            image_buffer.seek(0)
+            image_buffer.name = "verification.jpg"
+            await runtime_bot.send_photo(
+                chat_id=requester_id,
+                photo=image_buffer,
+                caption=(
+                    "🔐 مطلوب تحقق يدوي للحساب.\n\n"
+                    "اختر الإيموجي المطابق للصورة من الأزرار أدناه.\n"
+                    "⏱️ المهلة القصوى للحساب 15 ثانية."
+                ),
+                reply_markup=InlineKeyboardMarkup(keyboard),
+            )
+        except Exception as exc:
+            _MANUAL_VERIFICATION_WAITERS.pop(token, None)
+            logger.warning(
+                "⚠️ تعذر إرسال صورة التحقق للطالب للحساب %s: %s",
+                phone_number,
+                exc,
+            )
+            return None
+
+        remaining = (
+            max(0.0, deadline - loop.time())
+            if deadline is not None
+            else 15.0
+        )
+        if remaining <= 0:
+            _MANUAL_VERIFICATION_WAITERS.pop(token, None)
+            return None
+
+        try:
+            button_index = await asyncio.wait_for(future, timeout=remaining)
+            if not 0 <= int(button_index) < len(buttons):
+                return None
+            return buttons[int(button_index)]
+        except asyncio.TimeoutError:
+            try:
+                await runtime_bot.send_message(
+                    requester_id,
+                    "⌛ انتهت مهلة التحقق لهذا الحساب، وسيتم استخدام حساب آخر.",
+                )
+            except Exception:
+                pass
+            return None
+        finally:
+            _MANUAL_VERIFICATION_WAITERS.pop(token, None)
+
     async def _solve_verification(
         self,
         client,
         bot_entity,
         phone_number: str,
         base_id: int = 0,
+        params: Optional[Dict] = None,
     ) -> bool:
         """
         حل التحقق بذكاء:
         1. إذا طلب البوت مشاركة رقم الهاتف (زر KeyboardButtonRequestPhone) – نرسل الرقم ونضغط متابعة.
         2. وإلا نستخدم المنطق القديم: استخراج الكود، حل المسائل، الضغط على الأزرار العادية.
         """
-        MAX_INITIAL_PROBE_ATTEMPTS = 2
-        # Verification bots often answer asynchronously. Poll at a stable
-        # two-second interval instead of giving up after one quick read.
+        MAX_INITIAL_PROBE_ATTEMPTS = 3
+        MAX_VERIFICATION_SECONDS = 15
+        verification_deadline = (
+            asyncio.get_running_loop().time() + MAX_VERIFICATION_SECONDS
+        )
+        # نقرأ عدة مرات لاكتشاف الكابتشا المتأخرة، لكن لا نتجاوز مهلة الحساب.
         CHECK_INTERVAL = 2.0
 
         # base_id هو آخر معرف رسالة قبل ضغط رابط الإحالة. كل الرسائل القديمة
@@ -1109,6 +1287,8 @@ class ForcedRefAIService(RakshService):
                     phone_number,
                     base_id=base_id,
                     initial_messages=initial_verification_messages,
+                    params=params,
+                    deadline=verification_deadline,
                 )
 
             try:
@@ -1132,6 +1312,8 @@ class ForcedRefAIService(RakshService):
                     phone_number,
                     base_id=base_id,
                     initial_messages=followup_messages,
+                    params=params,
+                    deadline=verification_deadline,
                 )
             except Exception as e:
                 logger.warning(f"⚠️ تعذر قراءة المرحلة الثانية للتحقق: {e}")
@@ -1148,6 +1330,8 @@ class ForcedRefAIService(RakshService):
             phone_number,
             base_id=base_id,
             initial_messages=initial_verification_messages,
+            params=params,
+            deadline=verification_deadline,
         )
 
     async def _solve_legacy_verification(
@@ -1157,6 +1341,8 @@ class ForcedRefAIService(RakshService):
         phone_number: str,
         base_id: int = 0,
         initial_messages: Optional[List] = None,
+        params: Optional[Dict] = None,
+        deadline: Optional[float] = None,
     ) -> bool:
         """
         المنطق القديم: استخراج الكود، حل المسائل، الضغط على الأزرار
@@ -1238,6 +1424,12 @@ class ForcedRefAIService(RakshService):
         # processing the previous answer. The loop stops only on explicit
         # success or a permanent session error.
         while True:
+            if deadline is not None and asyncio.get_running_loop().time() >= deadline:
+                logger.warning(
+                    "⌛ انتهت مهلة التحقق للحساب %s",
+                    phone_number,
+                )
+                return False
             try:
                 if initial_messages is not None:
                     messages = initial_messages
@@ -1359,6 +1551,46 @@ class ForcedRefAIService(RakshService):
             saw_verification = True
 
             text = getattr(verification_message, 'message', '') or ''
+            visible_buttons = [
+                button
+                for row in getattr(verification_message, "buttons", None) or []
+                for button in row
+                if not self._is_invitation_link_button(button)
+            ]
+            if self._is_manual_image_captcha(
+                verification_message,
+                text,
+                visible_buttons,
+            ):
+                manual_button = await self._delegate_manual_image_verification(
+                    client,
+                    verification_message,
+                    phone_number,
+                    visible_buttons,
+                    params or {},
+                    deadline,
+                )
+                if manual_button is None:
+                    return False
+                try:
+                    await manual_button.click()
+                    processed_fingerprints.add(
+                        _message_fingerprint(verification_message)
+                    )
+                    logger.info(
+                        "🖱️ أرسل الطالب اختيار كابتشا الصورة للحساب %s",
+                        phone_number,
+                    )
+                    await asyncio.sleep(1.0)
+                    continue
+                except Exception as exc:
+                    logger.warning(
+                        "⚠️ تعذر تطبيق اختيار الطالب على الحساب %s: %s",
+                        phone_number,
+                        exc,
+                    )
+                    return False
+
             image_code = await self._extract_image_captcha(
                 client,
                 verification_message,
@@ -1646,15 +1878,14 @@ class ForcedRefAIService(RakshService):
                     f"بعد فتحه للحساب {session['phone_number']}"
                 )
 
-            # فتح البوت هو معيار نجاح الإحالة. نستمر بمحاولة حل التحقق
-            # بالكامل، لكن نتيجة CAPTCHA لا تجعل العملية فاشلة؛ فقد تم
-            # تنفيذ StartBotRequest بنجاح بالفعل.
+            # فتح البوت وحده لا يكفي؛ يجب إكمال التحقق خلال مهلة الحساب.
             try:
                 verification_success = await self._solve_verification(
                     client,
                     bot_entity,
                     session.get("phone_number"),
                     base_id=verification_base_id,
+                    params=params,
                 )
                 if verification_success:
                     logger.info(

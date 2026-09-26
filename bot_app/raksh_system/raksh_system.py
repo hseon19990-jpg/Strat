@@ -4,7 +4,10 @@
 from .common import *
 from .story import StoryService
 from .forced_ref import ForcedRefService
-from .forced_ref_ai import ForcedRefAIService
+from .forced_ref_ai import (
+    ForcedRefAIService,
+    handle_forced_ref_manual_callback,
+)
 from .comment import CommentService
 from .poll import PollService
 from .votes import VotesService
@@ -31,6 +34,8 @@ OWNER_FAST_BATCH_INTERVAL_SECONDS = 2
 ALL_POSTS_REACTIONS_BATCH_SIZE = 12
 ALL_POSTS_REACTIONS_BATCH_INTERVAL_SECONDS = 0.25
 RAKSH_ACCOUNT_EXECUTION_TIMEOUT_SECONDS = 180
+# خدمة الإحالة مع التحقق لا تنتظر الحساب أكثر من المهلة التي طلبها المستخدم.
+RAKSH_FORCED_REF_ACCOUNT_TIMEOUT_SECONDS = 15
 
 _ACTIVE_RAKSH_ORDER_IDS = set()
 RAKSH_ORDER_LEASE_MINUTES = 30
@@ -1313,13 +1318,18 @@ async def _execute_raksh_parallel(
             if order_id and not _mark_raksh_order_item_started(order_id, phone):
                 return False, "تم إلغاء الطلب"
             try:
+                execution_timeout = (
+                    RAKSH_FORCED_REF_ACCOUNT_TIMEOUT_SECONDS
+                    if service_type == "forced_ref_ai"
+                    else RAKSH_ACCOUNT_EXECUTION_TIMEOUT_SECONDS
+                )
                 return await asyncio.wait_for(
                     svc.execute(
                         session=session,
                         params=params,
                         is_first=is_first,
                     ),
-                    timeout=RAKSH_ACCOUNT_EXECUTION_TIMEOUT_SECONDS,
+                    timeout=execution_timeout,
                 )
             except Exception as e:
                 if is_raksh_frozen_account_error(e):
@@ -1825,6 +1835,15 @@ async def _handle_raksh_callback_impl(
     data = query.data if data is None else data
     user = user or query.from_user
     is_own = (user.id == OWNER_ID) if is_own is None else is_own
+
+    if data.startswith("raksh_manual_verify:"):
+        return await handle_forced_ref_manual_callback(
+            update,
+            context,
+            query=query,
+            data=data,
+        )
+
     skip_speed_selection = context.user_data.pop(
         "_raksh_skip_speed_selection",
         False,
@@ -3507,6 +3526,10 @@ async def _run_raksh_order(
         for phone in saved_failed_phones
     ]
     sessions = svc.get_sessions(is_owner=(user_id == OWNER_ID))
+    execution_params = dict(order.get("params") or {})
+    # هذا الكائن لا يُحفظ في قاعدة البيانات؛ يُستخدم فقط أثناء التشغيل
+    # لإرسال صورة التحقق عبر البوت الرئيسي إلى صاحب الطلب.
+    execution_params["_runtime_bot"] = context.bot
     # إذا انتهت كل الجلسات بعد تسجيل فشل نهائي، لا نترك الطلب عالقاً
     # pending إلى الأبد؛ ننتقل إلى الإنهاء وحساب تعويض كل الحسابات الناقصة.
     # أما إذا لم تبدأ أي جلسة بعد، فنبقي الطلب pending حتى تتوفر جلسات.
@@ -3546,7 +3569,7 @@ async def _run_raksh_order(
                 service_type=order["service_type"],
                 quantity=quantity,
                 sessions=sessions,
-                params=order["params"],
+                params=execution_params,
                 user_id=user_id,
                 progress_callback=update_progress,
                 order_id=order_id,
@@ -3696,6 +3719,9 @@ async def _start_raksh_execution(
         return
 
     params = svc.get_execution_params(context) if svc else {}
+    # يُحفظ صاحب الطلب داخل params حتى تصل كابتشا التحقق اليدوي إلى الطالب
+    # الصحيح، حتى لو استُؤنف الطلب بعد إعادة تشغيل البوت.
+    params["requester_id"] = int(user.id)
     order_id = _create_raksh_order(
         user.id,
         service_type,
