@@ -250,6 +250,30 @@ class ForcedRefAIHelperTests(unittest.TestCase):
         ]
         self.assertGreater(rocket, max(alternatives))
 
+    def test_target_signature_beats_red_and_blue_alternatives(self):
+        # The supplied CAPTCHA contains a red bullseye and a blue dart on a
+        # pale noisy background. The combination must beat either colour alone.
+        features = {
+            "average": (229, 211, 210),
+            "dark": 0.035,
+            "gray": 0.66,
+            "white": 0.43,
+            "pink": 0.035,
+            "red": 0.052,
+            "orange": 0.006,
+            "brown": 0.008,
+            "yellow": 0.004,
+            "green": 0.003,
+            "blue": 0.010,
+        }
+        target = self.helper._emoji_image_score("🎯", features)
+        alternatives = [
+            self.helper._emoji_image_score(label, features)
+            for label in ("🐙", "🌹", "🐟", "🦋")
+        ]
+        self.assertIsNotNone(target)
+        self.assertGreater(target, max(alternatives))
+
     def test_donut_signature_beats_fire_and_fruit_buttons(self):
         features = {
             "average": (226, 211, 207),
