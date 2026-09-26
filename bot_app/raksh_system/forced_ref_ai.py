@@ -335,7 +335,7 @@ class ForcedRefAIService(RakshService):
         candidate_labels: list,
         phone_number: str,
     ) -> Optional[str]:
-        """يستعمل واجهة OpenAI-compatible ويقبل إجابة مطابقة حرفياً لأحد الأزرار."""
+        """يرى الصورة مرتين ويضغط فقط عند اتفاق تحليلين مستقلين."""
         api_key = (
             os.getenv("GPT_API_KEY")
             or os.getenv("OPENAI_API_KEY")
@@ -361,48 +361,31 @@ class ForcedRefAIService(RakshService):
         )
         encoded_image = base64.b64encode(image_bytes).decode("ascii")
         options_json = json.dumps(candidate_labels, ensure_ascii=False)
-        prompt = (
-            "You solve a Telegram visual emoji captcha. Inspect the attached image "
-            "and choose the Telegram button label that matches the requested object. "
-            f"Available labels are exactly: {options_json}. "
-            f"Challenge text: {challenge_text!r}. "
-            'Return JSON only: {"label":"one exact label"} or {"label":null} '
-            "when unclear. Never invent a label or add an explanation."
+        if image_bytes.startswith(b"\x89PNG"):
+            image_mime = "image/png"
+        elif image_bytes.startswith(b"GIF"):
+            image_mime = "image/gif"
+        elif image_bytes.startswith(b"RIFF"):
+            image_mime = "image/webp"
+        else:
+            image_mime = "image/jpeg"
+
+        prompts = (
+            (
+                "Act as a strict visual inspector. Look at the attached image itself, "
+                "identify the main object or emoji shown in it, and match it to exactly "
+                "one of the Telegram buttons. Do not use color alone; inspect its shape "
+                "and semantic object. "
+            ),
+            (
+                "Independently verify this visual captcha from the image. Ignore any "
+                "guess based only on dominant color. Compare the actual pictured object "
+                "with every candidate button and choose one only if the visual identity "
+                "is clear. "
+            ),
         )
-        payload = {
-            "model": model,
-            "temperature": 0,
-            "max_tokens": 80,
-            "messages": [{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{encoded_image}",
-                            "detail": "high",
-                        },
-                    },
-                ],
-            }],
-        }
 
-        def _request():
-            request = urllib.request.Request(
-                endpoint,
-                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                method="POST",
-            )
-            with urllib.request.urlopen(request, timeout=25) as response:
-                return response.read().decode("utf-8")
-
-        try:
-            raw_response = await asyncio.to_thread(_request)
+        def _parse_response(raw_response: str):
             response = json.loads(raw_response)
             content = (
                 response.get("choices", [{}])[0]
@@ -411,17 +394,106 @@ class ForcedRefAIService(RakshService):
             )
             if isinstance(content, list):
                 content = "".join(
-                    item.get("text", "") for item in content
+                    item.get("text", "")
+                    for item in content
                     if isinstance(item, dict)
                 )
-            result = json.loads(str(content).strip())
-            label = result.get("label") if isinstance(result, dict) else None
+            text = str(content).strip()
+            text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text).strip()
+            match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+            result = json.loads(match.group(0) if match else text)
+            if not isinstance(result, dict):
+                return None, 0.0, ""
+            label = result.get("label")
+            confidence = result.get("confidence", 0.0)
+            description = str(result.get("description", ""))[:160]
+            try:
+                confidence = float(confidence)
+            except (TypeError, ValueError):
+                confidence = 0.0
             if not isinstance(label, str):
-                return None
+                return None, confidence, description
             normalized = self._normalise_captcha_label(label)
             for candidate in candidate_labels:
                 if self._normalise_captcha_label(candidate) == normalized:
-                    return candidate
+                    return candidate, confidence, description
+            return None, confidence, description
+
+        async def _inspect(prompt_prefix: str):
+            prompt = (
+                f"{prompt_prefix}"
+                f"Available Telegram button labels are exactly: {options_json}. "
+                f"Challenge text: {challenge_text!r}. "
+                'Return JSON only in this shape: '
+                '{"label":"one exact candidate","confidence":0.0,'
+                '"description":"short description of what is visible"}. '
+                'If the image is unclear or no candidate matches, return '
+                '{"label":null,"confidence":0.0,"description":"unclear"}. '
+                "Never invent a label. Confidence must be between 0 and 1."
+            )
+            payload = {
+                "model": model,
+                "temperature": 0,
+                "max_tokens": 140,
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": (
+                                    f"data:{image_mime};base64,{encoded_image}"
+                                ),
+                                "detail": "high",
+                            },
+                        },
+                    ],
+                }],
+            }
+
+            def _request():
+                request = urllib.request.Request(
+                    endpoint,
+                    data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    method="POST",
+                )
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    return response.read().decode("utf-8")
+
+            raw_response = await asyncio.to_thread(_request)
+            return _parse_response(raw_response)
+
+        try:
+            first = await _inspect(prompts[0])
+            second = await _inspect(prompts[1])
+            first_label, first_confidence, first_description = first
+            second_label, second_confidence, second_description = second
+            first_normalized = self._normalise_captcha_label(first_label or "")
+            second_normalized = self._normalise_captcha_label(second_label or "")
+            logger.info(
+                "👁️ فحص الصورة: الأول=%r (%.2f، %s)، الثاني=%r (%.2f، %s)",
+                first_label,
+                first_confidence,
+                first_description,
+                second_label,
+                second_confidence,
+                second_description,
+            )
+            if (
+                first_normalized
+                and first_normalized == second_normalized
+                and first_confidence >= 0.85
+                and second_confidence >= 0.85
+            ):
+                return first_label
+            logger.warning(
+                "⚠️ رفض اختيار كابتشا الإيموجي: لا يوجد اتفاق بصري بثقة كافية"
+            )
         except urllib.error.HTTPError as exc:
             logger.error(
                 "❌ فشل GPT Vision للحساب %s: HTTP %s",
