@@ -1,10 +1,8 @@
 import ast
-import colorsys
 import re
 import unicodedata
 import unittest
 from pathlib import Path
-from typing import Optional
 
 
 SOURCE_PATH = (
@@ -17,15 +15,6 @@ SOURCE_PATH = (
 
 def _load_helper_methods():
     tree = ast.parse(SOURCE_PATH.read_text(encoding="utf-8"))
-    emoji_hints = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.Assign)
-        and any(
-            isinstance(target, ast.Name) and target.id == "_EMOJI_IMAGE_HINTS"
-            for target in node.targets
-        )
-    )
     service = next(
         node
         for node in tree.body
@@ -34,11 +23,6 @@ def _load_helper_methods():
     selected = {
         "_is_invitation_link_button",
         "_is_verification_success_text",
-        "_is_image_emoji_captcha_text",
-        "_extract_target_number",
-        "_image_color_similarity",
-        "_emoji_image_score",
-        "_match_vision_answer",
         "_normalise_captcha_label",
         "_normalise_math_text",
         "_button_label",
@@ -46,16 +30,7 @@ def _load_helper_methods():
         "_captcha_target_labels",
         "_captcha_target_custom_emoji_ids",
     }
-    namespace = {
-        "re": re,
-        "unicodedata": unicodedata,
-        "Optional": Optional,
-        "colorsys": colorsys,
-    }
-    exec(
-        compile(ast.Module(body=[emoji_hints], type_ignores=[]), str(SOURCE_PATH), "exec"),
-        namespace,
-    )
+    namespace = {"re": re, "unicodedata": unicodedata}
     methods = {}
     for node in service.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in selected:
@@ -83,8 +58,6 @@ def _load_helper_methods():
     Helper._captcha_target_custom_emoji_ids = classmethod(
         methods["_captcha_target_custom_emoji_ids"]
     )
-    Helper._emoji_image_score = classmethod(methods["_emoji_image_score"])
-    Helper._match_vision_answer = classmethod(methods["_match_vision_answer"])
     return Helper
 
 
@@ -184,161 +157,6 @@ class ForcedRefAIHelperTests(unittest.TestCase):
         self.assertFalse(self.helper._is_verification_success_text("لم يتم التحقق"))
         self.assertFalse(self.helper._is_verification_success_text("غير صحيح، حاول مرة أخرى"))
         self.assertFalse(self.helper._is_verification_success_text("تم تغيير الأزرار"))
-
-    def test_image_emoji_challenge_is_not_treated_as_ocr(self):
-        self.assertTrue(
-            self.helper._is_image_emoji_captcha_text(
-                "اختر الإيموجي المطابق للصورة أعلاه لإكمال التحقق"
-            )
-        )
-        self.assertFalse(
-            self.helper._is_image_emoji_captcha_text(
-                "أدخل النص الظاهر في الصورة"
-            )
-        )
-
-    def test_numeric_button_target_from_arabic_prompt(self):
-        self.assertEqual(
-            self.helper._extract_target_number(
-                "للتأكد من أنك مستخدم حقيقي، يرجى النقر على الرقم (79) من القائمة بالأسفل."
-            ),
-            "79",
-        )
-        self.assertEqual(
-            self.helper._extract_target_number("اختر الإجابة الصحيحة: [٣٣]"),
-            "33",
-        )
-
-    def test_cow_signature_beats_pig_and_rhino(self):
-        features = {
-            "average": (185, 180, 175),
-            "dark": 0.14,
-            "gray": 0.60,
-            "pink": 0.05,
-            "red": 0.01,
-            "orange": 0.01,
-            "yellow": 0.01,
-            "green": 0.01,
-            "blue": 0.01,
-            "white": 0.42,
-        }
-        cow = self.helper._emoji_image_score("🐮", features)
-        pig = self.helper._emoji_image_score("🐷", features)
-        rhino = self.helper._emoji_image_score("🦏", features)
-        self.assertGreater(cow, pig)
-        self.assertGreater(cow, rhino)
-
-    def test_rocket_signature_beats_the_other_buttons_in_image(self):
-        # Signature measured from the supplied rocket CAPTCHA: pale background
-        # with red body/fins, blue window and orange flame.
-        features = {
-            "average": (231, 208, 210),
-            "dark": 0.03,
-            "gray": 0.70,
-            "pink": 0.03,
-            "red": 0.050,
-            "orange": 0.009,
-            "yellow": 0.002,
-            "green": 0.005,
-            "blue": 0.007,
-            "white": 0.40,
-        }
-        rocket = self.helper._emoji_image_score("🚀", features)
-        alternatives = [
-            self.helper._emoji_image_score(label, features)
-            for label in ("🔑", "🍕", "🍒", "🍍", "🦋", "🥑")
-        ]
-        self.assertGreater(rocket, max(alternatives))
-
-    def test_target_signature_beats_red_and_blue_alternatives(self):
-        # The supplied CAPTCHA contains a red bullseye and a blue dart on a
-        # pale noisy background. The combination must beat either colour alone.
-        features = {
-            "average": (229, 211, 210),
-            "dark": 0.035,
-            "gray": 0.66,
-            "white": 0.43,
-            "pink": 0.035,
-            "red": 0.052,
-            "orange": 0.006,
-            "brown": 0.008,
-            "yellow": 0.004,
-            "green": 0.003,
-            "blue": 0.010,
-        }
-        target = self.helper._emoji_image_score("🎯", features)
-        alternatives = [
-            self.helper._emoji_image_score(label, features)
-            for label in ("🐙", "🌹", "🐟", "🦋")
-        ]
-        self.assertIsNotNone(target)
-        self.assertGreater(target, max(alternatives))
-
-    def test_donut_signature_beats_fire_and_fruit_buttons(self):
-        features = {
-            "average": (226, 211, 207),
-            "dark": 0.055,
-            "gray": 0.64,
-            "white": 0.46,
-            "pink": 0.015,
-            "red": 0.008,
-            "orange": 0.075,
-            "brown": 0.13,
-            "yellow": 0.004,
-            "green": 0.003,
-            "blue": 0.006,
-        }
-        donut = self.helper._emoji_image_score("🍩", features)
-        alternatives = [
-            self.helper._emoji_image_score(label, features)
-            for label in ("🔥", "🍍", "🥕", "🍕")
-        ]
-        self.assertGreater(donut, max(alternatives))
-
-    def test_fire_signature_beats_donut_and_cool_colours(self):
-        features = {
-            "average": (230, 216, 207),
-            "dark": 0.018,
-            "gray": 0.68,
-            "white": 0.50,
-            "pink": 0.01,
-            "red": 0.072,
-            "orange": 0.10,
-            "brown": 0.018,
-            "yellow": 0.045,
-            "green": 0.004,
-            "blue": 0.004,
-        }
-        fire = self.helper._emoji_image_score("🔥", features)
-        alternatives = [
-            self.helper._emoji_image_score(label, features)
-            for label in ("🍩", "🐟", "🦋", "🥑")
-        ]
-        self.assertGreater(fire, max(alternatives))
-
-    def test_dynamic_vision_answer_is_matched_to_candidate_button(self):
-        buttons = [FakeButton("🔑"), FakeButton("🚀"), FakeButton("🍕")]
-        self.assertIs(
-            self.helper._match_vision_answer("rocket", buttons),
-            buttons[1],
-        )
-        self.assertIs(
-            self.helper._match_vision_answer("🚀", buttons),
-            buttons[1],
-        )
-
-    def test_dynamic_vision_index_matches_unknown_object_without_catalogue(self):
-        # The object may be absent from _EMOJI_IMAGE_HINTS. The vision model
-        # can still choose it by the numbered candidate list.
-        buttons = [FakeButton("🪿"), FakeButton("🪼"), FakeButton("🦣")]
-        self.assertIs(
-            self.helper._match_vision_answer("candidate 2", buttons),
-            buttons[1],
-        )
-        self.assertIs(
-            self.helper._match_vision_answer("3", buttons),
-            buttons[2],
-        )
 
     def test_math_answer_is_not_followed_by_same_message_button_click(self):
         source = SOURCE_PATH.read_text(encoding="utf-8")
