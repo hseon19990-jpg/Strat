@@ -1,5 +1,11 @@
+إصلاح الإصدار الثاني
+
 استبدل الملفات مع الحفاظ على المسارات:
 bot_app/raksh_system/forced_ref_ai.py
+bot_app/forced_ref_ai.py
+bot_app/raksh_system/votes_ai_fixed.py
 requirements.txt
 
-تم تحديث Telethon إلى 1.45.0 لدعم style.icon الخاص بالإيموجي المدفوع.
+سبب الإصلاح: Telethon 1.45 يستخدم ButtonTypeRequestPhone بدلاً من KeyboardButtonRequestPhone.
+
+بعد فك الضغط شغّل: pip install -r requirements.txt ثم أعد تشغيل الخدمة.
