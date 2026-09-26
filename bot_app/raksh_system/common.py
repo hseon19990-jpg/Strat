@@ -907,6 +907,19 @@ def _is_already_joined_error(error: Exception) -> bool:
         "AlreadyParticipantError",
     }
 
+def _is_join_request_pending_error(error: Exception) -> bool:
+    """Return True when Telegram accepted a join request for admin approval."""
+    error_name = type(error).__name__.upper().replace("_", "").replace(" ", "")
+    error_text = str(error).upper().replace("_", "").replace(" ", "")
+    return any(
+        marker in error_name or marker in error_text
+        for marker in (
+            "INVITEREQUESTSENT",
+            "JOINREQUESTSENT",
+            "REQUESTPENDING",
+        )
+    )
+
 async def _is_raksh_entity_in_dialogs(client, entity) -> Optional[bool]:
     """اعرف إن كان الحساب عضواً قبل استدعاء JoinChannelRequest."""
     target_id = getattr(entity, "id", None)
@@ -998,6 +1011,7 @@ async def _join_channel_and_schedule_leave(
         return False
 
     entity = None
+    request_pending = False
     try:
         if normalized_ref.startswith("invite:"):
             invite_hash = normalized_ref[7:]
@@ -1005,14 +1019,22 @@ async def _join_channel_and_schedule_leave(
                 updates = await client(ImportChatInviteRequest(invite_hash))
                 entity = next(iter(getattr(updates, "chats", None) or []), None)
             except Exception as invite_error:
-                if not _is_already_joined_error(invite_error):
+                if _is_join_request_pending_error(invite_error):
+                    request_pending = True
+                    logger.info(
+                        "📨 تم إرسال طلب انضمام للقناة الخاصة %s؛ "
+                        "بانتظار موافقة المشرف",
+                        normalized_ref,
+                    )
+                elif not _is_already_joined_error(invite_error):
                     raise
-                # ImportChatInviteRequest لا يعيد القناة عندما يكون الحساب
-                # عضوًا مسبقًا؛ CheckChatInviteRequest يعيد الكيان في هذه الحالة.
-                invite_info = await client(
-                    functions.messages.CheckChatInviteRequest(invite_hash)
-                )
-                entity = getattr(invite_info, "chat", None)
+                else:
+                    # ImportChatInviteRequest لا يعيد القناة عندما يكون الحساب
+                    # عضوًا مسبقًا؛ CheckChatInviteRequest يعيد الكيان في هذه الحالة.
+                    invite_info = await client(
+                        functions.messages.CheckChatInviteRequest(invite_hash)
+                    )
+                    entity = getattr(invite_info, "chat", None)
         else:
             entity = await _resolve_raksh_entity(
                 client,
@@ -1029,12 +1051,20 @@ async def _join_channel_and_schedule_leave(
                 try:
                     await client(JoinChannelRequest(entity))
                 except Exception as join_error:
-                    if not _is_already_joined_error(join_error):
+                    if _is_join_request_pending_error(join_error):
+                        request_pending = True
+                        logger.info(
+                            "📨 تم إرسال طلب انضمام للقناة %s؛ "
+                            "بانتظار موافقة المشرف",
+                            normalized_ref,
+                        )
+                    elif not _is_already_joined_error(join_error):
                         raise
-                    logger.info(
-                        f"الحساب عضو مسبقاً في القناة {normalized_ref}; "
-                        "سيتم إعادة ضبط المؤقت"
-                    )
+                    else:
+                        logger.info(
+                            f"الحساب عضو مسبقاً في القناة {normalized_ref}; "
+                            "سيتم إعادة ضبط المؤقت"
+                        )
     except Exception as error:
         if is_raksh_frozen_account_error(error):
             # لا نخفي خطأ الحساب المجمد؛ المستدعي سيعطله من pool الرشق.
@@ -1042,6 +1072,11 @@ async def _join_channel_and_schedule_leave(
         if not _is_already_joined_error(error):
             logger.warning(f"تعذر الانضمام للقناة {normalized_ref}: {error}")
             return False
+
+    # طلب الانضمام ليس عضوية بعد؛ لا نحفظه كعضوية ولا نرسل طلب مغادرة
+    # لاحقًا قبل موافقة مشرف القناة.
+    if request_pending:
+        return True
 
     if not phone_number:
         logger.warning(f"تم الانضمام للقناة {normalized_ref} بلا رقم حساب؛ لن تُحفظ مهلة المغادرة")
