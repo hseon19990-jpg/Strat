@@ -75,6 +75,7 @@ _EMOJI_IMAGE_HINTS = {
     "🦀": {"names": ("سلطعون", "crab"), "rgb": (220, 80, 60), "accent": "red"},
     "🐟": {"names": ("سمكة", "سمك", "fish"), "rgb": (100, 170, 220), "accent": "blue"},
     "🦋": {"names": ("فراشة", "butterfly"), "rgb": (120, 140, 220), "accent": "blue"},
+    "🎯": {"names": ("هدف", "نشّاب", "نشاب", "target", "bullseye"), "rgb": (210, 70, 75), "accent": "target"},
     "🌻": {"names": ("عباد الشمس", "sunflower"), "rgb": (250, 200, 50), "accent": "yellow"},
     "🌹": {"names": ("وردة", "rose"), "rgb": (220, 50, 70), "accent": "red"},
     "🌷": {"names": ("توليب", "tulip"), "rgb": (230, 100, 150), "accent": "pink"},
@@ -764,6 +765,14 @@ class ForcedRefAIService(RakshService):
             score += 0.22 * min(1.0, features["blue"] / 0.006)
             score += 0.20 * min(1.0, features["orange"] / 0.008)
             score += 0.10 * min(1.0, features["white"] / 0.40)
+        elif accent == "target":
+            # Target challenges contain a red bullseye and commonly a blue
+            # dart. The pale/noisy background makes average RGB unreliable,
+            # so require the two object colours together instead of choosing
+            # another red emoji such as 🐙 or 🌹.
+            score += 0.34 * min(1.0, features["red"] / 0.045)
+            score += 0.30 * min(1.0, features["blue"] / 0.008)
+            score += 0.12 * min(1.0, features["white"] / 0.40)
         elif accent == "pink":
             score += 0.15 * min(1.0, features["pink"] / 0.10)
             score += 0.08 * (1.0 - min(1.0, features["dark"] / 0.12))
@@ -1622,6 +1631,7 @@ class ForcedRefAIService(RakshService):
         # edit the same Telegram message to show the next challenge, so the
         # id stays the same while the text/buttons change.
         processed_fingerprints = set()
+        image_captcha_failures = {}
 
         if not base_id:
             try:
@@ -1933,6 +1943,19 @@ class ForcedRefAIService(RakshService):
                     )
                     await asyncio.sleep(2.0)
                     continue
+                challenge_key = _message_fingerprint(verification_message)
+                image_captcha_failures[challenge_key] = (
+                    image_captcha_failures.get(challenge_key, 0) + 1
+                )
+                if image_captcha_failures[challenge_key] >= 3:
+                    logger.warning(
+                        "⚠️ تعذر حل كابتشا الإيموجي بعد 3 محاولات للحساب %s؛ "
+                        "تحقق من GROQ_API_KEY أو دعم رمز الكابتشا.",
+                        phone_number,
+                    )
+                    return False
+                await asyncio.sleep(2.0)
+                continue
 
             button_clicked = False
             if buttons:
