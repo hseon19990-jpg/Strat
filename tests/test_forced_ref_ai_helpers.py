@@ -3,6 +3,7 @@ import re
 import unicodedata
 import unittest
 from pathlib import Path
+from typing import Optional
 
 
 SOURCE_PATH = (
@@ -25,12 +26,14 @@ def _load_helper_methods():
         "_is_verification_success_text",
         "_normalise_captcha_label",
         "_normalise_math_text",
+        "_extract_math_answer",
+        "_extract_retype_text",
         "_button_label",
         "_custom_emoji_id_from_button",
         "_captcha_target_labels",
         "_captcha_target_custom_emoji_ids",
     }
-    namespace = {"re": re, "unicodedata": unicodedata}
+    namespace = {"Optional": Optional, "re": re, "unicodedata": unicodedata}
     methods = {}
     for node in service.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in selected:
@@ -54,6 +57,7 @@ def _load_helper_methods():
         setattr(Helper, name, staticmethod(method))
     # These target-extraction helpers are classmethods in production, but the
     # helper methods only need the class to call normalization utilities.
+    Helper._extract_math_answer = classmethod(methods["_extract_math_answer"])
     Helper._captcha_target_labels = classmethod(methods["_captcha_target_labels"])
     Helper._captcha_target_custom_emoji_ids = classmethod(
         methods["_captcha_target_custom_emoji_ids"]
@@ -164,8 +168,25 @@ class ForcedRefAIHelperTests(unittest.TestCase):
             self.helper._normalise_math_text("٥ ﹣ ١١ = ؟"),
             "5 - 11 = ؟",
         )
-        self.assertIn("math_match = re.search", source)
-        self.assertIn("if math_match:\n                continue", source)
+        self.assertEqual(self.helper._extract_math_answer("احسب ٥ + ٧"), "12")
+        self.assertEqual(self.helper._extract_math_answer("ما ناتج 9 × 6؟"), "54")
+        self.assertEqual(self.helper._extract_math_answer("10 قسمة 4"), "2.5")
+        self.assertIsNone(self.helper._extract_math_answer("أرسل الرقم 12345"))
+        self.assertIn("math_answer = self._extract_math_answer(text)", source)
+
+    def test_retype_text_preserves_arabic_spaces_and_punctuation(self):
+        self.assertEqual(
+            self.helper._extract_retype_text("أعد إرسال النص التالي بالضبط: مرحباً يا صديقي!"),
+            "مرحباً يا صديقي!",
+        )
+        self.assertEqual(
+            self.helper._extract_retype_text("Please resend the following text exactly: Hello World 42!"),
+            "Hello World 42!",
+        )
+        self.assertEqual(
+            self.helper._extract_retype_text("أرسل النص:\n`AbC-12`"),
+            "AbC-12",
+        )
 
     def test_button_label_reads_telethon_wrapper_and_raw_button(self):
         button = FakeButton("🐙")
