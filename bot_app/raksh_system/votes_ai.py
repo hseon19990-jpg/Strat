@@ -190,7 +190,15 @@ class VotesAIService(ForcedRefAIService):
         return False
 
     async def _execute_verified_vote(self, session, params, is_first):
-        """التصويت مع تحقق: يحاول تنفيذ التصويت إن أمكن، ويعتبر ناجحاً فور التحقق."""
+        """التصويت مع تحقق باستخدام مسار الإحالة نفسه عند وجود رابط بوت."""
+        link = (params.get("link") or "").strip()
+        post_ref, post_id = _parse_post_link(link)
+
+        # رابط البوت يجب أن يمر حرفياً عبر تنفيذ الإحالة مع التحقق، بما في
+        # ذلك تمرير بيانات صاحب الطلب للكابتشا اليدوية.
+        if not (post_ref and post_id):
+            return await super().execute(session, params, is_first)
+
         client = TelegramClient(
             StringSession(session["session_string"]),
             int(TELEGRAM_API_ID),
@@ -202,140 +210,61 @@ class VotesAIService(ForcedRefAIService):
                 _mark_raksh_session_unauthorized(session.get("phone_number"))
                 return False, "الجلسة غير مصرح بها."
 
+            post_entity = None
+            post_message = None
+
+            try:
+                post_entity = await client.get_entity(post_ref)
+                post_message = self._as_message(
+                    await client.get_messages(post_entity, ids=post_id)
+                )
+            except Exception as exc:
+                logger.warning(f"تعذر جلب المنشور {link}: {exc}")
+                return False, "تعذر الوصول إلى القناة/المنشور."
+
+            if not post_message:
+                return False, "المنشور غير موجود."
+            post_button = _select_post_action_button(post_message)
+            if post_button is None:
+                return False, "لم يتم العثور على زر مناسب في المنشور."
+
+            button_url = getattr(post_button, "url", None)
+            bot_username, _ = _parse_bot_link(button_url or "")
+            if bot_username:
+                # زر البوت في المنشور يصبح رابط الهدف، ثم نعيد تشغيل مسار
+                # الإحالة بالكامل بدلاً من تنفيذ نسخة تحقق خاصة بالتصويت.
+                verification_params = dict(params)
+                verification_params["link"] = button_url
+                await client.disconnect()
+                client = None
+                return await super().execute(
+                    session,
+                    verification_params,
+                    is_first,
+                )
+
+            # الزر callback هو استثناء المنشور: نضغطه مباشرة بعد تجهيز
+            # القناة، لأن الزر نفسه هو عملية التصويت ولا يفتح بوت تحقق.
             if is_first:
                 channels = params.get("channel_ref") or []
                 if isinstance(channels, str):
                     channels = [channels]
                 for channel_ref in channels[:1]:
                     try:
-                        await _join_channel_and_schedule_leave(client, channel_ref)
+                        await _join_channel_and_schedule_leave(
+                            client,
+                            channel_ref,
+                            session.get("phone_number"),
+                        )
                         await asyncio.sleep(1.0)
                     except Exception as exc:
                         logger.warning(f"فشل الانضمام للقناة {channel_ref}: {exc}")
-
-            link = (params.get("link") or "").strip()
-            post_ref, post_id = _parse_post_link(link)
-            post_entity = None
-            post_message = None
-
-            # الفرق الوحيد عن الإحالة: رابط التصويت قد يكون منشوراً.
-            if post_ref and post_id:
-                try:
-                    post_entity = await client.get_entity(post_ref)
-                    post_message = self._as_message(
-                        await client.get_messages(post_entity, ids=post_id)
-                    )
-                except Exception as exc:
-                    logger.warning(f"تعذر جلب المنشور {link}: {exc}")
-                    return False, "تعذر الوصول إلى القناة/المنشور."
-
-                if not post_message:
-                    return False, "المنشور غير موجود."
-                post_button = _select_post_action_button(post_message)
-                if post_button is None:
-                    return False, "لم يتم العثور على زر مناسب في المنشور."
-
-                button_url = getattr(post_button, "url", None)
-                bot_username, bot_start_param = _parse_bot_link(button_url or "")
-                if not bot_username:
-                    # إذا كان الزر المختار callback عاديًا، نضغطه مباشرةً.
-                    # هذا يغطي المنشورات ذات الزر الواحد مهما كان نصه،
-                    # والمنشورات متعددة الأزرار التي تحتوي زرًا بإيموجي.
-                    try:
-                        await post_button.click()
-                        await asyncio.sleep(0.5)
-                        return True, f"✅ تم الضغط على زر التصويت من {session['phone_number']}"
-                    except Exception as exc:
-                        return False, f"تعذر الضغط على زر المنشور: {str(exc)[:80]}"
-            else:
-                bot_username, bot_start_param = _parse_bot_link(link)
-                if not bot_username:
-                    return False, "الرابط غير صحيح لهذه الخدمة."
-
             try:
-                bot_entity = await self._resolve_bot(client, bot_username)
+                await post_button.click()
+                await asyncio.sleep(0.5)
+                return True, f"✅ تم الضغط على زر التصويت من {session['phone_number']}"
             except Exception as exc:
-                return False, f"تعذر العثور على البوت {bot_username}: {str(exc)[:80]}"
-            if not bot_entity:
-                return False, "تعذر العثور على البوت."
-
-            verification_base_id = await self._start_target_bot(
-                client,
-                bot_entity,
-                bot_start_param or "",
-            )
-
-            # استخدام نفس الكلاس يضمن نفس: الضغط، القراءة كل ثانيتين،
-            # الرسالة المعدلة، الرسالة الجديدة، النص، caption، الكيبورد
-            # وطلب مشاركة الرقم.
-            verified = await self._solve_verification(
-                client,
-                bot_entity,
-                session.get("phone_number"),
-                base_id=verification_base_id,
-            )
-            if not verified:
-                # The bot may have accepted the vote and only failed to
-                # expose the final verification message. Treat an explicit
-                # "already voted" response as an achieved result instead of
-                # reporting a false failure to the owner.
-                if await self._check_already_voted(client, bot_entity):
-                    logger.info(
-                        "✅ الجلسة %s لديها تصويت مسجل رغم فشل قراءة التحقق",
-                        session["phone_number"],
-                    )
-                    return True, (
-                        f"✅ التصويت موجود مسبقاً من "
-                        f"{session['phone_number']}"
-                    )
-                return False, "فشل التحقق بعد محاولات متعددة."
-
-            # وجود تصويت سابق يعني أن نتيجة الحساب موجودة بالفعل؛ لا نعرضه
-            # كفشل، لأن ذلك كان سبباً رئيسياً لظهور فشل رغم وصول التصويت.
-            if await self._check_already_voted(client, bot_entity):
-                logger.info(f"الجلسة {session['phone_number']} سبق أن صوّتت")
-                return True, (
-                    f"✅ التصويت موجود مسبقاً من "
-                    f"{session['phone_number']}"
-                )
-
-            # ===== تعديل: بمجرد اكتمال التحقق، نعتبر التصويت ناجحاً =====
-            # لكن نحاول تنفيذ التصويت الفعلي إن كان ممكناً دون فشل إذا تعذر.
-
-            if post_entity is not None:
-                # محاولة جلب المنشور مجدداً وتنفيذ التصويت إن أمكن
-                try:
-                    refreshed_post = self._as_message(
-                        await client.get_messages(post_entity, ids=post_id)
-                    )
-                    if refreshed_post:
-                        media = getattr(refreshed_post, "media", None)
-                        poll_media = getattr(refreshed_post, "poll", None) or media
-                        poll = getattr(poll_media, "poll", None) or poll_media
-                        options = getattr(poll, "answers", None) or []
-                        if options:
-                            chosen = _select_poll_option(
-                                options,
-                                params.get("poll_option"),
-                            )
-                            if chosen is None:
-                                chosen = random.choice(options)
-                            await _send_vote_and_check(
-                                client,
-                                post_entity,
-                                post_id,
-                                chosen.option,
-                            )
-                        else:
-                            vote_button = _select_post_action_button(refreshed_post)
-                            if vote_button and not getattr(vote_button, "url", None):
-                                await vote_button.click()
-                                await asyncio.sleep(0.5)
-                except Exception as exc:
-                    logger.warning(f"تعذر تنفيذ التصويت بعد التحقق: {exc}")
-
-            # النجاح مضمون فور التحقق حتى لو لم يتم العثور على زر
-            return True, f"✅ تم التصويت مع التحقق من {session['phone_number']}"
+                return False, f"تعذر الضغط على زر المنشور: {str(exc)[:80]}"
 
         except Exception as exc:
             if "two different IP" in str(exc) or "AuthKeyDuplicated" in str(exc):
@@ -343,7 +272,8 @@ class VotesAIService(ForcedRefAIService):
                 return False, "الجلسة تستخدم من IP مختلف - تم تعطيلها مؤقتاً"
             return False, f"❌ فشل التصويت: {str(exc)[:80]}"
         finally:
-            await client.disconnect()
+            if client is not None:
+                await client.disconnect()
 
     async def execute(self, session, params, is_first):
         return await self._execute_verified_vote(session, params, is_first)
