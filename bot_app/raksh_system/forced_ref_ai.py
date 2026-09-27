@@ -83,11 +83,23 @@ async def handle_forced_ref_manual_callback(
     future = waiter["future"]
     if not future.done():
         future.set_result(button_index)
-    await query.answer("✅ تم إرسال اختيارك للحساب.")
+    logger.info(
+        "🖱️ استلم callback التحقق اليدوي token=%s user=%s index=%s",
+        token,
+        waiter["user_id"],
+        button_index,
+    )
+    await query.answer("⏳ تم استلام اختيارك، يجري تطبيقه على الحساب.")
     try:
-        await query.edit_message_reply_markup(reply_markup=None)
+        await query.edit_message_caption(
+            caption="⏳ تم استلام الإجابة، يجري تطبيقها على حساب التحقق...",
+            reply_markup=None,
+        )
     except Exception:
-        pass
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
     return True
 
 
@@ -1043,6 +1055,10 @@ class ForcedRefAIService(RakshService):
             "future": future,
             "user_id": requester_id,
             "button_count": len(buttons),
+            "button_data": [
+                getattr(button, "data", None)
+                for button in buttons
+            ],
         }
 
         keyboard = []
@@ -1171,10 +1187,19 @@ class ForcedRefAIService(RakshService):
             # كائن Telethon القديم بعد فصل الاتصال؛ نستخدم نسخة مرتبطة
             # بالاتصال الجديد حتى يعمل زر المرحلة الحالية بشكل صحيح.
             await asyncio.wait_for(client.connect(), timeout=20)
-            refreshed_message = await client.get_messages(
-                bot_entity,
-                ids=getattr(verification_message, "id", None),
-            )
+            try:
+                refreshed_message = await client.get_messages(
+                    bot_entity,
+                    ids=getattr(verification_message, "id", None),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "⚠️ تعذر إعادة قراءة رسالة التحقق للحساب %s: %s؛ "
+                    "سيُستخدم زر الجلسة الأصلي",
+                    phone_number,
+                    exc,
+                )
+                return buttons[int(button_index)], relay_ref
             if isinstance(refreshed_message, (list, tuple)):
                 refreshed_message = refreshed_message[0] if refreshed_message else None
             refreshed_buttons = [
@@ -1183,12 +1208,60 @@ class ForcedRefAIService(RakshService):
                 for button in row
                 if not self._is_invitation_link_button(button)
             ]
+            if not refreshed_buttons:
+                # بعض طبقات Telethon لا تعيد reply markup عند طلب رسالة
+                # واحدة بعد إعادة الاتصال؛ أعد قراءة آخر الرسائل وابحث عن
+                # نفس معرف الرسالة أو عن زر callback المطابق.
+                try:
+                    recent_messages = await client.get_messages(
+                        bot_entity,
+                        limit=30,
+                    )
+                except Exception:
+                    recent_messages = []
+                candidates = (
+                    recent_messages
+                    if isinstance(recent_messages, (list, tuple))
+                    else [recent_messages]
+                )
+                refreshed_message = next(
+                    (
+                        message
+                        for message in candidates
+                        if getattr(message, "id", None)
+                        == getattr(verification_message, "id", None)
+                    ),
+                    refreshed_message,
+                )
+                refreshed_buttons = [
+                    button
+                    for row in getattr(refreshed_message, "buttons", None) or []
+                    for button in row
+                    if not self._is_invitation_link_button(button)
+                ]
             if not refreshed_message or int(button_index) >= len(refreshed_buttons):
                 logger.warning(
-                    "⚠️ لم تعد رسالة التحقق اليدوية متاحة للحساب %s",
+                    "⚠️ لم تعد أزرار رسالة التحقق اليدوية متاحة للحساب %s؛ "
+                    "سيُستخدم زر الجلسة الأصلي بعد إعادة الاتصال",
                     phone_number,
                 )
-                return None
+                return buttons[int(button_index)], relay_ref
+            target_data = _MANUAL_VERIFICATION_WAITERS.get(token, {}).get(
+                "button_data",
+                [],
+            )
+            if int(button_index) < len(target_data) and target_data[int(button_index)]:
+                selected_data = target_data[int(button_index)]
+                matching_button = next(
+                    (
+                        button
+                        for button in refreshed_buttons
+                        if getattr(button, "data", None) == selected_data
+                    ),
+                    None,
+                )
+                if matching_button is not None:
+                    return matching_button, relay_ref
             return refreshed_buttons[int(button_index)], relay_ref
         except asyncio.TimeoutError:
             try:
@@ -1460,6 +1533,23 @@ class ForcedRefAIService(RakshService):
         quiet_attempts = 0
         manual_relay_message = None
 
+        async def _update_manual_relay_caption(caption: str) -> None:
+            """إظهار نتيجة الضغط في رسالة الكابتشا الخاصة بالمستخدم."""
+            runtime_bot = (params or {}).get("_runtime_bot")
+            requester_id = (params or {}).get("requester_id")
+            message_id = (manual_relay_message or {}).get("message_id")
+            if not runtime_bot or not requester_id or not message_id:
+                return
+            try:
+                await runtime_bot.edit_message_caption(
+                    chat_id=int(requester_id),
+                    message_id=message_id,
+                    caption=caption,
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
+
         def _message_fingerprint(message) -> str:
             """Return a stable fingerprint that changes when a message is edited."""
             parts = [
@@ -1548,6 +1638,9 @@ class ForcedRefAIService(RakshService):
                     continue
                 success_text = (getattr(msg, "message", "") or "").strip().casefold()
                 if self._is_verification_success_text(success_text):
+                    await _update_manual_relay_caption(
+                        "✅ تم قبول التحقق لهذا الحساب."
+                    )
                     logger.info(f"✅ تم تأكيد التحقق من {phone_number}: {success_text[:120]}")
                     return True
 
@@ -1676,6 +1769,9 @@ class ForcedRefAIService(RakshService):
                 deadline = None
                 try:
                     await manual_button.click()
+                    await _update_manual_relay_caption(
+                        "⏳ تم تطبيق الإجابة على الحساب، بانتظار رد البوت..."
+                    )
                     processed_fingerprints.add(
                         _message_fingerprint(verification_message)
                     )
@@ -1686,6 +1782,9 @@ class ForcedRefAIService(RakshService):
                     await asyncio.sleep(1.0)
                     continue
                 except Exception as exc:
+                    await _update_manual_relay_caption(
+                        "❌ تعذر تطبيق الإجابة على الحساب؛ ستتم إعادة المحاولة."
+                    )
                     logger.warning(
                         "⚠️ تعذر تطبيق اختيار الطالب على الحساب %s: %s",
                         phone_number,
