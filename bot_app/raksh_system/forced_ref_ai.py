@@ -5,6 +5,7 @@
 """
 
 from .common import *
+from telegram import InputMediaPhoto
 from telethon.tl.types import InputMediaContact
 try:
     from telethon.tl.types import KeyboardButtonRequestPhone
@@ -48,7 +49,7 @@ async def handle_forced_ref_manual_callback(
     query=None,
     data=None,
 ) -> bool:
-    """استقبال اختيار الطالب وإعادته إلى جلسة Telethon المنتظرة."""
+    """استقبال اختيار الطالب وإعادة الاتصال بالحساب عند الحاجة."""
     query = query or update.callback_query
     data = data or getattr(query, "data", "") or ""
     parts = data.split(":")
@@ -571,6 +572,8 @@ class ForcedRefAIService(RakshService):
         return normalized in {
             "✅", "✓", "✔", "☑",
             "تم",
+            "صح",
+            "صحيح",
             "success", "ok", "passed", "correct",
             "تم فقط",
             "أنت بشري", "انت بشري",
@@ -1012,13 +1015,15 @@ class ForcedRefAIService(RakshService):
     async def _delegate_manual_image_verification(
         self,
         client,
+        bot_entity,
         verification_message,
         phone_number: str,
         buttons: List,
         params: Dict,
         deadline: Optional[float],
+        relay_message: Optional[Dict] = None,
     ):
-        """إرسال صورة الكابتشا للطالب وانتظار اختيار الزر منه."""
+        """إرسال/تحديث صورة الكابتشا للطالب وانتظار اختيار الزر منه."""
         runtime_bot = params.get("_runtime_bot") if params else None
         requester_id = params.get("requester_id") if params else None
         try:
@@ -1066,6 +1071,12 @@ class ForcedRefAIService(RakshService):
             return None
 
         image_buffer = BytesIO()
+        relay_ref = dict(relay_message or {})
+        caption = (
+            "🔐 مطلوب تحقق يدوي للحساب.\n\n"
+            "اختر الإيموجي المطابق للصورة من الأزرار أدناه.\n"
+            "⏳ ستبقى هذه الرسالة بانتظار اختيارك."
+        )
         try:
             await verification_message.download_media(file=image_buffer)
             image_buffer.seek(0)
@@ -1075,22 +1086,49 @@ class ForcedRefAIService(RakshService):
                 for attempt in range(3):
                     try:
                         image_buffer.seek(0)
-                        await runtime_bot.send_photo(
-                            chat_id=requester_id,
-                            photo=image_buffer,
-                            caption=(
-                                "🔐 مطلوب تحقق يدوي للحساب.\n\n"
-                                "اختر الإيموجي المطابق للصورة من الأزرار أدناه.\n"
-                                "⏳ ستبقى هذه الرسالة بانتظار اختيارك."
-                            ),
-                            reply_markup=InlineKeyboardMarkup(keyboard),
-                        )
+                        if relay_ref.get("message_id"):
+                            await runtime_bot.edit_message_media(
+                                chat_id=requester_id,
+                                message_id=relay_ref["message_id"],
+                                media=InputMediaPhoto(
+                                    media=image_buffer,
+                                    caption=caption,
+                                ),
+                                reply_markup=InlineKeyboardMarkup(keyboard),
+                            )
+                        else:
+                            sent_message = await runtime_bot.send_photo(
+                                chat_id=requester_id,
+                                photo=image_buffer,
+                                caption=caption,
+                                reply_markup=InlineKeyboardMarkup(keyboard),
+                            )
+                            relay_ref["message_id"] = getattr(
+                                sent_message, "message_id", None
+                            )
                         send_error = None
                         break
                     except Exception as exc:
                         send_error = exc
                         if attempt < 2:
                             await asyncio.sleep(2 * (attempt + 1))
+                        elif relay_ref.get("message_id"):
+                            # Keep the challenge available if media replacement
+                            # is rejected after a long-lived callback.
+                            try:
+                                image_buffer.seek(0)
+                                sent_message = await runtime_bot.send_photo(
+                                    chat_id=requester_id,
+                                    photo=image_buffer,
+                                    caption=caption,
+                                    reply_markup=InlineKeyboardMarkup(keyboard),
+                                )
+                                relay_ref["message_id"] = getattr(
+                                    sent_message, "message_id", None
+                                )
+                                send_error = None
+                            except Exception as fallback_exc:
+                                send_error = fallback_exc
             if send_error is not None:
                 raise send_error
         except Exception as exc:
@@ -1102,10 +1140,23 @@ class ForcedRefAIService(RakshService):
             )
             return None
 
+        # لا نبقي اتصال حساب تيليثون مفتوحاً أثناء انتظار المستخدم. تبقى
+        # الجلسة في الذاكرة فقط، ثم نعيد الاتصال بها بعد وصول callback.
+        try:
+            if client.is_connected():
+                await client.disconnect()
+        except Exception as exc:
+            logger.warning(
+                "⚠️ تعذر فصل اتصال التحقق اليدوي للحساب %s: %s",
+                phone_number,
+                exc,
+            )
+
         try:
             if deadline is None:
                 # الكابتشا اليدوية تبقى معلقة حتى يختار العضو زرها؛ لا
-                # نربطها بمهلة الحساب أو بترتيب بقية الحسابات.
+                # نربطها بمهلة الحساب أو بترتيب بقية الحسابات. الاتصال
+                # نفسه مفصول خلال هذا الانتظار.
                 button_index = await future
             else:
                 remaining = max(0.0, deadline - loop.time())
@@ -1115,7 +1166,30 @@ class ForcedRefAIService(RakshService):
                 button_index = await asyncio.wait_for(future, timeout=remaining)
             if not 0 <= int(button_index) < len(buttons):
                 return None
-            return buttons[int(button_index)]
+
+            # أعد الاتصال بسرعة ثم أعد جلب رسالة التحقق الأصلية. لا نضغط
+            # كائن Telethon القديم بعد فصل الاتصال؛ نستخدم نسخة مرتبطة
+            # بالاتصال الجديد حتى يعمل زر المرحلة الحالية بشكل صحيح.
+            await asyncio.wait_for(client.connect(), timeout=20)
+            refreshed_message = await client.get_messages(
+                bot_entity,
+                ids=getattr(verification_message, "id", None),
+            )
+            if isinstance(refreshed_message, (list, tuple)):
+                refreshed_message = refreshed_message[0] if refreshed_message else None
+            refreshed_buttons = [
+                button
+                for row in getattr(refreshed_message, "buttons", None) or []
+                for button in row
+                if not self._is_invitation_link_button(button)
+            ]
+            if not refreshed_message or int(button_index) >= len(refreshed_buttons):
+                logger.warning(
+                    "⚠️ لم تعد رسالة التحقق اليدوية متاحة للحساب %s",
+                    phone_number,
+                )
+                return None
+            return refreshed_buttons[int(button_index)], relay_ref
         except asyncio.TimeoutError:
             try:
                 await runtime_bot.send_message(
@@ -1384,6 +1458,7 @@ class ForcedRefAIService(RakshService):
 
         saw_verification = False
         quiet_attempts = 0
+        manual_relay_message = None
 
         def _message_fingerprint(message) -> str:
             """Return a stable fingerprint that changes when a message is edited."""
@@ -1583,16 +1658,19 @@ class ForcedRefAIService(RakshService):
                 # التحقق اليدوي مستقل عن مهلة التحقق الآلية: يمكن للعضو
                 # حل أي رسالة من الرسائل المعلقة وبأي ترتيب.
                 manual_deadline = None
-                manual_button = await self._delegate_manual_image_verification(
+                manual_result = await self._delegate_manual_image_verification(
                     client,
+                    bot_entity,
                     verification_message,
                     phone_number,
                     visible_buttons,
                     params or {},
                     manual_deadline,
+                    relay_message=manual_relay_message,
                 )
-                if manual_button is None:
+                if manual_result is None:
                     return False
+                manual_button, manual_relay_message = manual_result
                 # بعد ظهور كابتشا يدوية، تبقى مراحل هذا الحساب مرتبطة
                 # بإجابة العضو وبعلامة النجاح الصريحة، لا بترتيب الحسابات.
                 deadline = None
