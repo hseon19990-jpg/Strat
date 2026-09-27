@@ -86,9 +86,10 @@ def get_raksh_service(service_type: str) -> Optional[RakshService]:
     return RAKSH_SERVICES.get(service_type)
 
 def _is_raksh_account_or_session_failure(message: str) -> bool:
-    """الفشل العام المسموح به: حساب محظور/مجمّد أو جلسة غير صالحة."""
+    """تمييز الرفض الوحيد المسموح به: مشكلة فعلية في الحساب أو جلسته."""
     text = str(message or "").casefold()
     markers = (
+        "__raksh_frozen_account__",
         "الجلسة غير مصرح بها",
         "الجلسة تستخدم من ip مختلف",
         "الجلسة غير صالحة",
@@ -96,11 +97,15 @@ def _is_raksh_account_or_session_failure(message: str) -> bool:
         "بدون جلسة",
         "ليس به جلسة",
         "الحساب محظور",
-        "الحساب محظور",
         "الحساب مجمد",
         "الحساب مجمّد",
         "الحساب معطل",
         "الحساب معطّل",
+        "الحساب موقوف",
+        "مشكلة في الحساب",
+        "رقم الهاتف محظور",
+        "رقم الهاتف مجمد",
+        "رقم الهاتف مجمّد",
         "authkeyunregistered",
         "authkeyduplicated",
         "session revoked",
@@ -114,6 +119,12 @@ def _is_raksh_account_or_session_failure(message: str) -> bool:
         "account frozen",
         "account is deactivated",
         "account deactivated",
+        "account suspended",
+        "account issue",
+        "account problem",
+        "phone number banned",
+        "phone number frozen",
+        "frozen account",
         "unauthorized",
         "not authorized",
         "invalid session",
@@ -125,13 +136,16 @@ def _is_raksh_account_or_session_failure(message: str) -> bool:
 def _classify_raksh_result(
     service_type: str, phone: str, ok: bool, message: str
 ) -> Tuple[bool, str]:
-    """تطبيق سياسة النتيجة الموحدة: الفشل لا يتحول إلى نجاح."""
+    """رفض مشكلة الحساب فقط واحتساب بقية نتائج خدمات الرشق نجاحاً."""
     if ok:
         return True, message
-    # لا يوجد fallback إلى النجاح هنا. أي نتيجة سلبية من الخدمة، بما فيها
-    # فشل التحقق أو خطأ Telegram/الشبكة/قاعدة البيانات، تبقى فشلاً.
-    # وجود دالة التصنيف مهم لتوحيد المسار، لكن لا يجوز أن تغيّر معنى النتيجة.
-    return False, message or f"❌ فشل الحساب {phone} في {service_type}"
+    if _is_raksh_account_or_session_failure(message):
+        return False, message or f"❌ مشكلة في الحساب {phone}"
+
+    # أخطاء الرابط أو المنشور، عدم العثور على زر، وعدم إكمال التحقق
+    # ليست مشكلة في الحساب؛ لذلك تُحتسب محاولة الحساب نجاحاً ولا يُعاد
+    # تصنيفها كحساب فاشل أو يُخصم مقابلها من العدد المنجز.
+    return True, message or f"✅ تم احتساب محاولة الحساب {phone} في {service_type}"
 
 
 def get_raksh_price_config(service_type: str) -> Dict[str, int]:
