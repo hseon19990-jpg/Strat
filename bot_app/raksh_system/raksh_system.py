@@ -2843,6 +2843,16 @@ async def handle_raksh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]),
             )
             return True
+
+        if service_type == "votes_ai" and len(channel_refs) > 1:
+            await update.message.reply_text(
+                "⚠️ خدمة التصويت مع التحقق تقبل قناة إجبارية واحدة فقط.\n"
+                "أرسل قناة واحدة أو اكتب «تخطي».",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                ]),
+            )
+            return True
         
         context.user_data["raksh_channels"] = channel_refs
         context.user_data["raksh_step"] = "link"

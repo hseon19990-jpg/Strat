@@ -27,6 +27,8 @@ class VotesAIService(ForcedRefAIService):
         min_delay=3,
         max_delay=3,
         max_concurrent=1,
+        channel_free_limit=1,
+        channel_extra_point_price=0,
     )
 
     def get_start_message(self) -> str:
@@ -34,12 +36,10 @@ class VotesAIService(ForcedRefAIService):
             f"{self.config.name}\n\n"
             f"💰 السعر: {self.get_rate_text('points')}\n"
             f"⭐ السعر: {self.get_rate_text('stars')}\n\n"
-            f"📢 *أرسل روابط القنوات الإجبارية:*\n"
-            f"كل قناة في سطر منفصل:\n"
+            f"📢 *أرسل قناة إجبارية واحدة (اختياري):*\n"
             f"@channel1\n"
-            f"@channel2\n"
-            f"أو أرسل روابط t.me\n\n"
-            f"✍️ اكتب 'تخطي' لعدم وجود قنوات"
+            f"أو أرسل رابط t.me للقناة\n\n"
+            f"✍️ اكتب 'تخطي' لعدم وجود قناة"
         )
 
     def get_start_keyboard(self) -> InlineKeyboardMarkup:
@@ -55,10 +55,10 @@ class VotesAIService(ForcedRefAIService):
         return "raksh_votes_ai"
 
     def get_link_prompt_label(self) -> str:
-        return "رابط البوست أو رابط التصويت"
+        return "رابط البوت أو المنشور"
 
     def get_saved_link_label(self) -> str:
-        return "رابط البوست/التصويت"
+        return "رابط البوت/المنشور"
 
     def get_quantity_label(self) -> str:
         return "عدد التصويتات المطلوبة"
@@ -75,14 +75,25 @@ class VotesAIService(ForcedRefAIService):
     def get_link_instruction(self) -> str:
         return (
             "🔹 رابط بوت: `https://t.me/xxxBot?start=compvote-xxx`\n"
-            "🔹 أو رابط منشور/تصويت: `https://t.me/channel/123`"
+            "🔹 أو رابط منشور يحتوي على زر: `https://t.me/channel/123`"
         )
 
     def validate_link(self, value: str) -> Optional[str]:
         if not value.strip():
-            return "⚠️ أرسل رابط البوت أو رابط المنشور/التصويت."
-        if not ("@" in value or "t.me/" in value):
-            return "⚠️ أرسل رابط بوت أو رابط منشور/تصويت صالحاً من Telegram."
+            return "⚠️ أرسل رابط البوت أو رابط المنشور الذي يحتوي على زر."
+
+        channel_ref, message_id = _parse_post_link(value)
+        if channel_ref and message_id is not None:
+            return None
+
+        bot_username, _ = _parse_bot_link(value)
+        if not bot_username:
+            return (
+                "⚠️ الرابط غير صحيح لهذه الخدمة.\n\n"
+                "أرسل رابط بوت مباشر أو رابط منشور يحتوي على زر، مثل:\n"
+                "https://t.me/xxxBot?start=compvote-xxx\n"
+                "https://t.me/channel/123"
+            )
         return None
 
     @staticmethod
@@ -195,7 +206,7 @@ class VotesAIService(ForcedRefAIService):
                 channels = params.get("channel_ref") or []
                 if isinstance(channels, str):
                     channels = [channels]
-                for channel_ref in channels:
+                for channel_ref in channels[:1]:
                     try:
                         await _join_channel_and_schedule_leave(client, channel_ref)
                         await asyncio.sleep(1.0)

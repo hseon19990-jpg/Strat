@@ -523,30 +523,39 @@ def _is_no_action_bot(bot_username: Optional[str]) -> bool:
     return str(bot_username or "").lstrip("@").strip().lower() == RAKSH_NO_ACTION_BOT
 
 def _parse_bot_link(value: str) -> Tuple[Optional[str], Optional[str]]:
-    """تحليل رابط بوت"""
-    value = (value or "").strip()
-    if not value:
+    """تحليل رابط بوت مباشر فقط، مع رفض روابط القنوات والمنشورات."""
+    raw = (value or "").strip().strip("<>")
+    if not raw:
         return None, None
 
     try:
-        if "t.me/" in value or "telegram.me/" in value:
-            parsed = urlparse(value if "://" in value else f"https://{value}")
-            path = parsed.path.strip("/")
-            if path:
-                bot_username = path.split("/")[0]
-                query = parse_qs(parsed.query)
-                start_param = (
-                    query.get("start", [""])[0]
-                    or query.get("startapp", [""])[0]
-                    or query.get("startgroup", [""])[0]
-                )
-                return bot_username, start_param
-        else:
-            parts = value.split()
-            if parts:
-                bot_username = parts[0].lstrip("@")
-                start_param = parts[1] if len(parts) > 1 else ""
-                return bot_username, start_param
+        if raw.startswith("@"):
+            parts = raw.split()
+            if len(parts) > 2:
+                return None, None
+            bot_username = parts[0].lstrip("@")
+            if not re.fullmatch(r"[A-Za-z0-9_]{5,32}", bot_username):
+                return None, None
+            return bot_username, parts[1] if len(parts) == 2 else ""
+
+        parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+        netloc = parsed.netloc.lower().removeprefix("www.")
+        if netloc not in {"t.me", "telegram.me"}:
+            return None, None
+
+        parts = [part for part in parsed.path.strip("/").split("/") if part]
+        if len(parts) != 1:
+            return None, None
+        bot_username = parts[0].lstrip("@")
+        if not re.fullmatch(r"[A-Za-z0-9_]{5,32}", bot_username):
+            return None, None
+        query = parse_qs(parsed.query)
+        start_param = (
+            query.get("start", [""])[0]
+            or query.get("startapp", [""])[0]
+            or query.get("startgroup", [""])[0]
+        )
+        return bot_username, start_param
     except Exception:
         pass
     return None, None
@@ -884,6 +893,9 @@ async def _solve_forced_ref_verification(client, bot_entity, phone_number: str) 
 RAKSH_CHANNEL_MAX_LEAVE_HOURS = 72
 RAKSH_CHANNEL_FREE_LIMIT = 5
 RAKSH_CHANNEL_EXTRA_POINT_PRICE = 15
+# تسعير القنوات الخاص بخدمة الإحالة مع التحقق.
+RAKSH_FORCED_REF_AI_CHANNEL_FREE_LIMIT = 5
+RAKSH_FORCED_REF_AI_CHANNEL_EXTRA_POINT_PRICE = 30
 
 def _raksh_channel_leave_hours() -> int:
     """مهلة مغادرة حسابات الرشق؛ لا تتجاوز 72 ساعة."""
@@ -1373,14 +1385,21 @@ class RakshService:
         bundle_quantity = config[quantity_key]
         total = ((quantity + bundle_quantity - 1) // bundle_quantity) * price
         if self.config.has_channel and payment_method == "points":
+            extra_channel_price = 0
             try:
                 free_limit = max(0, int(self.config.channel_free_limit))
+                extra_channel_price = max(
+                    0, int(self.config.channel_extra_point_price)
+                )
+                if self.service_type == "forced_ref_ai":
+                    free_limit = RAKSH_FORCED_REF_AI_CHANNEL_FREE_LIMIT
+                    extra_channel_price = (
+                        RAKSH_FORCED_REF_AI_CHANNEL_EXTRA_POINT_PRICE
+                    )
                 extra_channels = max(0, int(channel_count) - free_limit)
             except (TypeError, ValueError):
                 extra_channels = 0
-            total += extra_channels * max(
-                0, int(self.config.channel_extra_point_price)
-            )
+            total += extra_channels * extra_channel_price
         return total
 
     def get_rate_text(self, payment_method: str) -> str:
