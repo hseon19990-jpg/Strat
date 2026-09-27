@@ -1034,8 +1034,9 @@ class ForcedRefAIService(RakshService):
         params: Dict,
         deadline: Optional[float],
         relay_message: Optional[Dict] = None,
+        wait_for_selection: bool = True,
     ):
-        """إرسال/تحديث صورة الكابتشا للطالب وانتظار اختيار الزر منه."""
+        """إرسال/تحديث صورة الكابتشا للطالب وانتظار اختياره عند الطلب."""
         runtime_bot = params.get("_runtime_bot") if params else None
         requester_id = params.get("requester_id") if params else None
         try:
@@ -1172,6 +1173,12 @@ class ForcedRefAIService(RakshService):
                 phone_number,
                 exc,
             )
+
+        if not wait_for_selection:
+            # في هذا النمط يكفي نجاح ترحيل الصورة لاحتساب الإحالة. لا نترك
+            # waiter معلقاً لأن مسار التنفيذ لن ينتظر اختيار المستخدم.
+            _MANUAL_VERIFICATION_WAITERS.pop(token, None)
+            return None, relay_ref
 
         try:
             if deadline is None:
@@ -1654,39 +1661,73 @@ class ForcedRefAIService(RakshService):
                 )
 
         async def _manual_click_finished_without_text(message) -> bool:
-            """اكتشاف نجاح البوتات التي تحذف رسالة الكابتشا بلا رد نصي."""
-            try:
-                current = await client.get_messages(
-                    bot_entity,
-                    ids=getattr(message, "id", None),
-                )
-                if isinstance(current, (list, tuple)):
-                    current = current[0] if current else None
-                # حذف رسالة الكابتشا من محادثة الحساب يعني أن الإجابة قُبلت.
-                if current is None:
-                    return True
-                current_text = (
-                    getattr(current, "message", "")
-                    or getattr(current, "text", "")
-                    or ""
-                ).strip()
-                current_buttons = [
-                    button
-                    for row in getattr(current, "buttons", None) or []
-                    for button in row
-                    if not self._is_invitation_link_button(button)
-                ]
-                if current_text and self._is_verification_success_text(current_text):
-                    return True
-                # إذا اختفت الصورة والأزرار معاً ولم يصل تحدٍّ جديد، فهذا
-                # هو نمط البوتات التي تؤكد النجاح بالحذف فقط.
-                return (
-                    not current_text
-                    and not current_buttons
-                    and not self._has_image_media(current)
-                )
-            except Exception:
+            """اكتشاف نجاح الحذف فقط بعد استبعاد إرسال كابتشا بديلة.
+
+            بعض البوتات تحذف رسالة الكابتشا القديمة ثم ترسل صورة جديدة عند
+            الإجابة الخاطئة. لذلك لا يكفي أن تكون الرسالة القديمة غير موجودة؛
+            يجب أن ننتظر قليلاً ونفحص الرسائل الأحدث أولاً.
+            """
+            message_id = getattr(message, "id", None)
+            if not message_id:
                 return False
+
+            for attempt in range(3):
+                try:
+                    flow_messages = await _read_flow_messages()
+                    for item in flow_messages:
+                        item_text = (
+                            getattr(item, "message", "")
+                            or getattr(item, "text", "")
+                            or ""
+                        )
+                        if self._is_verification_success_text(item_text):
+                            return True
+
+                    newer_challenge = any(
+                        not getattr(item, "out", False)
+                        and int(getattr(item, "id", 0) or 0) > int(message_id)
+                        and self._looks_like_verification_message(item)
+                        for item in flow_messages
+                    )
+                    if newer_challenge:
+                        return False
+
+                    current = await client.get_messages(
+                        bot_entity,
+                        ids=message_id,
+                    )
+                    if isinstance(current, (list, tuple)):
+                        current = current[0] if current else None
+                    if current is not None:
+                        current_text = (
+                            getattr(current, "message", "")
+                            or getattr(current, "text", "")
+                            or ""
+                        ).strip()
+                        if current_text and self._is_verification_success_text(
+                            current_text
+                        ):
+                            return True
+                        # استمرار وجود الصورة أو الأزرار يعني أن التحدي ما
+                        # زال قائماً؛ لا نعتبر إرسال/تحديث الصورة نجاحاً.
+                        if (
+                            self._has_image_media(current)
+                            or any(
+                                not self._is_invitation_link_button(button)
+                                for row in getattr(current, "buttons", None) or []
+                                for button in row
+                            )
+                        ):
+                            return False
+                    elif attempt == 2:
+                        # لا توجد رسالة بديلة بعد فترة الانتظار، والرسالة
+                        # التي ضغطنا عليها اختفت بالكامل: هذا نمط نجاح بلا نص.
+                        return True
+                except Exception:
+                    pass
+                if attempt < 2:
+                    await asyncio.sleep(1.0)
+            return False
 
         # Keep waiting after a challenge has appeared. A fixed attempt limit
         # made slower accounts fail even though the verification bot was still
@@ -1845,6 +1886,7 @@ class ForcedRefAIService(RakshService):
                     params or {},
                     manual_deadline,
                     relay_message=manual_relay_message,
+                    wait_for_selection=False,
                 )
                 if manual_result is None:
                     await _update_manual_relay_caption(
@@ -1852,8 +1894,14 @@ class ForcedRefAIService(RakshService):
                     )
                     return False
                 manual_button, manual_relay_message = manual_result
-                # بعد ظهور كابتشا يدوية، تبقى مراحل هذا الحساب مرتبطة
-                # بإجابة العضو وبعلامة النجاح الصريحة، لا بترتيب الحسابات.
+                if manual_button is None:
+                    logger.info(
+                        "✅ تم احتساب الإحالة فور إرسال صورة التحقق للمستخدم للحساب %s",
+                        phone_number,
+                    )
+                    return True
+                # هذا المسار يُحتسب ناجحاً عند ترحيل الصورة؛ لا ننتظر
+                # إجابة العضو داخل عملية الإحالة الحالية.
                 deadline = None
                 try:
                     callback_result = await manual_button.click()
