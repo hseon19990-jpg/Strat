@@ -1565,6 +1565,26 @@ class ForcedRefAIService(RakshService):
                 except Exception:
                     pass
 
+        async def _delete_manual_relay_message() -> None:
+            """حذف صورة التحقق بعد قبول الإجابة الصحيحة."""
+            runtime_bot = (params or {}).get("_runtime_bot")
+            requester_id = (params or {}).get("requester_id")
+            message_id = (manual_relay_message or {}).get("message_id")
+            if not runtime_bot or not requester_id or not message_id:
+                return
+            try:
+                await runtime_bot.delete_message(
+                    chat_id=int(requester_id),
+                    message_id=message_id,
+                )
+            except Exception as exc:
+                # إذا حُذفت الرسالة مسبقاً أو رفض Telegram الحذف، لا نوقف
+                # تنفيذ الحساب؛ نترك للمستخدم آخر حالة قابلة للقراءة.
+                logger.debug(
+                    "تعذر حذف رسالة التحقق المرحّلة بعد النجاح: %s",
+                    exc,
+                )
+
         async def _show_bot_reply_in_relay(message, prefix: str = "📨") -> None:
             """عرض رد بوت التحقق الفعلي بدلاً من إبقاء رسالة الانتظار معلّقة."""
             text = (
@@ -1611,7 +1631,7 @@ class ForcedRefAIService(RakshService):
                     if self._is_verification_success_text(
                         getattr(item, "message", "") or getattr(item, "text", "") or ""
                     ):
-                        await _show_bot_reply_in_relay(item, prefix="✅")
+                        await _delete_manual_relay_message()
                         return True
             except Exception:
                 pass
@@ -1632,6 +1652,41 @@ class ForcedRefAIService(RakshService):
                 return await client.get_messages(
                     bot_entity, limit=100, min_id=base_id
                 )
+
+        async def _manual_click_finished_without_text(message) -> bool:
+            """اكتشاف نجاح البوتات التي تحذف رسالة الكابتشا بلا رد نصي."""
+            try:
+                current = await client.get_messages(
+                    bot_entity,
+                    ids=getattr(message, "id", None),
+                )
+                if isinstance(current, (list, tuple)):
+                    current = current[0] if current else None
+                # حذف رسالة الكابتشا من محادثة الحساب يعني أن الإجابة قُبلت.
+                if current is None:
+                    return True
+                current_text = (
+                    getattr(current, "message", "")
+                    or getattr(current, "text", "")
+                    or ""
+                ).strip()
+                current_buttons = [
+                    button
+                    for row in getattr(current, "buttons", None) or []
+                    for button in row
+                    if not self._is_invitation_link_button(button)
+                ]
+                if current_text and self._is_verification_success_text(current_text):
+                    return True
+                # إذا اختفت الصورة والأزرار معاً ولم يصل تحدٍّ جديد، فهذا
+                # هو نمط البوتات التي تؤكد النجاح بالحذف فقط.
+                return (
+                    not current_text
+                    and not current_buttons
+                    and not self._has_image_media(current)
+                )
+            except Exception:
+                return False
 
         # Keep waiting after a challenge has appeared. A fixed attempt limit
         # made slower accounts fail even though the verification bot was still
@@ -1669,10 +1724,7 @@ class ForcedRefAIService(RakshService):
                     continue
                 success_text = (getattr(msg, "message", "") or "").strip().casefold()
                 if self._is_verification_success_text(success_text):
-                    await _update_manual_relay_caption(
-                        "✅ تم قبول التحقق لهذا الحساب.\n\n"
-                        f"📨 رد البوت:\n{(getattr(msg, 'message', '') or '').strip()[:850]}"
-                    )
+                    await _delete_manual_relay_message()
                     logger.info(f"✅ تم تأكيد التحقق من {phone_number}: {success_text[:120]}")
                     return True
 
@@ -1804,7 +1856,25 @@ class ForcedRefAIService(RakshService):
                 # بإجابة العضو وبعلامة النجاح الصريحة، لا بترتيب الحسابات.
                 deadline = None
                 try:
-                    await manual_button.click()
+                    callback_result = await manual_button.click()
+                    callback_text = getattr(callback_result, "message", "")
+                    if not callback_text:
+                        callback_text = getattr(callback_result, "alert", "")
+                    if self._is_verification_success_text(callback_text):
+                        await _delete_manual_relay_message()
+                        logger.info(
+                            "✅ أكد رد callback اكتمال التحقق اليدوي للحساب %s",
+                            phone_number,
+                        )
+                        return True
+                    await asyncio.sleep(1.0)
+                    if await _manual_click_finished_without_text(verification_message):
+                        await _delete_manual_relay_message()
+                        logger.info(
+                            "✅ اختفت رسالة كابتشا الحساب بعد الإجابة الصحيحة %s",
+                            phone_number,
+                        )
+                        return True
                     await _update_manual_relay_caption(
                         "⏳ تم تطبيق الإجابة على الحساب، بانتظار رد البوت..."
                     )
@@ -2016,10 +2086,7 @@ class ForcedRefAIService(RakshService):
                         if not callback_text:
                             callback_text = getattr(callback_result, "alert", "")
                         if self._is_verification_success_text(callback_text):
-                            await _update_manual_relay_caption(
-                                "✅ تم قبول التحقق من رد البوت.\n\n"
-                                f"📨 رد البوت:\n{str(callback_text)[:850]}"
-                            )
+                            await _delete_manual_relay_message()
                             logger.info(
                                 "✅ أكد رد callback اكتمال التحقق للحساب %s: %s",
                                 phone_number,
