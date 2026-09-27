@@ -34,8 +34,9 @@ OWNER_FAST_BATCH_INTERVAL_SECONDS = 2
 ALL_POSTS_REACTIONS_BATCH_SIZE = 12
 ALL_POSTS_REACTIONS_BATCH_INTERVAL_SECONDS = 0.25
 RAKSH_ACCOUNT_EXECUTION_TIMEOUT_SECONDS = 180
-# خدمة الإحالة مع التحقق لا تنتظر الحساب أكثر من المهلة التي طلبها المستخدم.
-RAKSH_FORCED_REF_ACCOUNT_TIMEOUT_SECONDS = 15
+# لا توجد مهلة عامة لخدمة الإحالة مع التحقق؛ كل حساب يبقى منتظراً حتى
+# يجيب العضو على كابتشاه الخاصة به.
+RAKSH_FORCED_REF_ACCOUNT_TIMEOUT_SECONDS = None
 
 _ACTIVE_RAKSH_ORDER_IDS = set()
 RAKSH_ORDER_LEASE_MINUTES = 30
@@ -988,6 +989,22 @@ async def execute_raksh_service(
     delay_seconds = svc.get_delay_seconds(params.get("delay_seconds"))
 
     async def execute_with_selected_speed():
+        if service_type == "forced_ref_ai":
+            # أرسل تحدياً مستقلاً لكل حساب في الطلب. لا ننتظر نتيجة الحساب
+            # السابق ولا نفرض فاصلاً بين الحسابات؛ callback كل رسالة يحمل
+            # token خاصاً بها ويرجع الاختيار إلى الحساب الصحيح.
+            return await _execute_raksh_parallel(
+                svc,
+                shuffled,
+                params,
+                user_id,
+                quantity,
+                progress_callback,
+                service_type,
+                max_concurrent=max(1, min(quantity, len(shuffled))),
+                batch_delay_seconds=0,
+                order_id=order_id,
+            )
         return await _execute_raksh_parallel(
             svc,
             shuffled,
@@ -1318,18 +1335,18 @@ async def _execute_raksh_parallel(
             if order_id and not _mark_raksh_order_item_started(order_id, phone):
                 return False, "تم إلغاء الطلب"
             try:
-                execution_timeout = (
-                    RAKSH_FORCED_REF_ACCOUNT_TIMEOUT_SECONDS
-                    if service_type == "forced_ref_ai"
-                    else RAKSH_ACCOUNT_EXECUTION_TIMEOUT_SECONDS
+                execution = svc.execute(
+                    session=session,
+                    params=params,
+                    is_first=is_first,
                 )
+                if service_type == "forced_ref_ai":
+                    # قد ينتظر هذا الحساب callback الخاص به وقتاً غير محدد؛
+                    # لا نلغي كابتشا صحيحة بسبب مهلة الحساب.
+                    return await execution
                 return await asyncio.wait_for(
-                    svc.execute(
-                        session=session,
-                        params=params,
-                        is_first=is_first,
-                    ),
-                    timeout=execution_timeout,
+                    execution,
+                    timeout=RAKSH_ACCOUNT_EXECUTION_TIMEOUT_SECONDS,
                 )
             except Exception as e:
                 if is_raksh_frozen_account_error(e):

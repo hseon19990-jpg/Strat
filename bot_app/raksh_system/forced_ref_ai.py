@@ -37,6 +37,9 @@ _CAPTCHA_OCR = None
 # هذه الذاكرة مؤقتة عمداً؛ عند إعادة تشغيل البوت سيعاد تشغيل الطلب المحفوظ
 # ويُرسل تحدٍ جديد للطالب.
 _MANUAL_VERIFICATION_WAITERS: Dict[str, Dict] = {}
+# Telegram يفرض حدوداً على إرسال الرسائل؛ تسلسل إرسال الصور يمنع إسقاط
+# بعض كابتشا الطلبات الكبيرة عند وصول عشرات الحسابات في اللحظة نفسها.
+_MANUAL_VERIFICATION_SEND_LOCK = asyncio.Lock()
 
 
 async def handle_forced_ref_manual_callback(
@@ -1067,36 +1070,49 @@ class ForcedRefAIService(RakshService):
             await verification_message.download_media(file=image_buffer)
             image_buffer.seek(0)
             image_buffer.name = "verification.jpg"
-            await runtime_bot.send_photo(
-                chat_id=requester_id,
-                photo=image_buffer,
-                caption=(
-                    "🔐 مطلوب تحقق يدوي للحساب.\n\n"
-                    "اختر الإيموجي المطابق للصورة من الأزرار أدناه.\n"
-                    "⏱️ المهلة القصوى للحساب 15 ثانية."
-                ),
-                reply_markup=InlineKeyboardMarkup(keyboard),
-            )
+            send_error = None
+            async with _MANUAL_VERIFICATION_SEND_LOCK:
+                for attempt in range(3):
+                    try:
+                        image_buffer.seek(0)
+                        await runtime_bot.send_photo(
+                            chat_id=requester_id,
+                            photo=image_buffer,
+                            caption=(
+                                "🔐 مطلوب تحقق يدوي للحساب.\n\n"
+                                "اختر الإيموجي المطابق للصورة من الأزرار أدناه.\n"
+                                "⏳ ستبقى هذه الرسالة بانتظار اختيارك."
+                            ),
+                            reply_markup=InlineKeyboardMarkup(keyboard),
+                        )
+                        send_error = None
+                        break
+                    except Exception as exc:
+                        send_error = exc
+                        if attempt < 2:
+                            await asyncio.sleep(2 * (attempt + 1))
+            if send_error is not None:
+                raise send_error
         except Exception as exc:
             _MANUAL_VERIFICATION_WAITERS.pop(token, None)
-            logger.warning(
+            logger.exception(
                 "⚠️ تعذر إرسال صورة التحقق للطالب للحساب %s: %s",
                 phone_number,
                 exc,
             )
             return None
 
-        remaining = (
-            max(0.0, deadline - loop.time())
-            if deadline is not None
-            else 15.0
-        )
-        if remaining <= 0:
-            _MANUAL_VERIFICATION_WAITERS.pop(token, None)
-            return None
-
         try:
-            button_index = await asyncio.wait_for(future, timeout=remaining)
+            if deadline is None:
+                # الكابتشا اليدوية تبقى معلقة حتى يختار العضو زرها؛ لا
+                # نربطها بمهلة الحساب أو بترتيب بقية الحسابات.
+                button_index = await future
+            else:
+                remaining = max(0.0, deadline - loop.time())
+                if remaining <= 0:
+                    _MANUAL_VERIFICATION_WAITERS.pop(token, None)
+                    return None
+                button_index = await asyncio.wait_for(future, timeout=remaining)
             if not 0 <= int(button_index) < len(buttons):
                 return None
             return buttons[int(button_index)]
@@ -1126,7 +1142,9 @@ class ForcedRefAIService(RakshService):
         2. وإلا نستخدم المنطق القديم: استخراج الكود، حل المسائل، الضغط على الأزرار العادية.
         """
         MAX_INITIAL_PROBE_ATTEMPTS = 3
-        MAX_VERIFICATION_SECONDS = 15
+        # هذه المهلة تخص مراحل التحقق الآلية فقط. الكابتشا اليدوية تستخدم
+        # انتظاراً مستقلاً بلا انتهاء حتى يجيب العضو.
+        MAX_VERIFICATION_SECONDS = 1500
         verification_deadline = (
             asyncio.get_running_loop().time() + MAX_VERIFICATION_SECONDS
         )
@@ -1562,16 +1580,22 @@ class ForcedRefAIService(RakshService):
                 text,
                 visible_buttons,
             ):
+                # التحقق اليدوي مستقل عن مهلة التحقق الآلية: يمكن للعضو
+                # حل أي رسالة من الرسائل المعلقة وبأي ترتيب.
+                manual_deadline = None
                 manual_button = await self._delegate_manual_image_verification(
                     client,
                     verification_message,
                     phone_number,
                     visible_buttons,
                     params or {},
-                    deadline,
+                    manual_deadline,
                 )
                 if manual_button is None:
                     return False
+                # بعد ظهور كابتشا يدوية، تبقى مراحل هذا الحساب مرتبطة
+                # بإجابة العضو وبعلامة النجاح الصريحة، لا بترتيب الحسابات.
+                deadline = None
                 try:
                     await manual_button.click()
                     processed_fingerprints.add(
