@@ -1034,9 +1034,8 @@ class ForcedRefAIService(RakshService):
         params: Dict,
         deadline: Optional[float],
         relay_message: Optional[Dict] = None,
-        wait_for_selection: bool = True,
     ):
-        """إرسال/تحديث صورة الكابتشا للطالب وانتظار اختياره عند الطلب."""
+        """إرسال/تحديث صورة الكابتشا للطالب وانتظار اختيار الزر منه."""
         runtime_bot = params.get("_runtime_bot") if params else None
         requester_id = params.get("requester_id") if params else None
         try:
@@ -1173,12 +1172,6 @@ class ForcedRefAIService(RakshService):
                 phone_number,
                 exc,
             )
-
-        if not wait_for_selection:
-            # في هذا النمط يكفي نجاح ترحيل الصورة لاحتساب الإحالة. لا نترك
-            # waiter معلقاً لأن مسار التنفيذ لن ينتظر اختيار المستخدم.
-            _MANUAL_VERIFICATION_WAITERS.pop(token, None)
-            return None, relay_ref
 
         try:
             if deadline is None:
@@ -1886,7 +1879,6 @@ class ForcedRefAIService(RakshService):
                     params or {},
                     manual_deadline,
                     relay_message=manual_relay_message,
-                    wait_for_selection=False,
                 )
                 if manual_result is None:
                     await _update_manual_relay_caption(
@@ -1894,14 +1886,8 @@ class ForcedRefAIService(RakshService):
                     )
                     return False
                 manual_button, manual_relay_message = manual_result
-                if manual_button is None:
-                    logger.info(
-                        "✅ تم احتساب الإحالة فور إرسال صورة التحقق للمستخدم للحساب %s",
-                        phone_number,
-                    )
-                    return True
-                # هذا المسار يُحتسب ناجحاً عند ترحيل الصورة؛ لا ننتظر
-                # إجابة العضو داخل عملية الإحالة الحالية.
+                # بعد ترحيل الكابتشا ننتظر إجابة العضو، ثم نحتسب النجاح فقط
+                # بعد تطبيق الزر وقبول التحقق من بوت الوجهة.
                 deadline = None
                 try:
                     callback_result = await manual_button.click()
