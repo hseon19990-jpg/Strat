@@ -265,7 +265,7 @@ async def _notify_referral_credit(context, user, credited) -> str:
 
 
 async def finalize_verification(update: Update, context: ContextTypes.DEFAULT_TYPE, user, edit=False, skip_referral=False):
-    """تُستدعى بعد اجتياز التحقق: تُفعّل المستخدم، تمنح نقاط الإحالة (إلا إذا skip_referral=True)، وتعرض القائمة الرئيسية."""
+    """تُستدعى بعد اجتياز التحقق: تُفعّل المستخدم، تمنح نقاط الإحالة، وتعرض القائمة الرئيسية."""
     set_user_verified(user.id)
     try:
         await count_user_for_fundings(user.id, context)
@@ -274,36 +274,25 @@ async def finalize_verification(update: Update, context: ContextTypes.DEFAULT_TY
         logger.exception("فشل تحديث تمويلات القنوات أثناء إنهاء التحقق")
     is_own = (user.id == OWNER_ID)
 
-    # لا تُحتسب الإحالة عند اجتياز التحقق وحده؛ تُحتسب فقط بعد استلام
-    # المدعو للهدية اليومية من قسم تجميع النقاط.
-    credited = None
-    referral_note = ""
+    # يكفي إكمال التحقق لاحتساب الإحالة؛ الهدية اليومية مستقلة عن الإحالة.
+    credited = (
+        credit_referral_if_pending(user.id, context)
+        if not skip_referral
+        else None
+    )
+    referral_note = await _notify_referral_credit(context, user, credited)
 
     context.user_data["state"] = "main_menu"
     db_user = get_user(user.id)
     pts = db_user["points"] if db_user else 0
     welcome = get_setting("welcome_message") or "أهلاً بك!"
-    has_pending_referral = bool(
-        db_user
-        and db_user.get("invited_by")
-        and not db_user.get("referral_credited")
-    )
-    pending_referral_note = (
-        "\n\n📌 ملاحظة: يجب استلام الهدية اليومية حتى تُحتسب الإحالة كاملة.\n"
-        "المسار: تجميع النقاط ← الهدية اليومية."
-        if has_pending_referral
-        else ""
-    )
-    text = f"✅ *تم التحقق بنجاح!*\n\n{welcome}\n\n💰 رصيدك: {pts} نقطة{pending_referral_note}{referral_note}"
+    text = f"✅ *تم التحقق بنجاح!*\n\n{welcome}\n\n💰 رصيدك: {pts} نقطة{referral_note}"
     menu_kb = main_menu_kb(
         is_own,
         is_supervisor_user=is_supervisor(user.id) and not is_own,
         is_number_admin_user=(not is_own and is_number_admin(user.id)),
     )
-    menu_rows = list(menu_kb.inline_keyboard)
-    if has_pending_referral:
-        menu_rows.append([InlineKeyboardButton("💰 تجميع النقاط لإكمال الإحالة", callback_data="collect_points")])
-    kb = InlineKeyboardMarkup(menu_rows)
+    kb = menu_kb
     if edit and update.callback_query:
         await update.callback_query.edit_message_text(
             text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb
@@ -363,20 +352,14 @@ async def _cmd_start_impl(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await show_mandatory_gate(update, context, unjoined, edit=False, is_owner=is_own)
             return
         context.user_data["state"] = "main_menu"
+        welcome = get_setting("welcome_message") or "أهلاً بك!"
+        credited = credit_referral_if_pending(user.id, context)
+        referral_note = await _notify_referral_credit(context, user, credited)
         db_user = get_user(user.id)
         pts = db_user["points"] if db_user else 0
-        welcome = get_setting("welcome_message") or "أهلاً بك!"
-        pending_referral_note = (
-            "\n\n🔗 تم فتح رابط دعوة صديقك.\n"
-            "لا تُحتسب الإحالة إلا بعد استلام الهدية اليومية من «تجميع النقاط»."
-            if db_user
-            and db_user.get("invited_by")
-            and not db_user.get("referral_credited")
-            else ""
-        )
         await update.message.reply_text(
             f"👋 *أهلاً بك مجدداً!*\n\n{welcome}\n\n💰 رصيدك: {pts} نقطة"
-            f"{pending_referral_note}",
+            f"{referral_note}",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=main_menu_kb(
                 is_own,
@@ -402,8 +385,7 @@ async def _cmd_start_impl(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "👋 *أهلاً بك!*"
             + (
                 "\n\n🔗 تم فتح رابط دعوة صديقك.\n"
-                "أكمل التحقق ثم استلم الهدية اليومية من «تجميع النقاط» "
-                "حتى تُحتسب الإحالة."
+                "أكمل التحقق حتى تُحتسب الإحالة."
                 if referral_link_just_opened
                 else ""
             )

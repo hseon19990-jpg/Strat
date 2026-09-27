@@ -229,8 +229,7 @@ async def notify_referral_link_opened(bot, invited_user, inviter_id: int):
                 "🔗 <b>تم فتح رابط دعوتك</b>\n\n"
                 f"👤 المدعو: {invited_name}{invited_handle}\n"
                 "⏳ الإحالة ما زالت معلّقة؛ لن تُضاف نقاط الآن.\n"
-                "يجب على المدعو إكمال التحقق ثم استلام الهدية اليومية "
-                "من «تجميع النقاط» حتى تُحتسب الإحالة."
+                "يجب على المدعو إكمال التحقق حتى تُحتسب الإحالة."
             ),
             parse_mode=ParseMode.HTML,
         )
@@ -312,7 +311,7 @@ async def notify_referral_result_to_numbers_group(
         logger.warning(f"referral result group notify error: {e}")
 
 def credit_referral_if_pending(user_id: int, context=None):
-    """يمنح نقاط الإحالة للداعي مرة واحدة فقط بعد تحقق المدعو واستلامه الهدية اليومية.
+    """يمنح نقاط الإحالة للداعي مرة واحدة فقط بعد إكمال المدعو التحقق.
     يُعيد (inviter_id, points) عند المنح، أو None إن لم يكن هناك شيء لمنحه."""
     with db_conn() as c:
         row = c.execute(
