@@ -1090,8 +1090,13 @@ class ForcedRefAIService(RakshService):
         relay_ref = dict(relay_message or {})
         caption = (
             "🔐 مطلوب تحقق يدوي للحساب.\n\n"
-            "اختر الإيموجي المطابق للصورة من الأزرار أدناه.\n"
-            "⏳ ستبقى هذه الرسالة بانتظار اختيارك."
+            + (
+                f"📨 رد البوت:\n{str(getattr(verification_message, 'message', '') or '')[:500]}\n\n"
+                if str(getattr(verification_message, "message", "") or "").strip()
+                else ""
+            )
+            + "اختر الإيموجي المطابق للصورة من الأزرار أدناه.\n"
+            + "⏳ ستبقى هذه الرسالة بانتظار اختيارك."
         )
         try:
             await verification_message.download_media(file=image_buffer)
@@ -1548,7 +1553,32 @@ class ForcedRefAIService(RakshService):
                     reply_markup=None,
                 )
             except Exception:
-                pass
+                # قد تكون رسالة التحقق النصية أُرسلت كرسالة عادية في نسخة
+                # قديمة من التدفق، لذلك جرّب تعديل النص إذا لم يكن لها caption.
+                try:
+                    await runtime_bot.edit_message_text(
+                        chat_id=int(requester_id),
+                        message_id=message_id,
+                        text=caption,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+
+        async def _show_bot_reply_in_relay(message, prefix: str = "📨") -> None:
+            """عرض رد بوت التحقق الفعلي بدلاً من إبقاء رسالة الانتظار معلّقة."""
+            text = (
+                getattr(message, "message", "")
+                or getattr(message, "text", "")
+                or ""
+            ).strip()
+            if not text:
+                return
+            # حد caption في Telegram هو 1024 حرفاً. نحتفظ بالرد نفسه ونقص
+            # الزوائد فقط حتى يبقى الخطأ/النجاح قابلاً للقراءة.
+            if len(text) > 850:
+                text = text[:847].rstrip() + "..."
+            await _update_manual_relay_caption(f"{prefix} رد بوت التحقق:\n\n{text}")
 
         def _message_fingerprint(message) -> str:
             """Return a stable fingerprint that changes when a message is edited."""
@@ -1581,6 +1611,7 @@ class ForcedRefAIService(RakshService):
                     if self._is_verification_success_text(
                         getattr(item, "message", "") or getattr(item, "text", "") or ""
                     ):
+                        await _show_bot_reply_in_relay(item, prefix="✅")
                         return True
             except Exception:
                 pass
@@ -1639,7 +1670,8 @@ class ForcedRefAIService(RakshService):
                 success_text = (getattr(msg, "message", "") or "").strip().casefold()
                 if self._is_verification_success_text(success_text):
                     await _update_manual_relay_caption(
-                        "✅ تم قبول التحقق لهذا الحساب."
+                        "✅ تم قبول التحقق لهذا الحساب.\n\n"
+                        f"📨 رد البوت:\n{(getattr(msg, 'message', '') or '').strip()[:850]}"
                     )
                     logger.info(f"✅ تم تأكيد التحقق من {phone_number}: {success_text[:120]}")
                     return True
@@ -1731,6 +1763,7 @@ class ForcedRefAIService(RakshService):
                 continue
 
             if not self._looks_like_verification_message(verification_message):
+                await _show_bot_reply_in_relay(verification_message)
                 processed_fingerprints.add(_message_fingerprint(verification_message))
                 await asyncio.sleep(2.0)
                 continue
@@ -1762,6 +1795,9 @@ class ForcedRefAIService(RakshService):
                     relay_message=manual_relay_message,
                 )
                 if manual_result is None:
+                    await _update_manual_relay_caption(
+                        "❌ تعذر تجهيز التحقق اليدوي لهذا الرد؛ سيتم استخدام حساب آخر."
+                    )
                     return False
                 manual_button, manual_relay_message = manual_result
                 # بعد ظهور كابتشا يدوية، تبقى مراحل هذا الحساب مرتبطة
@@ -1980,6 +2016,10 @@ class ForcedRefAIService(RakshService):
                         if not callback_text:
                             callback_text = getattr(callback_result, "alert", "")
                         if self._is_verification_success_text(callback_text):
+                            await _update_manual_relay_caption(
+                                "✅ تم قبول التحقق من رد البوت.\n\n"
+                                f"📨 رد البوت:\n{str(callback_text)[:850]}"
+                            )
                             logger.info(
                                 "✅ أكد رد callback اكتمال التحقق للحساب %s: %s",
                                 phone_number,
@@ -1998,9 +2038,14 @@ class ForcedRefAIService(RakshService):
                         # لم يثبت النجاح بعد؛ نعيد قراءة المرحلة التالية.
                         button_clicked = True
                         break
-                    except Exception:
+                    except Exception as exc:
                         # فشل الضغط قد يكون مؤقتاً؛ أعد قراءة نفس المرحلة
                         # بعد ثانيتين بدلاً من إسقاط الحساب مباشرة.
+                        await _update_manual_relay_caption(
+                            "❌ تعذر تطبيق الإجابة على الحساب.\n\n"
+                            f"📨 تفاصيل الخطأ:\n{str(exc)[:700]}\n\n"
+                            "⏳ ستتم إعادة المحاولة."
+                        )
                         await asyncio.sleep(2.0)
                         continue
 
