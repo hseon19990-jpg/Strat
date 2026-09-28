@@ -237,6 +237,12 @@ async def _notify_referral_credit(context, user, credited) -> str:
         return ""
 
     invited_by, rp = credited
+    free_minutes = int(context.user_data.pop("referral_reward_granted_minutes", 0) or 0)
+    free_note = (
+        f"\n🎁 حصلت أيضاً على رشق مجاني لكل الخدمات لمدة {free_minutes} دقيقة."
+        if free_minutes > 0
+        else ""
+    )
     invited_name = md_escape(
         f"@{user.username}" if user.username else user.full_name or "مستخدم"
     )
@@ -256,6 +262,7 @@ async def _notify_referral_credit(context, user, credited) -> str:
             text=(
                 f"🎉 مبروك! لقد أكمل المستخدم {invited_name} "
                 f"التحقق عن طريق رابط دعوتك، وحصلت على {rp} نقطة."
+                f"{free_note}"
             ),
             parse_mode=ParseMode.MARKDOWN,
         )
@@ -274,7 +281,6 @@ async def finalize_verification(update: Update, context: ContextTypes.DEFAULT_TY
         logger.exception("فشل تحديث تمويلات القنوات أثناء إنهاء التحقق")
     is_own = (user.id == OWNER_ID)
 
-    # يكفي إكمال التحقق لاحتساب الإحالة؛ الهدية اليومية مستقلة عن الإحالة.
     credited = (
         credit_referral_if_pending(user.id, context)
         if not skip_referral

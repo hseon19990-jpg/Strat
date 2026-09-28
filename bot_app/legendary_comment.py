@@ -2111,6 +2111,7 @@ async def execute_legendary_order(update, context, q, is_own: bool, payment_meth
         return await q.edit_text(text, **kwargs)
     
     if payment_method == "points":
+        points_cost = service_points_cost(requester_id, points_cost)
         if not deduct_points(requester_id, points_cost):
             await edit_order_message("❌ لم يعد رصيدك كافياً.")
             context.user_data["state"] = "main_menu"

@@ -689,6 +689,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             svc  = context.user_data.get("smm_svc", {})
             qty  = context.user_data.get("smm_qty", 0)
             cost = context.user_data.get("smm_cost", 0)
+            cost = service_points_cost(user.id, cost)
             if not svc:
                 await q.edit_message_text("⚠️ انتهت الجلسة. ابدأ من جديد.", reply_markup=main_menu_kb(is_own))
                 return
@@ -720,6 +721,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 svc  = context.user_data.get("smm_svc", {})
                 qty  = context.user_data.get("smm_qty", 0)
                 cost = context.user_data.get("smm_cost", 0)
+                cost = service_points_cost(user.id, cost)
                 link = context.user_data.get("smm_link", "")
                 panel = svc.get("panel", 1)
 
@@ -1593,10 +1595,9 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             )
             return
 
-        if data in ("collect_points", "daily_gift", "join_channels_menu"):
+        if data in ("collect_points", "join_channels_menu"):
             db_user = get_user(user.id)
             rows = [
-                [InlineKeyboardButton("🎁 الهدية اليومية", callback_data="daily_gift_screen")],
                 [InlineKeyboardButton("📡 الانضمام بقنوات", callback_data="join_channels")],
                 [InlineKeyboardButton(get_setting("gmail_button_label") or "📧 احصل على نقاط مقابل إيميل جيميل", callback_data="gmail_points")],
                 [InlineKeyboardButton("🔐 التحقق", callback_data="totp_generator")],
@@ -1769,48 +1770,6 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 f"📧 <b>{_label}</b> — {_total} إيميل\n\n" + "\n".join(lines),
                 parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup(_rows)
-            )
-            return
-
-        if data == "daily_gift_screen":
-            gift, claimed = claim_daily_gift(user.id)
-            db_user = get_user(user.id)
-            gift_alert = (
-                f"🎁 حصلت على {gift} نقطة!"
-                if claimed
-                else "⏰ هديتك اليومية مستلمة بالفعل اليوم."
-            )
-            await q.answer(gift_alert, show_alert=True)
-            rows = [[InlineKeyboardButton("🔙 رجوع", callback_data="collect_points")]]
-            status = "✅ استلمتها الآن" if claimed else "✅ مستلمة بالفعل اليوم"
-            await q.edit_message_text(
-                f"🎁 *الهدية اليومية*\n\n"
-                f"💰 رصيدك الحالي: {db_user['points'] if db_user else 0} نقطة\n"
-                f"🎁 الهدية اليوم: *{gift} نقطة* — {status}"
-                f"\n\n📌 طريقة الاستخدام: اضغط «الهدية اليومية» مرة واحدة يومياً، وستُضاف النقاط تلقائياً.",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup(rows)
-            )
-            return
-
-        if data == "daily_gift_collect":
-            gift, claimed = claim_daily_gift(user.id)
-            if not claimed:
-                await q.answer("⏰ لقد استلمت هديتك اليومية بالفعل! عد غداً.", show_alert=True)
-                return
-            db_user = get_user(user.id)
-            gift_alert = f"🎁 حصلت على {gift} نقطة!"
-            await q.answer(gift_alert, show_alert=True)
-            rows = [
-                [InlineKeyboardButton("⏰ تم استلام هديتك اليوم — عد غداً", callback_data="noop")],
-                [InlineKeyboardButton("🔙 رجوع", callback_data="collect_points")],
-            ]
-            await q.edit_message_text(
-                f"🎁 *الهدية اليومية*\n\n"
-                f"✅ استلمت *{gift} نقطة* بنجاح!\n"
-                f"💰 رصيدك الآن: {db_user['points'] if db_user else 0} نقطة",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup(rows)
             )
             return
 

@@ -995,6 +995,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         cost = int(qty / 1000 * svc.get("price_per_point", 1))
+        cost = service_points_cost(user.id, cost)
         context.user_data["smm_qty"] = qty
         context.user_data["smm_cost"] = cost
         context.user_data["state"] = "await_smm_link"
@@ -1013,6 +1014,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             svc  = context.user_data.get("smm_svc", {})
             qty  = context.user_data.get("smm_qty", 0)
             cost = context.user_data.get("smm_cost", 0)
+            cost = service_points_cost(user.id, cost)
             link = context.user_data.get("smm_link", "")
             if not deduct_points(user.id, cost):
                 await update.message.reply_text("❌ نقاطك غير كافية.")
@@ -2433,17 +2435,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     # ─────────────────────────────────────────────────────────────
 
-    if is_own and state == "os_await_gift_val":
-        try:
-            val = int(text)
-        except ValueError:
-            await update.message.reply_text("⚠️ أرسل رقماً.")
-            return
-        set_setting("daily_gift_points", str(val))
-        await update.message.reply_text(f"✅ تم تحديث الهدية اليومية إلى {val} نقطة.", reply_markup=owner_settings_kb())
-        context.user_data["state"] = "main_menu"
-        return
-
     if is_own and state == "os_await_referral_val":
         try:
             val = int(text)
@@ -2453,6 +2444,64 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_setting("referral_points", str(val))
         await update.message.reply_text(f"✅ تم تحديث نقاط الدعوة إلى {val} نقطة.", reply_markup=owner_settings_kb())
         context.user_data["state"] = "main_menu"
+        return
+
+    if is_own and state == "os_await_ref_tier_count":
+        try:
+            val = int(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل عدداً صحيحاً أكبر من صفر، مثل 10.")
+            return
+        if val < 1:
+            await update.message.reply_text("⚠️ عدد الإحالات يجب أن يكون أكبر من صفر.")
+            return
+        context.user_data["ref_tier_count"] = val
+        context.user_data["state"] = "os_await_ref_tier_minutes"
+        await update.message.reply_text(
+            "⏱ أرسل مدة الرشق المجاني لهذه الشريحة بالدقائق.\n"
+            "أرسل `0` إذا أردت تغيير سعر الإحالة فقط.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    if is_own and state == "os_await_ref_tier_minutes":
+        try:
+            val = int(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل عدداً صحيحاً بالدقائق.")
+            return
+        if val < 0:
+            await update.message.reply_text("⚠️ المدة لا يمكن أن تكون سالبة.")
+            return
+        context.user_data["ref_tier_minutes"] = val
+        context.user_data["state"] = "os_await_ref_tier_points"
+        await update.message.reply_text(
+            "💰 أرسل عدد النقاط التي تمنحها هذه الشريحة لكل إحالة جديدة.\n"
+            "مثال: `5` أو `10`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    if is_own and state == "os_await_ref_tier_points":
+        try:
+            val = int(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل عدداً صحيحاً للنقاط.")
+            return
+        if val < 0:
+            await update.message.reply_text("⚠️ قيمة المكافأة لا يمكن أن تكون سالبة.")
+            return
+        count = int(context.user_data.pop("ref_tier_count", 0))
+        minutes = int(context.user_data.pop("ref_tier_minutes", 0))
+        upsert_referral_reward_tier(count, minutes, val)
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(
+            "✅ تم حفظ شريحة الإحالة:\n"
+            f"• الحد: {count} إحالة\n"
+            f"• المجانية: {minutes} دقيقة\n"
+            f"• المكافأة: {val} نقطة لكل إحالة جديدة",
+            reply_markup=_referral_rewards_kb(),
+        )
         return
 
     if is_own and state == "os_await_contest_start":

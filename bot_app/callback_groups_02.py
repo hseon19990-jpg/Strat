@@ -7,6 +7,45 @@ while the sentinel lets the dispatcher continue to the next group.
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
+def _referral_rewards_text() -> str:
+    """نص إدارة شرائح الإحالات للمالك."""
+    tiers = list_referral_reward_tiers()
+    lines = [
+        "🎁 *شرائح مكافآت الإحالات*",
+        "",
+        "عند اكتمال إحالة جديدة يحصل الداعي على سعر الشريحة الأعلى التي وصل إليها.",
+        "وعند بلوغ شريحة فيها وقت مجاني تُضاف المجانية مرة واحدة لتلك الشريحة.",
+        "",
+    ]
+    if not tiers:
+        lines.append("لا توجد شرائح مضافة. سيُستخدم السعر الأساسي من إعداد نقاط الدعوة.")
+    else:
+        for tier in tiers:
+            free = f"{tier['free_minutes']} دقيقة مجانية" if tier["free_minutes"] else "بدون مجانية"
+            lines.append(
+                f"• {tier['referral_count']} إحالة → "
+                f"{tier['points_per_referral']} نقطة/إحالة + {free}"
+            )
+    return "\n".join(lines)
+
+
+def _referral_rewards_kb() -> InlineKeyboardMarkup:
+    rows = []
+    for tier in list_referral_reward_tiers():
+        rows.append([
+            InlineKeyboardButton(
+                f"🗑 حذف شريحة {tier['referral_count']}",
+                callback_data=f"os:referral_reward_delete:{tier['id']}",
+            )
+        ])
+    rows.append([
+        InlineKeyboardButton("➕ إضافة/تعديل شريحة", callback_data="os:referral_reward_add")
+    ])
+    rows.append([
+        InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")
+    ])
+    return InlineKeyboardMarkup(rows)
+
 async def export_ready_sessions(context, user_id, edit_message, requested_count=None):
     """فحص الحسابات غير المقيّدة وتصدير العدد المطلوب من جلساتها."""
     await edit_message(
@@ -2278,16 +2317,48 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             )
             return
 
-        if data == "os:edit_gift" and is_own:
-            context.user_data["state"] = "os_await_gift_val"
-            cur = get_setting("daily_gift_points") or "50"
-            await q.edit_message_text(f"🎁 الهدية الحالية: {cur} نقطة\n\nأرسل القيمة الجديدة:")
-            return
-
         if data == "os:edit_referral" and is_own:
             context.user_data["state"] = "os_await_referral_val"
             cur = get_setting("referral_points") or "30"
-            await q.edit_message_text(f"🔗 نقاط الدعوة الحالية: {cur} نقطة\n\nأرسل القيمة الجديدة:")
+            await q.edit_message_text(
+                f"🔗 نقاط الدعوة الأساسية الحالية: {cur} نقطة\n\n"
+                "أرسل القيمة الجديدة.\n"
+                "يمكنك ضبط الشرائح المتغيرة من زر «شرائح مكافآت الإحالات»."
+            )
+            return
+
+        if data == "os:referral_rewards" and is_own:
+            await q.edit_message_text(
+                _referral_rewards_text(),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=_referral_rewards_kb(),
+            )
+            return
+
+        if data == "os:referral_reward_add" and is_own:
+            context.user_data["state"] = "os_await_ref_tier_count"
+            await q.edit_message_text(
+                "➕ *إضافة شريحة إحالة*\n\n"
+                "أرسل عدد الإحالات الذي تبدأ عنده الشريحة، مثل: `10`",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 إلغاء", callback_data="os:referral_rewards")
+                ]]),
+            )
+            return
+
+        if data.startswith("os:referral_reward_delete:") and is_own:
+            try:
+                tier_id = int(data.rsplit(":", 1)[1])
+            except ValueError:
+                await q.answer("⚠️ الشريحة غير صالحة.", show_alert=True)
+                return
+            delete_referral_reward_tier(tier_id)
+            await q.edit_message_text(
+                "✅ تم حذف الشريحة.\n\n" + _referral_rewards_text(),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=_referral_rewards_kb(),
+            )
             return
 
         if data == "os:edit_star_rate" and is_own:

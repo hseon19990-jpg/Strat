@@ -2616,6 +2616,7 @@ async def _handle_confirm_mansub(update, context, user, q, is_own, data):
     if _dbu and _dbu.get('referral_points_blocked'):
         await q.edit_message_text('🔒 حسابك موقوف. تواصل مع المالك.', reply_markup=main_menu_kb(is_own))
         return
+    total = service_points_cost(user.id, total)
     if not deduct_points(user.id, total):
         await q.edit_message_text('❌ نقاطك غير كافية.', reply_markup=main_menu_kb(is_own))
         context.user_data['state'] = 'main_menu'
@@ -3120,6 +3121,7 @@ async def _handle_confirm_forced_ref(update, context, user, q, is_own, data):
         _use_ai_s = draft.get('use_ai', False)
         cost_pts_ch = draft.get('cost_pts_channels', 0)
         if cost_pts_ch > 0:
+            cost_pts_ch = service_points_cost(user.id, cost_pts_ch)
             if not deduct_points(user.id, cost_pts_ch):
                 await q.edit_message_text(
                     f'❌ نقاطك غير كافية لتغطية تكلفة القنوات ({cost_pts_ch:,} نقطة).',
@@ -3141,6 +3143,7 @@ async def _handle_confirm_forced_ref(update, context, user, q, is_own, data):
         )
         return
 
+    total = service_points_cost(user.id, total)
     if not deduct_points(user.id, total):
         await q.edit_message_text('❌ نقاطك غير كافية.', reply_markup=main_menu_kb(is_own))
         context.user_data['state'] = 'main_menu'

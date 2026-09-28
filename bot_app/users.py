@@ -13,23 +13,6 @@ import asyncio
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
-def claim_daily_gift(user_id: int) -> tuple[int, bool]:
-    """يمنح الهدية اليومية مرة واحدة فقط في اليوم بشكل آمن ضد الضغطات المتزامنة."""
-    today = str(date.today())
-    gift = int(get_setting("daily_gift_points") or "50")
-    with db_conn() as c:
-        claimed = c.execute(
-            "INSERT INTO daily_gifts (user_id, last_claim) VALUES (%s, %s) "
-            "ON CONFLICT (user_id) DO UPDATE SET last_claim=EXCLUDED.last_claim "
-            "WHERE daily_gifts.last_claim IS DISTINCT FROM EXCLUDED.last_claim "
-            "RETURNING user_id",
-            (user_id, today),
-        ).fetchone()
-        if not claimed:
-            return gift, False
-        c.execute("UPDATE users SET points=points+%s WHERE user_id=%s", (gift, user_id))
-    return gift, True
-
 def _normalize_desc(desc: str) -> str:
     """يُطبّع الاختصارات الشائعة في أوصاف خدمات SMM إلى العربية.
     K → ألف  |  /D → /يوم  |  /H → /ساعة  |  /W → /أسبوع  |  /M → /شهر
@@ -313,6 +296,8 @@ async def notify_referral_result_to_numbers_group(
 def credit_referral_if_pending(user_id: int, context=None):
     """يمنح نقاط الإحالة للداعي مرة واحدة فقط بعد إكمال المدعو التحقق.
     يُعيد (inviter_id, points) عند المنح، أو None إن لم يكن هناك شيء لمنحه."""
+    if context is not None:
+        context.user_data.pop("referral_reward_granted_minutes", None)
     with db_conn() as c:
         row = c.execute(
             "SELECT invited_by, referral_credited, verified FROM users WHERE user_id=%s",
@@ -331,15 +316,114 @@ def credit_referral_if_pending(user_id: int, context=None):
         ):
             return None
 
-        rp = int(get_setting("referral_points") or "30")
         c.execute(
             "UPDATE users SET referral_credited=1, credited_at=NOW() WHERE user_id=%s AND referral_credited=0",
             (user_id,)
         )
         if c.rowcount == 0:
             return None
+        count_row = c.execute(
+            "SELECT COUNT(*) AS cnt FROM users "
+            "WHERE invited_by=%s AND referral_credited=1",
+            (invited_by,),
+        ).fetchone()
+        referral_count = int((count_row or {}).get("cnt", 0) or 0)
+        tier = c.execute(
+            "SELECT id, referral_count, points_per_referral, free_minutes "
+            "FROM referral_reward_tiers "
+            "WHERE active=1 AND referral_count<=%s "
+            "ORDER BY referral_count DESC LIMIT 1",
+            (referral_count,),
+        ).fetchone()
+        rp = int(
+            tier["points_per_referral"]
+            if tier is not None
+            else (get_setting("referral_points") or 30)
+        )
         c.execute("UPDATE users SET points=points+%s WHERE user_id=%s", (rp, invited_by))
+        # تمنح كل شريحة زمنية مرة واحدة عند بلوغ عدد إحالاتها بالضبط.
+        reached_tier = c.execute(
+            "SELECT id, free_minutes FROM referral_reward_tiers "
+            "WHERE active=1 AND referral_count=%s AND free_minutes>0",
+            (referral_count,),
+        ).fetchone()
+        if reached_tier:
+            claim = c.execute(
+                "INSERT INTO referral_reward_claims (user_id, tier_id) "
+                "VALUES (%s,%s) ON CONFLICT (user_id,tier_id) DO NOTHING",
+                (invited_by, reached_tier["id"]),
+            )
+            if claim.rowcount:
+                minutes = int(reached_tier["free_minutes"])
+                if context is not None:
+                    context.user_data["referral_reward_granted_minutes"] = minutes
+                c.execute(
+                    """
+                    INSERT INTO referral_free_access (user_id, free_until)
+                    VALUES (%s, NOW() + (%s * INTERVAL '1 minute'))
+                    ON CONFLICT (user_id) DO UPDATE SET
+                        free_until = GREATEST(referral_free_access.free_until, NOW())
+                            + (%s * INTERVAL '1 minute'),
+                        updated_at = NOW()
+                    """,
+                    (invited_by, minutes, minutes),
+                )
     return (invited_by, rp)
+
+
+def list_referral_reward_tiers() -> list[dict]:
+    """إرجاع شرائح الإحالة الفعّالة مرتبة من الأصغر إلى الأكبر."""
+    with db_conn() as c:
+        rows = c.execute(
+            "SELECT id, referral_count, points_per_referral, free_minutes "
+            "FROM referral_reward_tiers WHERE active=1 ORDER BY referral_count"
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def upsert_referral_reward_tier(
+    referral_count: int, free_minutes: int, points_per_referral: int
+) -> None:
+    """إضافة شريحة أو تحديثها عند استخدام نفس عدد الإحالات."""
+    with db_conn() as c:
+        c.execute(
+            """
+            INSERT INTO referral_reward_tiers
+                (referral_count, free_minutes, points_per_referral, active)
+            VALUES (%s,%s,%s,1)
+            ON CONFLICT (referral_count) DO UPDATE SET
+                free_minutes=EXCLUDED.free_minutes,
+                points_per_referral=EXCLUDED.points_per_referral,
+                active=1
+            """,
+            (int(referral_count), int(free_minutes), int(points_per_referral)),
+        )
+
+
+def delete_referral_reward_tier(tier_id: int) -> None:
+    with db_conn() as c:
+        c.execute("DELETE FROM referral_reward_tiers WHERE id=%s", (int(tier_id),))
+
+
+def has_active_referral_free_access(user_id: int) -> bool:
+    """هل يملك المستخدم إعفاء الإحالات المؤقت الساري؟"""
+    try:
+        with db_conn() as c:
+            row = c.execute(
+                """
+                SELECT 1
+                FROM users u
+                JOIN referral_free_access r ON r.user_id=u.user_id
+                WHERE u.user_id=%s
+                  AND COALESCE(u.referral_points_blocked, 0)=0
+                  AND r.free_until>NOW()
+                """,
+                (int(user_id),),
+            ).fetchone()
+        return bool(row)
+    except Exception:
+        logger.exception("تعذر فحص إعفاء الإحالة المؤقت")
+        return False
 
 def _referral_counter_reset_at():
     """يُرجع لحظة آخر تصفير للعداد (UTC) إن وُجدت، وإلا None."""

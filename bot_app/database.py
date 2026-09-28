@@ -204,6 +204,28 @@ def init_db():
               PRIMARY KEY (user_id, service_type)
           )""")
           c.execute("""
+          CREATE TABLE IF NOT EXISTS referral_reward_tiers (
+              id                  SERIAL PRIMARY KEY,
+              referral_count      INTEGER NOT NULL UNIQUE,
+              points_per_referral INTEGER NOT NULL DEFAULT 30,
+              free_minutes        INTEGER NOT NULL DEFAULT 0,
+              active              INTEGER NOT NULL DEFAULT 1,
+              created_at          TIMESTAMPTZ DEFAULT NOW()
+          )""")
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS referral_reward_claims (
+              user_id     BIGINT NOT NULL,
+              tier_id     INTEGER NOT NULL REFERENCES referral_reward_tiers(id) ON DELETE CASCADE,
+              granted_at  TIMESTAMPTZ DEFAULT NOW(),
+              PRIMARY KEY (user_id, tier_id)
+          )""")
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS referral_free_access (
+              user_id     BIGINT PRIMARY KEY,
+              free_until  TIMESTAMPTZ NOT NULL,
+              updated_at  TIMESTAMPTZ DEFAULT NOW()
+          )""")
+          c.execute("""
           CREATE TABLE IF NOT EXISTS mandatory_sub_orders (
               id            SERIAL PRIMARY KEY,
               user_id       BIGINT NOT NULL,
@@ -382,11 +404,6 @@ def init_db():
               phone_number  TEXT PRIMARY KEY,
               assigned_name TEXT NOT NULL,
               assigned_at   TIMESTAMPTZ DEFAULT NOW()
-          )""")
-          c.execute("""
-          CREATE TABLE IF NOT EXISTS daily_gifts (
-              user_id    BIGINT PRIMARY KEY,
-              last_claim TEXT
           )""")
           c.execute("""
           CREATE TABLE IF NOT EXISTS channel_funding (
@@ -811,7 +828,6 @@ def init_db():
           
           default_settings = [
               ('join_channel_reward', '45'),
-              ('daily_gift_points', '50'),
               ('referral_points', '30'),
               ('star_to_points', '250'),
               ('exchange_star_rate', '2000'),

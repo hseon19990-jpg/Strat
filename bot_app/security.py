@@ -1249,6 +1249,25 @@ def deduct_points(user_id: int, pts: int) -> bool:
         )
         return c.rowcount > 0
 
+
+def service_points_cost(user_id: int, pts: int) -> int:
+    """التكلفة الفعلية لخدمة: صفر أثناء مكافأة الإحالة المؤقتة."""
+    try:
+        amount = max(0, int(pts or 0))
+    except (TypeError, ValueError):
+        amount = 0
+    if amount <= 0:
+        return 0
+    if has_active_referral_free_access(int(user_id)):
+        return 0
+    return amount
+
+
+def deduct_service_points(user_id: int, pts: int) -> bool:
+    """خصم تكلفة خدمة، مع احترام الإعفاء المؤقت دون تجاوز حظر النقاط."""
+    return deduct_points(user_id, service_points_cost(user_id, pts))
+
+
 def deduct_points_clamped(user_id: int, pts: int) -> int:
     """يخصم نقاطاً بحد أقصى لا يقل عن صفر (لا يجعل الرصيد سالباً)، ويُرجع العدد الفعلي المخصوم."""
     with db_conn() as c:
