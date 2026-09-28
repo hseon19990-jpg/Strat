@@ -2223,12 +2223,6 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             )
             return
 
-        if data == "os:edit_gift" and is_own:
-            context.user_data["state"] = "os_await_gift_val"
-            cur = get_setting("daily_gift_points") or "50"
-            await q.edit_message_text(f"🎁 الهدية الحالية: {cur} نقطة\n\nأرسل القيمة الجديدة:")
-            return
-
         if data == "os:edit_referral" and is_own:
             context.user_data["state"] = "os_await_referral_val"
             cur = get_setting("referral_points") or "30"

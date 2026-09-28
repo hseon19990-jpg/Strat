@@ -376,11 +376,6 @@ def init_db():
               assigned_at   TIMESTAMPTZ DEFAULT NOW()
           )""")
           c.execute("""
-          CREATE TABLE IF NOT EXISTS daily_gifts (
-              user_id    BIGINT PRIMARY KEY,
-              last_claim TEXT
-          )""")
-          c.execute("""
           CREATE TABLE IF NOT EXISTS channel_funding (
               id               SERIAL PRIMARY KEY,
               user_id          BIGINT,
@@ -803,7 +798,6 @@ def init_db():
           
           default_settings = [
               ('join_channel_reward', '45'),
-              ('daily_gift_points', '50'),
               ('referral_points', '30'),
               ('star_to_points', '250'),
               ('exchange_star_rate', '2000'),

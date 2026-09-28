@@ -2405,17 +2405,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     # ─────────────────────────────────────────────────────────────
 
-    if is_own and state == "os_await_gift_val":
-        try:
-            val = int(text)
-        except ValueError:
-            await update.message.reply_text("⚠️ أرسل رقماً.")
-            return
-        set_setting("daily_gift_points", str(val))
-        await update.message.reply_text(f"✅ تم تحديث الهدية اليومية إلى {val} نقطة.", reply_markup=owner_settings_kb())
-        context.user_data["state"] = "main_menu"
-        return
-
     if is_own and state == "os_await_referral_val":
         try:
             val = int(text)
