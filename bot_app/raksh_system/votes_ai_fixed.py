@@ -213,6 +213,8 @@ class VotesAIService(RakshService):
                 await query.edit_message_text("⚠️ لا يمكن قبول هذا الطلب حالياً. حاول لاحقاً.", reply_markup=raksh_menu_kb(is_own))
                 return True
             total_cost = self.get_total(quantity, payment_method, len(context.user_data.get("raksh_channels") or []))
+            if payment_method == "points":
+                total_cost = service_points_cost(user.id, total_cost)
             await query.edit_message_text(
                 f"📋 *تأكيد الطلب*\n\n📢 القنوات الإجبارية: {len(context.user_data.get('raksh_channels', []))} قناة\n🔗 رابط التصويت: `{context.user_data.get('raksh_link', '')}`\n🔢 العدد: {quantity}\n💳 طريقة الدفع: {'💰 نقاط' if payment_method == 'points' else '⭐ نجوم'}\n💰 التكلفة: {total_cost} {'نقطة' if payment_method == 'points' else 'نجمة'}\n\n*هل تريد تأكيد الطلب؟*",
                 parse_mode=ParseMode.MARKDOWN,

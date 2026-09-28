@@ -324,6 +324,8 @@ class PremiumReactionService(RakshService):
                 return True
             
             total_cost = self.get_total(quantity, payment_method, len(context.user_data.get("raksh_channels") or []))
+            if payment_method == "points":
+                total_cost = service_points_cost(user.id, total_cost)
             
             await query.edit_message_text(
                 f"📋 *تأكيد الطلب*\n\n"

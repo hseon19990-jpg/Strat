@@ -164,7 +164,7 @@ def get_raksh_total(service_type: str, quantity: int, payment_method: str) -> in
 
 
 def is_raksh_free_user(user_id: int, service_type: str) -> bool:
-    """هل يملك المستخدم إعفاءً دائماً من تكلفة خدمة رشق محددة؟"""
+    """هل يملك المستخدم إعفاءً دائماً لخدمة أو إعفاء إحالات مؤقتاً؟"""
     try:
         with db_conn() as c:
             row = c.execute(
@@ -175,10 +175,42 @@ def is_raksh_free_user(user_id: int, service_type: str) -> bool:
                 """,
                 (int(user_id), str(service_type)),
             ).fetchone()
-        return bool(row)
+            referral_row = c.execute(
+                """
+                SELECT 1
+                FROM users u
+                JOIN referral_free_access r ON r.user_id=u.user_id
+                WHERE u.user_id=%s
+                  AND COALESCE(u.referral_points_blocked, 0)=0
+                  AND r.free_until>NOW()
+                """,
+                (int(user_id),),
+            ).fetchone()
+        return bool(row or referral_row)
     except Exception:
         logger.exception(
             "فشل فحص الإعفاء المجاني لخدمة الرشق %s للمستخدم %s",
+            service_type,
+            user_id,
+        )
+        return False
+
+
+def is_raksh_permanent_free_user(user_id: int, service_type: str) -> bool:
+    """هل فعّل المالك إعفاء هذه الخدمة تحديداً بشكل دائم؟"""
+    try:
+        with db_conn() as c:
+            row = c.execute(
+                """
+                SELECT 1 FROM raksh_free_access
+                WHERE user_id=%s AND service_type=%s AND enabled=1
+                """,
+                (int(user_id), str(service_type)),
+            ).fetchone()
+        return bool(row)
+    except Exception:
+        logger.exception(
+            "فشل فحص الإعفاء الدائم لخدمة الرشق %s للمستخدم %s",
             service_type,
             user_id,
         )
@@ -232,7 +264,7 @@ def raksh_admin_free_kb(target_user_id: int):
     rows = []
     target_user_id = int(target_user_id)
     for service_type, svc in RAKSH_SERVICES.items():
-        free_enabled = is_raksh_free_user(target_user_id, service_type)
+        free_enabled = is_raksh_permanent_free_user(target_user_id, service_type)
         status = "🟢 مجانية" if free_enabled else "🔴 مدفوعة"
         rows.append([
             InlineKeyboardButton(
@@ -2320,7 +2352,7 @@ async def _handle_raksh_callback_impl(
                         )
                         return
                     await query.edit_message_text(
-                        f"🎁 *الخدمة مجانية لهذا المستخدم بشكل دائم*\n\n"
+                        "🎁 *الخدمة مجانية ضمن صلاحية الإعفاء الحالية*\n\n"
                         f"الخدمة: {svc.config.name}\n"
                         f"العدد: {_free_quantity}\n"
                         "التكلفة: 0\n\n"
@@ -2493,7 +2525,7 @@ async def _handle_raksh_callback_impl(
             context.user_data["raksh_payment_method"] = "points"
             context.user_data["raksh_step"] = "payment_confirm"
             await query.edit_message_text(
-                "🎁 *الخدمة مجانية لهذا المستخدم بشكل دائم*\n\n"
+                "🎁 *الخدمة مجانية ضمن صلاحية الإعفاء الحالية*\n\n"
                 f"الخدمة: {svc.config.name}\n"
                 f"العدد: {quantity}\n"
                 "التكلفة: 0\n\n"
@@ -2587,6 +2619,8 @@ async def _handle_raksh_callback_impl(
             if svc
             else get_raksh_total(service_type, quantity, payment_method)
         )
+        if payment_method == "points":
+            total_cost = service_points_cost(user.id, total_cost)
         if button_total != total_cost:
             logger.info(f"تحديث سعر الرشق: {service_type} {quantity}")
         
