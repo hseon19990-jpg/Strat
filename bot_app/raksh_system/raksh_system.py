@@ -37,8 +37,6 @@ RAKSH_ACCOUNT_EXECUTION_TIMEOUT_SECONDS = 180
 # لا توجد مهلة عامة لخدمة الإحالة مع التحقق؛ كل حساب يبقى منتظراً حتى
 # يجيب العضو على كابتشاه الخاصة به.
 RAKSH_FORCED_REF_ACCOUNT_TIMEOUT_SECONDS = None
-RAKSH_FORCED_REF_REFUND_PERCENT = 10
-
 _ACTIVE_RAKSH_ORDER_IDS = set()
 RAKSH_ORDER_LEASE_MINUTES = 30
 
@@ -62,20 +60,6 @@ RAKSH_SERVICE_LABELS = {
     svc_type: svc.label for svc_type, svc in RAKSH_SERVICES.items()
 }
 
-
-def _forced_ref_points_bonus_refund(
-    service_type: str,
-    payment_method: str,
-    total_cost: int,
-) -> int:
-    """حساب استرداد الولاء لخدمة الإحالة مع التحقق مرة واحدة."""
-    if service_type != "forced_ref_ai" or payment_method != "points":
-        return 0
-    try:
-        cost = max(0, int(total_cost or 0))
-    except (TypeError, ValueError):
-        return 0
-    return (cost * RAKSH_FORCED_REF_REFUND_PERCENT) // 100
 
 # ════════════════════════════════════════════════════════
 # ═══ 10. دوال مساعدة عامة ═══
@@ -3728,19 +3712,12 @@ async def _run_raksh_order(
     # لا يوجد استرجاع نصفي: الحسابات التي لا يظهر لها تحقق
     # تُحتسب نجاحاً كاملاً، والتعويض يكون فقط للحسابات الفاشلة فعلياً.
     refund = 0
-    forced_ref_bonus_refund = 0
     special_count = 0
     if payment_method == "points":
         refund = max(
             0,
             total_cost - get_raksh_total(order["service_type"], success_count, "points"),
         )
-        forced_ref_bonus_refund = _forced_ref_points_bonus_refund(
-            order["service_type"],
-            payment_method,
-            total_cost,
-        )
-        refund += forced_ref_bonus_refund
 
     result_text = (
         "✅ *اكتمل الطلب!*\n\n"
@@ -3751,11 +3728,6 @@ async def _run_raksh_order(
     )
     if refund > 0:
         result_text += f"💰 تم إرجاع: {refund} نقطة\n"
-    if forced_ref_bonus_refund > 0:
-        result_text += (
-            f"🎁 استرداد 10% لخدمة التحقق: "
-            f"{forced_ref_bonus_refund} نقطة\n"
-        )
     contributor_credits = []
     with db_conn() as c:
         completed_row = c.execute(
