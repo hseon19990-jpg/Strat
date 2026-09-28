@@ -329,7 +329,7 @@ def credit_referral_if_pending(user_id: int, context=None):
         ).fetchone()
         referral_count = int((count_row or {}).get("cnt", 0) or 0)
         tier = c.execute(
-            "SELECT id, referral_count, points_per_referral, free_minutes "
+            "SELECT referral_count, points_per_referral "
             "FROM referral_reward_tiers "
             "WHERE active=1 AND referral_count<=%s "
             "ORDER BY referral_count DESC LIMIT 1",
@@ -341,62 +341,37 @@ def credit_referral_if_pending(user_id: int, context=None):
             else (get_setting("referral_points") or 30)
         )
         c.execute("UPDATE users SET points=points+%s WHERE user_id=%s", (rp, invited_by))
-        # تمنح كل شريحة زمنية مرة واحدة عند بلوغ عدد إحالاتها بالضبط.
-        reached_tier = c.execute(
-            "SELECT id, free_minutes FROM referral_reward_tiers "
-            "WHERE active=1 AND referral_count=%s AND free_minutes>0",
-            (referral_count,),
-        ).fetchone()
-        if reached_tier:
-            claim = c.execute(
-                "INSERT INTO referral_reward_claims (user_id, tier_id) "
-                "VALUES (%s,%s) ON CONFLICT (user_id,tier_id) DO NOTHING",
-                (invited_by, reached_tier["id"]),
-            )
-            if claim.rowcount:
-                minutes = int(reached_tier["free_minutes"])
-                if context is not None:
-                    context.user_data["referral_reward_granted_minutes"] = minutes
-                c.execute(
-                    """
-                    INSERT INTO referral_free_access (user_id, free_until)
-                    VALUES (%s, NOW() + (%s * INTERVAL '1 minute'))
-                    ON CONFLICT (user_id) DO UPDATE SET
-                        free_until = GREATEST(referral_free_access.free_until, NOW())
-                            + (%s * INTERVAL '1 minute'),
-                        updated_at = NOW()
-                    """,
-                    (invited_by, minutes, minutes),
-                )
+        minutes = _grant_daily_referral_free_access(c, invited_by)
+        if context is not None and minutes:
+            context.user_data["referral_reward_granted_minutes"] = minutes
     return (invited_by, rp)
 
 
 def list_referral_reward_tiers() -> list[dict]:
-    """إرجاع شرائح الإحالة الفعّالة مرتبة من الأصغر إلى الأكبر."""
+    """إرجاع شرائح تغيير مكافأة الإحالة فقط."""
     with db_conn() as c:
         rows = c.execute(
-            "SELECT id, referral_count, points_per_referral, free_minutes "
+            "SELECT id, referral_count, points_per_referral "
             "FROM referral_reward_tiers WHERE active=1 ORDER BY referral_count"
         ).fetchall()
     return [dict(row) for row in rows]
 
 
 def upsert_referral_reward_tier(
-    referral_count: int, free_minutes: int, points_per_referral: int
+    referral_count: int, points_per_referral: int
 ) -> None:
-    """إضافة شريحة أو تحديثها عند استخدام نفس عدد الإحالات."""
+    """إضافة/تحديث مكافأة النقاط عند بلوغ عدد إحالات محدد."""
     with db_conn() as c:
         c.execute(
             """
             INSERT INTO referral_reward_tiers
-                (referral_count, free_minutes, points_per_referral, active)
-            VALUES (%s,%s,%s,1)
+                (referral_count, points_per_referral, active)
+            VALUES (%s,%s,1)
             ON CONFLICT (referral_count) DO UPDATE SET
-                free_minutes=EXCLUDED.free_minutes,
                 points_per_referral=EXCLUDED.points_per_referral,
                 active=1
             """,
-            (int(referral_count), int(free_minutes), int(points_per_referral)),
+            (int(referral_count), int(points_per_referral)),
         )
 
 
@@ -405,9 +380,111 @@ def delete_referral_reward_tier(tier_id: int) -> None:
         c.execute("DELETE FROM referral_reward_tiers WHERE id=%s", (int(tier_id),))
 
 
-def has_active_referral_free_access(user_id: int) -> bool:
-    """هل يملك المستخدم إعفاء الإحالات المؤقت الساري؟"""
+def list_referral_daily_free_tiers() -> list[dict]:
+    """إرجاع شرائح الحق المجاني المؤقت التي تُراجع مرة كل يوم."""
+    with db_conn() as c:
+        rows = c.execute(
+            "SELECT id, referral_count, free_minutes "
+            "FROM referral_daily_free_tiers "
+            "WHERE active=1 ORDER BY referral_count"
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def upsert_referral_daily_free_tier(
+    referral_count: int, free_minutes: int
+) -> None:
+    """إضافة/تحديث مدة الاستخدام المجاني اليومية عند عدد إحالات محدد."""
+    with db_conn() as c:
+        c.execute(
+            """
+            INSERT INTO referral_daily_free_tiers
+                (referral_count, free_minutes, active)
+            VALUES (%s,%s,1)
+            ON CONFLICT (referral_count) DO UPDATE SET
+                free_minutes=EXCLUDED.free_minutes,
+                active=1
+            """,
+            (int(referral_count), int(free_minutes)),
+        )
+
+
+def delete_referral_daily_free_tier(tier_id: int) -> None:
+    with db_conn() as c:
+        c.execute(
+            "DELETE FROM referral_daily_free_tiers WHERE id=%s",
+            (int(tier_id),),
+        )
+
+
+def _grant_daily_referral_free_access(c, user_id: int) -> int:
+    """يمنح الحق المجاني مرة واحدة لكل شريحة في كل يوم."""
+    eligible = c.execute(
+        """
+        SELECT t.id, t.free_minutes
+        FROM referral_daily_free_tiers t
+        WHERE t.active=1
+          AND t.free_minutes>0
+          AND t.referral_count <= (
+              SELECT COUNT(*)
+              FROM users
+              WHERE invited_by=%s AND referral_credited=1
+          )
+        ORDER BY t.referral_count DESC
+        LIMIT 1
+        """,
+        (int(user_id),),
+    ).fetchone()
+    if not eligible:
+        return 0
+
+    claim = c.execute(
+        """
+        INSERT INTO referral_daily_free_claims
+            (user_id, tier_id, claim_date)
+        VALUES (%s,%s,CURRENT_DATE)
+        ON CONFLICT (user_id, tier_id, claim_date) DO NOTHING
+        """,
+        (int(user_id), int(eligible["id"])),
+    )
+    if claim.rowcount == 0:
+        return 0
+
+    minutes = int(eligible["free_minutes"])
+    c.execute(
+        """
+        INSERT INTO referral_free_access (user_id, free_until)
+        VALUES (%s, NOW() + (%s * INTERVAL '1 minute'))
+        ON CONFLICT (user_id) DO UPDATE SET
+            free_until=NOW() + (%s * INTERVAL '1 minute'),
+            updated_at=NOW()
+        """,
+        (int(user_id), minutes, minutes),
+    )
+    return minutes
+
+
+def refresh_daily_referral_free_access(user_id: int) -> int:
+    """يبدأ حق اليوم عند أول محاولة لاستخدام خدمة مدفوعة."""
     try:
+        with db_conn() as c:
+            blocked = c.execute(
+                "SELECT COALESCE(referral_points_blocked, 0) AS blocked "
+                "FROM users WHERE user_id=%s",
+                (int(user_id),),
+            ).fetchone()
+            if blocked and blocked["blocked"]:
+                return 0
+            return _grant_daily_referral_free_access(c, int(user_id))
+    except Exception:
+        logger.exception("تعذر تحديث الحق المجاني اليومي للإحالة")
+        return 0
+
+
+def has_active_referral_free_access(user_id: int) -> bool:
+    """هل يملك المستخدم إعفاء الإحالات المؤقت الساري؟ يبدأ حق اليوم عند الحاجة."""
+    try:
+        refresh_daily_referral_free_access(int(user_id))
         with db_conn() as c:
             row = c.execute(
                 """

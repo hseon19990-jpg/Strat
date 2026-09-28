@@ -220,11 +220,37 @@ def init_db():
               PRIMARY KEY (user_id, tier_id)
           )""")
           c.execute("""
+          CREATE TABLE IF NOT EXISTS referral_daily_free_tiers (
+              id                  SERIAL PRIMARY KEY,
+              referral_count      INTEGER NOT NULL UNIQUE,
+              free_minutes        INTEGER NOT NULL DEFAULT 0,
+              active              INTEGER NOT NULL DEFAULT 1,
+              created_at          TIMESTAMPTZ DEFAULT NOW()
+          )""")
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS referral_daily_free_claims (
+              user_id      BIGINT NOT NULL,
+              tier_id      INTEGER NOT NULL REFERENCES referral_daily_free_tiers(id) ON DELETE CASCADE,
+              claim_date   DATE NOT NULL DEFAULT CURRENT_DATE,
+              granted_at   TIMESTAMPTZ DEFAULT NOW(),
+              PRIMARY KEY (user_id, tier_id, claim_date)
+          )""")
+          c.execute("""
           CREATE TABLE IF NOT EXISTS referral_free_access (
               user_id     BIGINT PRIMARY KEY,
               free_until  TIMESTAMPTZ NOT NULL,
               updated_at  TIMESTAMPTZ DEFAULT NOW()
           )""")
+          # The first version stored temporary free access beside the points
+          # tier. Preserve that data while moving the two settings into
+          # independent sections and tables.
+          c.execute("""
+          INSERT INTO referral_daily_free_tiers (referral_count, free_minutes, active)
+          SELECT referral_count, free_minutes, active
+          FROM referral_reward_tiers
+          WHERE free_minutes > 0
+          ON CONFLICT (referral_count) DO NOTHING
+          """)
           c.execute("""
           CREATE TABLE IF NOT EXISTS mandatory_sub_orders (
               id            SERIAL PRIMARY KEY,

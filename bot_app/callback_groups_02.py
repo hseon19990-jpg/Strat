@@ -8,23 +8,21 @@ from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
 def _referral_rewards_text() -> str:
-    """نص إدارة شرائح الإحالات للمالك."""
+    """نص إدارة تغيير مكافأة الإحالة."""
     tiers = list_referral_reward_tiers()
     lines = [
-        "🎁 *شرائح مكافآت الإحالات*",
+        "🎁 *تغيير مكافأة الإحالة عند بلوغ عدد معين*",
         "",
-        "عند اكتمال إحالة جديدة يحصل الداعي على سعر الشريحة الأعلى التي وصل إليها.",
-        "وعند بلوغ شريحة فيها وقت مجاني تُضاف المجانية مرة واحدة لتلك الشريحة.",
+        "تُستخدم مكافأة الشريحة الأعلى التي وصل إليها العضو مع كل إحالة مكتملة.",
         "",
     ]
     if not tiers:
         lines.append("لا توجد شرائح مضافة. سيُستخدم السعر الأساسي من إعداد نقاط الدعوة.")
     else:
         for tier in tiers:
-            free = f"{tier['free_minutes']} دقيقة مجانية" if tier["free_minutes"] else "بدون مجانية"
             lines.append(
                 f"• {tier['referral_count']} إحالة → "
-                f"{tier['points_per_referral']} نقطة/إحالة + {free}"
+                f"{tier['points_per_referral']} نقطة لكل إحالة"
             )
     return "\n".join(lines)
 
@@ -40,6 +38,54 @@ def _referral_rewards_kb() -> InlineKeyboardMarkup:
         ])
     rows.append([
         InlineKeyboardButton("➕ إضافة/تعديل شريحة", callback_data="os:referral_reward_add")
+    ])
+    rows.append([
+        InlineKeyboardButton("⏱ إعادة الضبط اليومية", callback_data="os:referral_daily_free")
+    ])
+    rows.append([
+        InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
+def _referral_daily_free_text() -> str:
+    """نص إدارة الحق المجاني المؤقت الذي يُعاد منحه يومياً."""
+    tiers = list_referral_daily_free_tiers()
+    lines = [
+        "⏱ *إعادة الضبط اليومية للإحالات*",
+        "",
+        "يُمنح العضو حق استخدام مجاني مؤقت مرة واحدة يومياً.",
+        "يبدأ الحق عند أول استخدام لخدمة مدفوعة، وتُعاد مدته في اليوم التالي.",
+        "",
+    ]
+    if not tiers:
+        lines.append("لا توجد شرائح مجانية مضافة حالياً.")
+    else:
+        for tier in tiers:
+            lines.append(
+                f"• {tier['referral_count']} إحالة → "
+                f"{tier['free_minutes']} دقيقة مجانية يومياً"
+            )
+    return "\n".join(lines)
+
+
+def _referral_daily_free_kb() -> InlineKeyboardMarkup:
+    rows = []
+    for tier in list_referral_daily_free_tiers():
+        rows.append([
+            InlineKeyboardButton(
+                f"🗑 حذف {tier['referral_count']} إحالة",
+                callback_data=f"os:referral_daily_free_delete:{tier['id']}",
+            )
+        ])
+    rows.append([
+        InlineKeyboardButton(
+            "➕ إضافة/تعديل مدة مجانية",
+            callback_data="os:referral_daily_free_add",
+        )
+    ])
+    rows.append([
+        InlineKeyboardButton("🎁 مكافأة الإحالة", callback_data="os:referral_rewards")
     ])
     rows.append([
         InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")
@@ -2335,14 +2381,34 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             )
             return
 
+        if data == "os:referral_daily_free" and is_own:
+            await q.edit_message_text(
+                _referral_daily_free_text(),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=_referral_daily_free_kb(),
+            )
+            return
+
         if data == "os:referral_reward_add" and is_own:
             context.user_data["state"] = "os_await_ref_tier_count"
             await q.edit_message_text(
-                "➕ *إضافة شريحة إحالة*\n\n"
+                "➕ *إضافة شريحة تغيير المكافأة*\n\n"
                 "أرسل عدد الإحالات الذي تبدأ عنده الشريحة، مثل: `10`",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton("🔙 إلغاء", callback_data="os:referral_rewards")
+                ]]),
+            )
+            return
+
+        if data == "os:referral_daily_free_add" and is_own:
+            context.user_data["state"] = "os_await_ref_daily_count"
+            await q.edit_message_text(
+                "➕ *إضافة شريحة إعادة الضبط اليومية*\n\n"
+                "أرسل عدد الإحالات الذي يبدأ عنده الحق المجاني، مثل: `10`",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 إلغاء", callback_data="os:referral_daily_free")
                 ]]),
             )
             return
@@ -2358,6 +2424,21 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                 "✅ تم حذف الشريحة.\n\n" + _referral_rewards_text(),
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=_referral_rewards_kb(),
+            )
+            return
+
+        if data.startswith("os:referral_daily_free_delete:") and is_own:
+            try:
+                tier_id = int(data.rsplit(":", 1)[1])
+            except ValueError:
+                await q.answer("⚠️ الشريحة غير صالحة.", show_alert=True)
+                return
+            delete_referral_daily_free_tier(tier_id)
+            await q.edit_message_text(
+                "✅ تم حذف شريحة الحق المجاني اليومي.\n\n"
+                + _referral_daily_free_text(),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=_referral_daily_free_kb(),
             )
             return
 

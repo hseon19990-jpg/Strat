@@ -2456,29 +2456,49 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ عدد الإحالات يجب أن يكون أكبر من صفر.")
             return
         context.user_data["ref_tier_count"] = val
-        context.user_data["state"] = "os_await_ref_tier_minutes"
-        await update.message.reply_text(
-            "⏱ أرسل مدة الرشق المجاني لهذه الشريحة بالدقائق.\n"
-            "أرسل `0` إذا أردت تغيير سعر الإحالة فقط.",
-            parse_mode=ParseMode.MARKDOWN,
-        )
-        return
-
-    if is_own and state == "os_await_ref_tier_minutes":
-        try:
-            val = int(text)
-        except ValueError:
-            await update.message.reply_text("⚠️ أرسل عدداً صحيحاً بالدقائق.")
-            return
-        if val < 0:
-            await update.message.reply_text("⚠️ المدة لا يمكن أن تكون سالبة.")
-            return
-        context.user_data["ref_tier_minutes"] = val
         context.user_data["state"] = "os_await_ref_tier_points"
         await update.message.reply_text(
             "💰 أرسل عدد النقاط التي تمنحها هذه الشريحة لكل إحالة جديدة.\n"
             "مثال: `5` أو `10`",
             parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    if is_own and state == "os_await_ref_daily_count":
+        try:
+            val = int(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل عدداً صحيحاً أكبر من صفر، مثل 10.")
+            return
+        if val < 1:
+            await update.message.reply_text("⚠️ عدد الإحالات يجب أن يكون أكبر من صفر.")
+            return
+        context.user_data["ref_daily_count"] = val
+        context.user_data["state"] = "os_await_ref_daily_minutes"
+        await update.message.reply_text(
+            "⏱ أرسل مدة الاستخدام المجاني اليومية بالدقائق.\n"
+            "مثال: `30` أو `60`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    if is_own and state == "os_await_ref_daily_minutes":
+        try:
+            val = int(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل عدداً صحيحاً بالدقائق.")
+            return
+        if val < 1:
+            await update.message.reply_text("⚠️ مدة الاستخدام المجاني يجب أن تكون أكبر من صفر.")
+            return
+        count = int(context.user_data.pop("ref_daily_count", 0))
+        upsert_referral_daily_free_tier(count, val)
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(
+            "✅ تم حفظ شريحة إعادة الضبط اليومية:\n"
+            f"• الحد: {count} إحالة\n"
+            f"• الحق المجاني: {val} دقيقة يومياً",
+            reply_markup=_referral_daily_free_kb(),
         )
         return
 
@@ -2492,13 +2512,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ قيمة المكافأة لا يمكن أن تكون سالبة.")
             return
         count = int(context.user_data.pop("ref_tier_count", 0))
-        minutes = int(context.user_data.pop("ref_tier_minutes", 0))
-        upsert_referral_reward_tier(count, minutes, val)
+        upsert_referral_reward_tier(count, val)
         context.user_data["state"] = "main_menu"
         await update.message.reply_text(
-            "✅ تم حفظ شريحة الإحالة:\n"
+            "✅ تم حفظ شريحة تغيير المكافأة:\n"
             f"• الحد: {count} إحالة\n"
-            f"• المجانية: {minutes} دقيقة\n"
             f"• المكافأة: {val} نقطة لكل إحالة جديدة",
             reply_markup=_referral_rewards_kb(),
         )
