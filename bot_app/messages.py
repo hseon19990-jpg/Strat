@@ -861,6 +861,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if updated and action_value:
             custom_emoji_id = custom_emoji_ids[0] if custom_emoji_ids else ""
             _shared.save_button_custom_emoji(action_value, custom_emoji_id)
+            # The thank-owner button historically had a second label setting.
+            # Keep it synchronized so renaming it from the button manager is
+            # visible in the member menu as well.
+            if action_value == "thank_owner":
+                set_setting("thank_owner_button_label", new_label)
         context.user_data["state"] = "main_menu"
         if not updated:
             await update.message.reply_text(

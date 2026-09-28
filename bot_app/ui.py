@@ -160,12 +160,6 @@ def main_menu_kb(
 ):
     # المالك والأعضاء يستخدمون قائمة main نفسها وبنفس الأسماء والترتيب.
     menu_items = get_menu_items("main")
-    # تغيير نص زر خدمات الرشق فقط، دون تغيير محتوى قسم الخدمات.
-    for index, item in enumerate(menu_items):
-        if item["action_value"] == "services_menu":
-            normalized = dict(item)
-            normalized["label"] = "خدمات"
-            menu_items[index] = normalized
     if not is_legendary_services_visible():
         menu_items = [
             item for item in menu_items
@@ -793,48 +787,40 @@ def owner_settings_kb():
                     f"🔐 التحقق ({'مفعّل ✅' if _captcha_on else 'معطّل ❌'})",
                     callback_data="os:toggle_captcha",
                 )
-    # Add legendary settings button
-    rows.append([InlineKeyboardButton("👑 إعدادات الخدمات الأسطورية", callback_data="legendary:settings")])
     _buyback_on = is_buyback_visible()
-    rows.append([
-        InlineKeyboardButton(
-            f"💰 بيع حسابات تيليجرام ({'ظاهر للأعضاء ✅' if _buyback_on else 'مخفي عن الأعضاء ❌'})",
-            callback_data="os:toggle_buyback_visible",
-        ),
-        InlineKeyboardButton("📋 طلبات البيع", callback_data="buyback:owner:list"),
-    ])
-    rows.append([
-        InlineKeyboardButton(
-            f"💵 سعر الحساب السليم: {format_buyback_price(_buyback_price())}",
-            callback_data="os:edit_buyback_price",
-        ),
-    ])
-    rows.append([
-        InlineKeyboardButton(
-            f"💵 سعر الحساب المقيّد: {format_buyback_price(_buyback_price(restricted=True))}",
-            callback_data="os:edit_buyback_restricted_price",
-        ),
-    ])
-    rows.append([InlineKeyboardButton("🛡 إضافة مشرف", callback_data="os:add_supervisor"),
-                  InlineKeyboardButton("📋 إدارة المشرفين", callback_data="os:list_supervisors")])
-    rows.append([InlineKeyboardButton("👁 حسابات المشرفين", callback_data="os:sv_accounts")])
-    rows.append([InlineKeyboardButton("👤 معلومات الحسابات", callback_data="os:account_info")])
-    rows.append([
-        InlineKeyboardButton(
-            f"🔥 {get_raksh_accounts_label()}",
-            callback_data="os:raksh_accounts",
-        )
-    ])
-    rows.append([
-        InlineKeyboardButton("ادمنية الرشق", callback_data="os:raksh_admins")
-    ])
-    rows.append([
-        InlineKeyboardButton(
-            "✏️ تغيير اسم خدمات تلي مميزة",
-            callback_data="os:edit_raksh_label",
-        )
-    ])
-    rows.append([InlineKeyboardButton("📦 الخدمات الجديدة", callback_data="os:new_services")])
+    _buyback_suffix = f" (ظاهر للأعضاء {'✅' if _buyback_on else '❌'})"
+    _buyback_price_label = format_buyback_price(_buyback_price())
+    _buyback_restricted_price_label = format_buyback_price(_buyback_price(restricted=True))
+    for row in rows:
+        for i, btn in enumerate(row):
+            if btn.callback_data == "os:toggle_phone_verification":
+                base_label = btn.text.split(" (")[0]
+                row[i] = InlineKeyboardButton(
+                    base_label + f" ({'مفعّل ✅' if _phone_verify_on else 'معطّل ❌'})",
+                    callback_data=btn.callback_data,
+                )
+            elif btn.callback_data == "os:openai_api":
+                base_label = btn.text.split(" (")[0]
+                row[i] = InlineKeyboardButton(
+                    base_label + f" ({_openai_suffix})",
+                    callback_data=btn.callback_data,
+                )
+            elif btn.callback_data == "os:toggle_buyback_visible":
+                base_label = btn.text.split(" (")[0]
+                row[i] = InlineKeyboardButton(
+                    base_label + _buyback_suffix,
+                    callback_data=btn.callback_data,
+                )
+            elif btn.callback_data == "os:edit_buyback_price":
+                row[i] = InlineKeyboardButton(
+                    f"{btn.text}: {_buyback_price_label}",
+                    callback_data=btn.callback_data,
+                )
+            elif btn.callback_data == "os:edit_buyback_restricted_price":
+                row[i] = InlineKeyboardButton(
+                    f"{btn.text}: {_buyback_restricted_price_label}",
+                    callback_data=btn.callback_data,
+                )
     rows.append([InlineKeyboardButton("🧩 إضافة/إزالة خيار", callback_data="mb_menu:owner_settings")])
     rows.append([InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")])
     return InlineKeyboardMarkup(rows)

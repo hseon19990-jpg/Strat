@@ -113,6 +113,27 @@ MANAGEABLE_MENUS = [
     "raksh_menu",
 ] + [v for _, v in SERVICE_PLATFORMS] + [f"cat:{k}" for k in CATEGORY_MAP]
 
+# These controls are rendered in owner_settings_kb with dynamic status text,
+# but they are still ordinary owner buttons. Keeping their definitions in the
+# same menu_items store makes them visible to the button manager as well.
+OWNER_SETTINGS_EXTRA_DEFAULTS = [
+    ("📱 التحقق برقم الهاتف", "os:toggle_phone_verification", 1),
+    ("🤖 مفتاح OpenAI", "os:openai_api", 1),
+    ("👑 إعدادات الخدمات الأسطورية", "legendary:settings", 1),
+    ("💰 بيع حسابات تيليجرام", "os:toggle_buyback_visible", 2),
+    ("📋 طلبات البيع", "buyback:owner:list", 2),
+    ("💵 سعر الحساب السليم", "os:edit_buyback_price", 1),
+    ("💵 سعر الحساب المقيّد", "os:edit_buyback_restricted_price", 1),
+    ("🛡 إضافة مشرف", "os:add_supervisor", 2),
+    ("📋 إدارة المشرفين", "os:list_supervisors", 2),
+    ("👁 حسابات المشرفين", "os:sv_accounts", 1),
+    ("👤 معلومات الحسابات", "os:account_info", 1),
+    ("🔥 خدمات الرشق", "os:raksh_accounts", 1),
+    ("ادمنية الرشق", "os:raksh_admins", 1),
+    ("✏️ تغيير اسم خدمات تلي مميزة", "os:edit_raksh_label", 1),
+    ("📦 الخدمات الجديدة", "os:new_services", 1),
+]
+
 LEGENDARY_SERVICES_MESSAGE = (
     "👑 *الخدمات الأسطورية*\n\n"
     "جميع الحسابات حقيقية ولديها ستوري وبايو وصورة وافتار\n\n"
@@ -445,7 +466,9 @@ def seed_menu_items(menu: str):
                 "SELECT action_value FROM menu_items WHERE menu=? AND action_type='builtin'", (menu,)
             ).fetchall()
         existing_values = {r["action_value"] for r in existing}
-        defaults = BUILTIN_DEFAULTS.get(menu, [])
+        defaults = list(BUILTIN_DEFAULTS.get(menu, []))
+        if menu == "owner_settings":
+            defaults.extend(OWNER_SETTINGS_EXTRA_DEFAULTS)
         if not existing:
             for i, (label, value, width) in enumerate(defaults):
                 c.execute(
@@ -557,7 +580,10 @@ def render_mb_menu_screen(menu: str):
     for it in items:
         state_icon = "✅" if it["enabled"] else "🚫"
         width_icon = "▬ عريض" if it["width"] == 1 else "🔲 نصف"
-        rows.append([InlineKeyboardButton(f"{state_icon} {it['label']}", callback_data="noop")])
+        rows.append([InlineKeyboardButton(
+            f"{state_icon} {_menu_item_display_label(it)}",
+            callback_data="noop",
+        )])
         rows.append([
             InlineKeyboardButton("⬆️", callback_data=f"mb_up:{menu}:{it['id']}"),
             InlineKeyboardButton("⬇️", callback_data=f"mb_down:{menu}:{it['id']}"),
@@ -571,13 +597,18 @@ def render_mb_menu_screen(menu: str):
             f"✅ ظاهر | 🚫 مخفي — اضغط 🗑 للإخفاء و♻️ للإظهار مجدداً.")
     return text, InlineKeyboardMarkup(rows)
 
+def _menu_item_display_label(item):
+    """Return the label users actually see for a persisted menu item."""
+    label = item["label"]
+    if item["action_value"] == "thank_owner":
+        label = get_setting("thank_owner_button_label") or label
+    return label
+
 def build_kb_rows(items):
     rows = []
     pending = None
     for it in items:
-        label = it["label"]
-        if it["action_value"] == "thank_owner":
-            label = get_setting("thank_owner_button_label") or label
+        label = _menu_item_display_label(it)
         if it["action_type"] == "url":
             btn = InlineKeyboardButton(label, url=it["action_value"])
         elif it["action_type"] == "text":
