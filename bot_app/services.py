@@ -214,6 +214,8 @@ BUILTIN_DEFAULTS = {
         ("👻 رابط دعوة", "referral", 1),
         ("👍 شحن نقاط", "charge_points", 2),
         ("⭐ تجميع نقاط", "collect_points", 2),
+        ("🎁 هدية يومية", "daily_gift", 2),
+        ("🎁 هدية مؤقتة", "temporary_gift", 2),
         ("🎁 استبدال نقاط بجوائز", "exchange_points", 2),
         ("🎙 تحويل النقاط", "transfer_points", 2),
         ("🎟 استخدام كود", "use_promo", 2),
@@ -303,6 +305,8 @@ BUILTIN_DEFAULTS = {
         ("🎟 أكواد شراء رقم", "os:manage_num_codes", 2),
         ("🔄 سعر تمويل داخلي", "os:edit_internal_cost", 2),
         ("🎁 نقاط الانضمام للقنوات", "os:edit_join_reward", 1),
+        ("🎁 كمية الهدية اليومية", "os:edit_daily_gift", 1),
+        ("🎁 إنشاء هدية مؤقتة", "os:create_temporary_gift", 1),
         ("❌ خصم مغادرة القناة", "os:edit_leave_penalty", 1),
         ("⏱ مهلة المغادرة الآمنة (ساعة)", "os:edit_leave_grace", 1),
         ("⭐ إجباري: حد أدنى (نجوم)", "os:edit_mstars_min", 2),
@@ -379,7 +383,7 @@ def seed_menu_items(menu: str):
     with db_conn() as c:
         c.execute(
             "DELETE FROM menu_items WHERE menu='main' AND action_value IN "
-            "('daily_gift','join_channels','totp_generator')"
+            "('join_channels','totp_generator')"
         )
     if menu == "main":
         with db_conn() as c:

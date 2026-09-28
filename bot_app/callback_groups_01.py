@@ -898,6 +898,137 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             )
             return
 
+        if data == "daily_gift":
+            amount = get_daily_gift_points()
+            claimed_amount = get_daily_gift_claim_amount(user.id)
+            if claimed_amount is not None:
+                text = (
+                    "🎁 *الهدية اليومية*\n\n"
+                    f"✅ استلمت هديتك اليوم وهي *{claimed_amount:,} نقطة*.\n"
+                    "ارجع غداً لاستلام هدية جديدة."
+                )
+                rows = [[InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")]]
+            else:
+                text = (
+                    "🎁 *الهدية اليومية*\n\n"
+                    f"تحصل على *{amount:,} نقطة* مرة واحدة كل يوم.\n"
+                    "اضغط الزر أدناه لاستلام هديتك."
+                )
+                rows = [
+                    [InlineKeyboardButton(
+                        f"🎁 استلام {amount:,} نقطة",
+                        callback_data="daily_gift:claim",
+                    )],
+                    [InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")],
+                ]
+            await q.edit_message_text(
+                text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup(rows),
+            )
+            return
+
+        if data == "daily_gift:claim":
+            amount, new_balance = claim_daily_gift(user.id)
+            if amount is None:
+                await q.answer("✅ استلمت هديتك اليومية مسبقاً.", show_alert=True)
+                return
+            await q.answer(f"🎉 حصلت على {amount:,} نقطة!", show_alert=True)
+            await q.edit_message_text(
+                "🎉 *تم استلام هديتك اليومية بنجاح!*\n\n"
+                f"💰 تمت إضافة: *{amount:,} نقطة*\n"
+                f"📊 رصيدك الحالي: *{new_balance:,} نقطة*\n\n"
+                "ارجع غداً لاستلام هدية جديدة.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")
+                ]]),
+            )
+            return
+
+        if data == "temporary_gift":
+            gift = get_active_temporary_gift()
+            if not gift:
+                await q.edit_message_text(
+                    "🎁 *الهدية المؤقتة*\n\n"
+                    "لا توجد هدية متاحة حالياً.\n"
+                    "سيظهر هذا الخيار عند إنشاء هدية جديدة.",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")
+                    ]]),
+                )
+                return
+            claimed = get_temporary_gift_claim(user.id, int(gift["id"]))
+            ends_at = gift["ends_at"]
+            ends_label = ends_at.strftime("%Y-%m-%d %H:%M") if hasattr(ends_at, "strftime") else str(ends_at)
+            if claimed:
+                text = (
+                    "🎁 *الهدية المؤقتة*\n\n"
+                    f"✅ استلمت هذه الهدية مسبقاً: *{int(claimed['amount']):,} نقطة*.\n"
+                    f"⏳ تنتهي الإتاحة في: `{ends_label}` UTC"
+                )
+                rows = [[InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")]]
+            else:
+                text = (
+                    "🎁 *هدية مؤقتة*\n\n"
+                    f"تحصل على *{int(gift['points']):,} نقطة* مرة واحدة.\n"
+                    f"⏳ متاحة حتى: `{ends_label}` UTC\n\n"
+                    "اضغط الزر أدناه قبل انتهاء الوقت."
+                )
+                rows = [
+                    [InlineKeyboardButton(
+                        f"🎁 استلام {int(gift['points']):,} نقطة",
+                        callback_data=f"temporary_gift:claim:{int(gift['id'])}",
+                    )],
+                    [InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")],
+                ]
+            await q.edit_message_text(
+                text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup(rows),
+            )
+            return
+
+        if data.startswith("temporary_gift:claim:"):
+            try:
+                requested_gift_id = int(data.rsplit(":", 1)[-1])
+            except (TypeError, ValueError):
+                await q.answer("⚠️ الهدية غير صالحة.", show_alert=True)
+                return
+            amount, new_balance, gift_id, notify_owner = claim_temporary_gift(
+                user.id,
+                requested_gift_id,
+            )
+            if amount is None:
+                await q.answer(
+                    "⚠️ انتهت الهدية أو استلمتها مسبقاً.",
+                    show_alert=True,
+                )
+                return
+            await q.answer(f"🎉 حصلت على {amount:,} نقطة!", show_alert=True)
+            await q.edit_message_text(
+                "🎉 *تم استلام الهدية المؤقتة بنجاح!*\n\n"
+                f"💰 تمت إضافة: *{amount:,} نقطة*\n"
+                f"📊 رصيدك الحالي: *{new_balance:,} نقطة*",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")
+                ]]),
+            )
+            if notify_owner and OWNER_ID:
+                try:
+                    await context.bot.send_message(
+                        OWNER_ID,
+                        f"🔔 إشعار الهدية المؤقتة\n\n"
+                        f"تم تسجيل *4 عمليات استلام* أو مضاعفاتها للهدية رقم `{gift_id}`.\n"
+                        f"آخر عضو مستلم: `{user.id}`",
+                        parse_mode=ParseMode.MARKDOWN,
+                    )
+                except Exception as notify_error:
+                    logger.warning("تعذّر إرسال إشعار الهدية المؤقتة للمالك: %s", notify_error)
+            return
+
         if data == "thank_owner" and is_own:
             await q.edit_message_text(
                 "💌 *إعدادات شكر المالك*\n\n"

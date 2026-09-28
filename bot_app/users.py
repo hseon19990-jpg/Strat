@@ -107,6 +107,183 @@ def set_setting(key: str, value: str):
     """حفظ إعداد مع إعادة محاولة تلقائية عند انقطاع الاتصال"""
     with_db_retry(_do_set_setting, key, value)
 
+DAILY_GIFT_POINTS_SETTING = "daily_gift_points"
+DEFAULT_DAILY_GIFT_POINTS = 100
+
+def get_daily_gift_points() -> int:
+    """يُرجع قيمة الهدية اليومية مع قيمة افتراضية آمنة."""
+    try:
+        value = int(get_setting(DAILY_GIFT_POINTS_SETTING) or DEFAULT_DAILY_GIFT_POINTS)
+    except (TypeError, ValueError):
+        value = DEFAULT_DAILY_GIFT_POINTS
+    return value if value > 0 else DEFAULT_DAILY_GIFT_POINTS
+
+def get_daily_gift_claim_amount(user_id: int) -> int | None:
+    """يُرجع مبلغ الهدية المستلمة اليوم وفق تاريخ العراق الحالي."""
+    with db_conn() as c:
+        row = c.execute(
+            """
+            SELECT amount
+            FROM daily_gift_claims
+            WHERE user_id=%s
+              AND claim_date=(NOW() AT TIME ZONE 'Asia/Baghdad')::date
+            LIMIT 1
+            """,
+            (user_id,),
+        ).fetchone()
+    return int(row["amount"]) if row else None
+
+def has_claimed_daily_gift(user_id: int) -> bool:
+    """يتحقق من استلام المستخدم هديته وفق تاريخ العراق الحالي."""
+    return get_daily_gift_claim_amount(user_id) is not None
+
+def claim_daily_gift(user_id: int) -> tuple[int | None, int | None]:
+    """
+    يمنح الهدية مرة واحدة يومياً بشكل ذري.
+
+    يُرجع (المبلغ، الرصيد الجديد) عند النجاح، أو (None, None) إذا استُلمت
+    الهدية مسبقاً اليوم.
+    """
+    amount = get_daily_gift_points()
+    with db_conn() as c:
+        claimed = c.execute(
+            f"""
+            INSERT INTO daily_gift_claims (user_id, claim_date, amount)
+            VALUES (%s, (NOW() AT TIME ZONE 'Asia/Baghdad')::date, %s)
+            ON CONFLICT (user_id, claim_date) DO NOTHING
+            RETURNING amount
+            """,
+            (user_id, amount),
+        ).fetchone()
+        if not claimed:
+            return None, None
+
+        updated = c.execute(
+            """
+            UPDATE users
+            SET points=points+%s
+            WHERE user_id=%s
+            RETURNING points
+            """,
+            (amount, user_id),
+        ).fetchone()
+        if not updated:
+            raise ValueError(f"Cannot credit daily gift to unknown user {user_id}")
+    return amount, int(updated["points"])
+
+
+def get_active_temporary_gift() -> dict | None:
+    """يعيد الهدية المؤقتة الحالية إذا كانت ما زالت ضمن وقت الإتاحة."""
+    with db_conn() as c:
+        row = c.execute(
+            """
+            SELECT id, points, starts_at, ends_at
+            FROM temporary_gifts
+            WHERE active=1
+              AND starts_at <= NOW()
+              AND ends_at > NOW()
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_temporary_gift_claim(user_id: int, gift_id: int) -> dict | None:
+    """يتحقق من استلام عضو لهدية مؤقتة محددة."""
+    with db_conn() as c:
+        row = c.execute(
+            """
+            SELECT gift_id, amount, claimed_at
+            FROM temporary_gift_claims
+            WHERE gift_id=%s AND user_id=%s
+            LIMIT 1
+            """,
+            (gift_id, user_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def create_temporary_gift(points: int, duration_seconds: int, owner_id: int) -> dict:
+    """ينشئ هدية مؤقتة جديدة ويغلق أي هدية سابقة."""
+    with db_conn() as c:
+        c.execute(
+            "UPDATE temporary_gifts SET active=0 WHERE active=1"
+        )
+        row = c.execute(
+            """
+            INSERT INTO temporary_gifts (points, starts_at, ends_at, created_by)
+            VALUES (%s, NOW(), NOW() + (%s * INTERVAL '1 second'), %s)
+            RETURNING id, points, starts_at, ends_at
+            """,
+            (points, duration_seconds, owner_id),
+        ).fetchone()
+    return dict(row)
+
+
+def claim_temporary_gift(
+    user_id: int,
+    gift_id: int | None = None,
+) -> tuple[int | None, int | None, int | None, bool]:
+    """
+    يستلم العضو الهدية الحالية مرة واحدة بشكل ذري.
+
+    يُرجع (النقاط، الرصيد، رقم الهدية، هل حان إشعار الأربع عمليات).
+    """
+    gift_filter = "AND id=%s" if gift_id is not None else ""
+    params = [user_id, user_id]
+    if gift_id is not None:
+        params.append(gift_id)
+    with db_conn() as c:
+        claimed = c.execute(
+            """
+            INSERT INTO temporary_gift_claims (gift_id, user_id, amount)
+            SELECT id, %s, points
+            FROM temporary_gifts
+            WHERE active=1
+              AND starts_at <= NOW()
+              AND ends_at > NOW()
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM temporary_gift_claims old_claim
+                  WHERE old_claim.gift_id=temporary_gifts.id
+                    AND old_claim.user_id=%s
+              )
+            {gift_filter}
+            ORDER BY id DESC
+            LIMIT 1
+            ON CONFLICT (gift_id, user_id) DO NOTHING
+            RETURNING gift_id, amount
+            """,
+            params,
+        ).fetchone()
+        if not claimed:
+            return None, None, None, False
+
+        updated = c.execute(
+            """
+            UPDATE users
+            SET points=points+%s
+            WHERE user_id=%s
+            RETURNING points
+            """,
+            (claimed["amount"], user_id),
+        ).fetchone()
+        if not updated:
+            raise ValueError(f"Cannot credit temporary gift to unknown user {user_id}")
+
+        count_row = c.execute(
+            "SELECT COUNT(*) AS total FROM temporary_gift_claims WHERE gift_id=%s",
+            (claimed["gift_id"],),
+        ).fetchone()
+    total_claims = int(count_row["total"]) if count_row else 0
+    return (
+        int(claimed["amount"]),
+        int(updated["points"]),
+        int(claimed["gift_id"]),
+        total_claims % 4 == 0,
+    )
+
 THANK_OWNER_SETTINGS = {
     "thank_owner_button_label": ("نص زر «شكر المالك»", "💌 شكر المالك"),
     "thank_owner_ar_button_label": ("نص زر الرسالة العربية", "🇸🇦 رسالة بالعربية"),

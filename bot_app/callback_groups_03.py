@@ -3383,6 +3383,32 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
             )
             return
 
+        if data == "os:edit_daily_gift" and is_own:
+            cur = get_daily_gift_points()
+            context.user_data["state"] = "os_await_daily_gift"
+            await q.edit_message_text(
+                f"🎁 *كمية الهدية اليومية*\n\n"
+                f"القيمة الحالية: {cur:,} نقطة\n\n"
+                "أرسل عدد النقاط الجديد (يجب أن يكون أكبر من صفر):",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        if data == "os:create_temporary_gift" and is_own:
+            context.user_data["state"] = "os_await_temporary_gift_points"
+            context.user_data.pop("temporary_gift_points", None)
+            await q.edit_message_text(
+                "🎁 *إنشاء هدية مؤقتة*\n\n"
+                "الهدية الحالية ستتوقف عند إنشاء هدية جديدة.\n\n"
+                "الهدية كم نقطة؟\n"
+                "أرسل رقماً صحيحاً أكبر من صفر:",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 إلغاء", callback_data="owner_settings")
+                ]]),
+            )
+            return
+
         if data == "os:edit_leave_penalty" and is_own:
             cur = get_setting("channel_leave_penalty") or "75"
             context.user_data["state"] = "os_await_leave_penalty"

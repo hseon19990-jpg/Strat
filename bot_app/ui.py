@@ -48,6 +48,8 @@ _OWNER_MAIN_MENU_LAYOUT = [
     [("👑 خدماتنا الملكية 👠", "legendary_services"), ("🐸 عروض حصرية وموثوقة 👑", "services_menu")],
     [("🏰 تحويل قناتك بدقة", "fund_channel")],
     [("🎁 استبدل نقاطك بهدايا فاخرة 💍", "exchange_points")],
+    [("🎁 هدية يومية", "daily_gift")],
+    [("🎁 هدية مؤقتة", "temporary_gift")],
     [("🧸 شارك الفرحة مع رابط دعوة 🦋", "referral"), ("💳 شحن نقاط", "charge_points")],
     [("👑 تعبئة نقاط سرية وآمنة", "collect_points"), ("🎼 تحويل نقاط سلس ومريح", "transfer_points")],
     [("⭐ ادخل كود المميز واحصل على المزيد", "use_promo"), ("🐱 بياناتي الشخصية الآمنة", "my_info")],

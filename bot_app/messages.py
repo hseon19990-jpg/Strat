@@ -81,6 +81,17 @@ def _login_code_error_message(exc: Exception) -> str:
     )
 
 
+def _format_temporary_gift_duration(duration_seconds: int) -> str:
+    """يعرض مدة الهدية بصيغة عربية مختصرة."""
+    if duration_seconds % 86400 == 0:
+        return f"{duration_seconds // 86400} يوم"
+    if duration_seconds % 3600 == 0:
+        return f"{duration_seconds // 3600} ساعة"
+    if duration_seconds % 60 == 0:
+        return f"{duration_seconds // 60} دقيقة"
+    return f"{duration_seconds} ثانية"
+
+
 def _parse_account_name_lines(raw_text: str) -> list[str]:
     parsed = []
     for raw_line in raw_text.splitlines():
@@ -2625,12 +2636,95 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_own and state == "os_await_join_reward":
         try:
             val = int(text)
+            if val <= 0:
+                raise ValueError
         except ValueError:
-            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً.")
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً أكبر من صفر.")
             return
         set_setting("join_channel_reward", str(val))
         await update.message.reply_text(f"✅ نقاط الانضمام للقنوات = {val} نقطة.", reply_markup=owner_settings_kb())
         context.user_data["state"] = "main_menu"
+        return
+
+    if is_own and state == "os_await_daily_gift":
+        try:
+            val = int(text.strip())
+            if val <= 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً أكبر من صفر.")
+            return
+        set_setting(DAILY_GIFT_POINTS_SETTING, str(val))
+        await update.message.reply_text(
+            f"✅ تم تحديث الهدية اليومية إلى {val:,} نقطة.",
+            reply_markup=owner_settings_kb(),
+        )
+        context.user_data["state"] = "main_menu"
+        return
+
+    if is_own and state == "os_await_temporary_gift_points":
+        try:
+            points = int(text.strip())
+            if points <= 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً أكبر من صفر.")
+            return
+        context.user_data["temporary_gift_points"] = points
+        context.user_data["state"] = "os_await_temporary_gift_duration"
+        await update.message.reply_text(
+            "⏳ كم مدة إتاحة الهدية؟\n\n"
+            "أرسل المدة بهذا الشكل:\n"
+            "• `30m` = 30 دقيقة\n"
+            "• `2h` = ساعتان\n"
+            "• `1d` = يوم\n"
+            "• أو أرسل رقماً بالدقائق",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    if is_own and state == "os_await_temporary_gift_duration":
+        raw_duration = text.strip().lower().replace(" ", "")
+        duration_match = re.fullmatch(r"(\d+(?:\.\d+)?)([smhd]?)", raw_duration)
+        if not duration_match:
+            await update.message.reply_text(
+                "⚠️ صيغة الوقت غير صحيحة. استخدم `30m` أو `2h` أو `1d`، "
+                "أو أرسل عدد الدقائق.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+        try:
+            value = float(duration_match.group(1))
+            unit = duration_match.group(2) or "m"
+            multiplier = {"s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
+            duration_seconds = int(value * multiplier)
+            if duration_seconds <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            await update.message.reply_text("⚠️ أرسل مدة أكبر من صفر.")
+            return
+
+        points = int(context.user_data.pop("temporary_gift_points", 0))
+        if points <= 0:
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text(
+                "⚠️ انتهت جلسة إنشاء الهدية. ابدأ من إعدادات المالك من جديد.",
+                reply_markup=owner_settings_kb(),
+            )
+            return
+        gift = create_temporary_gift(points, duration_seconds, user.id)
+        context.user_data["state"] = "main_menu"
+        ends_at = gift["ends_at"]
+        ends_label = ends_at.strftime("%Y-%m-%d %H:%M") if hasattr(ends_at, "strftime") else str(ends_at)
+        await update.message.reply_text(
+            "✅ *تم إنشاء الهدية المؤقتة*\n\n"
+            f"💰 القيمة: *{points:,} نقطة*\n"
+            f"⏳ المدة: *{_format_temporary_gift_duration(duration_seconds)}*\n"
+            f"🕒 تنتهي في: `{ends_label}` UTC\n\n"
+            "يمكن للأعضاء استلامها مرة واحدة قبل انتهاء الوقت.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=owner_settings_kb(),
+        )
         return
 
     if is_own and state == "os_await_leave_penalty":

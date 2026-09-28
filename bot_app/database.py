@@ -409,6 +409,36 @@ def init_db():
               value TEXT
           )""")
           c.execute("""
+          CREATE TABLE IF NOT EXISTS daily_gift_claims (
+              user_id    BIGINT NOT NULL,
+              claim_date DATE NOT NULL,
+              amount     INTEGER NOT NULL,
+              claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              PRIMARY KEY (user_id, claim_date)
+          )""")
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS temporary_gifts (
+              id          SERIAL PRIMARY KEY,
+              points      INTEGER NOT NULL CHECK (points > 0),
+              starts_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              ends_at     TIMESTAMPTZ NOT NULL,
+              active      INTEGER NOT NULL DEFAULT 1,
+              created_by  BIGINT NOT NULL,
+              created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )""")
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS temporary_gift_claims (
+              gift_id    INTEGER NOT NULL REFERENCES temporary_gifts(id) ON DELETE CASCADE,
+              user_id    BIGINT NOT NULL,
+              amount     INTEGER NOT NULL,
+              claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              PRIMARY KEY (gift_id, user_id)
+          )""")
+          c.execute("""
+          CREATE INDEX IF NOT EXISTS temporary_gifts_active_window_idx
+          ON temporary_gifts (active, starts_at, ends_at)
+          """)
+          c.execute("""
           CREATE TABLE IF NOT EXISTS account_media_assignments (
               id           SERIAL PRIMARY KEY,
               kind         TEXT NOT NULL CHECK (kind IN ('stories', 'avatar')),
@@ -854,6 +884,7 @@ def init_db():
           
           default_settings = [
               ('join_channel_reward', '45'),
+              ('daily_gift_points', '100'),
               ('referral_points', '30'),
               ('star_to_points', '250'),
               ('exchange_star_rate', '2000'),
