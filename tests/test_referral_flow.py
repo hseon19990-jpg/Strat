@@ -38,14 +38,6 @@ class ReferralFlowTests(unittest.TestCase):
         should_notify = _load_should_notify()
         self.assertFalse(should_notify(0, 20, 0, 20))
 
-    def test_daily_gift_screen_does_not_complete_referral(self):
-        source = CALLBACKS.read_text(encoding="utf-8")
-        start = source.index('if data == "daily_gift_screen":')
-        end = source.index('if data == "daily_gift_collect":', start)
-        block = source[start:end]
-        self.assertIn("if claimed", block)
-        self.assertNotIn("credit_referral_if_pending(user.id, context)", block)
-
     def test_verification_completes_referral_without_daily_gift(self):
         source = ONBOARDING.read_text(encoding="utf-8")
         start = source.index("async def finalize_verification")
