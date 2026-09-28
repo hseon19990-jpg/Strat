@@ -9,7 +9,11 @@ from ..accounts import get_forced_ref_account_count, get_raksh_account_count
 from ..database import db_conn
 from ..security import add_points, deduct_points, get_user, is_user_banned
 from ..services import get_raksh_accounts_label, md_escape
-from ..users import get_setting, set_setting
+from ..users import (
+    get_setting,
+    set_setting,
+    refresh_daily_referral_free_access,
+)
 from ..ui import main_menu_kb
 from telethon import TelegramClient, functions
 from telethon.sessions import StringSession

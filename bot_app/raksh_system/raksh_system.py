@@ -166,6 +166,7 @@ def get_raksh_total(service_type: str, quantity: int, payment_method: str) -> in
 def is_raksh_free_user(user_id: int, service_type: str) -> bool:
     """هل يملك المستخدم إعفاءً دائماً لخدمة أو إعفاء إحالات مؤقتاً؟"""
     try:
+        refresh_daily_referral_free_access(int(user_id))
         with db_conn() as c:
             row = c.execute(
                 """
