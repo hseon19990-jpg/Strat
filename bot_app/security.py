@@ -549,6 +549,13 @@ async def _rotate_one_session(phone: str, old_session_str: str) -> tuple[bool, s
     import datetime as _dt
     if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
         return False, "لا توجد API_ID / API_HASH"
+    with db_conn() as _rental_guard:
+        _rental_row = _rental_guard.execute(
+            "SELECT raksh_only FROM number_stock WHERE phone_number=%s",
+            (phone,),
+        ).fetchone()
+    if _rental_row and _rental_row["raksh_only"]:
+        return False, "حساب مؤجّر — تم تجاوز تدوير الجلسة و2FA حفاظاً على إعداداته"
 
     old_client = None
     new_client = None
@@ -748,7 +755,7 @@ async def cmd_rotate_sessions(update: Update, context: ContextTypes.DEFAULT_TYPE
         rows = _c.execute(
             "SELECT id, phone_number, session_string FROM number_stock "
             "WHERE ever_sold IS NOT TRUE AND session_string IS NOT NULL "
-            "AND deleted_at IS NULL"
+            "AND deleted_at IS NULL AND raksh_only IS NOT TRUE"
         ).fetchall()
 
     total = len(rows)

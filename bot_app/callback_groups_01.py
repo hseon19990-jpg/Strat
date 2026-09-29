@@ -324,13 +324,50 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                     lines.append(f"_(يوجد {len(rows) - 30} حساباً إضافياً)_")
             else:
                 lines.append("\nلا توجد حسابات مرتبطة بك بعد.")
+            account_buttons = []
+            for row in rows[:30]:
+                if not row.get("twofa_password"):
+                    account_buttons.append([InlineKeyboardButton(
+                        f"🔐 حفظ 2FA {row.get('phone_number')}",
+                        callback_data=f"contributor:save_2fa:{row.get('id')}",
+                    )])
             await q.edit_message_text(
                 "\n".join(lines),
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
+                    *account_buttons,
                     [InlineKeyboardButton("➕ إضافة حساب", callback_data="contributor:add")],
                     [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
                 ]),
+            )
+            return
+
+        if data.startswith("contributor:save_2fa:"):
+            try:
+                stock_id = int(data.rsplit(":", 1)[-1])
+            except ValueError:
+                await q.answer("⚠️ الحساب غير صحيح.", show_alert=True)
+                return
+            with db_conn() as c:
+                row = c.execute(
+                    "SELECT phone_number FROM number_stock "
+                    "WHERE id=%s AND contributed_by=%s AND raksh_only IS TRUE "
+                    "AND deleted_at IS NULL AND ever_sold IS NOT TRUE",
+                    (stock_id, user.id),
+                ).fetchone()
+            if not row:
+                await q.answer("⚠️ الحساب غير موجود ضمن حساباتك المؤجرة.", show_alert=True)
+                return
+            context.user_data["state"] = "contributor_await_2fa_password"
+            context.user_data["contributor_2fa_stock_id"] = stock_id
+            await q.edit_message_text(
+                f"🔐 *حفظ 2FA للحساب `{row['phone_number']}`*\n\n"
+                "أرسل كلمة مرور التحقق بخطوتين لهذا الحساب.\n"
+                "سيتم التحقق منها مع تيليجرام ولن تُحفظ إلا إذا كانت صحيحة.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("❌ إلغاء", callback_data="contributor_accounts")
+                ]]),
             )
             return
 

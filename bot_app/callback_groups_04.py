@@ -2127,6 +2127,21 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:sold_accounts")]]))
                 return
             saved_pwd = rec.get("twofa_password") or ""
+            if rec.get("raksh_only"):
+                await q.edit_message_text(
+                    f"🔐 *التحقق بخطوتين — {rec['phone_number']}*\n\n"
+                    + (
+                        f"✅ مفعّل ومحفوظ\n🗝 كلمة المرور: `{saved_pwd}`\n\n"
+                        if saved_pwd
+                        else "⚠️ كلمة 2FA غير محفوظة في البوت.\n"
+                    )
+                    + "هذا حساب مؤجّر؛ لا يغيّر البوت 2FA الخاصة به.",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🔙 رجوع للتفاصيل", callback_data=f"os:sold_detail:{stock_id}")
+                    ]]),
+                )
+                return
             if saved_pwd:
                 await q.edit_message_text(
                     f"🔐 *التحقق بخطوتين — {rec['phone_number']}*\n\n"
@@ -2153,6 +2168,12 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             if not rec or not rec.get("session_string"):
                 await q.edit_message_text("⚠️ لا تتوفر جلسة لهذا الرقم.",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data=f"os:sold_detail:{stock_id}")]]))
+                return
+            if rec.get("raksh_only"):
+                await q.answer(
+                    "🔒 هذا حساب مؤجّر. لا يمكن تغيير 2FA الخاصة به.",
+                    show_alert=True,
+                )
                 return
             current_pwd = rec.get("twofa_password") or ""
             await q.edit_message_text(

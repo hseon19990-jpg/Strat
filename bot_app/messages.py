@@ -3961,6 +3961,65 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _finish_supervisor_login(update, context, user.id)
         return
 
+    if state == "contributor_await_2fa_password":
+        stock_id = context.user_data.get("contributor_2fa_stock_id")
+        pwd = text.strip()
+        context.user_data["state"] = "main_menu"
+        context.user_data.pop("contributor_2fa_stock_id", None)
+        if not stock_id:
+            await update.message.reply_text("⚠️ انتهت صلاحية الطلب، افتح قائمة حساباتك من جديد.")
+            return
+        with db_conn() as c:
+            rec = c.execute(
+                "SELECT phone_number, session_string FROM number_stock "
+                "WHERE id=%s AND contributed_by=%s AND raksh_only IS TRUE "
+                "AND deleted_at IS NULL AND ever_sold IS NOT TRUE",
+                (stock_id, user.id),
+            ).fetchone()
+        if not rec or not rec["session_string"]:
+            await update.message.reply_text("⚠️ لم يُعثر على الحساب المؤجّر أو انتهت جلسته.")
+            return
+        await update.message.reply_text("⏳ جاري التحقق من كلمة 2FA مع تيليجرام...")
+        client = TelegramClient(
+            StringSession(rec["session_string"]),
+            int(TELEGRAM_API_ID),
+            TELEGRAM_API_HASH,
+        )
+        try:
+            await asyncio.wait_for(client.connect(), timeout=20)
+            verified = await verify_current_2fa_password(
+                client, pwd, phone=rec["phone_number"]
+            )
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+        if verified is True:
+            with db_conn() as c:
+                c.execute(
+                    "UPDATE number_stock SET twofa_password=%s WHERE id=%s AND contributed_by=%s",
+                    (pwd, stock_id, user.id),
+                )
+            await update.message.reply_text(
+                f"✅ تم التحقق وحفظ 2FA للحساب `{rec['phone_number']}`.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("📱 عرض حساباتي المؤجرة", callback_data="contributor_accounts")
+                ]]),
+            )
+        elif verified is False:
+            await update.message.reply_text(
+                f"❌ كلمة 2FA غير صحيحة للحساب `{rec['phone_number']}`.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔐 المحاولة مجدداً", callback_data="contributor_accounts")
+                ]]),
+            )
+        else:
+            await update.message.reply_text("⚠️ تعذّر التحقق الآن بسبب الاتصال. حاول مرة أخرى.")
+        return
+
     if is_own and state == "os_await_manual_2fa_pwd":
         stock_id = context.user_data.get("manual_2fa_stock_id")
         pwd = text.strip()
@@ -5689,9 +5748,9 @@ async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     with db_conn() as _rc:
         _stock_row = _rc.execute(
-            "SELECT id FROM number_stock WHERE phone_number=%s", (phone,)
+            "SELECT id, raksh_only FROM number_stock WHERE phone_number=%s", (phone,)
         ).fetchone()
-    if _stock_row:
+    if _stock_row and not _stock_row["raksh_only"]:
         try:
             _2fa_cl = TelegramClient(StringSession(session_string), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
             await _2fa_cl.connect()
