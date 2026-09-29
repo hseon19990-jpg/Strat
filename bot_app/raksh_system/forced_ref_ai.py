@@ -644,12 +644,24 @@ class ForcedRefAIService(RakshService):
 
     @staticmethod
     def _button_label(button) -> str:
-        """Return the visible label from Telethon's button wrappers."""
+        """Return text and string-style icons from Telethon's button wrappers."""
         labels = []
         for candidate in (button, getattr(button, "button", None)):
-            label = getattr(candidate, "text", None) if candidate else None
-            if label is not None and str(label) not in labels:
-                labels.append(str(label))
+            if candidate is None:
+                continue
+            for source in (candidate, getattr(candidate, "style", None)):
+                if source is None:
+                    continue
+                for attribute in ("text", "emoji", "icon"):
+                    label = getattr(source, attribute, None)
+                    # A numeric style.icon is a custom-emoji document id and
+                    # is handled separately by _custom_emoji_id_from_button.
+                    if (
+                        isinstance(label, str)
+                        and label
+                        and label not in labels
+                    ):
+                        labels.append(label)
         return " ".join(labels)
 
     @staticmethod
@@ -786,8 +798,30 @@ class ForcedRefAIService(RakshService):
             text,
             flags=re.IGNORECASE,
         )
+        if not target_marker_match:
+            # A common variant says «اضغط على هذا الزر ...: 🍋» or
+            # «اضغط على نفس الإيموجي ...: 🍋» without using the word
+            # "الرمز". In that form the heading may contain another emoji,
+            # so extracting every emoji can select the wrong button.
+            target_marker_match = re.search(
+                r"(?:هذا\s+الزر|نفس\s+(?:الإيموجي|الايموجي)|"
+                r"this\s+button|same\s+emoji)[^:\n]{0,80}"
+                r"[:：]\s*([^\s،,.!?؟]+)",
+                text,
+                flags=re.IGNORECASE,
+            )
         target_offset = (
             target_marker_match.start(1) if target_marker_match else None
+        )
+        target_entity_offset = None
+        if target_offset is not None:
+            target_entity_offset = len(
+                text[:target_offset].encode("utf-16-le")
+            ) // 2
+        target_entity_label = (
+            cls._normalise_captcha_label(target_marker_match.group(1))
+            if target_marker_match
+            else ""
         )
 
         # Prefer the value after «اضغط على الرمز» so the robot emoji in a
@@ -807,11 +841,17 @@ class ForcedRefAIService(RakshService):
             get_entities_text = getattr(message, "get_entities_text", None)
             if get_entities_text:
                 for entity, entity_text in get_entities_text():
+                    entity_is_target = (
+                        target_entity_label
+                        and cls._normalise_captcha_label(entity_text)
+                        == target_entity_label
+                    )
                     if (
                         entity.__class__.__name__ == "MessageEntityCustomEmoji"
                         and (
-                            target_offset is None
-                            or getattr(entity, "offset", 0) >= target_offset
+                            target_entity_offset is None
+                            or getattr(entity, "offset", 0) >= target_entity_offset
+                            or entity_is_target
                         )
                     ):
                         labels.append(entity_text)
@@ -833,20 +873,48 @@ class ForcedRefAIService(RakshService):
             text,
             flags=re.IGNORECASE,
         )
+        if not target_marker_match:
+            target_marker_match = re.search(
+                r"(?:هذا\s+الزر|نفس\s+(?:الإيموجي|الايموجي)|"
+                r"this\s+button|same\s+emoji)[^:\n]{0,80}"
+                r"[:：]\s*([^\s،,.!?؟]+)",
+                text,
+                flags=re.IGNORECASE,
+            )
         target_offset = (
             target_marker_match.start(1) if target_marker_match else None
+        )
+        # Telethon stores MessageEntity offsets in UTF-16 code units, while
+        # Python string indexes count Unicode code points. Convert the marker
+        # offset before comparing it with entity.offset; Arabic text and
+        # astral emoji otherwise make a heading emoji look like the target.
+        target_entity_offset = None
+        if target_offset is not None:
+            target_entity_offset = len(
+                text[:target_offset].encode("utf-16-le")
+            ) // 2
+        target_entity_label = (
+            cls._normalise_captcha_label(target_marker_match.group(1))
+            if target_marker_match
+            else ""
         )
         ids = set()
 
         try:
             get_entities_text = getattr(message, "get_entities_text", None)
             entity_items = get_entities_text() if get_entities_text else []
-            for entity, _entity_text in entity_items:
+            for entity, entity_text in entity_items:
                 if entity.__class__.__name__ != "MessageEntityCustomEmoji":
                     continue
+                entity_is_target = (
+                    target_entity_label
+                    and cls._normalise_captcha_label(entity_text)
+                    == target_entity_label
+                )
                 if (
-                    target_offset is not None
-                    and getattr(entity, "offset", 0) < target_offset
+                    target_entity_offset is not None
+                    and getattr(entity, "offset", 0) < target_entity_offset
+                    and not entity_is_target
                 ):
                     continue
                 document_id = getattr(entity, "document_id", None)
