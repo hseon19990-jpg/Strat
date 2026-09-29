@@ -1979,7 +1979,8 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                 rec = _c.execute(
                     "SELECT ns.id, ns.phone_number, ns.session_string, ns.assigned_to, ns.assigned_at, "
                     "       ns.twofa_password, pe.order_code, pe.created_at AS sale_date, "
-                    "       u.full_name AS buyer_name "
+                    "       u.full_name AS buyer_name, ns.raksh_only, "
+                    "       ns.contributor_share_percent, ns.last_authorized, ns.frozen_at "
                     "FROM number_stock ns "
                     "LEFT JOIN prize_exchanges pe ON pe.prize_value = ns.phone_number "
                     "     AND pe.status = 'completed' "
@@ -1998,11 +1999,24 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                 if hasattr(v, "strftime"): return v.strftime("%Y-%m-%d %H:%M")
                 return str(v)[:16]
             has_session = bool(rec.get("session_string"))
-            buyer_name  = rec.get("buyer_name") or f"ID:{rec.get('assigned_to', '?')}"
-            saved_2fa   = rec.get("twofa_password") or "—"
+            buyer_id    = rec.get("assigned_to") or "—"
+            buyer_name  = rec.get("buyer_name") or (
+                f"ID:{rec.get('assigned_to')}" if rec.get("assigned_to") else "—"
+            )
+            saved_2fa   = rec.get("twofa_password") or "غير محفوظة"
+            if rec.get("raksh_only"):
+                share = int(rec.get("contributor_share_percent") or 50)
+                account_status = f"🔵 مؤجّر للرشق ({share}٪ للعضو)"
+            elif rec.get("frozen_at"):
+                account_status = "🧊 مجمّد"
+            elif rec.get("last_authorized") is False:
+                account_status = "🚫 الجلسة منتهية"
+            else:
+                account_status = "✅ موجود"
             info = (
                 f"📱 *{rec['phone_number']}*\n\n"
-                f"👤 المشتري: {buyer_name} (`{rec.get('assigned_to', '—')}`)\n"
+                f"📌 الحالة: {account_status}\n"
+                f"👤 المشتري: {buyer_name} (`{buyer_id}`)\n"
                 f"📅 تاريخ البيع: {_fd(rec.get('assigned_at'))}\n"
                 f"📌 كود الطلب: {rec.get('order_code') or '—'}\n"
                 f"🗝 كلمة مرور 2FA: `{saved_2fa}`\n"
