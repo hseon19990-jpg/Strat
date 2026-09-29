@@ -817,6 +817,7 @@ async def _finish_number_login(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     client = pending["client"]
     phone = pending.get("phone")
+    login_2fa_password = str(pending.get("login_2fa_password") or "").strip()
     reply_target = getattr(update, "message", None) or getattr(update, "effective_message", None)
     if not phone:
         try:
@@ -836,6 +837,7 @@ async def _finish_number_login(update: Update, context: ContextTypes.DEFAULT_TYP
                 int(contributor_id),
                 phone,
                 session_str,
+                twofa_password=login_2fa_password,
             )
             if not added:
                 await reply_target.reply_text(

@@ -1404,7 +1404,12 @@ def add_number_with_session(phone: str, session_str: str, raksh_only: bool = Fal
         )
         return True
 
-def add_contributor_account(user_id: int, phone: str, session_str: str) -> tuple[bool, str]:
+def add_contributor_account(
+    user_id: int,
+    phone: str,
+    session_str: str,
+    twofa_password: str = "",
+) -> tuple[bool, str]:
     """يحفظ حساب مستخدم في مخزون الرشق دون المساس بجلساته أو إعداداته.
 
     لا يسمح هذا المسار بالاستيلاء على رقم موجود في مخزون المالك أو مستخدم
@@ -1412,6 +1417,7 @@ def add_contributor_account(user_id: int, phone: str, session_str: str) -> tuple
     """
     phone = str(phone or "").strip()
     session_str = str(session_str or "").strip()
+    twofa_password = str(twofa_password or "").strip()
     if not phone or not session_str:
         return False, "بيانات الحساب غير مكتملة."
 
@@ -1434,6 +1440,7 @@ def add_contributor_account(user_id: int, phone: str, session_str: str) -> tuple
                 """
                 UPDATE number_stock
                 SET session_string=%s,
+                    twofa_password=COALESCE(NULLIF(%s, ''), number_stock.twofa_password),
                     deleted_at=NULL,
                     raksh_only=TRUE,
                     source_type='raksh',
@@ -1441,18 +1448,18 @@ def add_contributor_account(user_id: int, phone: str, session_str: str) -> tuple
                     last_authorized=TRUE
                 WHERE id=%s
                 """,
-                (session_str, existing["id"]),
+                (session_str, twofa_password, existing["id"]),
             )
             return True, "updated"
 
         c.execute(
             """
             INSERT INTO number_stock
-                (phone_number, session_string, deleted_at, raksh_only,
+                (phone_number, session_string, twofa_password, deleted_at, raksh_only,
                  source_type, raksh_excluded, contributed_by, contributor_share_percent)
-            VALUES (%s, %s, NULL, TRUE, 'raksh', FALSE, %s, 50)
+            VALUES (%s, %s, NULLIF(%s, ''), NULL, TRUE, 'raksh', FALSE, %s, 50)
             """,
-            (phone, session_str, user_id),
+            (phone, session_str, twofa_password, user_id),
         )
     return True, "added"
 

@@ -3819,6 +3819,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _cleanup_pending_login(user.id)
             context.user_data["state"] = "main_menu"
             return
+        if state == "contributor_await_login_password":
+            # The password was accepted by Telegram. Keep it with the rental
+            # account so its 2FA value can be shown in searches and lists.
+            pending["login_2fa_password"] = text.strip()
         await _finish_number_login(update, context, user.id)
         return
 
