@@ -1461,7 +1461,8 @@ def get_contributor_accounts(user_id: int) -> list[dict]:
     with db_conn() as c:
         rows = c.execute(
             """
-            SELECT ns.id, ns.phone_number, ns.last_authorized, ns.frozen_at,
+            SELECT ns.id, ns.phone_number, ns.twofa_password,
+                   ns.last_authorized, ns.frozen_at,
                    COALESCE(SUM(e.share_points), 0) AS earned_points
             FROM number_stock ns
             LEFT JOIN raksh_contributor_earnings e

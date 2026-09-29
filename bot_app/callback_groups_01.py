@@ -314,8 +314,10 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 lines.append("\n*الحسابات:*")
                 for row in rows[:30]:
                     status = "✅ جاهز" if row.get("last_authorized") is not False else "⚠️ الجلسة منتهية"
+                    twofa = row.get("twofa_password") or "غير محفوظة"
                     lines.append(
                         f"• `{row.get('phone_number')}` — {status} | "
+                        f"🔐 2FA: `{twofa}` | "
                         f"💰 {int(row.get('earned_points') or 0):,}"
                     )
                 if len(rows) > 30:

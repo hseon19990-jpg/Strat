@@ -1853,7 +1853,8 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                 rented_rows = c.execute(
                     """
                     SELECT ns.id, ns.phone_number, ns.contributed_by,
-                           ns.contributor_share_percent, ns.last_authorized,
+                           ns.contributor_share_percent, ns.twofa_password,
+                           ns.last_authorized,
                            ns.frozen_at, u.full_name AS contributor_name,
                            COALESCE(SUM(e.share_points), 0) AS earned_points
                     FROM number_stock ns
@@ -1866,7 +1867,8 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                       AND ns.deleted_at IS NULL
                       AND ns.ever_sold IS NOT TRUE
                     GROUP BY ns.id, ns.phone_number, ns.contributed_by,
-                             ns.contributor_share_percent, ns.last_authorized,
+                             ns.contributor_share_percent, ns.twofa_password,
+                             ns.last_authorized,
                              ns.frozen_at, u.full_name
                     ORDER BY ns.id DESC
                     LIMIT 100
@@ -1887,9 +1889,11 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                     status = "🚫 الجلسة منتهية"
                 else:
                     status = "✅ نشط"
+                twofa = rented["twofa_password"] or "غير محفوظة"
                 lines.append(
                     f"\n🔵 `{rented['phone_number']}` — {status}\n"
                     f"   👤 العضو: {contributor} (`{rented['contributed_by']}`)\n"
+                    f"   🔐 2FA: `{twofa}`\n"
                     f"   💵 نسبة العضو: *{share}٪* | الأرباح: *{int(rented['earned_points'] or 0):,} نقطة*"
                 )
 
