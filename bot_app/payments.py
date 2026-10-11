@@ -8,6 +8,147 @@ domain.
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
+JEWEL_STAR_TOPUP_MAX = 10000
+JEWEL_STAR_TOPUP_PRESETS = (3, 10, 50, 100)
+
+
+def parse_jewel_star_topup_amount(value):
+    """Parse a user-entered jewel count, including Arabic-Indic digits."""
+    raw = str(value or "").strip().translate(str.maketrans(
+        "٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹",
+        "01234567890123456789",
+    ))
+    try:
+        amount = int(raw.replace(",", "").replace("٬", ""))
+    except (TypeError, ValueError):
+        return None
+    return amount if 1 <= amount <= JEWEL_STAR_TOPUP_MAX else None
+
+
+def validate_jewel_star_invoice(payload, user_id, total_amount, currency):
+    """Return the jewel quantity only for a correctly priced XTR invoice."""
+    parts = str(payload or "").split(":")
+    if (
+        len(parts) != 3
+        or parts[0] != "jewel_stars"
+        or not parts[1].isdigit()
+        or not parts[2].isdigit()
+        or currency != "XTR"
+    ):
+        return None
+    amount = int(parts[1])
+    if (
+        not 1 <= amount <= JEWEL_STAR_TOPUP_MAX
+        or int(parts[2]) != int(user_id)
+        or int(total_amount) != amount
+    ):
+        return None
+    return amount
+
+
+async def send_jewel_star_invoice(context, user, amount):
+    """Create a Telegram Stars invoice at the fixed rate of one star per jewel."""
+    amount = parse_jewel_star_topup_amount(amount)
+    if amount is None:
+        raise ValueError("invalid jewel top-up amount")
+    await context.bot.send_invoice(
+        chat_id=user.id,
+        title="شحن مجوهرات",
+        description=f"شراء {amount} مجوهرة مقابل {amount} نجمة",
+        payload=f"jewel_stars:{amount}:{user.id}",
+        provider_token="",
+        currency="XTR",
+        prices=[LabeledPrice("مجوهرات", amount)],
+    )
+
+
+async def handle_jewel_topup_callback(update, context, q, data, user, is_owner):
+    """Route jewel top-up choices, custom counts, and manual-payment instructions."""
+    if data in ("jewels_topup", "jtopup:menu"):
+        context.user_data["state"] = "main_menu"
+        await q.edit_message_text(
+            "💎 *شحن مجوهرات*\n\nاختر طريقة الشحن:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📱 الشحن برصيد آسيا سيل", callback_data="jtopup:asiacell")],
+                [InlineKeyboardButton("⭐ الشحن بالنجوم", callback_data="jtopup:stars")],
+                [InlineKeyboardButton("💳 العملات الإلكترونية", callback_data="jtopup:ewallet")],
+                [InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="main_menu")],
+            ]),
+        )
+        return
+
+    if data in ("jtopup:asiacell", "jtopup:ewallet"):
+        if data.endswith("asiacell"):
+            setting_key = "jewels_asiacell_text"
+            default_text = "💎 تواصل مع المالك لمعرفة تعليمات التحويل عبر آسيا سيل."
+        else:
+            setting_key = "jewels_ewallet_text"
+            default_text = "💎 تواصل مع المالك لمعرفة تعليمات التحويل عبر العملات الإلكترونية."
+        text = get_setting(setting_key) or default_text
+        contact = get_setting("owner_contact") or (
+            f"tg://user?id={OWNER_ID}" if OWNER_ID else ""
+        )
+        rows = []
+        if contact:
+            rows.append([InlineKeyboardButton("💬 التواصل مع المالك", url=contact)])
+        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="jtopup:menu")])
+        context.user_data["state"] = "main_menu"
+        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(rows))
+        return
+
+    if data == "jtopup:stars":
+        context.user_data["state"] = "main_menu"
+        rows = []
+        for start in range(0, len(JEWEL_STAR_TOPUP_PRESETS), 2):
+            rows.append([
+                InlineKeyboardButton(
+                    f"{amount} 💎",
+                    callback_data=f"jtopup:stars:qty:{amount}",
+                )
+                for amount in JEWEL_STAR_TOPUP_PRESETS[start:start + 2]
+            ])
+        rows.extend([
+            [InlineKeyboardButton("🔢 كمية أخرى", callback_data="jtopup:stars:custom")],
+            [InlineKeyboardButton("🔙 رجوع", callback_data="jtopup:menu")],
+        ])
+        await q.edit_message_text(
+            "⭐ *الشحن بالنجوم*\n\n"
+            "سعر كل مجوهرة: *1 نجمة*.\n"
+            "اختر كمية جاهزة أو أدخل كمية أخرى؛ ستظهر فاتورة Telegram قبل الدفع.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(rows),
+        )
+        return
+
+    if data == "jtopup:stars:custom":
+        context.user_data["state"] = "await_jewel_star_amount"
+        await q.edit_message_text(
+            f"🔢 أرسل عدد المجوهرات المطلوب شحنها (من 1 إلى {JEWEL_STAR_TOPUP_MAX:,}).",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 رجوع", callback_data="jtopup:stars")
+            ]]),
+        )
+        return
+
+    if data.startswith("jtopup:stars:qty:"):
+        amount = parse_jewel_star_topup_amount(data.rsplit(":", 1)[-1])
+        if amount is None:
+            await q.answer("⚠️ الكمية غير صالحة.", show_alert=True)
+            return
+        await q.answer("✅ جارٍ تجهيز فاتورة النجوم.")
+        try:
+            await send_jewel_star_invoice(context, user, amount)
+        except Exception:
+            logger.exception("تعذر إرسال فاتورة شحن المجوهرات بالنجوم للمستخدم %s", user.id)
+            await q.message.reply_text(
+                "⚠️ تعذر إنشاء فاتورة النجوم الآن. حاول مرة أخرى لاحقاً.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 رجوع لشحن المجوهرات", callback_data="jtopup:stars")
+                ]]),
+            )
+
+
 async def pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query   = update.pre_checkout_query
     payload = query.invoice_payload
@@ -22,6 +163,14 @@ async def pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 actual_stars   = query.total_amount
                 if query.from_user.id == uid_in_payload and actual_stars == expected_stars:
                     valid = True
+
+        if payload.startswith("jewel_stars:"):
+            valid = validate_jewel_star_invoice(
+                payload,
+                query.from_user.id,
+                query.total_amount,
+                query.currency,
+            ) is not None
 
         if payload.startswith("number_stars:"):
             parts = payload.split(":")
@@ -234,6 +383,96 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 "⚠️ تعذر تنفيذ الطلب ورد النجوم تلقائياً. أبلغت المالك لمتابعة الاسترداد.",
                 reply_markup=main_menu_kb(is_own),
             )
+        return
+
+    if payload.startswith("jewel_stars:"):
+        amount = validate_jewel_star_invoice(
+            payload,
+            user.id,
+            payment.total_amount,
+            payment.currency,
+        )
+        charge_id = payment.telegram_payment_charge_id
+        if amount is None:
+            logger.error(
+                "دفعة شحن مجوهرات غير مطابقة: user=%s payload=%s amount=%s currency=%s",
+                user.id,
+                payload,
+                payment.total_amount,
+                payment.currency,
+            )
+            try:
+                await context.bot.refund_star_payment(
+                    user_id=user.id,
+                    telegram_payment_charge_id=charge_id,
+                )
+                await update.message.reply_text(
+                    "⚠️ لم تتطابق بيانات الفاتورة، لذلك أُعيدت النجوم المدفوعة."
+                )
+            except Exception:
+                logger.exception("تعذر رد دفعة مجوهرات غير مطابقة")
+                await _notify_owner_manual_star_purchase(
+                    context,
+                    f"⚠️ دفعة شحن مجوهرات غير مطابقة تحتاج مراجعة. المستخدم: {user.id}، "
+                    f"العملية: {charge_id}، الحمولة: {payload}",
+                )
+                await update.message.reply_text(
+                    "⚠️ تعذر التحقق من الدفعة أو ردها تلقائياً؛ أبلغت المالك لمراجعتها.",
+                    reply_markup=main_menu_kb(is_own),
+                )
+            return
+
+        already_credited = False
+        with db_conn() as c:
+            c.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"jewel-stars:{charge_id}",))
+            existing = c.execute(
+                "SELECT status FROM jewel_star_transactions "
+                "WHERE telegram_payment_id=%s FOR UPDATE",
+                (charge_id,),
+            ).fetchone()
+            if existing and existing["status"] == "completed":
+                already_credited = True
+            else:
+                c.execute(
+                    "INSERT INTO users (user_id,username,full_name,jewels) "
+                    "VALUES (%s,%s,%s,%s) "
+                    "ON CONFLICT (user_id) DO UPDATE SET "
+                    "jewels=COALESCE(users.jewels,0)+EXCLUDED.jewels, "
+                    "username=COALESCE(EXCLUDED.username,users.username), "
+                    "full_name=COALESCE(EXCLUDED.full_name,users.full_name)",
+                    (user.id, user.username, user.full_name, amount),
+                )
+                if existing:
+                    c.execute(
+                        "UPDATE jewel_star_transactions "
+                        "SET status='completed', stars=%s, jewels_given=%s "
+                        "WHERE telegram_payment_id=%s",
+                        (amount, amount, charge_id),
+                    )
+                else:
+                    c.execute(
+                        "INSERT INTO jewel_star_transactions "
+                        "(user_id,stars,jewels_given,telegram_payment_id,status) "
+                        "VALUES (%s,%s,%s,%s,'completed')",
+                        (user.id, amount, amount, charge_id),
+                    )
+
+        if already_credited:
+            await update.message.reply_text(
+                "✅ تمت معالجة هذه الدفعة مسبقاً؛ لم تتم إضافة المجوهرات مرة أخرى.",
+                reply_markup=main_menu_kb(is_own),
+            )
+            return
+
+        db_user = get_user(user.id)
+        jewels_balance = int((db_user or {}).get("jewels") or 0)
+        await update.message.reply_text(
+            "✅ تم شحن المجوهرات تلقائياً بنجاح!\n\n"
+            f"⭐ المدفوع: {amount} نجمة\n"
+            f"💎 المضاف: {amount} مجوهرة\n"
+            f"💎 رصيدك الحالي: {jewels_balance:,} مجوهرة",
+            reply_markup=main_menu_kb(is_own),
+        )
         return
 
     if payload.startswith("charge_stars:"):

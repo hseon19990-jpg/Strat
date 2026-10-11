@@ -2159,6 +2159,10 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             except Exception:
                 pass
             return
+        if data == "jewels_topup" or data.startswith("jtopup:"):
+            await handle_jewel_topup_callback(update, context, q, data, user, is_own)
+            return
+
         if data == "charge_points":
             try:
                 await q.edit_message_text("💎 *اختر طريقة الشحن:*", parse_mode=ParseMode.MARKDOWN,

@@ -1171,6 +1171,26 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
+    if state == "await_jewel_star_amount":
+        amount = parse_jewel_star_topup_amount(text)
+        if amount is None:
+            await update.message.reply_text(
+                f"⚠️ أرسل عدداً صحيحاً من 1 إلى {JEWEL_STAR_TOPUP_MAX:,} مجوهرة."
+            )
+            return
+        context.user_data["state"] = "main_menu"
+        try:
+            await send_jewel_star_invoice(context, user, amount)
+        except Exception:
+            logger.exception("تعذر إرسال فاتورة شحن المجوهرات بالنجوم للمستخدم %s", user.id)
+            await update.message.reply_text(
+                "⚠️ تعذر إنشاء فاتورة النجوم الآن. حاول مرة أخرى لاحقاً.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 رجوع لشحن المجوهرات", callback_data="jtopup:stars")
+                ]]),
+            )
+        return
+
     if state == "await_charge_points_amount":
         try:
             pts = int(text)
@@ -4300,6 +4320,30 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💰 التكلفة: {cost:,} نقطة",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=owner_settings_kb()
+        )
+        return
+
+    if is_own and state == "os_await_jewels_asiacell_text":
+        if not text.strip():
+            await update.message.reply_text("⚠️ لا يمكن أن تكون التعليمات فارغة.")
+            return
+        set_setting("jewels_asiacell_text", text)
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(
+            "✅ تم تحديث تعليمات شحن المجوهرات عبر آسيا سيل.",
+            reply_markup=owner_settings_kb(),
+        )
+        return
+
+    if is_own and state == "os_await_jewels_ewallet_text":
+        if not text.strip():
+            await update.message.reply_text("⚠️ لا يمكن أن تكون التعليمات فارغة.")
+            return
+        set_setting("jewels_ewallet_text", text)
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(
+            "✅ تم تحديث تعليمات شحن المجوهرات عبر العملات الإلكترونية.",
+            reply_markup=owner_settings_kb(),
         )
         return
 

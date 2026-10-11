@@ -518,6 +518,16 @@ def init_db():
               created_at          TEXT DEFAULT CURRENT_TIMESTAMP
           )""")
           c.execute("""
+          CREATE TABLE IF NOT EXISTS jewel_star_transactions (
+              id                  BIGSERIAL PRIMARY KEY,
+              user_id             BIGINT NOT NULL,
+              stars               INTEGER NOT NULL CHECK (stars > 0),
+              jewels_given        INTEGER NOT NULL CHECK (jewels_given > 0),
+              telegram_payment_id TEXT NOT NULL UNIQUE,
+              status              TEXT NOT NULL DEFAULT 'completed',
+              created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )""")
+          c.execute("""
           CREATE TABLE IF NOT EXISTS number_star_purchases (
               telegram_payment_id TEXT PRIMARY KEY,
               user_id             BIGINT NOT NULL,
@@ -945,6 +955,8 @@ def init_db():
               ('total_bot_orders', '0'),
               ('total_bot_users', '0'),
               ('asiacell_text', '⚠️ الشحن التلقائي عبر اسيا سيل غير متاح حالياً.\nيرجى التواصل مع المالك.'),
+              ('jewels_asiacell_text', '💎 لشحن المجوهرات عبر آسيا سيل، اتبع تعليمات التحويل ثم اضغط «التواصل مع المالك» لإرسال طلبك.'),
+              ('jewels_ewallet_text', '💎 لشحن المجوهرات عبر العملات الإلكترونية، اتبع تعليمات التحويل ثم اضغط «التواصل مع المالك» لإرسال طلبك.'),
               ('captcha_enabled', '0'),
               ('phone_verification_enabled', '1'),
               ('maintenance_mode', '0'),

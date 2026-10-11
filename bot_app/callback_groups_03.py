@@ -3406,6 +3406,24 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
             await q.edit_message_text(f"📲 النص الحالي لاسيا سيل:\n\n{cur}\n\nأرسل النص الجديد:")
             return
 
+        if data == "os:edit_jewels_asiacell" and is_own:
+            context.user_data["state"] = "os_await_jewels_asiacell_text"
+            cur = get_setting("jewels_asiacell_text") or ""
+            await q.edit_message_text(
+                "💎 تعليمات شحن المجوهرات عبر آسيا سيل\n\n"
+                f"النص الحالي:\n{cur}\n\nأرسل النص الجديد:"
+            )
+            return
+
+        if data == "os:edit_jewels_ewallet" and is_own:
+            context.user_data["state"] = "os_await_jewels_ewallet_text"
+            cur = get_setting("jewels_ewallet_text") or ""
+            await q.edit_message_text(
+                "💎 تعليمات شحن المجوهرات عبر العملات الإلكترونية\n\n"
+                f"النص الحالي:\n{cur}\n\nأرسل النص الجديد:"
+            )
+            return
+
         if data == "os:edit_join_reward" and is_own:
             cur = get_setting("join_channel_reward") or "45"
             context.user_data["state"] = "os_await_join_reward"
