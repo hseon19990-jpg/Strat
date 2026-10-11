@@ -145,6 +145,7 @@ def init_db():
               username     TEXT,
               full_name    TEXT,
               points       INTEGER DEFAULT 0,
+              jewels       BIGINT NOT NULL DEFAULT 0,
               invited_by   BIGINT DEFAULT 0,
               total_orders INTEGER DEFAULT 0,
               joined_at    TEXT DEFAULT CURRENT_DATE,
@@ -160,6 +161,10 @@ def init_db():
               quantity     INTEGER,
               cost_points  INTEGER DEFAULT 0,
               cost_stars   INTEGER DEFAULT 0,
+              cost_jewels  BIGINT NOT NULL DEFAULT 0,
+              payment_method TEXT NOT NULL DEFAULT 'points',
+              service_value_points INTEGER NOT NULL DEFAULT 0,
+              telegram_payment_id TEXT,
               api_order_id TEXT DEFAULT '',
               status       TEXT DEFAULT 'pending',
                order_code   TEXT,
@@ -168,6 +173,37 @@ def init_db():
                provider_cost_usd REAL DEFAULT 0,
                partial_refund_pts INTEGER DEFAULT 0,
                refund_points INTEGER DEFAULT 0
+          )""")
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS smm_payment_intents (
+              id                  BIGSERIAL PRIMARY KEY,
+              user_id             BIGINT NOT NULL,
+              service_id          INTEGER NOT NULL,
+              service_name        TEXT NOT NULL,
+              api_service_id      INTEGER NOT NULL,
+              panel               INTEGER NOT NULL DEFAULT 1,
+              link                TEXT NOT NULL,
+              quantity            INTEGER NOT NULL,
+              service_value_points INTEGER NOT NULL DEFAULT 0,
+              cost_stars          INTEGER NOT NULL DEFAULT 0,
+              cost_jewels         BIGINT NOT NULL DEFAULT 0,
+              payment_method      TEXT,
+              status              TEXT NOT NULL DEFAULT 'pending',
+              telegram_payment_id TEXT UNIQUE,
+              order_code          TEXT,
+              last_error          TEXT,
+              created_at          TIMESTAMPTZ DEFAULT NOW(),
+              updated_at          TIMESTAMPTZ DEFAULT NOW()
+          )""")
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS jewel_transactions (
+              id          BIGSERIAL PRIMARY KEY,
+              user_id     BIGINT NOT NULL,
+              amount      BIGINT NOT NULL,
+              transaction_type TEXT NOT NULL,
+              admin_id    BIGINT,
+              reference   TEXT,
+              created_at  TIMESTAMPTZ DEFAULT NOW()
           )""")
           c.execute("""
           CREATE TABLE IF NOT EXISTS services (
@@ -618,6 +654,16 @@ def init_db():
               active           INTEGER DEFAULT 1
           )""")
           for _alt in [
+              "ALTER TABLE users ADD COLUMN IF NOT EXISTS jewels BIGINT NOT NULL DEFAULT 0",
+              "ALTER TABLE orders ADD COLUMN IF NOT EXISTS cost_stars INTEGER NOT NULL DEFAULT 0",
+              "ALTER TABLE orders ADD COLUMN IF NOT EXISTS cost_jewels BIGINT NOT NULL DEFAULT 0",
+              "ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_method TEXT NOT NULL DEFAULT 'points'",
+              "ALTER TABLE orders ADD COLUMN IF NOT EXISTS service_value_points INTEGER NOT NULL DEFAULT 0",
+              "ALTER TABLE orders ADD COLUMN IF NOT EXISTS telegram_payment_id TEXT",
+              "CREATE UNIQUE INDEX IF NOT EXISTS orders_telegram_payment_id_unique "
+              "ON orders (telegram_payment_id) WHERE telegram_payment_id IS NOT NULL AND telegram_payment_id <> ''",
+              "CREATE INDEX IF NOT EXISTS smm_payment_intents_user_status_idx "
+              "ON smm_payment_intents (user_id, status, created_at DESC)",
               "ALTER TABLE channel_funding ADD COLUMN IF NOT EXISTS target_members INTEGER DEFAULT 0",
               "ALTER TABLE channel_funding ADD COLUMN IF NOT EXISTS current_members INTEGER DEFAULT 0",
               "ALTER TABLE channel_funding ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active'",
@@ -887,6 +933,7 @@ def init_db():
               ('daily_gift_points', '100'),
               ('referral_points', '30'),
               ('star_to_points', '250'),
+              ('raksh_points_per_jewel', '1000'),
               ('exchange_star_rate', '2000'),
               ('telegram_number_cost', '5000'),
               ('telegram_number_stars', '18'),

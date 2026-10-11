@@ -63,6 +63,22 @@ async def pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if query.from_user.id == uid_in_payload and query.total_amount == expected_stars:
                     valid = True
 
+        if payload.startswith("smm_stars:"):
+            parts = payload.split(":")
+            if len(parts) == 2 and parts[1].isdigit():
+                intent = get_smm_payment_intent(int(parts[1]), query.from_user.id)
+                if (
+                    intent
+                    and query.currency == "XTR"
+                    and intent.get("payment_method") == "stars"
+                    and validate_smm_stars_invoice(
+                        int(parts[1]),
+                        query.from_user.id,
+                        int(query.total_amount),
+                    )
+                ):
+                    valid = True
+
         if valid:
             await query.answer(ok=True)
         else:
@@ -92,6 +108,133 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
     payload = payment.invoice_payload
     user    = update.effective_user
     is_own  = (user.id == OWNER_ID)
+
+    if payload.startswith("smm_stars:"):
+        parts = payload.split(":")
+        if len(parts) != 2 or not parts[1].isdigit():
+            await update.message.reply_text(
+                "⚠️ بيانات طلب مواقع الرشق غير صالحة.",
+                reply_markup=main_menu_kb(is_own),
+            )
+            return
+
+        intent_id = int(parts[1])
+        charge_id = payment.telegram_payment_charge_id
+        claim_status, intent = claim_smm_stars_payment(
+            intent_id,
+            user.id,
+            int(payment.total_amount),
+            charge_id,
+        )
+        if claim_status == "duplicate_update":
+            await update.message.reply_text(
+                "✅ تمت معالجة هذا الدفع مسبقاً.",
+                reply_markup=main_menu_kb(is_own),
+            )
+            return
+
+        if claim_status == "duplicate_charge":
+            try:
+                await context.bot.refund_star_payment(
+                    user_id=user.id,
+                    telegram_payment_charge_id=charge_id,
+                )
+                await update.message.reply_text(
+                    "⚠️ تم رصد دفع مكرر لهذا الطلب، وأُعيدت النجوم الإضافية.",
+                    reply_markup=main_menu_kb(is_own),
+                )
+            except Exception:
+                logger.exception("تعذر رد نجوم دفعة SMM مكررة")
+                await _notify_owner_manual_star_purchase(
+                    context,
+                    f"⚠️ يلزم مراجعة دفعة نجوم مكررة لخدمات الرشق. المستخدم: {user.id}، "
+                    f"رقم العملية: {charge_id}",
+                )
+                await update.message.reply_text(
+                    "⚠️ وصل دفع مكرر وتعذر رد النجوم تلقائياً. تواصل مع المالك وأرسل رقم العملية.",
+                    reply_markup=main_menu_kb(is_own),
+                )
+            return
+
+        if claim_status != "claimed" or not intent:
+            try:
+                await context.bot.refund_star_payment(
+                    user_id=user.id,
+                    telegram_payment_charge_id=charge_id,
+                )
+                await update.message.reply_text(
+                    "⚠️ لم يعد هذا الطلب صالحاً؛ أُعيدت النجوم المدفوعة.",
+                    reply_markup=main_menu_kb(is_own),
+                )
+            except Exception:
+                logger.exception("تعذر رد نجوم دفع SMM لطلب غير صالح")
+                await _notify_owner_manual_star_purchase(
+                    context,
+                    f"⚠️ يلزم مراجعة دفع نجوم لطلب رشق غير صالح. المستخدم: {user.id}، "
+                    f"رقم العملية: {charge_id}",
+                )
+                await update.message.reply_text(
+                    "⚠️ تعذر بدء الطلب أو رد النجوم تلقائياً. تواصل مع المالك وأرسل رقم العملية.",
+                    reply_markup=main_menu_kb(is_own),
+                )
+            return
+
+        try:
+            result = await execute_smm_payment_intent(
+                context,
+                intent,
+                "stars",
+                int(payment.total_amount),
+                telegram_payment_id=charge_id,
+            )
+        except Exception:
+            # A transport or persistence error after an upstream submission is
+            # ambiguous; avoid charging/refunding blindly and alert the owner.
+            logger.exception("نتيجة طلب SMM بعد دفع النجوم غير مؤكدة")
+            finish_smm_payment_intent(
+                intent_id, "needs_review", "order submission outcome uncertain"
+            )
+            await _notify_owner_manual_star_purchase(
+                context,
+                f"⚠️ يلزم التحقق من طلب مواقع الرشق بعد دفع النجوم. "
+                f"المستخدم: {user.id}، الطلب: {intent_id}، العملية: {charge_id}",
+            )
+            await update.message.reply_text(
+                "⚠️ تم استلام النجوم، لكن تعذر تأكيد نتيجة الطلب تلقائياً. أبلغت المالك للمراجعة؛ لا تعِد الدفع.",
+                reply_markup=main_menu_kb(is_own),
+            )
+            return
+
+        if result.get("ok"):
+            return
+
+        try:
+            await context.bot.refund_star_payment(
+                user_id=user.id,
+                telegram_payment_charge_id=charge_id,
+            )
+            finish_smm_payment_intent(
+                intent_id, "refunded", str(result.get("error") or "provider_error")
+            )
+            await update.message.reply_text(
+                "⚠️ تعذر إرسال الطلب إلى موقع الرشق، وأُعيدت النجوم تلقائياً.",
+                reply_markup=main_menu_kb(is_own),
+            )
+        except Exception:
+            logger.exception("تعذر رد نجوم طلب SMM بعد رفض موقع الرشق")
+            finish_smm_payment_intent(
+                intent_id, "refund_required", str(result.get("error") or "refund_failed")
+            )
+            await _notify_owner_manual_star_purchase(
+                context,
+                f"⚠️ تعذر رد نجوم طلب مواقع الرشق. المستخدم: {user.id}، "
+                f"الطلب: {intent_id}، العملية: {charge_id}",
+            )
+            await update.message.reply_text(
+                "⚠️ تعذر تنفيذ الطلب ورد النجوم تلقائياً. أبلغت المالك لمتابعة الاسترداد.",
+                reply_markup=main_menu_kb(is_own),
+            )
+        return
 
     if payload.startswith("charge_stars:"):
         parts = payload.split(":")

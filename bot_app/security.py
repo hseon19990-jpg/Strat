@@ -1243,6 +1243,48 @@ def add_points(user_id: int, pts: int):
     with db_conn() as c:
         c.execute("UPDATE users SET points=points+%s WHERE user_id=%s", (pts, user_id))
 
+def add_jewels(user_id: int, amount: int, admin_id: int | None = None, reference: str = "") -> int:
+    """يضيف مجوهرات ويسجل سبب الحركة دون المساس برصيد النقاط."""
+    amount = int(amount)
+    if amount <= 0:
+        raise ValueError("Jewel amount must be greater than zero")
+    with db_conn() as c:
+        updated = c.execute(
+            "UPDATE users SET jewels=COALESCE(jewels,0)+%s "
+            "WHERE user_id=%s RETURNING jewels",
+            (amount, user_id),
+        ).fetchone()
+        if not updated:
+            raise ValueError(f"Cannot credit jewels to unknown user {user_id}")
+        c.execute(
+            "INSERT INTO jewel_transactions "
+            "(user_id,amount,transaction_type,admin_id,reference) "
+            "VALUES (%s,%s,%s,%s,%s)",
+            (user_id, amount, "gift" if admin_id else "refund", admin_id, reference or None),
+        )
+    return int(updated["jewels"])
+
+def deduct_jewels(user_id: int, amount: int, reference: str = "") -> int | None:
+    """يخصم المجوهرات ذرياً، ويعيد الرصيد الجديد أو None عند عدم كفاية الرصيد."""
+    amount = int(amount)
+    if amount <= 0:
+        raise ValueError("Jewel amount must be greater than zero")
+    with db_conn() as c:
+        updated = c.execute(
+            "UPDATE users SET jewels=COALESCE(jewels,0)-%s "
+            "WHERE user_id=%s AND COALESCE(jewels,0)>=%s RETURNING jewels",
+            (amount, user_id, amount),
+        ).fetchone()
+        if not updated:
+            return None
+        c.execute(
+            "INSERT INTO jewel_transactions "
+            "(user_id,amount,transaction_type,reference) "
+            "VALUES (%s,%s,'spend',%s)",
+            (user_id, -amount, reference or None),
+        )
+    return int(updated["jewels"])
+
 def deduct_points(user_id: int, pts: int) -> bool:
     """خصم نقاط بشكل ذري باستخدام UPDATE مشروط — آمن للاستخدام المتزامن.
     إذا كان المستخدم مقيّداً (referral_points_blocked) يُرجع False مباشرةً دون خصم."""

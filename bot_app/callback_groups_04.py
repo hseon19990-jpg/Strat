@@ -306,13 +306,48 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
         if data == "os:manage_points" and is_own:
             reset_owner_flow(context)
             await q.edit_message_text(
-                "💰 *منح / خصم نقاط*\n\nاختر العملية:",
+                "💰 *إدارة النقاط والمجوهرات*\n\nاختر العملية:",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("➕ منح نقاط لعضو", callback_data="os:give_points")],
                     [InlineKeyboardButton("➖ خصم نقاط من عضو", callback_data="os:deduct_points")],
+                    [InlineKeyboardButton("💎 منح مجوهرات لعضو", callback_data="os:give_jewels")],
+                    [InlineKeyboardButton("⚙️ سعر المجوهرات لخدمات الرشق", callback_data="os:raksh_jewel_rate")],
                     [InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")],
                 ])
+            )
+            return
+
+        if data == "os:give_jewels" and is_own:
+            begin_owner_flow(
+                context,
+                "jewels",
+                "os_await_jewels_target",
+            )
+            await q.edit_message_text(
+                "💎 *منح مجوهرات*\n\nأرسل ID المستخدم أو @يوزرنيم:",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 إلغاء", callback_data="os:manage_points")
+                ]]),
+            )
+            return
+
+        if data == "os:raksh_jewel_rate" and is_own:
+            begin_owner_flow(
+                context,
+                "raksh_jewel_rate",
+                "os_await_raksh_jewel_rate",
+            )
+            current_rate = int(get_setting("raksh_points_per_jewel") or "1000")
+            await q.edit_message_text(
+                "⚙️ *تحديد سعر المجوهرات لخدمات مواقع الرشق*\n\n"
+                f"السعر الحالي: مجوهرة واحدة لكل {current_rate:,} نقطة من قيمة الخدمة.\n\n"
+                "أرسل عدد نقاط قيمة الخدمة التي تعادل مجوهرة واحدة:",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 إلغاء", callback_data="os:manage_points")
+                ]]),
             )
             return
 

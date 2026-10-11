@@ -524,13 +524,22 @@ def _render_order_block(o) -> str:
     category = CATEGORY_MAP.get(o.get("s_category"), o.get("s_category") or "—")
     status_map = {"pending": "⏳ قيد التنفيذ", "completed": "✅ مكتمل", "cancelled": "❌ ملغي"}
     status = status_map.get(o["status"], o["status"])
+    payment_method = o.get("payment_method") or "points"
+    if payment_method == "stars":
+        payment_text = f"{int(o.get('cost_stars') or 0):,} نجمة"
+    elif payment_method == "jewels":
+        payment_text = f"{int(o.get('cost_jewels') or 0):,} مجوهرة"
+    elif payment_method == "free":
+        payment_text = "مجاناً"
+    else:
+        payment_text = f"{int(o.get('cost_points') or 0):,} نقطة"
     return (
         f"🧾 *كود الطلب:* {o['order_code']}\n"
         f"👤 *صاحب الطلب:* {full_name} ({uname}) — ID: `{o['user_id']}`\n"
         f"📦 *نوع الطلب:* {service_name} ({category})\n"
         f"🔗 *الرابط:* {o['link'] or '—'}\n"
         f"🔢 *الكمية:* {o['quantity']}\n"
-        f"💰 *التكلفة:* {o['cost_points']} نقطة" + (f" + {o['cost_stars']} نجمة" if o.get("cost_stars") else "") + "\n"
+        f"💳 *التكلفة:* {payment_text}\n"
         f"📶 *الحالة:* {status}\n"
         f"🆔 *رقم API:* {o['api_order_id'] or '—'}\n"
         f"🕒 *الوقت:* {o['created_at']}\n"
@@ -688,12 +697,22 @@ def _render_member_order_details(
     except (TypeError, ValueError):
         pass
 
+    payment_method = order.get("payment_method") or "points"
+    if payment_method == "stars":
+        payment_text = f"{int(order.get('cost_stars') or 0):,} نجمة"
+    elif payment_method == "jewels":
+        payment_text = f"{int(order.get('cost_jewels') or 0):,} مجوهرة"
+    elif payment_method == "free":
+        payment_text = "مجاناً"
+    else:
+        payment_text = f"{int(order.get('cost_points') or 0):,} نقطة"
+
     return (
         f"📦 *تفاصيل الطلب رقم {order_number}*\n\n"
         f"🧾 كود الطلب: `{md_escape(order.get('order_code') or '—')}`\n"
         f"🔹 الخدمة: {md_escape(order.get('s_name_ar') or '—')}\n"
         f"🔗 الرابط: {md_escape(order.get('link') or '—')}\n"
-        f"💰 السعر: *{int(order.get('cost_points') or 0):,} نقطة*"
+        f"💳 السعر: *{payment_text}*"
         f"{provider_cost_text}\n"
         f"🔢 الكمية المطلوبة: {quantity:,}\n"
         f"✅ تم تنفيذ: {executed_text}\n"
@@ -2292,6 +2311,7 @@ def format_service_order_group_message(
     cost: int,
     code: str,
     order_time=None,
+    currency_label: str = "نقطة",
 ) -> str:
     """يبني رسالة موحّدة لطلبات الخدمات في كروب الطلبات."""
     if order_time is None:
@@ -2300,11 +2320,12 @@ def format_service_order_group_message(
         order_time = order_time.replace(tzinfo=timezone.utc)
     iraq_time = order_time.astimezone(timezone(timedelta(hours=3)))
     time_text = iraq_time.strftime("%Y-%m-%d %H:%M")
+    price_text = "مجاناً" if currency_label == "مجاناً" else f"{cost} {currency_label}"
 
     return (
         "🆕 <b>طلب جديد</b>\n"
         f"📱 التطبيق: {html.escape(str(service_name or 'الخدمة'), quote=False)}\n"
-        f"💰 السعر: {cost} نقطة\n"
+        f"💰 السعر: {price_text}\n"
         f"🔢 العدد: {quantity}\n"
         f"🕒 الوقت: {time_text} (توقيت العراق)\n"
         f"📌 الكود: {html.escape(str(code), quote=False)}"

@@ -28,6 +28,7 @@ _SECTION_NAMES = (
     "callback_groups_03",
     "callback_groups_04",
     "callbacks",
+    "smm_payments",
     "payments",
     "reaction_operations",
     "application",

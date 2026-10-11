@@ -16,6 +16,38 @@ def fmt_price(n) -> str:
         return str(n)
     return str(int(f)) if f == int(f) else str(f)
 
+SMM_POINTS_PER_STAR = 1000
+
+def smm_stars_cost(points: int) -> int:
+    """تحويل سعر خدمة مواقع الرشق إلى نجوم مع التقريب للأعلى."""
+    try:
+        points = max(0, int(points or 0))
+    except (TypeError, ValueError):
+        points = 0
+    return (points + SMM_POINTS_PER_STAR - 1) // SMM_POINTS_PER_STAR
+
+def smm_jewels_cost(points: int, points_per_jewel: int | None = None) -> int:
+    """تحويل قيمة الخدمة إلى مجوهرات حسب المعدل الذي يحدده المالك."""
+    try:
+        points = max(0, int(points or 0))
+    except (TypeError, ValueError):
+        points = 0
+    if points_per_jewel is None:
+        try:
+            points_per_jewel = int(get_setting("raksh_points_per_jewel") or "1000")
+        except (TypeError, ValueError):
+            points_per_jewel = 1000
+    points_per_jewel = max(1, int(points_per_jewel or 1000))
+    return (points + points_per_jewel - 1) // points_per_jewel
+
+def smm_price_rates(price_per_thousand: float) -> tuple[int, int]:
+    """يعرض أسعار النجوم والمجوهرات لخدمة مقدارها 1000 وحدة."""
+    try:
+        points = max(0, int(float(price_per_thousand or 0)))
+    except (TypeError, ValueError):
+        points = 0
+    return smm_stars_cost(points), smm_jewels_cost(points)
+
 CATEGORY_MAP = {
     "followers":    "رشق متابعين",
     "views":        "رشق مشاهدات",

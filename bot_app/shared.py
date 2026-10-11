@@ -449,6 +449,8 @@ _OWNER_FLOW_PREFIXES = (
     "ns_",
     "edit_svc_",
     "points_",
+    "jewels_",
+    "raksh_jewel_",
     "new_promo_",
     "new_num_code",
 )

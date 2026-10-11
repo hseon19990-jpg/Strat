@@ -270,8 +270,9 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 context.user_data["state"] = "main_menu"
                 db_user = get_user(user.id)
                 pts = db_user["points"] if db_user else 0
+                jewels = int((db_user or {}).get("jewels") or 0)
                 await q.edit_message_text(
-                    f"🏠 *القائمة الرئيسية*\n💰 رصيدك: {pts} نقطة",
+                    f"🏠 *القائمة الرئيسية*\n💰 رصيدك: {pts} نقطة\n💎 مجوهراتك: {jewels:,}",
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=main_menu_kb(True),
                 )
@@ -283,7 +284,12 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             context.user_data["state"] = "main_menu"
             db_user = get_user(user.id)
             pts = db_user["points"] if db_user else 0
-            menu_text = f"🏠 *القائمة الرئيسية*\n💰 رصيدك: {pts} نقطة"
+            jewels = int((db_user or {}).get("jewels") or 0)
+            menu_text = (
+                f"🏠 *القائمة الرئيسية*\n"
+                f"💰 رصيدك: {pts} نقطة\n"
+                f"💎 مجوهراتك: {jewels:,}"
+            )
             menu_kb = main_menu_kb(
                 is_own,
                 is_supervisor_user=is_supervisor_cb,
@@ -596,11 +602,17 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                     )
                 ])
             detail_rows.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"cat:{cat}")])
+            stars_rate, jewels_rate = smm_price_rates(svc.get("price_per_point", 0))
             await q.edit_message_text(
                 f"🔹 *{md_escape(svc['name_ar'])}*\n\n"
                 f"📉 الحد الأدنى: {svc['min_qty']}\n"
                 f"📈 الحد الأعلى: {svc['max_qty']}\n"
-                f"💰 السعر: {fmt_price(svc['price_per_point'])} نقطة / 1000 وحدة\n"
+                + (
+                    f"💰 السعر: {fmt_price(svc['price_per_point'])} نقطة / 1000 وحدة\n"
+                    if is_own else
+                    f"⭐ السعر: {stars_rate} نجمة / 1000 وحدة\n"
+                    f"💎 السعر: {jewels_rate} مجوهرة / 1000 وحدة\n"
+                )
                 + (f"🟢 الحالة: {'✅ مفعّلة' if svc['active'] else '❌ معطّلة'}\n\n" if is_own else "\n")
                 + ("🔢 أرسل *الكمية* المطلوبة:" if not is_own else "اختر الإجراء المطلوب:"),
                 parse_mode=ParseMode.MARKDOWN,
@@ -711,11 +723,13 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 return
             cat = context.user_data.get("smm_cat", svc.get("category", ""))
             context.user_data["state"] = "await_smm_qty"
+            stars_rate, jewels_rate = smm_price_rates(svc.get("price_per_point", 0))
             await q.edit_message_text(
                 f"🔹 *{md_escape(svc['name_ar'])}*\n\n"
                 f"📉 الحد الأدنى: {svc['min_qty']}\n"
                 f"📈 الحد الأعلى: {svc['max_qty']}\n"
-                f"💰 السعر: {fmt_price(svc['price_per_point'])} نقطة / 1000 وحدة\n\n"
+                f"⭐ السعر: {stars_rate} نجمة / 1000 وحدة\n"
+                f"💎 السعر: {jewels_rate} مجوهرة / 1000 وحدة\n\n"
                 f"🔢 أرسل *الكمية* المطلوبة:",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
@@ -734,13 +748,197 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 return
             context.user_data["state"] = "await_smm_link"
             await q.edit_message_text(
-                f"✅ الكمية: {qty} | التكلفة: {cost} نقطة\n\n"
+                f"✅ الكمية: {qty}\n"
+                f"⭐ السعر التقريبي: {smm_stars_cost(cost)} نجمة\n"
+                f"💎 السعر التقريبي: {smm_jewels_cost(cost)} مجوهرة\n\n"
                 f"📎 أرسل *رابط* الحساب/القناة/البوست:",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔙 رجوع (تغيير الكمية)", callback_data="smm_back:qty")]
                 ])
             )
+            return
+
+        if data.startswith("smm:cancel:"):
+            parts = data.split(":")
+            if len(parts) != 3 or not parts[2].isdigit():
+                await q.answer("⚠️ بيانات الطلب غير صالحة.", show_alert=True)
+                return
+            intent_id = int(parts[2])
+            with db_conn() as c:
+                c.execute(
+                    """
+                    UPDATE smm_payment_intents
+                    SET status='cancelled', updated_at=NOW()
+                    WHERE id=%s AND user_id=%s AND status='pending'
+                    """,
+                    (intent_id, user.id),
+                )
+            context.user_data["state"] = "main_menu"
+            await q.edit_message_text("❌ تم إلغاء الطلب.", reply_markup=main_menu_kb(is_own))
+            return
+
+        if data.startswith("smm:pay:"):
+            parts = data.split(":")
+            if len(parts) != 4 or not parts[3].isdigit():
+                await q.answer("⚠️ بيانات الدفع غير صالحة.", show_alert=True)
+                return
+            method = parts[2]
+            intent_id = int(parts[3])
+            if method == "stars":
+                intent = start_smm_stars_invoice(intent_id, user.id)
+                if not intent:
+                    await q.answer("⚠️ انتهت صلاحية الطلب أو تمت معالجته.", show_alert=True)
+                    return
+                try:
+                    await context.bot.send_invoice(
+                        chat_id=user.id,
+                        title=str(intent["service_name"])[:32],
+                        description=(
+                            f"{int(intent['quantity']):,} وحدة | "
+                            f"{int(intent['cost_stars']):,} نجمة"
+                        )[:255],
+                        payload=f"smm_stars:{intent_id}",
+                        provider_token="",
+                        currency="XTR",
+                        prices=[LabeledPrice("خدمة مواقع الرشق", int(intent["cost_stars"]))],
+                    )
+                except Exception:
+                    reset_smm_stars_invoice(intent_id, user.id)
+                    logger.exception("تعذر إرسال فاتورة نجوم لخدمة مواقع الرشق")
+                    await q.answer("تعذر إرسال الفاتورة الآن. حاول مرة أخرى.", show_alert=True)
+                    return
+                await q.edit_message_text(
+                    "⭐ أرسلت فاتورة النجوم إلى محادثتك. أكمل الدفع من رسالة الفاتورة."
+                )
+                return
+
+            if method == "jewels":
+                claim_status, intent, _new_balance = claim_smm_jewel_payment(
+                    intent_id, user.id
+                )
+                if claim_status == "insufficient":
+                    await q.answer("💎 رصيد المجوهرات غير كافٍ.", show_alert=True)
+                    return
+                if claim_status == "expired":
+                    await q.answer("⚠️ انتهت صلاحية الطلب. ابدأ طلباً جديداً.", show_alert=True)
+                    return
+                if claim_status != "claimed" or not intent:
+                    await q.answer("⚠️ انتهت صلاحية الطلب أو تمت معالجته.", show_alert=True)
+                    return
+                try:
+                    result = await execute_smm_payment_intent(
+                        context,
+                        intent,
+                        "jewels",
+                        int(intent["cost_jewels"]),
+                    )
+                except Exception:
+                    logger.exception("تعذر إكمال طلب رشق مدفوع بالمجوهرات")
+                    finish_smm_payment_intent(
+                        intent_id, "needs_review", "order submission outcome uncertain"
+                    )
+                    try:
+                        if OWNER_ID:
+                            await context.bot.send_message(
+                                OWNER_ID,
+                                f"⚠️ يلزم التحقق من طلب رشق بعد دفع المجوهرات. "
+                                f"المستخدم: {user.id}، الطلب: {intent_id}",
+                            )
+                    except Exception:
+                        logger.exception("تعذر تنبيه المالك بطلب مجوهرات قيد المراجعة")
+                    await q.edit_message_text(
+                        "⚠️ تم حجز المجوهرات، لكن نتيجة الطلب غير مؤكدة. أبلغت المالك للمراجعة؛ لا تعِد الطلب الآن.",
+                        reply_markup=main_menu_kb(is_own),
+                    )
+                    return
+                if not result.get("ok"):
+                    try:
+                        add_jewels(
+                            user.id,
+                            int(intent["cost_jewels"]),
+                            reference=f"smm_refund:{intent_id}",
+                        )
+                        finish_smm_payment_intent(
+                            intent_id,
+                            "refunded",
+                            str(result.get("error") or "provider_error"),
+                        )
+                    except Exception:
+                        logger.exception("تعذر رد مجوهرات طلب الرشق")
+                        try:
+                            if OWNER_ID:
+                                await context.bot.send_message(
+                                    OWNER_ID,
+                                    f"⚠️ تعذر رد مجوهرات طلب رشق فاشل. "
+                                    f"المستخدم: {user.id}، الطلب: {intent_id}",
+                                )
+                        except Exception:
+                            logger.exception("تعذر تنبيه المالك بفشل رد المجوهرات")
+                        await q.edit_message_text(
+                            f"⚠️ تعذر إرسال الطلب ورد المجوهرات تلقائياً. أبلغت المالك للمراجعة. رقم الطلب: {intent_id}",
+                            reply_markup=main_menu_kb(is_own),
+                        )
+                        return
+                    await q.edit_message_text(
+                        "⚠️ تعذر إرسال الطلب إلى موقع الرشق، وأُعيدت المجوهرات إلى رصيدك.",
+                        reply_markup=main_menu_kb(is_own),
+                    )
+                    return
+                context.user_data["state"] = "main_menu"
+                await q.edit_message_text(
+                    f"✅ تم قبول طلبك.\n📌 كود الطلب: <code>{result['order_code']}</code>",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=main_menu_kb(is_own),
+                )
+                return
+
+            if method == "free":
+                claim_status, intent = claim_smm_free_order(intent_id, user.id)
+                if claim_status != "claimed" or not intent:
+                    await q.answer("⚠️ انتهت صلاحية الطلب أو تمت معالجته.", show_alert=True)
+                    return
+                try:
+                    result = await execute_smm_payment_intent(
+                        context, intent, "free", 0
+                    )
+                except Exception:
+                    logger.exception("تعذر إكمال طلب الرشق المجاني")
+                    finish_smm_payment_intent(
+                        intent_id, "needs_review", "free order submission outcome uncertain"
+                    )
+                    try:
+                        if OWNER_ID:
+                            await context.bot.send_message(
+                                OWNER_ID,
+                                f"⚠️ يلزم التحقق من طلب رشق مجاني. المستخدم: {user.id}، "
+                                f"الطلب: {intent_id}",
+                            )
+                    except Exception:
+                        logger.exception("تعذر تنبيه المالك بطلب رشق مجاني قيد المراجعة")
+                    await q.edit_message_text(
+                        "⚠️ تعذر تأكيد نتيجة الطلب المجاني تلقائياً. أبلغت المالك للمراجعة؛ لا تعِد الطلب الآن.",
+                        reply_markup=main_menu_kb(is_own),
+                    )
+                    return
+                if not result.get("ok"):
+                    finish_smm_payment_intent(
+                        intent_id, "failed", str(result.get("error") or "provider_error")
+                    )
+                    await q.edit_message_text(
+                        "⚠️ تعذر إرسال الطلب إلى موقع الرشق. حاول لاحقاً.",
+                        reply_markup=main_menu_kb(is_own),
+                    )
+                    return
+                context.user_data["state"] = "main_menu"
+                await q.edit_message_text(
+                    f"✅ تم قبول الطلب المجاني.\n📌 كود الطلب: <code>{result['order_code']}</code>",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=main_menu_kb(is_own),
+                )
+                return
+
+            await q.answer("⚠️ طريقة الدفع غير متاحة.", show_alert=True)
             return
 
         if data.startswith('confirm_forced_ref:'):
@@ -751,171 +949,25 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             await _handle_confirm_mansub(update, context, user, q, is_own, data)
             return
 
+        # Legacy buttons must never charge points for SMM site orders.
         if data.startswith("confirm_order:"):
-            action = data.split(":")[1]
-            if context.user_data.get("state") != "confirm_smm":
-                await q.edit_message_text("⚠️ انتهت صلاحية هذا الطلب. ابدأ من جديد.", reply_markup=main_menu_kb(is_own))
-                return
-            if action == "yes":
-                svc  = context.user_data.get("smm_svc", {})
-                qty  = context.user_data.get("smm_qty", 0)
-                cost = context.user_data.get("smm_cost", 0)
-                cost = service_points_cost(user.id, cost)
-                link = context.user_data.get("smm_link", "")
-                panel = svc.get("panel", 1)
-
-                # افحص رصيد مزود الرشق قبل خصم نقاط المستخدم.
-                balance_response = await asyncio.to_thread(smm_request, "balance", panel=panel)
-                provider_balance = provider_rate = required_balance = None
-                try:
-                    provider_balance = float(
-                        str(balance_response.get("balance", "")).replace(",", "").strip()
-                    )
-                    provider_info = await asyncio.to_thread(
-                        smm_service_info, svc["api_service_id"], panel=panel
-                    )
-                    provider_rate = float(provider_info.get("rate", 0) or 0)
-                    required_balance = (provider_rate * qty) / 1000
-                except (AttributeError, TypeError, ValueError, KeyError):
-                    # إذا تعذر تفسير رد الرصيد، يستمر مسار API القديم بالتعويض عند الرفض.
-                    pass
-
-                if (
-                    provider_balance is not None
-                    and provider_rate is not None
-                    and provider_rate > 0
-                    and required_balance is not None
-                    and provider_balance < required_balance
-                ):
-                    currency = str(balance_response.get("currency") or "USD")
-                    warning = (
-                        "⚠️ رصيد موقع الرشق غير كافٍ لتنفيذ طلب جديد\n"
-                        f"الخدمة: {svc.get('name_ar') or 'غير معروفة'}\n"
-                        f"الرصيد الحالي: {provider_balance:.4f} {currency}\n"
-                        f"المطلوب تقريباً: {required_balance:.4f} {currency}\n"
-                        f"المستخدم: {user.id}"
-                    )
-                    try:
-                        if OWNER_ID:
-                            await context.bot.send_message(OWNER_ID, warning)
-                    except Exception as notify_error:
-                        logger.warning(f"تعذر إرسال تنبيه نقص رصيد المزود للمالك: {notify_error}")
-                    await q.edit_message_text(
-                        "⚠️ حدث خطأ مؤقت، يرجى المحاولة مرة أخرى لاحقاً.\n"
-                        "💰 تمت إعادة نقاطك بالكامل.",
-                        reply_markup=main_menu_kb(is_own),
-                    )
-                    context.user_data["state"] = "main_menu"
-                    return
-
-                if not deduct_points(user.id, cost):
-                    await q.edit_message_text("❌ نقاطك غير كافية.", reply_markup=main_menu_kb(is_own))
-                    context.user_data["state"] = "main_menu"
-                    return
-                api_res = await asyncio.to_thread(smm_create_order, svc["api_service_id"], link, qty, panel=svc.get("panel", 1))
-                if "error" in api_res or not api_res.get("order"):
-                    add_points(user.id, cost)
-                    api_error_text = str(api_res.get("error", "") or "").casefold()
-                    provider_balance_error = any(
-                        marker in api_error_text
-                        for marker in (
-                            "insufficient balance",
-                            "insufficient funds",
-                            "not enough balance",
-                            "low balance",
-                            "رصيد غير كاف",
-                            "الرصيد غير كاف",
-                            "رصيد الموقع",
+            action = data.split(":")[1] if ":" in data else ""
+            if action == "no":
+                intent_id = context.user_data.get("smm_intent_id")
+                if intent_id:
+                    with db_conn() as c:
+                        c.execute(
+                            "UPDATE smm_payment_intents SET status='cancelled', updated_at=NOW() "
+                            "WHERE id=%s AND user_id=%s AND status='pending'",
+                            (intent_id, user.id),
                         )
-                    )
-                    if provider_balance_error:
-                        owner_warning = (
-                            "⚠️ تعذر تنفيذ طلب بسبب عدم كفاية رصيد موقع الرشق\n"
-                            f"الخدمة: {svc.get('name_ar') or 'غير معروفة'}\n"
-                            f"الكمية: {qty}\n"
-                            f"المستخدم: {user.id}\n"
-                            f"تفاصيل الموقع: {api_res.get('error') or 'غير متوفرة'}"
-                        )
-                        try:
-                            if OWNER_ID:
-                                await context.bot.send_message(OWNER_ID, owner_warning)
-                        except Exception as notify_error:
-                            logger.warning(f"تعذر إرسال تنبيه نقص رصيد المزود للمالك: {notify_error}")
-                        await q.edit_message_text(
-                            "⚠️ حدث خطأ مؤقت، يرجى المحاولة مرة أخرى لاحقاً.\n"
-                            "💰 تمت إعادة نقاطك بالكامل.",
-                            reply_markup=main_menu_kb(is_own),
-                        )
-                    else:
-                        err_msg = md_escape(api_res.get("error", "خطأ غير معروف من الموقع"))
-                        await q.edit_message_text(
-                            f"❌ *فشل الطلب:* {err_msg}\n✅ تمت إعادة نقاطك.\n\n"
-                            f"{LINK_ERROR_GUIDANCE}",
-                            parse_mode=ParseMode.MARKDOWN,
-                            reply_markup=main_menu_kb(is_own)
-                        )
-                    context.user_data["state"] = "main_menu"
-                    return
-                if provider_rate is None or provider_rate <= 0:
-                    try:
-                        provider_info = await asyncio.to_thread(
-                            smm_service_info,
-                            svc["api_service_id"],
-                            panel=panel,
-                        )
-                        provider_rate = float(provider_info.get("rate", 0) or 0)
-                    except (AttributeError, TypeError, ValueError, KeyError):
-                        provider_rate = 0
-                provider_cost_usd = (
-                    (provider_rate * qty) / 1000
-                    if provider_rate > 0 and qty > 0
-                    else 0
-                )
-                api_oid = str(api_res.get("order", ""))
-                code    = next_order_code(user.id)
-                with db_conn() as c:
-                    c.execute(
-                        "INSERT INTO orders "
-                        "(user_id,service_id,link,quantity,cost_points,api_order_id,"
-                        "order_code,provider_rate_usd,provider_cost_usd) "
-                        "VALUES (?,?,?,?,?,?,?,?,?)",
-                        (
-                            user.id,
-                            svc["id"],
-                            link,
-                            qty,
-                            cost,
-                            api_oid,
-                            code,
-                            provider_rate,
-                            provider_cost_usd,
-                        )
-                    )
-                await q.edit_message_text(
-                    f"✅ *تمت العملية بنجاح!*\n\n"
-                    f"🔹 الخدمة: {md_escape(svc['name_ar'])}\n"
-                    f"🔢 الكمية: {qty}\n"
-                    f"💰 التكلفة: {cost} نقطة",
-                    parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=main_menu_kb(is_own)
-                )
-                await context.bot.send_message(
-                    user.id,
-                    f"📌 *كود عمليتك هو:* `{code}`\nاحفظه قد تحتاجه لاحقاً.",
-                    parse_mode=ParseMode.MARKDOWN
-                )
-                await notify_group(
-                    context.application,
-                    format_service_order_group_message(
-                        svc.get("name_ar") or "الخدمة",
-                        qty,
-                        cost,
-                        code,
-                    )
-                )
-            else:
+                context.user_data["state"] = "main_menu"
                 await q.edit_message_text("❌ تم إلغاء الطلب.", reply_markup=main_menu_kb(is_own))
-            context.user_data["state"] = "main_menu"
+            else:
+                await q.answer(
+                    "تم إيقاف الدفع بالنقاط لخدمات مواقع الرشق. ابدأ الطلب مجدداً واختر النجوم أو المجوهرات.",
+                    show_alert=True,
+                )
             return
 
         if data == "contact_support":
