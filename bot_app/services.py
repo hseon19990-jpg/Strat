@@ -261,6 +261,7 @@ BUILTIN_DEFAULTS = {
         ("🐺 خدمات", "services_menu", 2),
          ("🛍 خدمات الرشق", "raksh_menu", 2),
          ("📱 تأجير أرقامي", "contributor_accounts", 2),
+        ("📤 مشاركة حساب", "share_account:menu", 2),
         ("💰 بيع حساب تيليجرام", "buyback:start", 2),
         ("👑 خدمات تيليجرام أسطورية", "legendary_services", 1),
         ("🦇 تمويل قناتك حقيقي", "fund_channel", 1),
@@ -432,6 +433,7 @@ GOTO_TARGETS = [
     ("ℹ️ معلوماتي", "my_info"),
     ("📱 ارقامي", "my_numbers"),
     ("📱 تأجير أرقامي", "contributor_accounts"),
+    ("📤 مشاركة حساب", "share_account:menu"),
     ("📺 تمويل قناتك حقيقي", "fund_channel"),
 ] + SERVICE_PLATFORMS + [(v, f"cat:{k}") for k, v in CATEGORY_MAP.items()]
 
