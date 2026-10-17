@@ -239,6 +239,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+    if update.message.document and state.startswith("buyback_"):
+        try:
+            if await handle_buyback_document(update, context):
+                return
+        except Exception as exc:
+            logger.warning("فشل معالجة ملف بيع الحساب للمستخدم %s: %s", user.id, type(exc).__name__)
+            await update.message.reply_text("⚠️ تعذر معالجة الملف. أعد المحاولة أو ألغِ.", reply_markup=_buyback_cancel_markup())
+            return
+
     if state.startswith("buyback_"):
         try:
             if await handle_buyback_text(update, context, text):
