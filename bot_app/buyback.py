@@ -22,6 +22,8 @@ BUYBACK_ACTIVE_STATUSES = (
     "ready_for_payment",
 )
 
+BUYBACK_SESSION_MAX_BYTES = 5 * 1024 * 1024
+
 # Login clients live only for the short code/2FA hand-off flow.  Keep this
 # process-local and never persist the raw login code or 2FA password.
 _pending_buyback_logins = {}
@@ -208,7 +210,7 @@ async def _finish_buyback_login(update, context, user_id: int) -> bool:
         )
         return True
     except Exception as exc:
-        logger.warning(f"⚠️ فشل تجهيز طلب شراء الحساب للعضو {user_id}: {exc}")
+        logger.warning("فشل تجهيز طلب شراء الحساب للعضو %s: %s", user_id, type(exc).__name__)
         await update.message.reply_text(
             "❌ تعذر تجهيز الحساب للبيع. لم يتم إنشاء طلب شراء.",
             reply_markup=main_menu_kb(False),
@@ -218,6 +220,234 @@ async def _finish_buyback_login(update, context, user_id: int) -> bool:
     finally:
         _pending_buyback_logins.pop(user_id, None)
         await _disconnect_buyback_client(client)
+
+
+def _parse_buyback_session_upload(raw_bytes: bytes, filename: str) -> str | None:
+    """Extract exactly one Telethon/Pyrogram session without stock-import side effects."""
+    import base64 as _base64
+    import json as _json
+    import os as _os
+    import socket as _socket
+    import sqlite3 as _sqlite3
+    import struct as _struct
+    import tempfile as _tempfile
+
+    name = str(filename or "").strip().lower()
+    session_string = None
+    if name.endswith(".json"):
+        try:
+            payload = _json.loads(bytes(raw_bytes).decode("utf-8"))
+            if isinstance(payload, list):
+                if len(payload) != 1:
+                    return None
+                payload = payload[0]
+            if isinstance(payload, str):
+                session_string = _maybe_convert_session(payload.strip())
+            elif isinstance(payload, dict):
+                if "dc_id" in payload and "auth_key" in payload:
+                    session_string = pyrogram_json_to_telethon(payload)
+                else:
+                    candidate = payload.get("session_string") or payload.get("session") or ""
+                    if isinstance(candidate, str) and candidate.strip():
+                        session_string = _maybe_convert_session(candidate.strip())
+        except Exception:
+            return None
+    elif name.endswith(".session"):
+        temp_path = None
+        connection = None
+        try:
+            with _tempfile.NamedTemporaryFile(suffix=".session", delete=False) as temp_file:
+                temp_file.write(bytes(raw_bytes))
+                temp_path = temp_file.name
+            connection = _sqlite3.connect(f"file:{temp_path}?mode=ro", uri=True)
+            connection.row_factory = _sqlite3.Row
+            cursor = connection.cursor()
+            try:
+                rows = cursor.execute(
+                    "SELECT dc_id, server_address, port, auth_key FROM sessions LIMIT 2"
+                ).fetchall()
+            except _sqlite3.DatabaseError:
+                rows = []
+            if len(rows) > 1:
+                return None
+            if rows and rows[0]["auth_key"] and len(bytes(rows[0]["auth_key"])) == 256:
+                row = rows[0]
+                dc_id = int(row["dc_id"])
+                auth_key = bytes(row["auth_key"])
+                try:
+                    server_ip = _socket.inet_aton(str(row["server_address"]))
+                    server_port = int(row["port"])
+                except Exception:
+                    dc = _TG_DC.get(dc_id)
+                    if not dc:
+                        return None
+                    server_ip = _socket.inet_aton(dc[0])
+                    server_port = int(dc[1])
+                packed = _struct.pack(">B4sH256s", dc_id, server_ip, server_port, auth_key)
+                session_string = "1" + _base64.urlsafe_b64encode(packed).decode("ascii")
+            if not session_string:
+                try:
+                    rows = cursor.execute(
+                        "SELECT dc_id, auth_key FROM sessions LIMIT 2"
+                    ).fetchall()
+                except _sqlite3.DatabaseError:
+                    rows = []
+                if len(rows) > 1:
+                    return None
+                if rows and rows[0]["auth_key"] and len(bytes(rows[0]["auth_key"])) == 256:
+                    row = rows[0]
+                    dc_id = int(row["dc_id"])
+                    dc = _TG_DC.get(dc_id)
+                    if not dc:
+                        return None
+                    packed = _struct.pack(
+                        ">B4sH256s", dc_id, _socket.inet_aton(dc[0]), int(dc[1]), bytes(row["auth_key"])
+                    )
+                    session_string = "1" + _base64.urlsafe_b64encode(packed).decode("ascii")
+        except Exception:
+            return None
+        finally:
+            if connection is not None:
+                try:
+                    connection.close()
+                except Exception:
+                    pass
+            if temp_path:
+                try:
+                    _os.unlink(temp_path)
+                except OSError:
+                    pass
+    else:
+        return None
+
+    if not isinstance(session_string, str):
+        return None
+    session_string = session_string.strip()
+    if not session_string or len(session_string) > 8192:
+        return None
+    return session_string
+
+
+async def handle_buyback_document(update, context) -> bool:
+    """Accept a seller-owned .session/.json only inside the buyback upload step."""
+    user = update.effective_user
+    message = update.effective_message
+    document = getattr(message, "document", None) if message else None
+    if not user or not document or user.id == OWNER_ID:
+        return False
+    if is_user_banned(user.id):
+        await message.reply_text("🚫 تم حظرك من استخدام هذا البوت.")
+        return True
+    if is_maintenance_on():
+        await message.reply_text(MAINTENANCE_MESSAGE, parse_mode=ParseMode.MARKDOWN)
+        return True
+    try:
+        db_user = get_user(user.id)
+        if db_user and db_user.get("verified", 0):
+            unjoined = await get_unjoined_mandatory_channels(context, user.id)
+            if unjoined:
+                context.user_data["state"] = "await_mandatory_join"
+                await show_mandatory_gate(update, context, unjoined, edit=False, is_owner=False)
+                return True
+    except Exception as exc:
+        logger.warning("تعذر فحص بوابة رفع جلسة البيع للمستخدم %s: %s", user.id, type(exc).__name__)
+
+    state = context.user_data.get("state", "")
+    if state != "buyback_await_session_document":
+        if state == "buyback_session_await_password":
+            await message.reply_text("أرسل كلمة مرور التحقق بخطوتين كنص، أو اضغط إلغاء.", reply_markup=_buyback_cancel_markup())
+        else:
+            await message.reply_text("لرفع الجلسة كطريقة بيع، ابدأ من قسم بيع الحساب واختر رفع ملف الجلسة أولاً.")
+        return True
+
+    filename = str(getattr(document, "file_name", "") or "")
+    if not filename.lower().endswith((".session", ".json")):
+        await message.reply_text("⚠️ ارفع ملفاً واحداً بصيغة .session أو .json فقط.", reply_markup=_buyback_cancel_markup())
+        return True
+    file_size = getattr(document, "file_size", None)
+    if file_size is not None and int(file_size) > BUYBACK_SESSION_MAX_BYTES:
+        await message.reply_text("⚠️ حجم الملف أكبر من الحد المسموح (5 ميغابايت).", reply_markup=_buyback_cancel_markup())
+        return True
+    if not TELEGRAM_API_ID or not TELEGRAM_API_HASH:
+        context.user_data["state"] = "main_menu"
+        await message.reply_text("❌ إعدادات Telegram API غير مكتملة حالياً.", reply_markup=main_menu_kb(False))
+        return True
+
+    progress = await message.reply_text("⏳ جارٍ تنزيل الملف والتحقق من الجلسة...")
+    client = None
+    keep_client = False
+    try:
+        telegram_file = await context.bot.get_file(document.file_id)
+        raw_bytes = bytes(await telegram_file.download_as_bytearray())
+        if len(raw_bytes) > BUYBACK_SESSION_MAX_BYTES:
+            await progress.edit_text("⚠️ حجم الملف أكبر من الحد المسموح (5 ميغابايت). لم يُنشأ طلب بيع.")
+            return True
+        session_string = _parse_buyback_session_upload(raw_bytes, filename)
+        if not session_string:
+            await progress.edit_text("❌ تعذرت قراءة جلسة واحدة صالحة من الملف. لم يُنشأ طلب بيع.")
+            return True
+
+        client = TelegramClient(StringSession(session_string), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+        await asyncio.wait_for(client.connect(), timeout=20)
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+            context.user_data["state"] = "buyback_await_session_document"
+            await progress.edit_text("❌ الجلسة منتهية أو غير صالحة. لم يُنشأ طلب بيع؛ يمكنك رفع ملف آخر.")
+            return True
+        me = await asyncio.wait_for(client.get_me(), timeout=15)
+        phone = _normalize_buyback_phone(getattr(me, "phone", "") or "")
+        if not phone:
+            context.user_data["state"] = "buyback_await_session_document"
+            await progress.edit_text("❌ تعذر قراءة رقم الحساب من الجلسة. استخدم طريقة الرقم وكود الدخول بدلاً منها.")
+            return True
+        if _active_buyback_phone_exists(phone):
+            context.user_data["state"] = "main_menu"
+            await progress.edit_text("⚠️ هذا الحساب موجود مسبقاً في طلب بيع أو في المخزون.")
+            return True
+
+        password_state = await asyncio.wait_for(client(GetPasswordRequest()), timeout=15)
+        _pending_buyback_logins[user.id] = {
+            "client": client,
+            "phone": phone,
+            "current_password": None,
+            "uploaded_session": True,
+        }
+        keep_client = True
+        if getattr(password_state, "has_password", False):
+            context.user_data["state"] = "buyback_session_await_password"
+            await progress.edit_text(
+                chr(10).join([
+                    "🔒 تم التحقق من الجلسة للحساب " + _mask_buyback_phone(phone) + ".",
+                    "",
+                    "الحساب محمي بكلمة مرور التحقق بخطوتين. أرسل كلمة المرور الحالية للتحقق منها؛",
+                    "تبقى في الذاكرة فقط حتى تأكيد البيع ولا تُحفظ في قاعدة البيانات.",
+                    "",
+                    "لن يبدأ نقل الحساب إلا بعد تأكيدك النهائي.",
+                ]),
+                reply_markup=_buyback_cancel_markup(),
+            )
+            return True
+
+        context.user_data["state"] = "buyback_session_processing"
+        await progress.edit_text("✅ تم التحقق من الجلسة. أراجع تفاصيل طلب البيع الآن...")
+        return await _finish_buyback_login(update, context, user.id)
+    except Exception as exc:
+        logger.warning(
+            "تعذر التحقق من ملف جلسة بيع الحساب للمستخدم %s: %s",
+            user.id,
+            type(exc).__name__,
+        )
+        context.user_data["state"] = "buyback_await_session_document"
+        try:
+            await progress.edit_text("❌ تعذر التحقق من الملف الآن. لم يُنشأ طلب بيع؛ أعد المحاولة أو ألغِ.")
+        except Exception:
+            await message.reply_text("❌ تعذر التحقق من الملف الآن. لم يُنشأ طلب بيع؛ أعد المحاولة أو ألغِ.", reply_markup=_buyback_cancel_markup())
+        return True
+    finally:
+        if client is not None and not keep_client:
+            pending = _pending_buyback_logins.get(user.id)
+            if pending and pending.get("client") is client:
+                _pending_buyback_logins.pop(user.id, None)
+            await _disconnect_buyback_client(client)
 
 
 async def handle_buyback_text(update, context, text: str) -> bool:
@@ -329,6 +559,27 @@ async def handle_buyback_text(update, context, text: str) -> bool:
             context.user_data["state"] = "main_menu"
             await update.message.reply_text("❌ فشل التحقق.", reply_markup=main_menu_kb(False))
             return True
+        return await _finish_buyback_login(update, context, user.id)
+
+    if state == "buyback_session_await_password":
+        pending = _pending_buyback_logins.get(user.id)
+        if not pending or not pending.get("uploaded_session"):
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text("⚠️ انتهت جلسة رفع الملف. ابدأ من جديد.", reply_markup=main_menu_kb(False))
+            return True
+        password = (text or "").strip()
+        try:
+            password_state = await asyncio.wait_for(pending["client"](GetPasswordRequest()), timeout=15)
+            check = compute_check(password_state, password)
+            await asyncio.wait_for(pending["client"](CheckPasswordRequest(check)), timeout=15)
+        except PasswordHashInvalidError:
+            await update.message.reply_text("⚠️ كلمة المرور غير صحيحة. أرسلها مجدداً.", reply_markup=_buyback_cancel_markup())
+            return True
+        except Exception as exc:
+            logger.warning("تعذر التحقق من كلمة مرور 2FA لطلب شراء الحساب: %s", type(exc).__name__)
+            await update.message.reply_text("❌ تعذر التحقق الآن. أعد المحاولة أو ألغِ.", reply_markup=_buyback_cancel_markup())
+            return True
+        pending["current_password"] = password
         return await _finish_buyback_login(update, context, user.id)
 
     if state == "buyback_await_confirm":
@@ -532,12 +783,58 @@ async def handle_buyback_callback(update, context, q, data: str, user, is_owner:
             "💰 <b>بيع حساب تيليجرام</b>\n\n"
             "سيتم فحص ملكية الحساب أولاً. بعد موافقتك النهائية تُلغى الجلسات الأخرى، "
             "ويبقى الحساب تحت الحجز 48 ساعة. يتم دفع المبلغ بعد نجاح فحص 24 و48 ساعة.\n\n"
-            "⚠️ لا تستخدم هذه الخدمة لحساب لا تملكه، ولا ترسل كوداً لحساب شخص آخر.",
+            "⚠️ استخدم هذه الخدمة لحساب تملكه فقط. يمكنك التقديم برقم وكود الدخول أو برفع ملف الجلسة.",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("▶️ بدء بيع الحساب", callback_data="buyback:begin")],
+                [InlineKeyboardButton("📱 رقم + كود الدخول", callback_data="buyback:begin")],
+                [InlineKeyboardButton("📁 رفع ملف جلسة (.session / .json)", callback_data="buyback:begin_session")],
                 [InlineKeyboardButton("❌ إلغاء", callback_data="buyback:cancel")],
             ]),
+        )
+        return True
+
+    if data == "buyback:begin_session":
+        if is_owner:
+            await q.answer("هذا المسار مخصص للبائعين.", show_alert=True)
+            return True
+        if not is_buyback_visible():
+            await q.answer("هذا القسم غير متاح حالياً.", show_alert=True)
+            return True
+        await _clear_buyback_pending(user.id)
+        old_offer_id = context.user_data.pop("buyback_offer_id", None)
+        if old_offer_id:
+            _pending_buyback_passwords.pop(int(old_offer_id), None)
+        context.user_data["state"] = "buyback_await_session_consent"
+        await q.edit_message_text(
+            chr(10).join([
+                "📁 رفع الجلسة يمنح البوت إمكانية الدخول إلى الحساب. بعد تأكيدك النهائي سيغيّر البوت كلمة مرور 2FA إن وجدت،",
+                "ويلغي الجلسات الأخرى ويحذف بريد الاسترداد، ثم يبدأ حجز الحساب وفحصه لمدة 48 ساعة.",
+                "",
+                "ارفع جلسة حساب تملكه أنت فقط. لن يبدأ نقل الحساب قبل تأكيد البيع في الخطوة التالية.",
+            ]),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ أملك الحساب وأوافق على المتابعة", callback_data="buyback:session_consent")],
+                [InlineKeyboardButton("❌ إلغاء", callback_data="buyback:cancel")],
+            ]),
+        )
+        return True
+
+    if data == "buyback:session_consent":
+        if is_owner or not is_buyback_visible():
+            await q.answer("هذا القسم غير متاح حالياً.", show_alert=True)
+            return True
+        if context.user_data.get("state") != "buyback_await_session_consent":
+            await q.answer("انتهت خطوة الموافقة. ابدأ من جديد.", show_alert=True)
+            return True
+        context.user_data["state"] = "buyback_await_session_document"
+        await q.edit_message_text(
+            chr(10).join([
+                "📎 أرسل ملفاً واحداً بصيغة .session أو .json.",
+                "",
+                "يجب أن يحتوي الملف على جلسة حساب واحد فقط. لن يُستورد إلى مخزون الحسابات العادي؛",
+                "سيُنشأ طلب بيع بعد التحقق، ويبقى تأكيد البيع النهائي بيدك.",
+            ]),
+            reply_markup=_buyback_cancel_markup(),
         )
         return True
 
