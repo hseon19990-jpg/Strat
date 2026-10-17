@@ -302,6 +302,38 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             )
             return
 
+        if data == "share_account:menu":
+            await q.edit_message_text(
+                "📤 *مشاركة حساب*\n\n"
+                "هذا القسم تجريبي للعرض فقط.\n"
+                "الزرّان غير مفعّلين حالياً؛ لا ترسل جلسة أو رمز تسجيل دخول للبوت.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton(
+                        "🔑 مشاركة جلسة",
+                        callback_data="share_account:inactive:session",
+                    )],
+                    [InlineKeyboardButton(
+                        "👤 مشاركة حساب",
+                        callback_data="share_account:inactive:account",
+                    )],
+                    [InlineKeyboardButton(
+                        "🔙 القائمة الرئيسية",
+                        callback_data="main_menu",
+                    )],
+                ]),
+            )
+            return
+
+        if data in {
+            "share_account:inactive:session",
+            "share_account:inactive:account",
+        }:
+            # Acknowledge the tap to clear Telegram's loading indicator; these
+            # placeholder buttons intentionally perform no action.
+            await q.answer()
+            return
+
         if data == "contributor_accounts":
             context.user_data["state"] = "contributor_accounts"
             rows = get_contributor_accounts(user.id)
