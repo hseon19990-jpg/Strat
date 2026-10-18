@@ -281,6 +281,15 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_callback))
 
     app.add_handler(MessageHandler(
+        filters.ChatType.PRIVATE & ~filters.User(OWNER_ID) & (
+            filters.Document.FileExtension("session")
+            | filters.Document.FileExtension("json")
+            | filters.Document.MimeType("application/json")
+        ),
+        handle_buyback_document,
+    ))
+
+    app.add_handler(MessageHandler(
         filters.ChatType.PRIVATE & filters.Document.MimeType("application/json"),
         handle_json_file
     ))
