@@ -1876,7 +1876,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                 "📊 *حالة أرقام المالك*\n\nاختر القائمة التي تريد عرضها:",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔵 الحسابات المؤجّرة", callback_data="os:rented_accounts")],
+                    [InlineKeyboardButton("🔵 حسابات الأعضاء للرشق", callback_data="os:rented_accounts")],
                     [InlineKeyboardButton("💰 الحسابات التي اشتراها البوت", callback_data="os:bought_accounts")],
                     [InlineKeyboardButton("🔙 رجوع لمخزون الأرقام", callback_data="os:manage_numbers")],
                 ]),
@@ -1911,12 +1911,18 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                 ).fetchall()
 
             lines = [
-                f"🔵 *الحسابات المؤجّرة للرشق ({len(rented_rows)})*",
+                f"🔵 *حسابات الأعضاء المستخدمة للرشق ({len(rented_rows)})*",
                 "",
-                "هذه الحسابات مقدمة من الأعضاء، وتُحتسب أرباحها حسب نسبة العضو.",
+                "تظهر هنا حسابات التأجير والمشاركة؛ لكل حساب نسبة مكافأة مستقلة.",
             ]
             for rented in rented_rows:
-                share = int(rented["contributor_share_percent"] or 50)
+                share_value = rented["contributor_share_percent"]
+                share = int(share_value if share_value is not None else 50)
+                account_kind = (
+                    "مشاركة رقم بلا مكافأة"
+                    if share == 0
+                    else f"تأجير ({share}٪ للعضو)"
+                )
                 contributor = rented["contributor_name"] or f"ID:{rented['contributed_by']}"
                 if rented["frozen_at"]:
                     status = "🧊 مجمّد"
@@ -1926,14 +1932,14 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                     status = "✅ نشط"
                 twofa = rented["twofa_password"] or "غير محفوظة"
                 lines.append(
-                    f"\n🔵 `{rented['phone_number']}` — {status}\n"
+                    f"\n🔵 `{rented['phone_number']}` — {status} | {account_kind}\n"
                     f"   👤 العضو: {contributor} (`{rented['contributed_by']}`)\n"
                     f"   🔐 2FA: `{twofa}`\n"
                     f"   💵 نسبة العضو: *{share}٪* | الأرباح: *{int(rented['earned_points'] or 0):,} نقطة*"
                 )
 
             if not rented_rows:
-                lines.append("\nلا توجد حسابات مؤجّرة حالياً.")
+                lines.append("\nلا توجد حسابات أعضاء للرشق حالياً.")
             text = "\n".join(lines)
             if len(text) > 4000:
                 text = text[:3950] + "\n\n_(قُطع لطول القائمة)_"
@@ -2040,8 +2046,13 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             )
             saved_2fa   = rec.get("twofa_password") or "غير محفوظة"
             if rec.get("raksh_only"):
-                share = int(rec.get("contributor_share_percent") or 50)
-                account_status = f"🔵 مؤجّر للرشق ({share}٪ للعضو)"
+                share_value = rec.get("contributor_share_percent")
+                share = int(share_value if share_value is not None else 50)
+                account_status = (
+                    "🔵 مشاركة رقم للرشق بلا مكافأة"
+                    if share == 0
+                    else f"🔵 مؤجّر للرشق ({share}٪ للعضو)"
+                )
             elif rec.get("frozen_at"):
                 account_status = "🧊 مجمّد"
             elif rec.get("last_authorized") is False:
