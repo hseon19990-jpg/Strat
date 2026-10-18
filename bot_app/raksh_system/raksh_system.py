@@ -581,12 +581,21 @@ def _raksh_order_summary(order, current: bool) -> str:
     quantity = int(order["quantity"] or 0)
     success_count = int(order.get("success_count") or 0)
     failed_count = int(order.get("failed_count") or 0)
-    payment_label = "نقطة" if order["payment_method"] == "points" else "نجمة"
+    payment_label = {
+        "points": "نقطة",
+        "stars": "نجمة",
+        "contributor_free": "مجاني بحساباتي فقط",
+    }.get(order["payment_method"], "نقطة")
     if current:
         state = "⏳ جاري" if order["status"] == "running" else "🕐 بانتظار التنفيذ"
+        payment_detail = (
+            "🎁 مجاني بحساباتي فقط"
+            if order["payment_method"] == "contributor_free"
+            else f"💰 {order['total_cost']} {payment_label}"
+        )
         return (
             f"• *#{order_id}* — {service_name}\n"
-            f"  {state} | 📊 {success_count}/{quantity} | 💰 {order['total_cost']} {payment_label}\n"
+            f"  {state} | 📊 {success_count}/{quantity} | {payment_detail}\n"
             f"  🕒 {_raksh_order_date(order.get('created_at'))}"
         )
     state = "✅ مكتمل" if order["status"] == "completed" else "❌ ملغى"
@@ -1332,7 +1341,17 @@ async def _execute_raksh_parallel(
                 if item.get("phone_number")
             }
         )
-        fresh_sessions = svc.get_sessions(is_owner=(user_id == OWNER_ID))
+        fresh_sessions = svc.get_sessions(
+            is_owner=(user_id == OWNER_ID),
+            contributor_id=(
+                user_id if params.get("_contributor_only") else None
+            ),
+            contributor_share_percent=(
+                params.get("_contributor_share_percent")
+                if params.get("_contributor_only")
+                else None
+            ),
+        )
         replacement = next(
             (
                 candidate
@@ -1786,17 +1805,31 @@ def raksh_speed_prompt_text() -> str:
     )
 
 
-def raksh_confirm_kb(service_type: str, quantity: int, total_cost: int, payment_method: str):
+def raksh_confirm_kb(
+    service_type: str,
+    quantity: int,
+    total_cost: int,
+    payment_method: str,
+    user_id: int | None = None,
+):
     """أزرار تأكيد الطلب"""
-    return InlineKeyboardMarkup([
-        [
+    rows = [[
             InlineKeyboardButton(
                 "✅ تأكيد الطلب",
                 callback_data=f"raksh:confirm:{service_type}:{quantity}:{total_cost}:{payment_method}"
             )
-        ],
-        [InlineKeyboardButton("❌ إلغاء", callback_data="raksh_cancel")],
-    ])
+        ]]
+    if user_id is not None and _get_contributor_raksh_limit(
+        user_id, service_type
+    ) >= quantity:
+        rows.append([
+            InlineKeyboardButton(
+                "🎁 مجاني — حساباتي فقط",
+                callback_data=f"raksh:contributor_free:{service_type}:{quantity}",
+            )
+        ])
+    rows.append([InlineKeyboardButton("❌ إلغاء", callback_data="raksh_cancel")])
+    return InlineKeyboardMarkup(rows)
 
 
 async def _show_raksh_speed_selection(query, context, payment_callback: str, service_type: str):
@@ -1889,6 +1922,36 @@ def _get_request_limit(user_id: int, service_type: str) -> int:
     if svc:
         return svc.get_request_limit(user_id)
     return 0
+
+
+def _get_contributor_raksh_limit(user_id: int, service_type: str) -> int:
+    """الحسابات المتاحة للرشق المجاني، مقيدة بحسابات صاحب الطلب وحدوده."""
+    svc = get_raksh_service(service_type)
+    if not svc:
+        return 0
+    own_count = len(
+        svc.get_sessions(
+            contributor_id=int(user_id),
+            contributor_share_percent=0,
+        )
+    )
+    return min(
+        own_count,
+        get_raksh_hourly_remaining(int(user_id)),
+        get_raksh_daily_remaining(int(user_id)),
+    )
+
+
+def _get_raksh_order_sessions(svc, user_id: int, payment_method: str) -> list[dict]:
+    """Load only the requester's accounts for the account-owner free reward."""
+    if not svc:
+        return []
+    is_contributor_free = payment_method == "contributor_free"
+    return svc.get_sessions(
+        is_owner=(int(user_id) == OWNER_ID),
+        contributor_id=int(user_id) if is_contributor_free else None,
+        contributor_share_percent=0 if is_contributor_free else None,
+    )
 
 def _chunk_lines(lines: List[str], max_chars: int = 3500) -> List[str]:
     """تقسيم القوائم الطويلة"""
@@ -2449,6 +2512,43 @@ async def _handle_raksh_callback_impl(
             if handled:
                 return
     
+    if data.startswith("raksh:contributor_free:"):
+        parts = data.split(":")
+        if len(parts) != 4:
+            await query.answer("⚠️ بيانات الطلب المجاني غير صالحة.", show_alert=True)
+            return
+        service_type = parts[2]
+        try:
+            quantity = int(parts[3])
+        except ValueError:
+            await query.answer("⚠️ العدد غير صالح.", show_alert=True)
+            return
+        if (
+            service_type not in RAKSH_SERVICES
+            or quantity < 1
+            or quantity > _get_contributor_raksh_limit(user.id, service_type)
+        ):
+            await query.answer(
+                "⚠️ الطلب المجاني يقتصر على عدد حساباتك المتاحة للرشق.",
+                show_alert=True,
+            )
+            return
+        await query.edit_message_text(
+            "🎁 *تم تأكيد الرشق المجاني بحساباتك فقط*\n\n"
+            "⏳ جاري بدء التنفيذ...",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        await _start_raksh_execution(
+            update,
+            context,
+            query,
+            service_type,
+            quantity,
+            "contributor_free",
+            0,
+        )
+        return
+
     if data.startswith("raksh:free_confirm:"):
         parts = data.split(":")
         if len(parts) != 4:
@@ -2557,7 +2657,9 @@ async def _handle_raksh_callback_impl(
                 f"التكلفة: *{total} نجمة*\n\n"
                 "اضغط تأكيد للمتابعة:",
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=raksh_confirm_kb(service_type, quantity, total, "stars")
+                reply_markup=raksh_confirm_kb(
+                    service_type, quantity, total, "stars", user.id
+                )
             )
         else:
             total = _get_contextual_raksh_total(svc, quantity, "points", channel_count, context)
@@ -2571,7 +2673,9 @@ async def _handle_raksh_callback_impl(
                 f"رصيدك: *{points} نقطة*\n\n"
                 "اضغط تأكيد للمتابعة:",
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=raksh_confirm_kb(service_type, quantity, total, "points")
+                reply_markup=raksh_confirm_kb(
+                    service_type, quantity, total, "points", user.id
+                )
             )
         return
     
@@ -3040,7 +3144,12 @@ async def _send_raksh_order_to_group(
                 if service_type == "all_posts_reactions"
                 else f"📦 العدد: {quantity}"
             ),
-            f"💳 طريقة الدفع: {payment_method}",
+            "💳 طريقة الدفع: "
+            + (
+                "مجاني بحسابات صاحب الطلب فقط"
+                if payment_method == "contributor_free"
+                else payment_method
+            ),
         ]
         if service_type == "all_posts_reactions" and (params or {}).get("duration_days"):
             notification_lines.append(f"🗓 المدة: {(params or {}).get('duration_days')} يوم")
@@ -3082,7 +3191,11 @@ def format_message_order_owner_notification(
         "self": identity_name or "المستخدم",
         "fake": identity_name or "هوية مزيفة",
     }.get(identity_type, identity_name or "غير محدد")
-    payment_label = "نقطة" if payment_method == "points" else "نجمة"
+    payment_label = {
+        "points": "نقطة",
+        "stars": "نجمة",
+        "contributor_free": "مجاني بحساباته فقط",
+    }.get(payment_method, "نجمة")
 
     return (
         "📨 تفاصيل طلب إرسال رسالة\n\n"
@@ -3438,7 +3551,11 @@ async def _run_all_posts_reactions_order(context, order: Dict, progress_msg=None
             if phone
         }
         if monitor_expires_at and datetime.now(timezone.utc) < monitor_expires_at:
-            live_session_pool = svc.get_sessions(is_owner=(user_id == OWNER_ID))
+            live_session_pool = _get_raksh_order_sessions(
+                svc,
+                user_id,
+                order.get("payment_method") or "points",
+            )
             live_sessions = [
                 session
                 for session in live_session_pool
@@ -3464,7 +3581,11 @@ async def _run_all_posts_reactions_order(context, order: Dict, progress_msg=None
             await finish_order()
             return
 
-    sessions = svc.get_sessions(is_owner=(user_id == OWNER_ID)) if svc else []
+    sessions = _get_raksh_order_sessions(
+        svc,
+        user_id,
+        order.get("payment_method") or "points",
+    )
     if not sessions:
         _set_raksh_order_status(order_id, "pending", "لا توجد حسابات متاحة مؤقتاً")
         return
@@ -3546,7 +3667,11 @@ async def _run_all_posts_reactions_order(context, order: Dict, progress_msg=None
         successful_phones = {str(phone) for phone in success_phones}
         # قد يكون أحد الحسابات الناجحة بديلاً أُضيف داخل نفس الدفعة؛
         # أعد تحميل الجلسات حتى يدخل البديل في المستمع المباشر أيضاً.
-        live_session_pool = svc.get_sessions(is_owner=(user_id == OWNER_ID))
+        live_session_pool = _get_raksh_order_sessions(
+            svc,
+            user_id,
+            order.get("payment_method") or "points",
+        )
         live_sessions = [
             session
             for session in live_session_pool
@@ -3626,7 +3751,7 @@ async def _run_raksh_order(
         order_items[phone].get("last_error") or "فشل"
         for phone in saved_failed_phones
     ]
-    sessions = svc.get_sessions(is_owner=(user_id == OWNER_ID))
+    sessions = _get_raksh_order_sessions(svc, user_id, payment_method)
     if order["service_type"] == "forced_ref_ai":
         # استئناف نفس الحسابات المحجوزة للطلب؛ لا نبدلها بحسابات أخرى
         # فيتحول طلب 10 إلى أكثر من 10 حسابات أو تحديات.
@@ -3816,7 +3941,18 @@ async def _start_raksh_execution(
             parse_mode=ParseMode.MARKDOWN,
         )
 
-    sessions = svc.get_sessions(is_owner=(user.id == OWNER_ID)) if svc else []
+    if payment_method == "contributor_free":
+        own_limit = _get_contributor_raksh_limit(user.id, service_type)
+        if quantity > own_limit:
+            await progress_msg.edit_text(
+                "⚠️ لا يكفي عدد حساباتك المضافة لتقديم هذا الطلب مجاناً.",
+                reply_markup=raksh_menu_kb(user.id == OWNER_ID),
+            )
+            _clear_raksh_state(context)
+            return
+    sessions = _get_raksh_order_sessions(
+        svc, user.id, payment_method
+    )
     if service_type == "forced_ref_ai":
         # احجز أول quantity حسابات فقط، وتُحفظ هذه المجموعة في عناصر الطلب
         # لتبقى نفسها عند الاستئناف بعد إعادة التشغيل.
@@ -3832,6 +3968,9 @@ async def _start_raksh_execution(
         return
 
     params = svc.get_execution_params(context) if svc else {}
+    if payment_method == "contributor_free":
+        params["_contributor_only"] = True
+        params["_contributor_share_percent"] = 0
     # يُحفظ صاحب الطلب داخل params حتى تصل كابتشا التحقق اليدوي إلى الطالب
     # الصحيح، حتى لو استُؤنف الطلب بعد إعادة تشغيل البوت.
     params["requester_id"] = int(user.id)

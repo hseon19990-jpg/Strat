@@ -103,21 +103,31 @@ def message_confirmation_text(data: dict) -> str:
     )
 
 
-def _message_sessions(is_owner: bool = False) -> list[dict]:
+def _message_sessions(
+    is_owner: bool = False,
+    contributor_id: int | None = None,
+    contributor_share_percent: int | None = None,
+) -> list[dict]:
+    query = """
+        SELECT id, phone_number, session_string, raksh_only, last_authorized
+        FROM number_stock
+        WHERE session_string IS NOT NULL
+          AND BTRIM(session_string) <> ''
+          AND deleted_at IS NULL
+          AND frozen_at IS NULL
+          AND ever_sold IS NOT TRUE
+          AND raksh_excluded IS NOT TRUE
+    """
+    params = ()
+    if contributor_id is not None:
+        query += " AND contributed_by=%s"
+        params = (int(contributor_id),)
+    if contributor_share_percent is not None:
+        query += " AND COALESCE(contributor_share_percent, 50)=%s"
+        params = (*params, int(contributor_share_percent))
+    query += " ORDER BY last_authorized DESC NULLS LAST, id ASC"
     with db_conn() as connection:
-        rows = connection.execute(
-            """
-            SELECT id, phone_number, session_string, raksh_only, last_authorized
-            FROM number_stock
-            WHERE session_string IS NOT NULL
-              AND BTRIM(session_string) <> ''
-              AND deleted_at IS NULL
-              AND frozen_at IS NULL
-              AND ever_sold IS NOT TRUE
-              AND raksh_excluded IS NOT TRUE
-            ORDER BY last_authorized DESC NULLS LAST, id ASC
-            """
-        ).fetchall()
+        rows = connection.execute(query, params).fetchall()
     return get_raksh_sessions_for_request([dict(row) for row in rows], is_owner)
 
 
@@ -140,8 +150,17 @@ class MessageService(RakshService):
         max_delay=3,
     )
 
-    def get_sessions(self, is_owner: bool = False) -> list[dict]:
-        return _message_sessions(is_owner=is_owner)
+    def get_sessions(
+        self,
+        is_owner: bool = False,
+        contributor_id: int | None = None,
+        contributor_share_percent: int | None = None,
+    ) -> list[dict]:
+        return _message_sessions(
+            is_owner=is_owner,
+            contributor_id=contributor_id,
+            contributor_share_percent=contributor_share_percent,
+        )
 
     def get_execution_params(self, context) -> dict:
         data = context.user_data.get("raksh_message_data") or {}

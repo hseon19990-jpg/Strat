@@ -349,9 +349,17 @@ def _dedupe_raksh_sessions(sessions: List[Dict]) -> List[Dict]:
     return unique
 
 
-def _get_sessions_for_service(service_type: str, is_owner: bool = False) -> List[Dict]:
+def _get_sessions_for_service(
+    service_type: str,
+    is_owner: bool = False,
+    contributor_id: Optional[int] = None,
+    contributor_share_percent: Optional[int] = None,
+) -> List[Dict]:
     """Load sessions, remove duplicate accounts/auth keys, then randomize."""
-    cache_key = f"sessions_{service_type}"
+    cache_key = (
+        f"sessions_{service_type}_{contributor_id or 'all'}_"
+        f"{contributor_share_percent if contributor_share_percent is not None else 'any'}"
+    )
     if cache_key in _RAKSH_SESSION_CACHE:
         cache_time = _RAKSH_SESSION_CACHE_TIME.get(cache_key, 0)
         if time.time() - cache_time < _RAKSH_SESSION_CACHE_TTL:
@@ -371,9 +379,16 @@ def _get_sessions_for_service(service_type: str, is_owner: bool = False) -> List
               AND frozen_at IS NULL
               AND ever_sold IS NOT TRUE
               AND raksh_excluded IS NOT TRUE
-            ORDER BY last_authorized DESC NULLS LAST, id ASC
         """
-        rows = c.execute(query).fetchall()
+        params = ()
+        if contributor_id is not None:
+            query += " AND contributed_by=%s"
+            params = (int(contributor_id),)
+        if contributor_share_percent is not None:
+            query += " AND COALESCE(contributor_share_percent, 50)=%s"
+            params = (*params, int(contributor_share_percent))
+        query += " ORDER BY last_authorized DESC NULLS LAST, id ASC"
+        rows = c.execute(query, params).fetchall()
         sessions = _dedupe_raksh_sessions([dict(row) for row in rows])
 
     _RAKSH_SESSION_CACHE[cache_key] = sessions
@@ -1444,11 +1459,32 @@ class RakshService:
 
     # ─── الجلسات ───
 
-    def get_sessions(self, is_owner: bool = False) -> List[Dict]:
-        return _get_sessions_for_service(self.service_type, is_owner=is_owner)
+    def get_sessions(
+        self,
+        is_owner: bool = False,
+        contributor_id: Optional[int] = None,
+        contributor_share_percent: Optional[int] = None,
+    ) -> List[Dict]:
+        return _get_sessions_for_service(
+            self.service_type,
+            is_owner=is_owner,
+            contributor_id=contributor_id,
+            contributor_share_percent=contributor_share_percent,
+        )
 
-    def get_max_quantity(self, is_owner: bool = False) -> int:
-        return len(self.get_sessions(is_owner=is_owner))
+    def get_max_quantity(
+        self,
+        is_owner: bool = False,
+        contributor_id: Optional[int] = None,
+        contributor_share_percent: Optional[int] = None,
+    ) -> int:
+        return len(
+            self.get_sessions(
+                is_owner=is_owner,
+                contributor_id=contributor_id,
+                contributor_share_percent=contributor_share_percent,
+            )
+        )
 
     def get_request_limit(self, user_id: int) -> int:
         return min(
