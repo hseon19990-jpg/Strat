@@ -564,6 +564,7 @@ def init_db():
               added_at      TIMESTAMPTZ DEFAULT NOW(),
               contributed_by BIGINT,
               contributor_share_percent INTEGER DEFAULT 50,
+               contributor_method TEXT NOT NULL DEFAULT 'number',
               sale_excluded BOOLEAN DEFAULT FALSE
           )""")
           # الحسابات المسندة إلى أدمن أرقام تُستخدم لفتح الحساب وجلب كوده،
@@ -706,6 +707,7 @@ def init_db():
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS forced_ref_excluded BOOLEAN DEFAULT FALSE",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS contributed_by BIGINT",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS contributor_share_percent INTEGER DEFAULT 50",
+               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS contributor_method TEXT NOT NULL DEFAULT 'number'",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS sale_excluded BOOLEAN DEFAULT FALSE",
               "ALTER TABLE services ADD COLUMN IF NOT EXISTS platform TEXT DEFAULT 'tg'",
               "ALTER TABLE services ADD COLUMN IF NOT EXISTS source_name TEXT",

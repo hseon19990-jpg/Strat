@@ -252,6 +252,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+    if state == "share_session_await_upload":
+        await update.message.reply_text(
+            "ارفع ملف جلسة واحداً بصيغة `.session` أو `.json` فقط. "
+            "لإلغاء العملية استخدم /cancel.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
     # ─── الخدمات الأسطورية تستخدم نفس مسار استقبال الرسائل لكل أنواعها ───
     if await legendary_handle_text(update, context, text):
         return
@@ -5501,8 +5509,138 @@ async def handle_hex_text_file(update: Update, context: ContextTypes.DEFAULT_TYP
     await progress.edit_text("\n".join(result_lines), parse_mode=ParseMode.MARKDOWN)
 
 
+SHARE_SESSION_MAX_BYTES = 5 * 1024 * 1024
+
+
+async def handle_share_session_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Validate and save one member-owned session as a free-raksh contributor account."""
+    user = update.effective_user
+    message = update.effective_message
+    document = getattr(message, "document", None) if message else None
+    if (
+        not user
+        or not document
+        or context.user_data.get("state") != "share_session_await_upload"
+    ):
+        return
+    if is_user_banned(user.id):
+        await message.reply_text("🚫 لا يمكنك استخدام هذه الميزة.")
+        context.user_data["state"] = "main_menu"
+        return
+    if not TELEGRAM_API_ID or not TELEGRAM_API_HASH:
+        context.user_data["state"] = "share_session_menu"
+        await message.reply_text("❌ إعدادات Telegram API غير مكتملة حالياً.")
+        return
+
+    filename = str(
+        getattr(document, "file_name", "")
+        or ("upload.json" if getattr(document, "mime_type", "") == "application/json" else "")
+    )
+    if not filename.lower().endswith((".session", ".json")):
+        await message.reply_text("⚠️ ارفع ملفاً واحداً بصيغة `.session` أو `.json`.")
+        return
+    file_size = getattr(document, "file_size", None)
+    if file_size is not None and int(file_size) > SHARE_SESSION_MAX_BYTES:
+        await message.reply_text("⚠️ حجم الملف أكبر من الحد المسموح (5 ميغابايت).")
+        return
+
+    progress = await message.reply_text("⏳ جارٍ قراءة ملف الجلسة والتحقق منه...")
+    client = None
+    saved_account = False
+    phone = ""
+    try:
+        telegram_file = await context.bot.get_file(document.file_id)
+        raw_bytes = bytes(await telegram_file.download_as_bytearray())
+        if len(raw_bytes) > SHARE_SESSION_MAX_BYTES:
+            await progress.edit_text("⚠️ حجم الملف أكبر من الحد المسموح (5 ميغابايت).")
+            return
+
+        # Reuse the existing side-effect-free parser; unlike stock import it does
+        # not rotate the session, sign out other devices, or alter account settings.
+        from .buyback import _parse_buyback_session_upload
+
+        session_string = _parse_buyback_session_upload(raw_bytes, filename)
+        if not session_string:
+            await progress.edit_text(
+                "❌ تعذرت قراءة جلسة واحدة صالحة من الملف. "
+                "استخدم ملف `.session` أو `.json` يحتوي جلسة واحدة."
+            )
+            return
+
+        client = TelegramClient(
+            StringSession(session_string),
+            int(TELEGRAM_API_ID),
+            TELEGRAM_API_HASH,
+        )
+        await asyncio.wait_for(client.connect(), timeout=20)
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+            await progress.edit_text(
+                "❌ الجلسة منتهية أو غير صالحة. لم تتم إضافة أي حساب؛ ارفع جلسة أخرى."
+            )
+            return
+        me = await asyncio.wait_for(client.get_me(), timeout=15)
+        phone = str(getattr(me, "phone", "") or "").strip()
+        if phone and not phone.startswith("+"):
+            phone = f"+{phone}"
+        if not phone or not phone[1:].isdigit():
+            await progress.edit_text(
+                "❌ تعذر تحديد رقم الهاتف المرتبط بالجلسة؛ لم تتم إضافتها."
+            )
+            return
+
+        added, reason = add_contributor_account(
+            int(user.id),
+            phone,
+            client.session.save(),
+            share_percent=0,
+            contributor_method="session",
+        )
+        if not added:
+            await progress.edit_text(
+                f"⚠️ لم تتم إضافة الجلسة:\n{reason}\n\nلم يتم تغيير إعدادات الحساب."
+            )
+            return
+        saved_account = True
+
+        context.user_data["state"] = "share_session_await_upload"
+        await progress.edit_text(
+            f"✅ تمت إضافة جلسة الحساب `{phone}` للرشق فقط.\n"
+            "ستتمكن من الرشق مجاناً بحساباتك المشاركة، أما استخدام حسابات أخرى فيبقى مدفوعاً.\n"
+            "ارفع جلسة أخرى أو استخدم /cancel للانتهاء.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    except asyncio.TimeoutError:
+        await progress.edit_text("⏳ انتهت مهلة الاتصال بتيليجرام. حاول رفع الجلسة مرة أخرى.")
+    except Exception as exc:
+        logger.warning(
+            "تعذر التحقق من جلسة مشاركة العضو %s: %s",
+            user.id,
+            type(exc).__name__,
+        )
+        if saved_account:
+            context.user_data["state"] = "share_session_await_upload"
+            await message.reply_text(
+                f"✅ تمت إضافة جلسة الحساب `{phone}` للرشق فقط. "
+                "ارفع جلسة أخرى أو استخدم /cancel للانتهاء.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        else:
+            await progress.edit_text(
+                "❌ تعذر التحقق من الجلسة. لم يتم حفظها؛ تأكد من سلامة الملف ثم أعد المحاولة."
+            )
+    finally:
+        if client is not None:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+
+
 async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """يستقبل ملف JSON من المالك ويستورد الجلسات المحتواة فيه مباشرة."""
+    if context.user_data.get("state") == "share_session_await_upload":
+        await handle_share_session_document(update, context)
+        return
     user = update.effective_user
     if user.id != OWNER_ID:
         return
@@ -5741,6 +5879,9 @@ async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE
     Telethon  → جدول sessions: dc_id, server_address, port, auth_key (blob)
     Pyrogram  → جدول sessions: dc_id, auth_key (blob)
     """
+    if context.user_data.get("state") == "share_session_await_upload":
+        await handle_share_session_document(update, context)
+        return
     user = update.effective_user
     if user.id != OWNER_ID:
         return

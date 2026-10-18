@@ -302,13 +302,30 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             )
             return
 
-        if data in {"share_number:menu", "share_account:menu"}:
+        if data == "share_account:menu":
+            context.user_data["state"] = "share_account_menu"
+            await q.edit_message_text(
+                "📤 *مشاركة حساب*\n\n"
+                "اختر طريقة إضافة حسابك لاستخدامه في خدمات الرشق:\n"
+                "🎁 يمكنك الرشق مجاناً بحساباتك المشاركة فقط؛ استخدام الحسابات الأخرى يبقى مدفوعاً.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📱 مشاركة رقم", callback_data="share_number:menu")],
+                    [InlineKeyboardButton("🗂 مشاركة جلسة", callback_data="share_session:menu")],
+                    [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
+                ]),
+            )
+            return
+
+        if data == "share_number:menu":
             context.user_data["state"] = "share_number_menu"
-            rows = get_contributor_accounts(user.id, share_percent=0)
+            rows = get_contributor_accounts(
+                user.id, share_percent=0, contributor_method="number"
+            )
             lines = [
                 "📱 *مشاركة رقم*",
                 "",
-                "أضف رقمك لاستخدام الحساب في خدمات الرشق فقط.",
+                "أضف رقمك أو راجع الأرقام التي شاركتها لاستخدامها في خدمات الرشق فقط.",
                 "لن يطرد البوت أي جلسة أخرى ولن يغيّر كلمة المرور أو إعدادات الحساب.",
                 "🎁 مكافأتك: رشق مجاني باستخدام الأرقام التي أضفتها أنت فقط. "
                 "استخدام حسابات أخرى يبقى مدفوعاً.",
@@ -341,7 +358,40 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 reply_markup=InlineKeyboardMarkup([
                     *account_buttons,
                     [InlineKeyboardButton("➕ مشاركة رقم", callback_data="share_number:add")],
-                    [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
+                    [InlineKeyboardButton("🔙 طرق المشاركة", callback_data="share_account:menu")],
+                ]),
+            )
+            return
+
+        if data == "share_session:menu":
+            context.user_data["state"] = "share_session_menu"
+            rows = get_contributor_accounts(
+                user.id, share_percent=0, contributor_method="session"
+            )
+            lines = [
+                "🗂 *مشاركة جلسة*",
+                "",
+                "ارفع ملف جلسة حسابك بصيغة `.session` أو `.json` لاستخدامه في خدمات الرشق فقط.",
+                "لن يغيّر البوت إعدادات الحساب أو يطرد جلساته.",
+                "🎁 يمكنك الرشق مجاناً بحساباتك المشاركة فقط؛ استخدام الحسابات الأخرى يبقى مدفوعاً.",
+                "",
+                f"📦 الجلسات المشاركة: *{len(rows)}*",
+            ]
+            if rows:
+                lines.append("\n*الجلسات:*")
+                for row in rows[:30]:
+                    status = "✅ جاهزة" if row.get("last_authorized") is not False else "⚠️ منتهية"
+                    lines.append(f"• `{row.get('phone_number')}` — {status}")
+                if len(rows) > 30:
+                    lines.append(f"_(يوجد {len(rows) - 30} جلسات إضافية)_")
+            else:
+                lines.append("\nلا توجد جلسات مشاركة مرتبطة بك بعد.")
+            await q.edit_message_text(
+                "\n".join(lines),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("➕ مشاركة جلسة", callback_data="share_session:add")],
+                    [InlineKeyboardButton("🔙 طرق المشاركة", callback_data="share_account:menu")],
                 ]),
             )
             return
@@ -449,6 +499,27 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔙 إلغاء", callback_data="share_number:menu")],
                 ]),
+            )
+            return
+
+        if data == "share_session:add":
+            if is_user_banned(user.id):
+                await q.answer("🚫 لا يمكنك استخدام هذه الميزة.", show_alert=True)
+                return
+            if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
+                await q.answer("❌ إعدادات Telegram API غير مكتملة.", show_alert=True)
+                return
+            context.user_data["state"] = "share_session_await_upload"
+            await q.edit_message_text(
+                "🗂 *مشاركة جلسة*\n\n"
+                "ارفع ملف جلسة واحداً بصيغة `.session` أو `.json`.\n"
+                "سيتحقق البوت من الجلسة قبل إضافتها، وسيستخدمها لخدمات الرشق فقط؛ "
+                "لن يطرد جلسات أخرى أو يغيّر إعدادات الحساب.\n\n"
+                "⚠️ ملف الجلسة يتيح الدخول إلى الحساب؛ ارفع جلسة حسابك فقط ولا ترسلها لأحد.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 إلغاء", callback_data="share_session:menu")
+                ]]),
             )
             return
 

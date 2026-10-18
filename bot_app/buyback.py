@@ -353,6 +353,13 @@ async def handle_buyback_document(update, context) -> bool:
         logger.warning("تعذر فحص بوابة رفع جلسة البيع للمستخدم %s: %s", user.id, type(exc).__name__)
 
     state = context.user_data.get("state", "")
+    if state == "share_session_await_upload":
+        # The earlier document route normally handles account sharing, but
+        # non-owner .session/.json files arrive here first. Route only this
+        # explicit upload state to its dedicated, non-destructive handler.
+        from .messages import handle_share_session_document
+        await handle_share_session_document(update, context)
+        return True
     if state != "buyback_await_session_document":
         if state == "buyback_session_await_password":
             await message.reply_text("أرسل كلمة مرور التحقق بخطوتين كنص، أو اضغط إلغاء.", reply_markup=_buyback_cancel_markup())
