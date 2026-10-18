@@ -3534,8 +3534,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 status_icon = "⬜ مباع سابقاً (البوت غادره)"
                 status_marker = "⬜"
             elif is_rented:
-                _share = int(r.get("contributor_share_percent") or 50)
-                status_icon = f"🔵 مؤجّر للرشق ({_share}٪ للعضو)"
+                _share_value = r.get("contributor_share_percent")
+                _share = int(_share_value if _share_value is not None else 50)
+                status_icon = (
+                    "🔵 مشاركة رقم للرشق بلا مكافأة"
+                    if _share == 0
+                    else f"🔵 مؤجّر للرشق ({_share}٪ للعضو)"
+                )
                 status_marker = "🔵"
             elif is_frozen:
                 status_icon = "🧊 مجمّد"
@@ -3665,10 +3670,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
-    if state == "contributor_await_login_phone" or (
+    if state in {"contributor_await_login_phone", "share_number_await_login_phone"} or (
         is_own and state in {"os_await_login_phone", "os_await_raksh_login_phone"}
     ):
-        _contributor_login = state == "contributor_await_login_phone"
+        _share_number_login = state == "share_number_await_login_phone"
+        _contributor_login = state in {
+            "contributor_await_login_phone",
+            "share_number_await_login_phone",
+        }
         _raksh_login = state == "os_await_raksh_login_phone"
         phone = re.sub(r"\s+", "", text.strip())
         # ─── إضافة + تلقائياً إذا أرسل المالك الرقم بدونها ───
@@ -3702,9 +3711,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "phone_code_hash": sent.phone_code_hash,
             "raksh_only": _raksh_login,
             "contributor_id": user.id if _contributor_login else None,
+            "contributor_share_percent": (
+                0 if _share_number_login else 50 if _contributor_login else None
+            ),
         }
         context.user_data["state"] = (
-            "contributor_await_login_code"
+            "share_number_await_login_code"
+            if _share_number_login
+            else "contributor_await_login_code"
             if _contributor_login
             else "os_await_login_code"
         )
@@ -3722,14 +3736,25 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if state in {"os_await_login_code", "contributor_await_login_code"} and (
-        is_own or state == "contributor_await_login_code"
+    if state in {
+        "os_await_login_code",
+        "contributor_await_login_code",
+        "share_number_await_login_code",
+    } and (
+        is_own
+        or state in {"contributor_await_login_code", "share_number_await_login_code"}
     ):
-        _contributor_login = state == "contributor_await_login_code"
+        _share_number_login = state == "share_number_await_login_code"
+        _contributor_login = state in {
+            "contributor_await_login_code",
+            "share_number_await_login_code",
+        }
         pending = _pending_number_logins.get(user.id)
         if not pending:
             await update.message.reply_text(
-                "⚠️ انتهت الجلسة، ابدأ من جديد من قائمة الحسابات."
+                "⚠️ انتهت الجلسة، ابدأ من جديد من قسم مشاركة رقم."
+                if _share_number_login
+                else "⚠️ انتهت الجلسة، ابدأ من جديد من قائمة الحسابات."
                 if _contributor_login
                 else "⚠️ انتهت الجلسة، ابدأ من جديد من قائمة إدارة الأرقام.",
                 reply_markup=None if _contributor_login else owner_settings_kb(),
@@ -3742,8 +3767,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await client.sign_in(pending["phone"], code, phone_code_hash=pending["phone_code_hash"])
         except SessionPasswordNeededError:
             context.user_data["state"] = (
-                "contributor_await_login_password"
-                if state == "contributor_await_login_code"
+                "share_number_await_login_password"
+                if _share_number_login
+                else "contributor_await_login_password"
+                if _contributor_login
                 else "os_await_login_password"
             )
             await update.message.reply_text("🔒 هذا الحساب محمي بكلمة مرور تحقق بخطوتين (2FA). أرسلها الآن:")
@@ -3765,12 +3792,32 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _finish_number_login(update, context, user.id)
         return
 
-    if state in {"os_await_login_password", "contributor_await_login_password"} and (
-        is_own or state == "contributor_await_login_password"
+    if state in {
+        "os_await_login_password",
+        "contributor_await_login_password",
+        "share_number_await_login_password",
+    } and (
+        is_own
+        or state in {
+            "contributor_await_login_password",
+            "share_number_await_login_password",
+        }
     ):
+        _share_number_login = state == "share_number_await_login_password"
+        _contributor_login = state in {
+            "contributor_await_login_password",
+            "share_number_await_login_password",
+        }
         pending = _pending_number_logins.get(user.id)
         if not pending:
-            await update.message.reply_text("⚠️ انتهت الجلسة، ابدأ من جديد من قائمة إدارة الأرقام.", reply_markup=owner_settings_kb())
+            await update.message.reply_text(
+                "⚠️ انتهت الجلسة، ابدأ من جديد من قسم مشاركة رقم."
+                if _share_number_login
+                else "⚠️ انتهت الجلسة، ابدأ من جديد من قائمة الحسابات."
+                if _contributor_login
+                else "⚠️ انتهت الجلسة، ابدأ من جديد من قائمة إدارة الأرقام.",
+                reply_markup=None if _contributor_login else owner_settings_kb(),
+            )
             context.user_data["state"] = "main_menu"
             return
         client = pending["client"]
@@ -3783,20 +3830,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"❌ خطأ في تسجيل الدخول (2FA): {e}")
             await update.message.reply_text(
                 "❌ فشل تسجيل الدخول. حاول من جديد من قائمة الحسابات."
-                if state == "contributor_await_login_password"
+                if _contributor_login
                 else "❌ فشل تسجيل الدخول. حاول من جديد لاحقاً من قائمة إدارة الأرقام.",
                 reply_markup=(
                     None
-                    if state == "contributor_await_login_password"
+                    if _contributor_login
                     else owner_settings_kb()
                 ),
             )
             await _cleanup_pending_login(user.id)
             context.user_data["state"] = "main_menu"
             return
-        if state == "contributor_await_login_password":
-            # The password was accepted by Telegram. Keep it with the rental
-            # account so its 2FA value can be shown in searches and lists.
+        if _contributor_login:
+            # The password was accepted by Telegram. Keep it with the submitted
+            # account so its session can be used for raksh services.
             pending["login_2fa_password"] = text.strip()
         await _finish_number_login(update, context, user.id)
         return
@@ -3938,6 +3985,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if state == "contributor_await_2fa_password":
         stock_id = context.user_data.get("contributor_2fa_stock_id")
+        return_callback = context.user_data.pop(
+            "contributor_2fa_return_menu", "contributor_accounts"
+        )
         pwd = text.strip()
         context.user_data["state"] = "main_menu"
         context.user_data.pop("contributor_2fa_stock_id", None)
@@ -3952,7 +4002,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 (stock_id, user.id),
             ).fetchone()
         if not rec or not rec["session_string"]:
-            await update.message.reply_text("⚠️ لم يُعثر على الحساب المؤجّر أو انتهت جلسته.")
+            await update.message.reply_text("⚠️ لم يُعثر على الحساب أو انتهت جلسته.")
             return
         await update.message.reply_text("⏳ جاري التحقق من كلمة 2FA مع تيليجرام...")
         client = TelegramClient(
@@ -3980,7 +4030,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"✅ تم التحقق وحفظ 2FA للحساب `{rec['phone_number']}`.",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("📱 عرض حساباتي المؤجرة", callback_data="contributor_accounts")
+                    InlineKeyboardButton(
+                        "📱 العودة إلى حساباتي",
+                        callback_data=return_callback,
+                    )
                 ]]),
             )
         elif verified is False:
@@ -3988,7 +4041,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"❌ كلمة 2FA غير صحيحة للحساب `{rec['phone_number']}`.",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🔐 المحاولة مجدداً", callback_data="contributor_accounts")
+                    InlineKeyboardButton(
+                        "🔐 العودة إلى حساباتي",
+                        callback_data=return_callback,
+                    )
                 ]]),
             )
         else:

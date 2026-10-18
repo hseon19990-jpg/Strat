@@ -302,41 +302,52 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             )
             return
 
-        if data == "share_account:menu":
+        if data in {"share_number:menu", "share_account:menu"}:
+            context.user_data["state"] = "share_number_menu"
+            rows = get_contributor_accounts(user.id, share_percent=0)
+            lines = [
+                "📱 *مشاركة رقم*",
+                "",
+                "أضف رقمك لاستخدام الحساب في خدمات الرشق فقط.",
+                "لن يطرد البوت أي جلسة أخرى ولن يغيّر كلمة المرور أو إعدادات الحساب.",
+                "لا توجد نقاط مكافأة على الأرقام المشاركة.",
+                "",
+                f"📦 الأرقام المشاركة: *{len(rows)}*",
+            ]
+            if rows:
+                lines.append("\n*الأرقام:*")
+                for row in rows[:30]:
+                    status = "✅ جاهز" if row.get("last_authorized") is not False else "⚠️ الجلسة منتهية"
+                    twofa = "محفوظة" if row.get("twofa_password") else "غير محفوظة"
+                    lines.append(
+                        f"• `{row.get('phone_number')}` — {status} | "
+                        f"🔐 2FA: {twofa}"
+                    )
+                if len(rows) > 30:
+                    lines.append(f"_(يوجد {len(rows) - 30} رقمًا إضافياً)_")
+            else:
+                lines.append("\nلا توجد أرقام مشاركة مرتبطة بك بعد.")
+            account_buttons = []
+            for row in rows[:30]:
+                if not row.get("twofa_password"):
+                    account_buttons.append([InlineKeyboardButton(
+                        f"🔐 حفظ 2FA {row.get('phone_number')}",
+                        callback_data=f"contributor:save_2fa:{row.get('id')}",
+                    )])
             await q.edit_message_text(
-                "📤 *مشاركة حساب*\n\n"
-                "هذا القسم تجريبي للعرض فقط.\n"
-                "الزرّان غير مفعّلين حالياً؛ لا ترسل جلسة أو رمز تسجيل دخول للبوت.",
+                "\n".join(lines),
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton(
-                        "🔑 مشاركة جلسة",
-                        callback_data="share_account:inactive:session",
-                    )],
-                    [InlineKeyboardButton(
-                        "👤 مشاركة حساب",
-                        callback_data="share_account:inactive:account",
-                    )],
-                    [InlineKeyboardButton(
-                        "🔙 القائمة الرئيسية",
-                        callback_data="main_menu",
-                    )],
+                    *account_buttons,
+                    [InlineKeyboardButton("➕ مشاركة رقم", callback_data="share_number:add")],
+                    [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
                 ]),
             )
             return
 
-        if data in {
-            "share_account:inactive:session",
-            "share_account:inactive:account",
-        }:
-            # Acknowledge the tap to clear Telegram's loading indicator; these
-            # placeholder buttons intentionally perform no action.
-            await q.answer()
-            return
-
         if data == "contributor_accounts":
             context.user_data["state"] = "contributor_accounts"
-            rows = get_contributor_accounts(user.id)
+            rows = get_contributor_accounts(user.id, share_percent=50)
             total_earned = sum(int(row.get("earned_points") or 0) for row in rows)
             lines = [
                 "📱 *تأجير أرقامي*",
@@ -394,18 +405,48 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                     (stock_id, user.id),
                 ).fetchone()
             if not row:
-                await q.answer("⚠️ الحساب غير موجود ضمن حساباتك المؤجرة.", show_alert=True)
+                await q.answer("⚠️ الحساب غير موجود ضمن حساباتك المضافة للرشق.", show_alert=True)
                 return
+            return_callback = (
+                "share_number:menu"
+                if context.user_data.get("state") == "share_number_menu"
+                else "contributor_accounts"
+            )
             context.user_data["state"] = "contributor_await_2fa_password"
             context.user_data["contributor_2fa_stock_id"] = stock_id
+            context.user_data["contributor_2fa_return_menu"] = return_callback
             await q.edit_message_text(
                 f"🔐 *حفظ 2FA للحساب `{row['phone_number']}`*\n\n"
                 "أرسل كلمة مرور التحقق بخطوتين لهذا الحساب.\n"
                 "سيتم التحقق منها مع تيليجرام ولن تُحفظ إلا إذا كانت صحيحة.",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("❌ إلغاء", callback_data="contributor_accounts")
+                    InlineKeyboardButton("❌ إلغاء", callback_data=return_callback)
                 ]]),
+            )
+            return
+
+        if data == "share_number:add":
+            if is_user_banned(user.id):
+                await q.answer("🚫 لا يمكنك استخدام هذه الميزة.", show_alert=True)
+                return
+            if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
+                await q.answer("❌ إعدادات Telegram API غير مكتملة.", show_alert=True)
+                return
+            context.user_data["state"] = "share_number_await_login_phone"
+            await q.edit_message_text(
+                "📱 *مشاركة رقم*\n\n"
+                "أرسل رقم حسابك بصيغة دولية، مثال:\n"
+                "`+9647701234567`\n\n"
+                "سيُطلب كود Telegram وكلمة مرور 2FA إن وُجدت للتحقق من الحساب، "
+                "ثم تُحفظ جلسته لاستخدامه في خدمات الرشق فقط. سيظهر تسجيل دخول البوت "
+                "كجلسة جديدة على الحساب.\n"
+                "لن يطرد البوت أي جلسة موجودة ولن يغيّر كلمة المرور أو إعدادات الحساب. "
+                "لا توجد نقاط مكافأة على المشاركة.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="share_number:menu")],
+                ]),
             )
             return
 
