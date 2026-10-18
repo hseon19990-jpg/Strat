@@ -836,6 +836,10 @@ async def _finish_number_login(update: Update, context: ContextTypes.DEFAULT_TYP
     if not phone:
         raise ValueError("تعذّر تحديد رقم الحساب بعد تسجيل الدخول")
     contributor_id = pending.get("contributor_id")
+    share_percent_value = pending.get("contributor_share_percent")
+    contributor_share_percent = (
+        50 if share_percent_value is None else int(share_percent_value)
+    )
     raksh_only = bool(pending.get("raksh_only"))
     try:
         session_str = client.session.save()
@@ -845,6 +849,7 @@ async def _finish_number_login(update: Update, context: ContextTypes.DEFAULT_TYP
                 phone,
                 session_str,
                 twofa_password=login_2fa_password,
+                share_percent=contributor_share_percent,
             )
             if not added:
                 await reply_target.reply_text(
@@ -854,18 +859,27 @@ async def _finish_number_login(update: Update, context: ContextTypes.DEFAULT_TYP
                 )
                 context.user_data["state"] = "main_menu"
                 return
+            reward_note = (
+                "💰 ستحصل على 50٪ من نقاط الطلبات المنفذة بنجاح باستخدامه."
+                if contributor_share_percent
+                else "💰 لا توجد نقاط مكافأة على هذا الرقم."
+            )
             await reply_target.reply_text(
                 "✅ *تمت إضافة حسابك للرشق بنجاح!*\n\n"
                 f"📱 {phone}\n"
                 "🔥 سيُستخدم لخدمات الرشق فقط.\n"
                 "🔒 لم يطرد البوت أي جلسة ولم يغيّر كلمة مرور أو إعداداً.\n"
-                "💰 ستحصل على 50٪ من نقاط الطلبات المنفذة بنجاح باستخدامه.",
+                f"{reward_note}",
                 parse_mode=ParseMode.MARKDOWN,
             )
             await reply_target.reply_text(
-                "📲 أرسل حساباً آخر لإضافته، أو أرسل /cancel للتوقف."
+                "📲 أرسل رقماً آخر لإضافته، أو أرسل /cancel للتوقف."
             )
-            context.user_data["state"] = "contributor_await_login_phone"
+            context.user_data["state"] = (
+                "share_number_await_login_phone"
+                if contributor_share_percent == 0
+                else "contributor_await_login_phone"
+            )
             return
         add_number_with_session(phone, session_str, raksh_only=raksh_only)
         if raksh_only:

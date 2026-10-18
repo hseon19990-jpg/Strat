@@ -680,7 +680,11 @@ def _credit_raksh_contributors(
             continue
         gross = per_account + (1 if index < remainder else 0)
         try:
-            share_percent = max(0, min(100, int(row.get("share_percent") or 50)))
+            share_value = row.get("share_percent")
+            share_percent = max(
+                0,
+                min(100, int(share_value if share_value is not None else 50)),
+            )
         except (TypeError, ValueError):
             share_percent = 50
         share_points = (gross * share_percent) // 100

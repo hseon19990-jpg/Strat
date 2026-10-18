@@ -1409,22 +1409,30 @@ def add_contributor_account(
     phone: str,
     session_str: str,
     twofa_password: str = "",
+    share_percent: int = 50,
 ) -> tuple[bool, str]:
     """يحفظ حساب مستخدم في مخزون الرشق دون المساس بجلساته أو إعداداته.
 
     لا يسمح هذا المسار بالاستيلاء على رقم موجود في مخزون المالك أو مستخدم
-    آخر؛ الحساب يُضاف مرة واحدة ويُربط بصاحبه حتى تُنسب له أرباحه بشكل آمن.
+    آخر؛ الحساب يُضاف مرة واحدة ويُربط بصاحبه ونسبة مكافأته.
     """
     phone = str(phone or "").strip()
     session_str = str(session_str or "").strip()
     twofa_password = str(twofa_password or "").strip()
+    try:
+        share_percent = int(share_percent)
+    except (TypeError, ValueError):
+        return False, "نسبة المكافأة غير صالحة."
+    if not 0 <= share_percent <= 100:
+        return False, "نسبة المكافأة يجب أن تكون بين 0 و100."
     if not phone or not session_str:
         return False, "بيانات الحساب غير مكتملة."
 
     with db_conn() as c:
         existing = c.execute(
             """
-            SELECT id, contributed_by, ever_sold
+            SELECT id, contributed_by, ever_sold,
+                   COALESCE(contributor_share_percent, 50) AS contributor_share_percent
             FROM number_stock
             WHERE phone_number=%s
             FOR UPDATE
@@ -1436,6 +1444,11 @@ def add_contributor_account(
                 return False, "هذا الرقم موجود مسبقاً ولا يمكن ربطه بحساب مستخدم آخر."
             if existing["ever_sold"]:
                 return False, "هذا الحساب استُخدم في عملية بيع سابقة ولا يمكن إعادته للرشق."
+            if int(existing["contributor_share_percent"]) != share_percent:
+                return False, (
+                    "هذا الرقم مضاف مسبقاً من خلال قسم التأجير أو مشاركة الرقم، "
+                    "ولا يمكن تغيير نوعه من هنا."
+                )
             c.execute(
                 """
                 UPDATE number_stock
@@ -1457,17 +1470,25 @@ def add_contributor_account(
             INSERT INTO number_stock
                 (phone_number, session_string, twofa_password, deleted_at, raksh_only,
                  source_type, raksh_excluded, contributed_by, contributor_share_percent)
-            VALUES (%s, %s, NULLIF(%s, ''), NULL, TRUE, 'raksh', FALSE, %s, 50)
+            VALUES (%s, %s, NULLIF(%s, ''), NULL, TRUE, 'raksh', FALSE, %s, %s)
             """,
-            (phone, session_str, twofa_password, user_id),
+            (phone, session_str, twofa_password, user_id, share_percent),
         )
     return True, "added"
 
-def get_contributor_accounts(user_id: int) -> list[dict]:
-    """يعيد حسابات المستخدم وأرباحه المسجلة من طلبات الرشق."""
+def get_contributor_accounts(
+    user_id: int,
+    share_percent: int | None = None,
+) -> list[dict]:
+    """يعيد حسابات المستخدم وأرباحه المسجلة، مع إمكانية تحديد نسبة المكافأة."""
+    share_filter = ""
+    params = [user_id]
+    if share_percent is not None:
+        share_filter = "AND COALESCE(ns.contributor_share_percent, 50)=%s"
+        params.append(int(share_percent))
     with db_conn() as c:
         rows = c.execute(
-            """
+            f"""
             SELECT ns.id, ns.phone_number, ns.twofa_password,
                    ns.last_authorized, ns.frozen_at,
                    COALESCE(SUM(e.share_points), 0) AS earned_points
@@ -1477,10 +1498,11 @@ def get_contributor_accounts(user_id: int) -> list[dict]:
             WHERE ns.contributed_by=%s
               AND ns.deleted_at IS NULL
               AND ns.ever_sold IS NOT TRUE
+              {share_filter}
             GROUP BY ns.id, ns.phone_number, ns.last_authorized, ns.frozen_at
             ORDER BY ns.id DESC
             """,
-            (user_id,),
+            tuple(params),
         ).fetchall()
     return [dict(row) for row in rows]
 

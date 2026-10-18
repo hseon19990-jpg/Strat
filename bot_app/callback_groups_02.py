@@ -2906,8 +2906,13 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                     _sold_info = "🟢 مباع"
                     _status_marker = "🟢"
                 elif _row_info["raksh_only"]:
-                    _share = int(_row_info["contributor_share_percent"] or 50)
-                    _sold_info = f"🔵 مؤجّر للرشق ({_share}٪ للعضو)"
+                    _share_value = _row_info["contributor_share_percent"]
+                    _share = int(_share_value if _share_value is not None else 50)
+                    _sold_info = (
+                        "🔵 مشاركة رقم للرشق بلا مكافأة"
+                        if _share == 0
+                        else f"🔵 مؤجّر للرشق ({_share}٪ للعضو)"
+                    )
                     _status_marker = "🔵"
                 else:
                     _sold_info = "✅ غير مباع"

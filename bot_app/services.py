@@ -261,6 +261,7 @@ BUILTIN_DEFAULTS = {
         ("🐺 خدمات", "services_menu", 2),
          ("🛍 خدمات الرشق", "raksh_menu", 2),
          ("📱 تأجير أرقامي", "contributor_accounts", 2),
+        ("📱 مشاركة رقم", "share_number:menu", 2),
         ("💰 بيع حساب تيليجرام", "buyback:start", 2),
         ("👑 خدمات تيليجرام أسطورية", "legendary_services", 1),
         ("🦇 تمويل قناتك حقيقي", "fund_channel", 1),
@@ -432,6 +433,7 @@ GOTO_TARGETS = [
     ("ℹ️ معلوماتي", "my_info"),
     ("📱 ارقامي", "my_numbers"),
     ("📱 تأجير أرقامي", "contributor_accounts"),
+    ("📱 مشاركة رقم", "share_number:menu"),
     ("📺 تمويل قناتك حقيقي", "fund_channel"),
 ] + SERVICE_PLATFORMS + [(v, f"cat:{k}") for k, v in CATEGORY_MAP.items()]
 
@@ -466,6 +468,17 @@ def seed_menu_items(menu: str):
                     "📱 أرقامي للرشق",
                     "📱 ارقامي للرشق",
                 ),
+            )
+            c.execute(
+                """
+                UPDATE menu_items
+                SET action_value='share_number:menu',
+                    label=CASE WHEN label='📤 مشاركة حساب'
+                               THEN '📱 مشاركة رقم' ELSE label END
+                WHERE menu='main'
+                  AND action_type='builtin'
+                  AND action_value='share_account:menu'
+                """
             )
         # لا نعيد تسمية بقية أزرار القائمة الرئيسية تلقائياً هنا؛
         # الاسم والإيموجي المدفوع اللذان يحددهما المالك يجب أن يبقيا محفوظين.
