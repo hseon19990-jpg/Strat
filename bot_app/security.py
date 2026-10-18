@@ -862,7 +862,8 @@ async def _finish_number_login(update: Update, context: ContextTypes.DEFAULT_TYP
             reward_note = (
                 "💰 ستحصل على 50٪ من نقاط الطلبات المنفذة بنجاح باستخدامه."
                 if contributor_share_percent
-                else "💰 لا توجد نقاط مكافأة على هذا الرقم."
+                else "🎁 مكافأتك: يمكنك الرشق مجاناً باستخدام أرقام المشاركة الخاصة بك فقط؛ "
+                "استخدام حسابات أخرى يبقى مدفوعاً."
             )
             await reply_target.reply_text(
                 "✅ *تمت إضافة حسابك للرشق بنجاح!*\n\n"

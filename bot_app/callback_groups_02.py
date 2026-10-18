@@ -2909,7 +2909,7 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                     _share_value = _row_info["contributor_share_percent"]
                     _share = int(_share_value if _share_value is not None else 50)
                     _sold_info = (
-                        "🔵 مشاركة رقم للرشق بلا مكافأة"
+                        "🔵 مشاركة رقم — رشق مجاني لصاحبه بحساباته فقط"
                         if _share == 0
                         else f"🔵 مؤجّر للرشق ({_share}٪ للعضو)"
                     )

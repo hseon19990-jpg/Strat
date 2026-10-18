@@ -3537,7 +3537,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 _share_value = r.get("contributor_share_percent")
                 _share = int(_share_value if _share_value is not None else 50)
                 status_icon = (
-                    "🔵 مشاركة رقم للرشق بلا مكافأة"
+                    "🔵 مشاركة رقم — رشق مجاني لصاحبه بحساباته فقط"
                     if _share == 0
                     else f"🔵 مؤجّر للرشق ({_share}٪ للعضو)"
                 )

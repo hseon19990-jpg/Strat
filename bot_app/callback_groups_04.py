@@ -1913,13 +1913,14 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             lines = [
                 f"🔵 *حسابات الأعضاء المستخدمة للرشق ({len(rented_rows)})*",
                 "",
-                "تظهر هنا حسابات التأجير والمشاركة؛ لكل حساب نسبة مكافأة مستقلة.",
+                "تظهر هنا حسابات التأجير والمشاركة. حسابات المشاركة تتيح لصاحبها الرشق مجاناً بها فقط؛ "
+                "أما حسابات التأجير فتظل لها نسبة نقاط مستقلة.",
             ]
             for rented in rented_rows:
                 share_value = rented["contributor_share_percent"]
                 share = int(share_value if share_value is not None else 50)
                 account_kind = (
-                    "مشاركة رقم بلا مكافأة"
+                    "مشاركة رقم — رشق مجاني لصاحبه"
                     if share == 0
                     else f"تأجير ({share}٪ للعضو)"
                 )
@@ -2049,7 +2050,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                 share_value = rec.get("contributor_share_percent")
                 share = int(share_value if share_value is not None else 50)
                 account_status = (
-                    "🔵 مشاركة رقم للرشق بلا مكافأة"
+                    "🔵 مشاركة رقم — رشق مجاني لصاحبه بحساباته فقط"
                     if share == 0
                     else f"🔵 مؤجّر للرشق ({share}٪ للعضو)"
                 )
