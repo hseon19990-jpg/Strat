@@ -102,7 +102,25 @@ class RakshContributorShareTests(unittest.TestCase):
 
         self.assertTrue(added)
         self.assertEqual("added", result)
-        self.assertEqual(0, db.insert_params[-1])
+        self.assertEqual(0, db.insert_params[-2])
+        self.assertEqual("number", db.insert_params[-1])
+
+    def test_uploaded_session_is_persisted_as_free_session_share(self):
+        db = _AccountDb()
+        add_account = self._load_add_account_function(db)
+
+        added, result = add_account(
+            77,
+            "+9647700000003",
+            "uploaded-session-string",
+            share_percent=0,
+            contributor_method="session",
+        )
+
+        self.assertTrue(added)
+        self.assertEqual("added", result)
+        self.assertEqual(0, db.insert_params[-2])
+        self.assertEqual("session", db.insert_params[-1])
 
     def test_shared_number_gets_zero_points_and_is_not_credited(self):
         credit = self._load_credit_function()
