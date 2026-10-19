@@ -182,7 +182,7 @@ class StoryService(RakshService):
             if quantity > self.get_request_limit(user.id):
                 await query.edit_message_text(
                     "⚠️ لا يمكن قبول هذا الطلب حالياً. حاول لاحقاً.",
-                    reply_markup=raksh_menu_kb(is_own),
+                    reply_markup=get_raksh_menu_keyboard(is_own),
                 )
                 return True
             
@@ -229,7 +229,7 @@ class StoryService(RakshService):
             if quantity > self.get_request_limit(user.id):
                 await query.edit_message_text(
                     "⚠️ لا يمكن قبول هذا الطلب حالياً. حاول لاحقاً.",
-                    reply_markup=raksh_menu_kb(is_own),
+                    reply_markup=get_raksh_menu_keyboard(is_own),
                 )
                 return True
             
@@ -241,7 +241,7 @@ class StoryService(RakshService):
                         "❌ *نقاطك غير كافية!*\n"
                         f"التكلفة المطلوبة: {total_cost} نقطة",
                         parse_mode=ParseMode.MARKDOWN,
-                        reply_markup=raksh_menu_kb(is_own)
+                        reply_markup=get_raksh_menu_keyboard(is_own)
                     )
                     return True
                 
