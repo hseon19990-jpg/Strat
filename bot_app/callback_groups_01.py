@@ -887,10 +887,17 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
         if data == "smm_back:link":
             svc  = context.user_data.get("smm_svc", {})
             qty  = context.user_data.get("smm_qty", 0)
-            cost = context.user_data.get("smm_cost", 0)
-            cost = service_points_cost(user.id, cost)
+            cost = int(context.user_data.get("smm_cost", 0) or 0)
             if not svc:
                 await q.edit_message_text("⚠️ انتهت الجلسة. ابدأ من جديد.", reply_markup=main_menu_kb(is_own))
+                return
+            if cost <= 0:
+                context.user_data["state"] = "main_menu"
+                await q.edit_message_text(
+                    "⚠️ لا يمكن تنفيذ طلب مجاني لخدمات مواقع الرشق. "
+                    "ابدأ الطلب من جديد بعد التحقق من سعر الخدمة.",
+                    reply_markup=main_menu_kb(is_own),
+                )
                 return
             context.user_data["state"] = "await_smm_link"
             await q.edit_message_text(
@@ -1034,51 +1041,6 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 context.user_data["state"] = "main_menu"
                 await q.edit_message_text(
                     f"✅ تم قبول طلبك.\n📌 كود الطلب: <code>{result['order_code']}</code>",
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=main_menu_kb(is_own),
-                )
-                return
-
-            if method == "free":
-                claim_status, intent = claim_smm_free_order(intent_id, user.id)
-                if claim_status != "claimed" or not intent:
-                    await q.answer("⚠️ انتهت صلاحية الطلب أو تمت معالجته.", show_alert=True)
-                    return
-                try:
-                    result = await execute_smm_payment_intent(
-                        context, intent, "free", 0
-                    )
-                except Exception:
-                    logger.exception("تعذر إكمال طلب الرشق المجاني")
-                    finish_smm_payment_intent(
-                        intent_id, "needs_review", "free order submission outcome uncertain"
-                    )
-                    try:
-                        if OWNER_ID:
-                            await context.bot.send_message(
-                                OWNER_ID,
-                                f"⚠️ يلزم التحقق من طلب رشق مجاني. المستخدم: {user.id}، "
-                                f"الطلب: {intent_id}",
-                            )
-                    except Exception:
-                        logger.exception("تعذر تنبيه المالك بطلب رشق مجاني قيد المراجعة")
-                    await q.edit_message_text(
-                        "⚠️ تعذر تأكيد نتيجة الطلب المجاني تلقائياً. أبلغت المالك للمراجعة؛ لا تعِد الطلب الآن.",
-                        reply_markup=main_menu_kb(is_own),
-                    )
-                    return
-                if not result.get("ok"):
-                    finish_smm_payment_intent(
-                        intent_id, "failed", str(result.get("error") or "provider_error")
-                    )
-                    await q.edit_message_text(
-                        "⚠️ تعذر إرسال الطلب إلى موقع الرشق. حاول لاحقاً.",
-                        reply_markup=main_menu_kb(is_own),
-                    )
-                    return
-                context.user_data["state"] = "main_menu"
-                await q.edit_message_text(
-                    f"✅ تم قبول الطلب المجاني.\n📌 كود الطلب: <code>{result['order_code']}</code>",
                     parse_mode=ParseMode.HTML,
                     reply_markup=main_menu_kb(is_own),
                 )

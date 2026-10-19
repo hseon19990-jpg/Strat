@@ -33,6 +33,27 @@ def _load_smm_price_helpers():
     return namespace
 
 
+def _load_smm_payment_authorizer():
+    source = (ROOT / "bot_app" / "smm_payments.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_is_valid_smm_payment"
+    )
+    namespace = {}
+    exec(
+        compile(
+            ast.Module(body=[function], type_ignores=[]),
+            str(ROOT / "bot_app" / "smm_payments.py"),
+            "exec",
+        ),
+        namespace,
+    )
+    return namespace["_is_valid_smm_payment"]
+
+
 class SmmPaymentMethodTests(unittest.TestCase):
     def test_stars_cost_uses_one_star_per_thousand_and_rounds_up(self):
         helpers = _load_smm_price_helpers()
@@ -79,8 +100,45 @@ class SmmPaymentMethodTests(unittest.TestCase):
         source = (ROOT / "bot_app" / "messages.py").read_text(encoding="utf-8")
         self.assertIn('callback_data=f"smm:pay:stars:{intent_id}"', source)
         self.assertIn('callback_data=f"smm:pay:jewels:{intent_id}"', source)
+        self.assertNotIn('callback_data=f"smm:pay:free:{intent_id}"', source)
         self.assertIn("⭐ السعر:", source)
         self.assertIn("💎 السعر:", source)
+
+    def test_smm_quote_is_not_waived_by_referral_free_access(self):
+        message_source = (ROOT / "bot_app" / "messages.py").read_text(encoding="utf-8")
+        callback_source = (ROOT / "bot_app" / "callback_groups_01.py").read_text(
+            encoding="utf-8"
+        )
+        payment_source = (ROOT / "bot_app" / "smm_payments.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn("service_points_cost(user.id, cost)", message_source)
+        self.assertNotIn("service_points_cost(user.id, cost)", callback_source)
+        self.assertIn("if service_value_points <= 0:", payment_source)
+        self.assertIn(
+            "if not _is_valid_smm_payment(intent, payment_method, paid_amount):",
+            payment_source,
+        )
+        self.assertNotIn("claim_smm_free_order", payment_source + callback_source)
+        self.assertNotIn('if method == "free":', callback_source)
+
+    def test_smm_payment_authorizer_requires_exact_positive_stars_or_jewels(self):
+        is_valid = _load_smm_payment_authorizer()
+        intent = {
+            "service_value_points": 125_000,
+            "cost_stars": 125,
+            "cost_jewels": 125,
+        }
+
+        self.assertTrue(is_valid(intent, "stars", 125))
+        self.assertTrue(is_valid(intent, "jewels", 125))
+        self.assertFalse(is_valid(intent, "free", 0))
+        self.assertFalse(is_valid(intent, "stars", 0))
+        self.assertFalse(is_valid(intent, "stars", 124))
+        self.assertFalse(
+            is_valid({**intent, "service_value_points": 0}, "stars", 125)
+        )
 
     def test_owner_can_gift_jewels_and_smm_rate_is_fixed(self):
         callback_source = (ROOT / "bot_app" / "callback_groups_04.py").read_text(encoding="utf-8")
