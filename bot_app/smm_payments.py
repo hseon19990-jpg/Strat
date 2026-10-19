@@ -6,9 +6,31 @@ globals().update({key: value for key, value in vars(_shared).items() if not key.
 from .services import smm_jewels_cost, smm_stars_cost
 
 
+def _is_valid_smm_payment(intent: dict, payment_method: str, paid_amount: int) -> bool:
+    """Accept only a positive Stars or jewels payment matching the saved quote."""
+    if payment_method not in {"stars", "jewels"}:
+        return False
+    try:
+        service_value_points = int(intent.get("service_value_points") or 0)
+        expected_amount = int(
+            intent.get("cost_stars" if payment_method == "stars" else "cost_jewels")
+            or 0
+        )
+        actual_amount = int(paid_amount or 0)
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return (
+        service_value_points > 0
+        and expected_amount > 0
+        and actual_amount == expected_amount
+    )
+
+
 def create_smm_payment_intent(user_id: int, service: dict, link: str, quantity: int, service_value_points: int) -> dict:
     """Save the quoted SMM order and both payment amounts before showing checkout."""
-    service_value_points = max(0, int(service_value_points or 0))
+    service_value_points = int(service_value_points or 0)
+    if service_value_points <= 0:
+        raise ValueError("SMM orders must have a positive paid price")
     with db_conn() as c:
         row = c.execute(
             """
@@ -57,6 +79,7 @@ def start_smm_stars_invoice(intent_id: int, user_id: int) -> dict | None:
             UPDATE smm_payment_intents
             SET status='awaiting_payment', payment_method='stars', updated_at=NOW()
             WHERE id=%s AND user_id=%s AND status='pending'
+              AND service_value_points>0 AND cost_stars>0
               AND created_at > NOW() - INTERVAL '1 day'
             RETURNING *
             """,
@@ -84,7 +107,8 @@ def validate_smm_stars_invoice(intent_id: int, user_id: int, stars: int) -> bool
             """
             SELECT id FROM smm_payment_intents
             WHERE id=%s AND user_id=%s AND payment_method='stars'
-              AND status='awaiting_payment' AND cost_stars=%s
+              AND status='awaiting_payment' AND service_value_points>0
+              AND cost_stars>0 AND cost_stars=%s
               AND created_at > NOW() - INTERVAL '1 day'
             """,
             (intent_id, user_id, stars),
@@ -104,7 +128,13 @@ def claim_smm_stars_payment(
             "SELECT * FROM smm_payment_intents WHERE id=%s FOR UPDATE",
             (intent_id,),
         ).fetchone()
-        if not row or int(row["user_id"]) != int(user_id) or int(row["cost_stars"]) != int(stars):
+        if (
+            not row
+            or int(row["user_id"]) != int(user_id)
+            or int(row["service_value_points"] or 0) <= 0
+            or int(row["cost_stars"] or 0) <= 0
+            or int(row["cost_stars"]) != int(stars)
+        ):
             return "invalid", None
         if row["status"] == "awaiting_payment" and row["payment_method"] == "stars":
             c.execute(
@@ -135,6 +165,7 @@ def claim_smm_jewel_payment(intent_id: int, user_id: int) -> tuple[str, dict | N
         if (
             not row
             or row["status"] != "pending"
+            or int(row["service_value_points"] or 0) <= 0
             or int(row["cost_jewels"] or 0) <= 0
             or row["created_at"] is None
         ):
@@ -178,23 +209,6 @@ def claim_smm_jewel_payment(intent_id: int, user_id: int) -> tuple[str, dict | N
     return "claimed", result, updated["jewels"]
 
 
-def claim_smm_free_order(intent_id: int, user_id: int) -> tuple[str, dict | None]:
-    """Preserve explicitly free/referral-waived orders without touching points."""
-    with db_conn() as c:
-        row = c.execute(
-            """
-            UPDATE smm_payment_intents
-            SET status='processing', payment_method='free', updated_at=NOW()
-            WHERE id=%s AND user_id=%s AND status='pending'
-              AND service_value_points=0
-              AND created_at > NOW() - INTERVAL '1 day'
-            RETURNING *
-            """,
-            (intent_id, user_id),
-        ).fetchone()
-    return ("claimed", dict(row)) if row else ("unavailable", None)
-
-
 async def execute_smm_payment_intent(
     context,
     intent: dict,
@@ -203,6 +217,14 @@ async def execute_smm_payment_intent(
     telegram_payment_id: str = "",
 ) -> dict:
     """Submit one confirmed order to its provider and persist the chosen currency."""
+    if not _is_valid_smm_payment(intent, payment_method, paid_amount):
+        logger.warning(
+            "رفض تنفيذ طلب SMM دون دفعة صحيحة: intent_id=%s method=%s",
+            intent.get("id") if isinstance(intent, dict) else None,
+            payment_method,
+        )
+        return {"ok": False, "error": "invalid_payment"}
+
     user_id = int(intent["user_id"])
     service_id = int(intent["service_id"])
     quantity = int(intent["quantity"])

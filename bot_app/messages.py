@@ -936,11 +936,19 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         svc  = context.user_data.get("smm_svc", {})
         qty  = context.user_data.get("smm_qty", 0)
-        cost = context.user_data.get("smm_cost", 0)
+        cost = int(context.user_data.get("smm_cost", 0) or 0)
         if not svc:
             context.user_data["state"] = "main_menu"
             await update.message.reply_text(
                 "⚠️ انتهت جلسة الخدمة. ابدأ الطلب من جديد.",
+                reply_markup=main_menu_kb(is_own),
+            )
+            return
+        if cost <= 0:
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text(
+                "⚠️ لا يمكن تنفيذ طلب مجاني لخدمات مواقع الرشق. "
+                "تحقق من سعر الخدمة وابدأ الطلب من جديد.",
                 reply_markup=main_menu_kb(is_own),
             )
             return
@@ -967,22 +975,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         link_html = _smm_preview_value(link, 1500)
         desc_html = _smm_preview_value(desc_text, 1200)
         intent_id = int(intent["id"])
-        if cost > 0:
-            preview_rows = [
-                [InlineKeyboardButton(
-                    f"⭐ الدفع بالنجوم — {intent['cost_stars']:,}",
-                    callback_data=f"smm:pay:stars:{intent_id}",
-                )],
-                [InlineKeyboardButton(
-                    f"💎 الدفع بالمجوهرات — {intent['cost_jewels']:,}",
-                    callback_data=f"smm:pay:jewels:{intent_id}",
-                )],
-            ]
-        else:
-            preview_rows = [[InlineKeyboardButton(
-                "🎁 تنفيذ مجاناً",
-                callback_data=f"smm:pay:free:{intent_id}",
-            )]]
+        preview_rows = [
+            [InlineKeyboardButton(
+                f"⭐ الدفع بالنجوم — {intent['cost_stars']:,}",
+                callback_data=f"smm:pay:stars:{intent_id}",
+            )],
+            [InlineKeyboardButton(
+                f"💎 الدفع بالمجوهرات — {intent['cost_jewels']:,}",
+                callback_data=f"smm:pay:jewels:{intent_id}",
+            )],
+        ]
         preview_rows.extend([
             [InlineKeyboardButton("❌ إلغاء", callback_data=f"smm:cancel:{intent_id}")],
             [InlineKeyboardButton("🔙 رجوع (تغيير الرابط)", callback_data="smm_back:link")],
@@ -994,13 +996,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔢 الكمية: {qty}\n"
             f"🔗 الرابط: <code>{link_html}</code>\n"
             + (f"📝 {desc_html}\n" if desc_text else "")
-            + (
-                f"⭐ السعر: {int(intent['cost_stars']):,} نجمة\n"
-                f"💎 السعر: {int(intent['cost_jewels']):,} مجوهرة\n"
-                f"💎 رصيد مجوهراتك: {fmt_jewel_amount(jewels)}"
-                if cost > 0
-                else "🎁 هذا الطلب مجاني ضمن الإعفاء المتاح لك."
-            )
+            + f"⭐ السعر: {int(intent['cost_stars']):,} نجمة\n"
+            + f"💎 السعر: {int(intent['cost_jewels']):,} مجوهرة\n"
+            + f"💎 رصيد مجوهراتك: {fmt_jewel_amount(jewels)}"
         )
         try:
             await update.message.reply_text(
@@ -1018,13 +1016,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🔢 الكمية: {qty}\n"
                 f"🔗 الرابط: {link[:1500]}\n"
                 + (f"📝 {str(desc_text)[:1200]}\n" if desc_text else "")
-                + (
-                    f"⭐ السعر: {int(intent['cost_stars']):,} نجمة\n"
-                    f"💎 السعر: {int(intent['cost_jewels']):,} مجوهرة\n"
-                    f"💎 رصيد مجوهراتك: {fmt_jewel_amount(jewels)}"
-                    if cost > 0
-                    else "🎁 هذا الطلب مجاني ضمن الإعفاء المتاح لك."
-                ),
+                + f"⭐ السعر: {int(intent['cost_stars']):,} نجمة\n"
+                + f"💎 السعر: {int(intent['cost_jewels']):,} مجوهرة\n"
+                + f"💎 رصيد مجوهراتك: {fmt_jewel_amount(jewels)}",
                 reply_markup=preview_markup,
             )
         context.user_data["smm_link"] = link
@@ -1050,7 +1044,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         cost = smm_service_cost_points(qty, svc.get("price_per_point", 1))
-        cost = service_points_cost(user.id, cost)
+        if cost <= 0:
+            await update.message.reply_text(
+                "⚠️ سعر هذه الخدمة غير صالح، لذلك لا يمكن إنشاء طلب مجاني. "
+                "تواصل مع الإدارة.",
+                reply_markup=main_menu_kb(is_own),
+            )
+            return
         context.user_data["smm_qty"] = qty
         context.user_data["smm_cost"] = cost
         context.user_data["state"] = "await_smm_link"
