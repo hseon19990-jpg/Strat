@@ -8,6 +8,8 @@ domain.
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
+from decimal import Decimal
+
 JEWEL_STAR_TOPUP_MAX = 10000
 JEWEL_STAR_TOPUP_PRESETS = (3, 10, 50, 100)
 
@@ -261,10 +263,29 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if payload.startswith("smm_stars:"):
         parts = payload.split(":")
         if len(parts) != 2 or not parts[1].isdigit():
-            await update.message.reply_text(
-                "⚠️ بيانات طلب مواقع الرشق غير صالحة.",
-                reply_markup=main_menu_kb(is_own),
-            )
+            try:
+                _credit_star_payment_as_jewels_once(
+                    user.id,
+                    payment.total_amount,
+                    payment.telegram_payment_charge_id or f"update:{update.update_id}",
+                )
+                await update.message.reply_text(
+                    f"⚠️ بيانات طلب الرشق غير صالحة؛ أُضيفت "
+                    f"{fmt_jewel_amount(payment.total_amount)} جواهر إلى رصيدك.",
+                    reply_markup=main_menu_kb(is_own),
+                )
+            except Exception:
+                logger.exception("تعذر تعويض دفعة SMM غير صالحة بالجواهر")
+                await _notify_owner_manual_star_purchase(
+                    context,
+                    f"⚠️ تعذّر إضافة جواهر تعويض لدفعة رشق غير صالحة. "
+                    f"المستخدم: {user.id}، العملية: {payment.telegram_payment_charge_id}",
+                )
+                await update.message.reply_text(
+                    "⚠️ بيانات الطلب غير صالحة وتعذّر إضافة جواهر التعويض تلقائياً. "
+                    "أبلغت المالك للمراجعة.",
+                    reply_markup=main_menu_kb(is_own),
+                )
             return
 
         intent_id = int(parts[1])
@@ -284,46 +305,49 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         if claim_status == "duplicate_charge":
             try:
-                await context.bot.refund_star_payment(
-                    user_id=user.id,
-                    telegram_payment_charge_id=charge_id,
+                credited = _credit_star_payment_as_jewels_once(
+                    user.id, payment.total_amount, charge_id
                 )
                 await update.message.reply_text(
-                    "⚠️ تم رصد دفع مكرر لهذا الطلب، وأُعيدت النجوم الإضافية.",
+                    f"⚠️ تم رصد دفعة إضافية؛ "
+                    f"{'أُضيفت' if credited else 'سبق إضافة'} "
+                    f"{fmt_jewel_amount(payment.total_amount)} جواهر إلى رصيدك.",
                     reply_markup=main_menu_kb(is_own),
                 )
             except Exception:
-                logger.exception("تعذر رد نجوم دفعة SMM مكررة")
+                logger.exception("تعذر تعويض دفعة SMM مكررة بالجواهر")
                 await _notify_owner_manual_star_purchase(
                     context,
-                    f"⚠️ يلزم مراجعة دفعة نجوم مكررة لخدمات الرشق. المستخدم: {user.id}، "
+                    f"⚠️ يلزم إضافة جواهر تعويض لدفعة رشق مكررة. المستخدم: {user.id}، "
                     f"رقم العملية: {charge_id}",
                 )
                 await update.message.reply_text(
-                    "⚠️ وصل دفع مكرر وتعذر رد النجوم تلقائياً. تواصل مع المالك وأرسل رقم العملية.",
+                    "⚠️ وصل دفع إضافي وتعذّر إضافة جواهر التعويض تلقائياً. "
+                    "أبلغت المالك للمراجعة.",
                     reply_markup=main_menu_kb(is_own),
                 )
             return
 
         if claim_status != "claimed" or not intent:
             try:
-                await context.bot.refund_star_payment(
-                    user_id=user.id,
-                    telegram_payment_charge_id=charge_id,
+                _credit_star_payment_as_jewels_once(
+                    user.id, payment.total_amount, charge_id
                 )
                 await update.message.reply_text(
-                    "⚠️ لم يعد هذا الطلب صالحاً؛ أُعيدت النجوم المدفوعة.",
+                    f"⚠️ لم يعد هذا الطلب صالحاً؛ أُضيفت "
+                    f"{fmt_jewel_amount(payment.total_amount)} جواهر إلى رصيدك.",
                     reply_markup=main_menu_kb(is_own),
                 )
             except Exception:
-                logger.exception("تعذر رد نجوم دفع SMM لطلب غير صالح")
+                logger.exception("تعذر تعويض دفعة SMM لطلب غير صالح بالجواهر")
                 await _notify_owner_manual_star_purchase(
                     context,
-                    f"⚠️ يلزم مراجعة دفع نجوم لطلب رشق غير صالح. المستخدم: {user.id}، "
+                    f"⚠️ يلزم مراجعة إضافة جواهر لدفعة طلب رشق غير صالح. المستخدم: {user.id}، "
                     f"رقم العملية: {charge_id}",
                 )
                 await update.message.reply_text(
-                    "⚠️ تعذر بدء الطلب أو رد النجوم تلقائياً. تواصل مع المالك وأرسل رقم العملية.",
+                    "⚠️ تعذّر بدء الطلب أو إضافة جواهر التعويض تلقائياً. "
+                    "أبلغت المالك للمراجعة.",
                     reply_markup=main_menu_kb(is_own),
                 )
             return
@@ -358,29 +382,30 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
             return
 
         try:
-            await context.bot.refund_star_payment(
-                user_id=user.id,
-                telegram_payment_charge_id=charge_id,
+            _credit_star_payment_as_jewels_once(
+                user.id, payment.total_amount, charge_id
             )
             finish_smm_payment_intent(
-                intent_id, "refunded", str(result.get("error") or "provider_error")
+                intent_id, "jewels_refunded", str(result.get("error") or "provider_error")
             )
             await update.message.reply_text(
-                "⚠️ تعذر إرسال الطلب إلى موقع الرشق، وأُعيدت النجوم تلقائياً.",
+                f"⚠️ تعذّر إرسال الطلب إلى موقع الرشق؛ أُضيفت "
+                f"{fmt_jewel_amount(payment.total_amount)} جواهر إلى رصيدك.",
                 reply_markup=main_menu_kb(is_own),
             )
         except Exception:
-            logger.exception("تعذر رد نجوم طلب SMM بعد رفض موقع الرشق")
+            logger.exception("تعذر تعويض طلب SMM بالجواهر بعد رفض موقع الرشق")
             finish_smm_payment_intent(
                 intent_id, "refund_required", str(result.get("error") or "refund_failed")
             )
             await _notify_owner_manual_star_purchase(
                 context,
-                f"⚠️ تعذر رد نجوم طلب مواقع الرشق. المستخدم: {user.id}، "
-                f"الطلب: {intent_id}، العملية: {charge_id}",
+                f"⚠️ تعذرت إضافة جواهر التعويض لطلب مواقع الرشق. المستخدم: {user.id}، "
+                f"الطلب: {intent_id}، العملية: {charge_id}، المبلغ: {payment.total_amount} نجمة",
             )
             await update.message.reply_text(
-                "⚠️ تعذر تنفيذ الطلب ورد النجوم تلقائياً. أبلغت المالك لمتابعة الاسترداد.",
+                "⚠️ تعذّر تنفيذ الطلب أو إضافة جواهر التعويض تلقائياً. "
+                "أبلغت المالك لمتابعة الحالة.",
                 reply_markup=main_menu_kb(is_own),
             )
         return
@@ -402,22 +427,26 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 payment.currency,
             )
             try:
-                await context.bot.refund_star_payment(
-                    user_id=user.id,
-                    telegram_payment_charge_id=charge_id,
+                credited = _credit_star_payment_as_jewels_once(
+                    user.id,
+                    payment.total_amount,
+                    charge_id or f"update:{update.update_id}",
                 )
                 await update.message.reply_text(
-                    "⚠️ لم تتطابق بيانات الفاتورة، لذلك أُعيدت النجوم المدفوعة."
+                    f"⚠️ لم تتطابق بيانات الفاتورة؛ "
+                    f"{'أُضيفت' if credited else 'سبق إضافة'} "
+                    f"{fmt_jewel_amount(payment.total_amount)} جواهر إلى رصيدك."
                 )
             except Exception:
-                logger.exception("تعذر رد دفعة مجوهرات غير مطابقة")
+                logger.exception("تعذر تحويل دفعة شحن مجوهرات غير مطابقة إلى جواهر")
                 await _notify_owner_manual_star_purchase(
                     context,
-                    f"⚠️ دفعة شحن مجوهرات غير مطابقة تحتاج مراجعة. المستخدم: {user.id}، "
+                    f"⚠️ دفعة شحن مجوهرات غير مطابقة تعذّر تحويلها إلى جواهر. المستخدم: {user.id}، "
                     f"العملية: {charge_id}، الحمولة: {payload}",
                 )
                 await update.message.reply_text(
-                    "⚠️ تعذر التحقق من الدفعة أو ردها تلقائياً؛ أبلغت المالك لمراجعتها.",
+                    "⚠️ تعذّر التحقق من الدفعة أو إضافة جواهرها تلقائياً؛ "
+                    "أبلغت المالك لمراجعتها.",
                     reply_markup=main_menu_kb(is_own),
                 )
             return
@@ -465,12 +494,12 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
             return
 
         db_user = get_user(user.id)
-        jewels_balance = int((db_user or {}).get("jewels") or 0)
+        jewels_balance = (db_user or {}).get("jewels") or 0
         await update.message.reply_text(
             "✅ تم شحن المجوهرات تلقائياً بنجاح!\n\n"
             f"⭐ المدفوع: {amount} نجمة\n"
             f"💎 المضاف: {amount} مجوهرة\n"
-            f"💎 رصيدك الحالي: {jewels_balance:,} مجوهرة",
+            f"💎 رصيدك الحالي: {fmt_jewel_amount(jewels_balance)} مجوهرة",
             reply_markup=main_menu_kb(is_own),
         )
         return
@@ -1162,8 +1191,8 @@ async def cmd_status_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_compensate_partial(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """أمر المالك: /compensate_partial
     يفحص جميع طلبات المواقع المكتملة التي لم تحصل على تعويض جزئي بعد،
-    يسأل موقع الرشق عن حالتها، وإن كانت Partial يحسب النقاط ويُعيدها لأصحابها.
-    مفيد لتعويض المستخدمين الذين خسروا نقاطاً قبل تفعيل هذه الميزة."""
+    يسأل موقع الرشق عن حالتها، وإن كانت Partial يحسب قيمة الجزء غير المنفذ
+    ويعيدها كمجوهرات بدقة عشرية."""
     user = update.effective_user
     if user.id != OWNER_ID:
         await update.message.reply_text("⛔ هذا الأمر للمالك فقط.")
@@ -1183,6 +1212,7 @@ async def cmd_compensate_partial(update: Update, context: ContextTypes.DEFAULT_T
                 "WHERE o.status='completed' "
                 "  AND COALESCE(o.refund_points, 0) = 0 "
                 "  AND COALESCE(o.partial_refund_pts, 0) = 0 "
+                "  AND COALESCE(o.refund_jewels, 0) = 0 "
                 "  AND o.api_order_id IS NOT NULL AND o.api_order_id != '' "
             ).fetchall()
     except Exception as e:
@@ -1196,7 +1226,7 @@ async def cmd_compensate_partial(update: Update, context: ContextTypes.DEFAULT_T
     await update.message.reply_text(f"📋 عدد الطلبات المراد فحصها: {len(candidates):,}")
 
     compensated, skipped, errors = 0, 0, 0
-    total_pts_given = 0
+    total_jewels_given = Decimal("0")
 
     for o in candidates:
         try:
@@ -1223,21 +1253,22 @@ async def cmd_compensate_partial(update: Update, context: ContextTypes.DEFAULT_T
             skipped += 1
             continue
 
-        refund_pts = _calc_partial_refund_pts(
+        refund_jewels = _calc_partial_refund_jewels(
             o["svc_api_id"],
             remains,
             panel,
             o.get("provider_rate_usd") or 0,
         )
-        if refund_pts <= 0:
+        if refund_jewels <= 0:
             skipped += 1
             continue
 
         settled = _settle_smm_order(
             o["id"],
             o["user_id"],
-            refund_pts,
+            0,
             "completed",
+            refund_jewels=refund_jewels,
             partial=True,
             allow_completed=True,
         )
@@ -1251,7 +1282,7 @@ async def cmd_compensate_partial(update: Update, context: ContextTypes.DEFAULT_T
                 f"💰 *تعويض طلب جزئي*\n\n"
                 f"📌 كود الطلب: `{o['order_code']}`\n"
                 f"📦 الوحدات غير المنفذة: {remains:,}\n"
-                f"✅ تم إضافة *{refund_pts:,}* نقطة إلى رصيدك تعويضاً.\n\n"
+                f"✅ تم إضافة *{fmt_jewel_amount(refund_jewels)}* مجوهرة إلى رصيدك تعويضاً.\n\n"
                 f"نعتذر عن التأخير في هذا التعويض.",
                 parse_mode="Markdown"
             )
@@ -1259,13 +1290,16 @@ async def cmd_compensate_partial(update: Update, context: ContextTypes.DEFAULT_T
             pass
 
         compensated += 1
-        total_pts_given += refund_pts
-        logger.info(f"✅ تعويض جزئي: طلب {o['order_code']} — {refund_pts:,} نقطة → {o['user_id']}")
+        total_jewels_given += refund_jewels
+        logger.info(
+            f"✅ تعويض جزئي: طلب {o['order_code']} — "
+            f"{fmt_jewel_amount(refund_jewels)} مجوهرة → {o['user_id']}"
+        )
 
     await update.message.reply_text(
         f"✅ *انتهى فحص التعويضات*\n\n"
         f"💚 طلبات عُوِّضت: {compensated}\n"
-        f"💰 إجمالي النقاط الموزّعة: {total_pts_given:,}\n"
+        f"💎 إجمالي المجوهرات الموزّعة: {fmt_jewel_amount(total_jewels_given)}\n"
         f"⏭ طلبات تخطّيها (غير جزئية): {skipped}\n"
         f"❌ أخطاء API: {errors}",
         parse_mode="Markdown"

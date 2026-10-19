@@ -270,9 +270,9 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 context.user_data["state"] = "main_menu"
                 db_user = get_user(user.id)
                 pts = db_user["points"] if db_user else 0
-                jewels = int((db_user or {}).get("jewels") or 0)
+                jewels = (db_user or {}).get("jewels") or 0
                 await q.edit_message_text(
-                    f"🏠 *القائمة الرئيسية*\n💰 رصيدك: {pts} نقطة\n💎 مجوهراتك: {jewels:,}",
+                    f"🏠 *القائمة الرئيسية*\n💰 رصيدك: {pts} نقطة\n💎 مجوهراتك: {fmt_jewel_amount(jewels)}",
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=main_menu_kb(True),
                 )
@@ -284,11 +284,11 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             context.user_data["state"] = "main_menu"
             db_user = get_user(user.id)
             pts = db_user["points"] if db_user else 0
-            jewels = int((db_user or {}).get("jewels") or 0)
+            jewels = (db_user or {}).get("jewels") or 0
             menu_text = (
                 f"🏠 *القائمة الرئيسية*\n"
                 f"💰 رصيدك: {pts} نقطة\n"
-                f"💎 مجوهراتك: {jewels:,}"
+                f"💎 مجوهراتك: {fmt_jewel_amount(jewels)}"
             )
             menu_kb = main_menu_kb(
                 is_own,

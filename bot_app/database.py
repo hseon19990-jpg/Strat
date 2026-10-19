@@ -145,7 +145,7 @@ def init_db():
               username     TEXT,
               full_name    TEXT,
               points       INTEGER DEFAULT 0,
-              jewels       BIGINT NOT NULL DEFAULT 0,
+              jewels       NUMERIC(20,6) NOT NULL DEFAULT 0,
               invited_by   BIGINT DEFAULT 0,
               total_orders INTEGER DEFAULT 0,
               joined_at    TEXT DEFAULT CURRENT_DATE,
@@ -172,7 +172,8 @@ def init_db():
                provider_rate_usd REAL DEFAULT 0,
                provider_cost_usd REAL DEFAULT 0,
                partial_refund_pts INTEGER DEFAULT 0,
-               refund_points INTEGER DEFAULT 0
+               refund_points INTEGER DEFAULT 0,
+               refund_jewels NUMERIC(20,6) NOT NULL DEFAULT 0
           )""")
           c.execute("""
           CREATE TABLE IF NOT EXISTS smm_payment_intents (
@@ -199,7 +200,7 @@ def init_db():
           CREATE TABLE IF NOT EXISTS jewel_transactions (
               id          BIGSERIAL PRIMARY KEY,
               user_id     BIGINT NOT NULL,
-              amount      BIGINT NOT NULL,
+              amount      NUMERIC(20,6) NOT NULL,
               transaction_type TEXT NOT NULL,
               admin_id    BIGINT,
               reference   TEXT,
@@ -665,7 +666,10 @@ def init_db():
               active           INTEGER DEFAULT 1
           )""")
           for _alt in [
-              "ALTER TABLE users ADD COLUMN IF NOT EXISTS jewels BIGINT NOT NULL DEFAULT 0",
+              "ALTER TABLE users ADD COLUMN IF NOT EXISTS jewels NUMERIC(20,6) NOT NULL DEFAULT 0",
+              "ALTER TABLE users ALTER COLUMN jewels TYPE NUMERIC(20,6) USING jewels::NUMERIC(20,6)",
+              "ALTER TABLE jewel_transactions ALTER COLUMN amount TYPE NUMERIC(20,6) USING amount::NUMERIC(20,6)",
+              "ALTER TABLE orders ADD COLUMN IF NOT EXISTS refund_jewels NUMERIC(20,6) NOT NULL DEFAULT 0",
               "ALTER TABLE orders ADD COLUMN IF NOT EXISTS cost_stars INTEGER NOT NULL DEFAULT 0",
               "ALTER TABLE orders ADD COLUMN IF NOT EXISTS cost_jewels BIGINT NOT NULL DEFAULT 0",
               "ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_method TEXT NOT NULL DEFAULT 'points'",

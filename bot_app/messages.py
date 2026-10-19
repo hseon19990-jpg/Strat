@@ -952,7 +952,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "⚠️ تعذر تجهيز الطلب حالياً. أرسل الرابط مرة أخرى بعد لحظات."
             )
             return
-        jewels = int((db_user or {}).get("jewels") or 0)
+        jewels = (db_user or {}).get("jewels") or 0
         desc_text = svc.get("description") or ""
         intent = create_smm_payment_intent(
             user.id, svc, link, qty, cost
@@ -997,7 +997,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             + (
                 f"⭐ السعر: {int(intent['cost_stars']):,} نجمة\n"
                 f"💎 السعر: {int(intent['cost_jewels']):,} مجوهرة\n"
-                f"💎 رصيد مجوهراتك: {jewels:,}"
+                f"💎 رصيد مجوهراتك: {fmt_jewel_amount(jewels)}"
                 if cost > 0
                 else "🎁 هذا الطلب مجاني ضمن الإعفاء المتاح لك."
             )
@@ -1021,7 +1021,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 + (
                     f"⭐ السعر: {int(intent['cost_stars']):,} نجمة\n"
                     f"💎 السعر: {int(intent['cost_jewels']):,} مجوهرة\n"
-                    f"💎 رصيد مجوهراتك: {jewels:,}"
+                    f"💎 رصيد مجوهراتك: {fmt_jewel_amount(jewels)}"
                     if cost > 0
                     else "🎁 هذا الطلب مجاني ضمن الإعفاء المتاح لك."
                 ),
@@ -1049,7 +1049,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"⚠️ الكمية خارج النطاق المسموح.\nالحد الأدنى: {svc['min_qty']} | الحد الأعلى: {svc['max_qty']}"
             )
             return
-        cost = int(qty / 1000 * svc.get("price_per_point", 1))
+        cost = smm_service_cost_points(qty, svc.get("price_per_point", 1))
         cost = service_points_cost(user.id, cost)
         context.user_data["smm_qty"] = qty
         context.user_data["smm_cost"] = cost
@@ -4525,7 +4525,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         payment_method = order.get("payment_method") or "points"
         if payment_method == "stars":
-            cancel_cost = f"{int(order.get('cost_stars') or 0):,} نجمة"
+            star_amount = int(order.get("cost_stars") or 0)
+            cancel_cost = f"{star_amount:,} نجمة (سيُعاد {star_amount:,} جواهر)"
         elif payment_method == "jewels":
             cancel_cost = f"{int(order.get('cost_jewels') or 0):,} مجوهرة"
         elif payment_method == "free":
@@ -4552,74 +4553,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             o_code = order.get("order_code")
             payment_method = order.get("payment_method") or "points"
             try:
-                if payment_method == "stars":
-                    charge_id = order.get("telegram_payment_id")
-                    if not charge_id:
-                        raise ValueError("لا يوجد رقم عملية نجوم محفوظ لهذا الطلب.")
-                    with db_conn() as c:
-                        claimed = c.execute(
-                            """
-                            UPDATE orders SET status='refund_processing'
-                            WHERE order_code=%s AND status NOT IN ('cancelled','refund_processing')
-                            RETURNING id
-                            """,
-                            (o_code,),
-                        ).fetchone()
-                    if not claimed:
-                        raise ValueError("الطلب ملغى مسبقاً أو قيد معالجة الاسترداد.")
-                    try:
-                        await context.bot.refund_star_payment(
-                            user_id=uid,
-                            telegram_payment_charge_id=charge_id,
-                        )
-                    except Exception:
-                        with db_conn() as c:
-                            c.execute(
-                                "UPDATE orders SET status=%s WHERE id=%s AND status='refund_processing'",
-                                (order.get("status") or "pending", claimed["id"]),
-                            )
-                        raise
-                    with db_conn() as c:
-                        c.execute(
-                            "UPDATE orders SET status='cancelled' WHERE id=%s AND status='refund_processing'",
-                            (claimed["id"],),
-                        )
-                    refund_text = f"{int(order.get('cost_stars') or 0):,} نجمة"
-
-                elif payment_method == "jewels":
-                    refund_amount = int(order.get("cost_jewels") or 0)
-                    if refund_amount > 0:
-                        with db_conn() as c:
-                            changed = c.execute(
-                                """
-                                UPDATE orders SET status='cancelled'
-                                WHERE order_code=%s AND status<>'cancelled'
-                                RETURNING id
-                                """,
-                                (o_code,),
-                            ).fetchone()
-                            if not changed:
-                                raise ValueError("الطلب ملغى مسبقاً.")
-                            new_balance = c.execute(
-                                "UPDATE users SET jewels=COALESCE(jewels,0)+%s "
-                                "WHERE user_id=%s RETURNING jewels",
-                                (refund_amount, uid),
-                            ).fetchone()
-                            if not new_balance:
-                                raise ValueError("لم يتم العثور على رصيد المستخدم.")
-                            c.execute(
-                                "INSERT INTO jewel_transactions "
-                                "(user_id,amount,transaction_type,reference) "
-                                "VALUES (%s,%s,'refund',%s)",
-                                (uid, refund_amount, f"cancelled_order:{o_code}"),
-                            )
-                    else:
-                        with db_conn() as c:
-                            c.execute(
-                                "UPDATE orders SET status='cancelled' WHERE order_code=%s",
-                                (o_code,),
-                            )
-                    refund_text = f"{refund_amount:,} مجوهرة"
+                if payment_method in {"stars", "jewels"}:
+                    refund_amount = int(
+                        order.get("cost_stars" if payment_method == "stars" else "cost_jewels")
+                        or 0
+                    )
+                    if not _settle_smm_order(
+                        int(order["id"]),
+                        int(uid),
+                        0,
+                        "cancelled",
+                        refund_jewels=refund_amount,
+                        allow_completed=True,
+                    ):
+                        raise ValueError("الطلب ملغى مسبقاً أو سبق تعويضه.")
+                    refund_text = f"{fmt_jewel_amount(refund_amount)} مجوهرة"
 
                 else:
                     with db_conn() as c:
@@ -5023,19 +4971,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         and state == "os_await_raksh_jewel_rate"
         and context.user_data.get("owner_flow") == "raksh_jewel_rate"
     ):
-        try:
-            points_per_jewel = int(text.strip())
-            if points_per_jewel <= 0:
-                raise ValueError
-        except ValueError:
-            await update.message.reply_text(
-                "⚠️ أرسل عدداً صحيحاً أكبر من صفر، مثل 1000."
-            )
-            return
-        set_setting("raksh_points_per_jewel", str(points_per_jewel))
         reset_owner_flow(context, state="main_menu")
         await update.message.reply_text(
-            f"✅ تم ضبط السعر: مجوهرة واحدة لكل {points_per_jewel:,} نقطة من قيمة خدمات مواقع الرشق.",
+            "ℹ️ معدل مجوهرات خدمات الرشق ثابت: مجوهرة واحدة لكل سنت. "
+            "تُقرّب الأسعار للأعلى عند الطلب، ويبقى الاسترداد الجزئي عشرياً.",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🔙 إدارة المجوهرات", callback_data="os:manage_points")
             ]]),
@@ -5076,7 +5015,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"💎 *منح مجوهرات إلى:* {md_escape(target.get('full_name') or '')} "
             f"({md_escape(username)})\n"
-            f"الرصيد الحالي: *{int(target.get('jewels') or 0):,}* مجوهرة\n\n"
+            f"الرصيد الحالي: *{fmt_jewel_amount(target.get('jewels') or 0)}* مجوهرة\n\n"
             "أرسل عدد المجوهرات المراد منحها:",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[
@@ -5128,7 +5067,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"✅ تم منح {amount:,} مجوهرة إلى {md_escape(target.get('full_name') or '')} "
             f"({md_escape(username)}).\n"
-            f"💎 الرصيد الجديد: {new_balance:,} مجوهرة",
+            f"💎 الرصيد الجديد: {fmt_jewel_amount(new_balance)} مجوهرة",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🔙 إدارة المجوهرات", callback_data="os:manage_points")
             ]]),
@@ -5137,7 +5076,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(
                 target_id,
                 f"🎁 أهدى لك المالك {amount:,} مجوهرة.\n"
-                f"💎 رصيدك الآن: {new_balance:,} مجوهرة",
+                f"💎 رصيدك الآن: {fmt_jewel_amount(new_balance)} مجوهرة",
             )
         except Exception:
             logger.info("تعذر إرسال إشعار هدية المجوهرات إلى المستخدم %s", target_id)

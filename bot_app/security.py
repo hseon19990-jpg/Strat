@@ -8,6 +8,8 @@ domain.
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+
 OWNER_FIXED_2FA_PASSWORD = os.getenv("TWOFA_PASSWORD", "محمد")
 
 def generate_2fa_password() -> str:
@@ -1258,9 +1260,14 @@ def add_points(user_id: int, pts: int):
     with db_conn() as c:
         c.execute("UPDATE users SET points=points+%s WHERE user_id=%s", (pts, user_id))
 
-def add_jewels(user_id: int, amount: int, admin_id: int | None = None, reference: str = "") -> int:
+def add_jewels(user_id: int, amount, admin_id: int | None = None, reference: str = ""):
     """يضيف مجوهرات ويسجل سبب الحركة دون المساس برصيد النقاط."""
-    amount = int(amount)
+    try:
+        amount = Decimal(str(amount)).quantize(
+            Decimal("0.000001"), rounding=ROUND_HALF_UP
+        )
+    except (InvalidOperation, TypeError, ValueError):
+        raise ValueError("Invalid jewel amount")
     if amount <= 0:
         raise ValueError("Jewel amount must be greater than zero")
     with db_conn() as c:
@@ -1277,7 +1284,45 @@ def add_jewels(user_id: int, amount: int, admin_id: int | None = None, reference
             "VALUES (%s,%s,%s,%s,%s)",
             (user_id, amount, "gift" if admin_id else "refund", admin_id, reference or None),
         )
-    return int(updated["jewels"])
+    return updated["jewels"]
+
+def _credit_star_payment_as_jewels_once(user_id: int, amount, charge_reference: str) -> bool:
+    """يعوّض أي دفعة نجوم بالجواهر مرة واحدة لكل عملية تيليجرام."""
+    try:
+        amount = Decimal(str(amount)).quantize(
+            Decimal("0.000001"), rounding=ROUND_HALF_UP
+        )
+    except (InvalidOperation, TypeError, ValueError):
+        raise ValueError("Invalid star-payment jewel credit")
+    reference = str(charge_reference or "").strip()
+    if not amount.is_finite() or amount <= 0 or not reference:
+        raise ValueError("Star-payment jewel credit requires a positive amount and reference")
+    ledger_reference = f"star_payment_jewels:{reference}"
+    with db_conn() as c:
+        c.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s))", (ledger_reference,)
+        )
+        existing = c.execute(
+            "SELECT id FROM jewel_transactions "
+            "WHERE reference=%s AND transaction_type='refund'",
+            (ledger_reference,),
+        ).fetchone()
+        if existing:
+            return False
+        updated = c.execute(
+            "UPDATE users SET jewels=COALESCE(jewels,0)+%s "
+            "WHERE user_id=%s RETURNING jewels",
+            (amount, user_id),
+        ).fetchone()
+        if not updated:
+            raise ValueError(f"Cannot credit star payment to unknown user {user_id}")
+        c.execute(
+            "INSERT INTO jewel_transactions "
+            "(user_id,amount,transaction_type,reference) "
+            "VALUES (%s,%s,'refund',%s)",
+            (user_id, amount, ledger_reference),
+        )
+    return True
 
 def deduct_jewels(user_id: int, amount: int, reference: str = "") -> int | None:
     """يخصم المجوهرات ذرياً، ويعيد الرصيد الجديد أو None عند عدم كفاية الرصيد."""
@@ -1298,7 +1343,7 @@ def deduct_jewels(user_id: int, amount: int, reference: str = "") -> int | None:
             "VALUES (%s,%s,'spend',%s)",
             (user_id, -amount, reference or None),
         )
-    return int(updated["jewels"])
+    return updated["jewels"]
 
 def deduct_points(user_id: int, pts: int) -> bool:
     """خصم نقاط بشكل ذري باستخدام UPDATE مشروط — آمن للاستخدام المتزامن.
@@ -1439,6 +1484,46 @@ def _usd_to_refund_points(amount_usd: float) -> int:
         return 0
     return max(0, round(amount * 100_000))
 
+def _usd_to_refund_jewels(amount_usd) -> Decimal:
+    """يحوّل الدولار إلى مجوهرات بدقة: كل سنت واحد يساوي مجوهرة."""
+    try:
+        amount = Decimal(str(amount_usd or 0))
+    except (InvalidOperation, TypeError, ValueError):
+        return Decimal("0")
+    if not amount.is_finite() or amount <= 0:
+        return Decimal("0")
+    return (amount * Decimal(100)).quantize(
+        Decimal("0.000001"), rounding=ROUND_HALF_UP
+    )
+
+def _calc_refund_jewels_from_rate(rate_usd_per_1000, units: int) -> Decimal:
+    """يحسب المجوهرات المستحقة عن وحدات لم ينفذها موقع الرشق."""
+    try:
+        rate = Decimal(str(rate_usd_per_1000 or 0))
+        quantity = int(units or 0)
+    except (InvalidOperation, TypeError, ValueError):
+        return Decimal("0")
+    if not rate.is_finite() or rate <= 0 or quantity <= 0:
+        return Decimal("0")
+    return _usd_to_refund_jewels(rate * quantity / Decimal(1000))
+
+def _calc_partial_refund_jewels(
+    api_service_id: int,
+    remains: int,
+    panel: int = 1,
+    provider_rate: float = 0,
+) -> Decimal:
+    """يحسب الاسترداد الدقيق بالجواهر للجزء غير المنفذ."""
+    try:
+        rate = Decimal(str(provider_rate or 0))
+        if not rate.is_finite() or rate <= 0:
+            svc_info = smm_service_info(api_service_id, panel=panel)
+            rate = Decimal(str((svc_info or {}).get("rate", 0) or 0))
+        return _calc_refund_jewels_from_rate(rate, remains)
+    except Exception as e:
+        logger.warning(f"⚠️ فشل حساب استرجاع الجواهر للطلب الجزئي: {e}")
+        return Decimal("0")
+
 
 def _provider_rate_for_order(order: dict, panel: int) -> float:
     """يعيد سعر المزود المحفوظ، أو يستكمله للطلبات القديمة من API الموقع."""
@@ -1495,22 +1580,32 @@ def _settle_smm_order(
     refund_points: int,
     final_status: str,
     *,
+    refund_jewels=Decimal("0"),
     partial: bool = False,
     allow_completed: bool = False,
 ) -> bool:
-    """ينهي الطلب ويضيف الرد في معاملة واحدة، مع حماية من التكرار.
+    """ينهي الطلب ويضيف التعويض في معاملة واحدة، مع حماية من التكرار.
 
     قفل الصف مع شرط الحالة يجعل تشغيل مهمتين متزامنتين آمناً: مهمة واحدة فقط
-    تستطيع تغيير الطلب وإضافة النقاط، والإشعار يُرسل بعدها مرة واحدة.
+    تستطيع تغيير الطلب وإضافة التعويض، والإشعار يُرسل بعدها مرة واحدة.
     """
     refund_points = max(0, int(refund_points or 0))
+    try:
+        refund_jewels = Decimal(str(refund_jewels or 0)).quantize(
+            Decimal("0.000001"), rounding=ROUND_HALF_UP
+        )
+    except (InvalidOperation, TypeError, ValueError):
+        return False
+    if not refund_jewels.is_finite() or refund_jewels < 0:
+        return False
     allowed_statuses = ["pending"]
-    if allow_completed and partial:
+    if allow_completed and final_status == "cancelled":
         allowed_statuses.append("completed")
     with db_conn() as c:
         order = c.execute(
             "SELECT status, COALESCE(refund_points, 0) AS refund_points, "
-            "COALESCE(partial_refund_pts, 0) AS partial_refund_pts "
+            "COALESCE(partial_refund_pts, 0) AS partial_refund_pts, "
+            "COALESCE(refund_jewels, 0) AS refund_jewels "
             "FROM orders WHERE id=%s FOR UPDATE",
             (order_id,),
         ).fetchone()
@@ -1518,20 +1613,41 @@ def _settle_smm_order(
             return False
         if order["status"] not in allowed_statuses:
             return False
-        if order["refund_points"] > 0 or order["partial_refund_pts"] > 0:
+        if (
+            order["refund_points"] > 0
+            or order["partial_refund_pts"] > 0
+            or order["refund_jewels"] > 0
+        ):
             return False
         if refund_points:
-            c.execute(
+            credited = c.execute(
                 "UPDATE users SET points=points+%s WHERE user_id=%s",
                 (refund_points, user_id),
             )
+            if credited.rowcount != 1:
+                return False
+        if refund_jewels > 0:
+            credited = c.execute(
+                "UPDATE users SET jewels=COALESCE(jewels,0)+%s "
+                "WHERE user_id=%s RETURNING jewels",
+                (refund_jewels, user_id),
+            ).fetchone()
+            if not credited:
+                return False
+            c.execute(
+                "INSERT INTO jewel_transactions "
+                "(user_id,amount,transaction_type,reference) "
+                "VALUES (%s,%s,'refund',%s)",
+                (user_id, refund_jewels, f"smm_refund:{order_id}"),
+            )
         c.execute(
             "UPDATE orders SET status=%s, refund_points=%s, "
-            "partial_refund_pts=%s WHERE id=%s",
+            "partial_refund_pts=%s, refund_jewels=%s WHERE id=%s",
             (
                 final_status,
                 refund_points,
                 refund_points if partial else 0,
+                refund_jewels,
                 order_id,
             ),
         )
@@ -1966,8 +2082,8 @@ async def compensate_duplicate_sales_job(context: ContextTypes.DEFAULT_TYPE):
 async def check_pending_orders_job(context: ContextTypes.DEFAULT_TYPE):
     """يفحص دورياً حالة الطلبات المعلّقة عبر API موقع الرشق، ويحدّث حالتها:
     - Completed  ← يُعلّم الطلب مكتملاً ويُشعر المستخدم.
-    - Partial    ← يُعلّم مكتملاً ويُعيد النقاط المستحقة (1000 نقطة/سنت) لموقع SMMMAIN.
-    - Canceled/Failed/Error ← يُعيد كامل النقاط ويُشعر المستخدم.
+    - Partial    ← يُعيد قيمة الجزء غير المنفذ كمجوهرات دقيقة.
+    - Canceled/Failed/Error ← يُعيد كامل القيمة؛ ومدفوعات النجوم تُعوّض جواهر.
     - Pending/Processing → لا تغيير، يُعاد فحصه لاحقاً."""
     try:
         with db_conn() as c:
@@ -2009,10 +2125,10 @@ async def check_pending_orders_job(context: ContextTypes.DEFAULT_TYPE):
 
         elif panel_status == "partial":
             remains    = int(res.get("remains", 0) or 0)
-            refund_pts = 0
+            refund_jewels = Decimal("0")
             if remains > 0 and o.get("svc_api_id"):
-                refund_pts = await asyncio.to_thread(
-                    _calc_partial_refund_pts,
+                refund_jewels = await asyncio.to_thread(
+                    _calc_partial_refund_jewels,
                     o["svc_api_id"],
                     remains,
                     panel,
@@ -2022,23 +2138,25 @@ async def check_pending_orders_job(context: ContextTypes.DEFAULT_TYPE):
             settled = _settle_smm_order(
                 o["id"],
                 o["user_id"],
-                refund_pts,
+                0,
                 "completed",
+                refund_jewels=refund_jewels,
                 partial=True,
             )
             if not settled:
                 continue
             logger.info(
                 f"💰 استرجاع جزئي: طلب {o['order_code']} — "
-                f"{refund_pts:,} نقطة → مستخدم {o['user_id']}"
+                f"{fmt_jewel_amount(refund_jewels)} مجوهرة → مستخدم {o['user_id']}"
             )
 
             try:
-                if refund_pts > 0:
+                if refund_jewels > 0:
                     msg = (
                         f"⚠️ طلبك بكود `{o['order_code']}` اكتمل *جزئياً*.\n\n"
                         f"📦 الوحدات غير المنفذة: {remains:,}\n"
-                        f"💰 تم استرجاع *{refund_pts:,}* نقطة لرصيدك تعويضاً عن الجزء الناقص.\n\n"
+                        f"💎 تم استرجاع *{fmt_jewel_amount(refund_jewels)}* مجوهرة "
+                        "إلى رصيدك عن الجزء غير المنفذ.\n\n"
                         f"ℹ️ سياسة الموقع: يُعيد الموقع قيمة الجزء غير المنفذ تلقائياً."
                     )
                 else:
@@ -2051,24 +2169,55 @@ async def check_pending_orders_job(context: ContextTypes.DEFAULT_TYPE):
                 pass
 
         elif panel_status in ("canceled", "cancelled", "failed", "error"):
-            provider_cost = o.get("provider_cost_usd") or 0
-            if not provider_cost:
-                rate = _provider_rate_for_order(o, panel)
-                provider_cost = (rate * int(o.get("quantity") or 0)) / 1000 if rate else 0
-            pts = _usd_to_refund_points(provider_cost)
-            # للطلبات القديمة التي لم تكن تحفظ سعر الموقع، أبقِ الرد آمناً
-            # بدلاً من حجز طلب ملغى بلا تعويض؛ الطلبات الجديدة تحفظ provider_cost_usd.
-            if pts <= 0 and not o.get("provider_rate_usd"):
-                pts = int(o.get("cost_points") or 0)
-            settled = _settle_smm_order(
-                o["id"], o["user_id"], pts, "cancelled"
-            )
-            if not settled:
-                continue
+            payment_method = str(o.get("payment_method") or "points")
+            if payment_method == "stars":
+                refund_amount = Decimal(str(o.get("cost_stars") or 0))
+                try:
+                    settled = _settle_smm_order(
+                        o["id"],
+                        o["user_id"],
+                        0,
+                        "cancelled",
+                        refund_jewels=refund_amount,
+                    )
+                except Exception:
+                    logger.exception(
+                        "تعذر إضافة جواهر استرداد طلب SMM مدفوع بالنجوم: order_id=%s",
+                        o["id"],
+                    )
+                    continue
+                if not settled:
+                    continue
+                refund_text = f"{fmt_jewel_amount(refund_amount)} مجوهرة"
+            elif payment_method == "jewels":
+                refund_amount = Decimal(str(o.get("cost_jewels") or 0))
+                settled = _settle_smm_order(
+                    o["id"],
+                    o["user_id"],
+                    0,
+                    "cancelled",
+                    refund_jewels=refund_amount,
+                )
+                if not settled:
+                    continue
+                refund_text = f"{fmt_jewel_amount(refund_amount)} مجوهرة"
+            elif payment_method == "free":
+                if not _settle_smm_order(o["id"], o["user_id"], 0, "cancelled"):
+                    continue
+                refund_text = "مجاناً"
+            else:
+                refund_amount = int(o.get("cost_points") or 0)
+                if not _settle_smm_order(
+                    o["id"], o["user_id"], refund_amount, "cancelled"
+                ):
+                    continue
+                refund_text = f"{refund_amount:,} نقطة"
+
             try:
                 await context.bot.send_message(
                     o["user_id"],
-                    f"🔴 تم إلغاء طلبك بكود {o['order_code']} من قبل موقع الرشق وإعادة *{pts}* نقطة لرصيدك.\n\n"
+                    f"🔴 ألغى موقع الرشق طلبك بكود {o['order_code']}، "
+                    f"وأُعيد كامل المبلغ المدفوع: *{refund_text}*.\n\n"
                     f"{LINK_ERROR_GUIDANCE}",
                     parse_mode=ParseMode.MARKDOWN
                 )

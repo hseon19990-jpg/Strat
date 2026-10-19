@@ -522,7 +522,13 @@ def _render_order_block(o) -> str:
     full_name = o.get("u_full_name") or "—"
     service_name = o.get("s_name_ar") or f"خدمة #{o['service_id']}"
     category = CATEGORY_MAP.get(o.get("s_category"), o.get("s_category") or "—")
-    status_map = {"pending": "⏳ قيد التنفيذ", "completed": "✅ مكتمل", "cancelled": "❌ ملغي"}
+    status_map = {
+        "pending": "⏳ قيد التنفيذ",
+        "completed": "✅ مكتمل",
+        "cancelled": "❌ ملغي",
+        "refund_processing": "🔄 استرداد قيد المعالجة",
+        "refund_required": "⚠️ الاسترداد يحتاج مراجعة",
+    }
     status = status_map.get(o["status"], o["status"])
     payment_method = o.get("payment_method") or "points"
     if payment_method == "stars":
@@ -668,6 +674,8 @@ def _render_member_order_details(
         "partial": "⚠️ مكتمل جزئياً",
         "cancelled": "❌ ملغي",
         "canceled": "❌ ملغي",
+        "refund_processing": "🔄 استرداد قيد المعالجة",
+        "refund_required": "⚠️ الاسترداد يحتاج مراجعة",
         "failed": "❌ فشل",
         "error": "❌ خطأ",
     }.get(status_key, status_key or "غير معروف")

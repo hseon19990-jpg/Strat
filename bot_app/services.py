@@ -8,6 +8,8 @@ domain.
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
+from decimal import Decimal, InvalidOperation, ROUND_CEILING
+
 def fmt_price(n) -> str:
     """يعرض السعر بدون فاصلة عشرية إن كان رقماً صحيحاً (100.0 → 100)، وإلا يُبقيه كما هو."""
     try:
@@ -17,35 +19,52 @@ def fmt_price(n) -> str:
     return str(int(f)) if f == int(f) else str(f)
 
 SMM_POINTS_PER_STAR = 1000
+SMM_POINTS_PER_JEWEL = 1000
 
-def smm_stars_cost(points: int) -> int:
+def fmt_jewel_amount(amount) -> str:
+    """يعرض رصيد المجوهرات مع الكسور عند وجودها، ويفصل الآلاف."""
+    try:
+        value = Decimal(str(amount or 0))
+        if not value.is_finite():
+            return "0"
+        value = value.normalize()
+    except (InvalidOperation, TypeError, ValueError):
+        return "0"
+    whole, dot, fraction = format(value, "f").partition(".")
+    whole_text = f"{int(whole):,}"
+    return f"{whole_text}.{fraction}" if dot else whole_text
+
+def smm_service_cost_points(quantity: int, price_per_thousand) -> int:
+    """يحتفظ بقيمة الخدمة الدقيقة حتى تحويلها لاحقاً إلى نجوم/مجوهرات صحيحة."""
+    try:
+        quantity_value = Decimal(str(quantity or 0))
+        rate = Decimal(str(price_per_thousand or 0))
+        if quantity_value <= 0 or rate <= 0:
+            return 0
+        points = quantity_value * rate / Decimal(1000)
+        return int(points.to_integral_value(rounding=ROUND_CEILING))
+    except (InvalidOperation, TypeError, ValueError, ZeroDivisionError):
+        return 0
+
+def smm_stars_cost(points) -> int:
     """تحويل سعر خدمة مواقع الرشق إلى نجوم مع التقريب للأعلى."""
     try:
-        points = max(0, int(points or 0))
-    except (TypeError, ValueError):
-        points = 0
-    return (points + SMM_POINTS_PER_STAR - 1) // SMM_POINTS_PER_STAR
+        value = max(Decimal(0), Decimal(str(points or 0)))
+        return int((value / SMM_POINTS_PER_STAR).to_integral_value(rounding=ROUND_CEILING))
+    except (InvalidOperation, TypeError, ValueError):
+        return 0
 
-def smm_jewels_cost(points: int, points_per_jewel: int | None = None) -> int:
-    """تحويل قيمة الخدمة إلى مجوهرات حسب المعدل الذي يحدده المالك."""
+def smm_jewels_cost(points) -> int:
+    """يحوّل السعر إلى مجوهرات؛ كل 1000 نقطة (سنت) تساوي مجوهرة واحدة."""
     try:
-        points = max(0, int(points or 0))
-    except (TypeError, ValueError):
-        points = 0
-    if points_per_jewel is None:
-        try:
-            points_per_jewel = int(get_setting("raksh_points_per_jewel") or "1000")
-        except (TypeError, ValueError):
-            points_per_jewel = 1000
-    points_per_jewel = max(1, int(points_per_jewel or 1000))
-    return (points + points_per_jewel - 1) // points_per_jewel
+        value = max(Decimal(0), Decimal(str(points or 0)))
+        return int((value / SMM_POINTS_PER_JEWEL).to_integral_value(rounding=ROUND_CEILING))
+    except (InvalidOperation, TypeError, ValueError):
+        return 0
 
 def smm_price_rates(price_per_thousand: float) -> tuple[int, int]:
     """يعرض أسعار النجوم والمجوهرات لخدمة مقدارها 1000 وحدة."""
-    try:
-        points = max(0, int(float(price_per_thousand or 0)))
-    except (TypeError, ValueError):
-        points = 0
+    points = smm_service_cost_points(1000, price_per_thousand)
     return smm_stars_cost(points), smm_jewels_cost(points)
 
 CATEGORY_MAP = {

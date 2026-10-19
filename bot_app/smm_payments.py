@@ -175,7 +175,7 @@ def claim_smm_jewel_payment(intent_id: int, user_id: int) -> tuple[str, dict | N
             raise RuntimeError(f"SMM payment intent {intent_id} changed while locked")
         result = dict(row)
         result["payment_method"] = "jewels"
-    return "claimed", result, int(updated["jewels"])
+    return "claimed", result, updated["jewels"]
 
 
 def claim_smm_free_order(intent_id: int, user_id: int) -> tuple[str, dict | None]:
