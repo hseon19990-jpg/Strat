@@ -283,6 +283,7 @@ def _clear_raksh_state(context: ContextTypes.DEFAULT_TYPE) -> None:
         "raksh_comment",
         "raksh_poll_option",
         "raksh_delay_seconds",
+        "raksh_speed_service",
         "raksh_pending_payment",
         "_raksh_skip_speed_selection",
         "raksh_quantity",

@@ -123,6 +123,10 @@ def _classify_raksh_result(
     """رفض مشكلة الحساب فقط واحتساب بقية نتائج خدمات الرشق نجاحاً."""
     if ok:
         return True, message
+    # التعليق لا ينجح إلا إذا أكد Telegram إرسال الرسالة فعلياً. أخطاء
+    # صلاحيات الكتابة في مجموعة النقاش وأي خطأ إرسال آخر تبقى فشلاً.
+    if service_type == "comment":
+        return False, message or f"❌ تعذر إرسال التعليق من الحساب {phone}"
     if _is_raksh_account_or_session_failure(message):
         return False, message or f"❌ مشكلة في الحساب {phone}"
 
@@ -1049,22 +1053,6 @@ async def execute_raksh_service(
     delay_seconds = svc.get_delay_seconds(params.get("delay_seconds"))
 
     async def execute_with_selected_speed():
-        if service_type == "forced_ref_ai":
-            # أرسل تحدياً مستقلاً لكل حساب في الطلب. لا ننتظر نتيجة الحساب
-            # السابق ولا نفرض فاصلاً بين الحسابات؛ callback كل رسالة يحمل
-            # token خاصاً بها ويرجع الاختيار إلى الحساب الصحيح.
-            return await _execute_raksh_parallel(
-                svc,
-                shuffled,
-                params,
-                user_id,
-                quantity,
-                progress_callback,
-                service_type,
-                max_concurrent=max(1, min(quantity, len(shuffled))),
-                batch_delay_seconds=0,
-                order_id=order_id,
-            )
         return await _execute_raksh_parallel(
             svc,
             shuffled,
@@ -1073,7 +1061,6 @@ async def execute_raksh_service(
             quantity,
             progress_callback,
             service_type,
-            max_concurrent=1,
             batch_delay_seconds=delay_seconds,
             order_id=order_id,
         )
@@ -1294,11 +1281,10 @@ async def _execute_raksh_parallel(
     quantity: int,
     progress_callback,
     service_type: str,
-    max_concurrent: int,
     batch_delay_seconds: float = 0,
     order_id: Optional[int] = None,
 ) -> Tuple[int, List[str], List[str], List[str], List[str]]:
-    """بدء الحسابات بالفاصل المحدد مع الحفاظ على ترتيب ونتائج الطلب."""
+    """بدء أول حساب فوراً، ثم توزيع البقية بالفاصل مع تحديث كل نتيجة فوراً."""
     order_items = _load_raksh_order_items(order_id) if order_id else {}
     success_phones = [
         phone for phone, item in order_items.items()
@@ -1509,57 +1495,96 @@ async def _execute_raksh_parallel(
                 len(failed_details),
             )
 
-    # جدولة كل حساب بشكل مستقل دون انتظار الحساب السابق. هكذا يبدأ الطلب
-    # فوراً، ويكون الفاصل بين بدايات الحسابات هو اختيار العضو.
-    while pool and (
-        (completed_count < quantity if fixed_account_count else success_count < quantity)
-    ) and not (order_id and _is_raksh_order_cancelled(order_id)):
-        planned = completed_count if fixed_account_count else success_count
-        scheduled = []
-        wave_number = 0
-        while pool and planned < quantity and not (order_id and _is_raksh_order_cancelled(order_id)):
-            wave = []
-            while pool and len(wave) < min(max_concurrent, quantity - planned):
-                session = pool.pop(0)
-                phone = session.get("phone_number")
-                if not phone or phone in attempted_phones:
-                    continue
-                attempted_phones.add(phone)
-                wave.append(session)
-            if not wave:
-                break
+    # الجدولة المستمرة تمنع تعليق تحديث التقدم بانتظار أبطأ حساب في الدفعة.
+    # أول حساب يبدأ فوراً؛ الفاصل يطبّق فقط على بدايات الحسابات التالية.
+    active = {}
+    loop = asyncio.get_running_loop()
+    next_start_at = loop.time()
+    account_index = 0
 
-            wave_number += 1
-            logger.info(
-                "⚡ raksh wave=%s accounts=%s planned=%s/%s delay=%ss",
-                wave_number,
-                len(wave),
-                planned,
-                quantity,
-                batch_delay_seconds,
-            )
-            wave_is_first = wave_number == 1 and success_count == 0
-            async def gather_wave():
-                return await asyncio.gather(
-                    *(
-                        execute_one(
-                            session,
-                            index,
-                            is_first=(wave_is_first and index == 0),
-                        )
-                        for index, session in enumerate(wave)
-                    ),
-                    return_exceptions=True,
+    async def process_finished(tasks):
+        for task in sorted(tasks, key=lambda item: active[item][1]):
+            session, _index = active.pop(task)
+            try:
+                result = task.result()
+            except BaseException as error:
+                result = error
+            await process_wave([session], [result])
+
+    while pool or active:
+        cancelled = bool(order_id and _is_raksh_order_cancelled(order_id))
+        finished = [task for task in active if task.done()]
+        if finished:
+            await process_finished(finished)
+            continue
+
+        planned = (
+            completed_count + len(active)
+            if fixed_account_count
+            else success_count + len(active)
+        )
+        can_start = (
+            not cancelled
+            and bool(pool)
+            and planned < quantity
+        )
+
+        if can_start:
+            wait_seconds = max(0.0, next_start_at - loop.time())
+            if wait_seconds:
+                if active:
+                    finished, _pending = await asyncio.wait(
+                        tuple(active),
+                        timeout=wait_seconds,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if finished:
+                        await process_finished(finished)
+                        continue
+                else:
+                    await asyncio.sleep(wait_seconds)
+
+            if order_id and _is_raksh_order_cancelled(order_id):
+                continue
+
+            session = None
+            while pool:
+                candidate = pool.pop(0)
+                phone = candidate.get("phone_number")
+                if phone and phone not in attempted_phones:
+                    session = candidate
+                    attempted_phones.add(phone)
+                    break
+            if session is not None:
+                phone = str(session.get("phone_number") or "").strip()
+                started_at = loop.time()
+                logger.info(
+                    "⚡ بدء حساب الرشق %s؛ الفاصل=%s ثانية",
+                    phone,
+                    batch_delay_seconds,
                 )
-            task = asyncio.create_task(gather_wave())
-            scheduled.append((wave, task))
-            planned += len(wave)
-            if pool and planned < quantity and batch_delay_seconds:
-                await asyncio.sleep(batch_delay_seconds)
+                task = asyncio.create_task(
+                    execute_one(
+                        session,
+                        account_index,
+                        is_first=(account_index == 0 and success_count == 0),
+                    )
+                )
+                active[task] = (session, account_index)
+                account_index += 1
+                next_start_at = started_at + max(0.0, batch_delay_seconds)
+                continue
 
-        for wave, task in scheduled:
-            results = await task
-            await process_wave(wave, results)
+        if active:
+            finished, _pending = await asyncio.wait(
+                tuple(active),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            await process_finished(finished)
+            continue
+
+        # انتهت الحسابات المتاحة أو تحقق عدد النجاح المطلوب.
+        break
 
     await _remove_invalid_raksh_sessions(failed_phones)
     return success_count, success_phones, success_details, failed_phones, failed_details
@@ -1799,7 +1824,7 @@ def raksh_speed_kb():
 def raksh_speed_prompt_text() -> str:
     return (
         "🚦 *حدد سرعة بدء الحسابات*\n\n"
-        "سيبدأ الطلب فور تأكيده، ثم يبدأ كل حساب بعد الفاصل الذي تختاره.\n"
+        "يبدأ الحساب الأول فور تأكيد الطلب، ثم يبدأ كل حساب بعد الفاصل الذي تختاره.\n"
         "⚡ الأسرع = 6 حسابات تقريباً في الثانية.\n"
         "أو أرسل رقماً مثل: `3` ليكون الفاصل 3 ثوانٍ بين كل حساب."
     )
@@ -1859,6 +1884,9 @@ async def _resume_raksh_payment_after_speed(
         return
 
     context.user_data["raksh_delay_seconds"] = float(delay_seconds)
+    context.user_data["raksh_speed_service"] = context.user_data.get(
+        "raksh_service"
+    )
     # يمنع إعادة عرض شاشة السرعة عندما نعيد تمرير زر الدفع الأصلي.
     context.user_data["_raksh_skip_speed_selection"] = True
     await _handle_raksh_callback_impl(
@@ -2389,6 +2417,21 @@ async def _handle_raksh_callback_impl(
     for service_type, svc in RAKSH_SERVICES.items():
         prefix = f"raksh_{service_type}:"
         if data.startswith(prefix):
+            parts = data[len(prefix):].split(":")
+            if (
+                parts
+                and parts[0] in {"payment", "confirm"}
+                and not skip_speed_selection
+                and context.user_data.get("raksh_speed_service") != service_type
+            ):
+                await _show_raksh_speed_selection(
+                    query,
+                    context,
+                    data,
+                    service_type,
+                )
+                return
+
             if is_raksh_free_user(user.id, service_type):
                 _free_parts = data[len(prefix):].split(":")
                 if _free_parts[0] == "payment" and len(_free_parts) >= 4:
@@ -2437,6 +2480,14 @@ async def _handle_raksh_callback_impl(
                             reply_markup=raksh_menu_kb(is_own),
                         )
                         return
+                    if context.user_data.get("raksh_speed_service") != service_type:
+                        await _show_raksh_speed_selection(
+                            query,
+                            context,
+                            data,
+                            service_type,
+                        )
+                        return
                     await query.edit_message_text(
                         "✅ *تم التأكيد — الخدمة مجانية*\n\n"
                         "⏳ جاري بدء التنفيذ...",
@@ -2465,6 +2516,14 @@ async def _handle_raksh_callback_impl(
                             reply_markup=raksh_menu_kb(is_own),
                         )
                         return
+                    if context.user_data.get("raksh_speed_service") != service_type:
+                        await _show_raksh_speed_selection(
+                            query,
+                            context,
+                            data,
+                            service_type,
+                        )
+                        return
                     await query.edit_message_text(
                         "✅ *تم التأكيد — الخدمة مجانية*\n\n"
                         "⏳ جاري بدء التنفيذ...",
@@ -2481,19 +2540,6 @@ async def _handle_raksh_callback_impl(
                     )
                     return
 
-            parts = data[len(prefix):].split(":")
-            if (
-                parts
-                and parts[0] == "payment"
-                and not skip_speed_selection
-            ):
-                await _show_raksh_speed_selection(
-                    query,
-                    context,
-                    data,
-                    service_type,
-                )
-                return
             try:
                 handled = await svc.handle_callback(
                     update, context, query, parts, user, is_own
@@ -2533,6 +2579,14 @@ async def _handle_raksh_callback_impl(
                 show_alert=True,
             )
             return
+        if context.user_data.get("raksh_speed_service") != service_type:
+            await _show_raksh_speed_selection(
+                query,
+                context,
+                data,
+                service_type,
+            )
+            return
         await query.edit_message_text(
             "🎁 *تم تأكيد الرشق المجاني بحساباتك فقط*\n\n"
             "⏳ جاري بدء التنفيذ...",
@@ -2568,6 +2622,14 @@ async def _handle_raksh_callback_impl(
             or quantity > svc.get_request_limit(user.id)
         ):
             await query.answer("⚠️ انتهت صلاحية الإعفاء أو الطلب غير صالح.", show_alert=True)
+            return
+        if context.user_data.get("raksh_speed_service") != service_type:
+            await _show_raksh_speed_selection(
+                query,
+                context,
+                data,
+                service_type,
+            )
             return
         await query.edit_message_text(
             "✅ *تم التأكيد — الخدمة مجانية*\n\n"
@@ -2696,6 +2758,14 @@ async def _handle_raksh_callback_impl(
         
         if service_type not in RAKSH_SERVICES or payment_method not in {"points", "stars"}:
             await query.answer("⚠️ بيانات الطلب غير صالحة.", show_alert=True)
+            return
+        if context.user_data.get("raksh_speed_service") != service_type:
+            await _show_raksh_speed_selection(
+                query,
+                context,
+                data,
+                service_type,
+            )
             return
         
         if quantity > _get_request_limit(user.id, service_type):
@@ -3777,9 +3847,23 @@ async def _run_raksh_order(
         logger.warning(f"⏳ لا توجد جلسات لطلب الرشق {order_id}; سيعاد فحصه لاحقاً")
         return
 
+    last_progress_update_at = 0.0
+    last_progress_state = None
+
     async def update_progress(current, total, success, failed):
+        nonlocal last_progress_update_at, last_progress_state
         if not progress_msg:
             return
+        progress_state = (current, total, success, failed)
+        if progress_state == last_progress_state:
+            return
+        if last_progress_state and last_progress_state[2] >= total:
+            return
+        now = asyncio.get_running_loop().time()
+        if success < total and now - last_progress_update_at < 1.0:
+            return
+        last_progress_update_at = now
+        last_progress_state = progress_state
         try:
             await progress_msg.edit_text(
                 f"⏳ *جاري التنفيذ...*\n\n"
