@@ -1324,7 +1324,12 @@ def _credit_star_payment_as_jewels_once(user_id: int, amount, charge_reference: 
         )
     return True
 
-def deduct_jewels(user_id: int, amount: int, reference: str = "") -> int | None:
+def deduct_jewels(
+    user_id: int,
+    amount: int,
+    reference: str = "",
+    admin_id: int | None = None,
+) -> int | None:
     """يخصم المجوهرات ذرياً، ويعيد الرصيد الجديد أو None عند عدم كفاية الرصيد."""
     amount = int(amount)
     if amount <= 0:
@@ -1339,9 +1344,9 @@ def deduct_jewels(user_id: int, amount: int, reference: str = "") -> int | None:
             return None
         c.execute(
             "INSERT INTO jewel_transactions "
-            "(user_id,amount,transaction_type,reference) "
-            "VALUES (%s,%s,'spend',%s)",
-            (user_id, -amount, reference or None),
+            "(user_id,amount,transaction_type,admin_id,reference) "
+            "VALUES (%s,%s,'spend',%s,%s)",
+            (user_id, -amount, admin_id, reference or None),
         )
     return updated["jewels"]
 

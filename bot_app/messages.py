@@ -4748,25 +4748,27 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         if target["user_id"] == OWNER_ID:
             await update.message.reply_text("⚠️ لا يمكن حظر المالك.", reply_markup=owner_settings_kb())
-            context.user_data["state"] = "main_menu"
+            reset_owner_flow(context)
+            context.user_data.pop("ban_target_id", None)
             return
         if target.get("banned"):
-            uname = f"@{target['username']}" if target.get("username") else f"ID: {target['user_id']}"
+            uname = f"@{md_escape(target['username'])}" if target.get("username") else f"ID: {target['user_id']}"
             await update.message.reply_text(
-                f"ℹ️ *{target.get('full_name', '')}* ({uname}) محظور مسبقاً.",
+                f"ℹ️ *{md_escape(target.get('full_name') or '')}* ({uname}) محظور مسبقاً.",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔓 رفع الحظر عنه", callback_data=f"os:unban_confirm:{target['user_id']}")],
                     [InlineKeyboardButton("🔙 رجوع", callback_data="os:ban_menu")],
                 ]),
             )
-            context.user_data["state"] = "main_menu"
+            reset_owner_flow(context)
+            context.user_data.pop("ban_target_id", None)
             return
         context.user_data["ban_target_id"] = target["user_id"]
         context.user_data["state"] = "os_await_ban_reason"
-        uname = f"@{target['username']}" if target.get("username") else f"ID: {target['user_id']}"
+        uname = f"@{md_escape(target['username'])}" if target.get("username") else f"ID: {target['user_id']}"
         await update.message.reply_text(
-            f"🚫 *حظر:* {target.get('full_name', '')} ({uname})\n\n"
+            f"🚫 *حظر:* {md_escape(target.get('full_name') or '')} ({uname})\n\n"
             "أرسل سبب الحظر (أو أرسل - لتخطي السبب):",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:ban_menu")]]),
@@ -4777,19 +4779,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target_id = context.user_data.get("ban_target_id")
         reason = text.strip() if text.strip() != "-" else ""
         if not target_id:
-            context.user_data["state"] = "main_menu"
+            reset_owner_flow(context)
+            context.user_data.pop("ban_target_id", None)
             await update.message.reply_text("⚠️ انتهت الجلسة.", reply_markup=owner_settings_kb())
             return
         found = ban_user_db(target_id, reason)
         target = get_user(target_id)
-        uname = f"@{target['username']}" if target and target.get("username") else f"ID: {target_id}"
-        name  = (target.get("full_name") or "") if target else ""
-        context.user_data["state"] = "main_menu"
+        uname = f"@{md_escape(target['username'])}" if target and target.get("username") else f"ID: {target_id}"
+        name = md_escape((target.get("full_name") or "") if target else "")
+        context.user_data.pop("ban_target_id", None)
+        reset_owner_flow(context)
         if found:
             await update.message.reply_text(
                 f"✅ *تم حظر العضو بنجاح*\n\n"
                 f"👤 {name} ({uname})\n"
-                f"📝 السبب: {reason or '—'}",
+                f"📝 السبب: {md_escape(reason or '—')}",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔓 رفع الحظر", callback_data=f"os:unban_confirm:{target_id}")],
@@ -4810,16 +4814,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         if not target.get("banned"):
-            uname = f"@{target['username']}" if target.get("username") else f"ID: {target['user_id']}"
+            uname = f"@{md_escape(target['username'])}" if target.get("username") else f"ID: {target['user_id']}"
             await update.message.reply_text(
-                f"ℹ️ {target.get('full_name', '')} ({uname}) غير محظور.",
+                f"ℹ️ {md_escape(target.get('full_name') or '')} ({uname}) غير محظور.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:ban_menu")]]),
             )
             return
         unban_user_db(target["user_id"])
-        uname = f"@{target['username']}" if target.get("username") else f"ID: {target['user_id']}"
+        uname = f"@{md_escape(target['username'])}" if target.get("username") else f"ID: {target['user_id']}"
         await update.message.reply_text(
-            f"✅ *تم رفع الحظر عن:* {target.get('full_name', '')} ({uname})",
+            f"✅ *تم رفع الحظر عن:* {md_escape(target.get('full_name') or '')} ({uname})",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:ban_menu")]]),
         )
@@ -5007,16 +5011,19 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         context.user_data["jewels_target_id"] = int(target["user_id"])
         context.user_data["state"] = "os_await_jewels_amount"
+        jewels_mode = context.user_data.get("jewels_mode", "give")
+        action = "خصم" if jewels_mode == "deduct" else "منح"
         username = (
             f"@{target['username']}"
             if target.get("username")
             else f"ID: {target['user_id']}"
         )
         await update.message.reply_text(
-            f"💎 *منح مجوهرات إلى:* {md_escape(target.get('full_name') or '')} "
+            f"💎 *{action} مجوهرات {'من' if jewels_mode == 'deduct' else 'إلى'}:* "
+            f"{md_escape(target.get('full_name') or '')} "
             f"({md_escape(username)})\n"
             f"الرصيد الحالي: *{fmt_jewel_amount(target.get('jewels') or 0)}* مجوهرة\n\n"
-            "أرسل عدد المجوهرات المراد منحها:",
+            f"أرسل عدد المجوهرات المراد {action}:",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🔙 إلغاء", callback_data="os:manage_points")
@@ -5052,22 +5059,42 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=owner_settings_kb(),
             )
             return
-        new_balance = add_jewels(
-            target_id,
-            amount,
-            admin_id=user.id,
-            reference="owner_gift",
-        )
+        jewels_mode = context.user_data.get("jewels_mode", "give")
+        if jewels_mode == "deduct":
+            new_balance = deduct_jewels(
+                target_id,
+                amount,
+                reference="owner_deduct",
+                admin_id=user.id,
+            )
+            if new_balance is None:
+                current_target = get_user(target_id) or target
+                await update.message.reply_text(
+                    f"⚠️ لا يمكن خصم {amount:,} مجوهرة؛ رصيد العضو الحالي "
+                    f"{fmt_jewel_amount(current_target.get('jewels') or 0)} مجوهرة. "
+                    "أرسل كمية أقل أو ألغِ العملية."
+                )
+                return
+        else:
+            new_balance = add_jewels(
+                target_id,
+                amount,
+                admin_id=user.id,
+                reference="owner_gift",
+            )
         username = (
             f"@{target['username']}"
             if target.get("username")
             else f"ID: {target_id}"
         )
         reset_owner_flow(context)
+        action = "خصم" if jewels_mode == "deduct" else "منح"
         await update.message.reply_text(
-            f"✅ تم منح {amount:,} مجوهرة إلى {md_escape(target.get('full_name') or '')} "
+            f"✅ تم {action} {amount:,} مجوهرة "
+            f"{'من' if jewels_mode == 'deduct' else 'إلى'} {md_escape(target.get('full_name') or '')} "
             f"({md_escape(username)}).\n"
             f"💎 الرصيد الجديد: {fmt_jewel_amount(new_balance)} مجوهرة",
+            parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🔙 إدارة المجوهرات", callback_data="os:manage_points")
             ]]),
@@ -5075,11 +5102,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await context.bot.send_message(
                 target_id,
-                f"🎁 أهدى لك المالك {amount:,} مجوهرة.\n"
-                f"💎 رصيدك الآن: {fmt_jewel_amount(new_balance)} مجوهرة",
+                (
+                    f"⚠️ خصم المالك {amount:,} مجوهرة من رصيدك.\n"
+                    if jewels_mode == "deduct"
+                    else f"🎁 أهدى لك المالك {amount:,} مجوهرة.\n"
+                )
+                + f"💎 رصيدك الآن: {fmt_jewel_amount(new_balance)} مجوهرة",
             )
         except Exception:
-            logger.info("تعذر إرسال إشعار هدية المجوهرات إلى المستخدم %s", target_id)
+            logger.info("تعذر إرسال إشعار تعديل رصيد المجوهرات إلى المستخدم %s", target_id)
         return
 
     if (
