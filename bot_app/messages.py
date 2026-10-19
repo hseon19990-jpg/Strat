@@ -5023,7 +5023,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{md_escape(target.get('full_name') or '')} "
             f"({md_escape(username)})\n"
             f"الرصيد الحالي: *{fmt_jewel_amount(target.get('jewels') or 0)}* مجوهرة\n\n"
-            f"أرسل عدد المجوهرات المراد {action}:",
+            f"أرسل كمية المجوهرات المراد {action} (مثال: 0.5، حتى 6 منازل عشرية):",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🔙 إلغاء", callback_data="os:manage_points")
@@ -5037,11 +5037,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         and context.user_data.get("owner_flow") == "jewels"
     ):
         try:
-            amount = int(text.strip())
-            if amount <= 0:
-                raise ValueError
+            amount = _parse_jewel_amount(text.strip())
         except ValueError:
-            await update.message.reply_text("⚠️ أرسل عدداً صحيحاً أكبر من صفر.")
+            await update.message.reply_text(
+                "⚠️ أرسل كمية موجبة أكبر من صفر، مثل 0.5، وبحد أقصى 6 منازل عشرية."
+            )
             return
         target_id = context.user_data.get("jewels_target_id")
         if not target_id:
@@ -5070,7 +5070,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if new_balance is None:
                 current_target = get_user(target_id) or target
                 await update.message.reply_text(
-                    f"⚠️ لا يمكن خصم {amount:,} مجوهرة؛ رصيد العضو الحالي "
+                    f"⚠️ لا يمكن خصم {fmt_jewel_amount(amount)} مجوهرة؛ رصيد العضو الحالي "
                     f"{fmt_jewel_amount(current_target.get('jewels') or 0)} مجوهرة. "
                     "أرسل كمية أقل أو ألغِ العملية."
                 )
@@ -5090,7 +5090,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reset_owner_flow(context)
         action = "خصم" if jewels_mode == "deduct" else "منح"
         await update.message.reply_text(
-            f"✅ تم {action} {amount:,} مجوهرة "
+            f"✅ تم {action} {fmt_jewel_amount(amount)} مجوهرة "
             f"{'من' if jewels_mode == 'deduct' else 'إلى'} {md_escape(target.get('full_name') or '')} "
             f"({md_escape(username)}).\n"
             f"💎 الرصيد الجديد: {fmt_jewel_amount(new_balance)} مجوهرة",

@@ -1324,16 +1324,44 @@ def _credit_star_payment_as_jewels_once(user_id: int, amount, charge_reference: 
         )
     return True
 
+def _parse_jewel_amount(value) -> Decimal:
+    """Parse a positive jewel quantity with the database's six-decimal precision."""
+    text = str(value if value is not None else "").strip()
+    text = text.translate(
+        str.maketrans(
+            "٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹",
+            "01234567890123456789",
+        )
+    )
+    text = text.replace("٬", "").replace("٫", ".")
+    if "," in text:
+        if "." in text or text.count(",") != 1:
+            raise ValueError("Invalid jewel amount")
+        text = text.replace(",", ".")
+    try:
+        amount = Decimal(text)
+        if not amount.is_finite():
+            raise ValueError("Invalid jewel amount")
+        normalized = amount.quantize(
+            Decimal("0.000001"), rounding=ROUND_HALF_UP
+        )
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise ValueError("Invalid jewel amount") from exc
+    if normalized != amount:
+        raise ValueError("Jewel amount cannot exceed six decimal places")
+    if normalized <= 0:
+        raise ValueError("Jewel amount must be greater than zero")
+    return normalized
+
+
 def deduct_jewels(
     user_id: int,
-    amount: int,
+    amount,
     reference: str = "",
     admin_id: int | None = None,
-) -> int | None:
-    """يخصم المجوهرات ذرياً، ويعيد الرصيد الجديد أو None عند عدم كفاية الرصيد."""
-    amount = int(amount)
-    if amount <= 0:
-        raise ValueError("Jewel amount must be greater than zero")
+) -> Decimal | None:
+    """يخصم المجوهرات كسرياً بشكل ذري، ويعيد الرصيد أو None عند عدم كفايته."""
+    amount = _parse_jewel_amount(amount)
     with db_conn() as c:
         updated = c.execute(
             "UPDATE users SET jewels=COALESCE(jewels,0)-%s "
