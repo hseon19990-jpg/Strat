@@ -120,9 +120,13 @@ def _is_raksh_account_or_session_failure(message: str) -> bool:
 def _classify_raksh_result(
     service_type: str, phone: str, ok: bool, message: str
 ) -> Tuple[bool, str]:
-    """رفض مشكلة الحساب فقط واحتساب بقية نتائج خدمات الرشق نجاحاً."""
+    """تطبيق سياسة النجاح والفشل الخاصة بنتائج خدمات الرشق."""
     if ok:
         return True, message
+    # التعليق لا يُحتسب إلا بعد نجاح send_message فعلياً؛ أخطاء الصلاحيات
+    # مثل ChatWriteForbidden يجب أن تبقى فشلاً ولا تتحول إلى نجاح عام.
+    if service_type == "comment":
+        return False, message or f"❌ فشل إرسال التعليق من الحساب {phone}"
     if _is_raksh_account_or_session_failure(message):
         return False, message or f"❌ مشكلة في الحساب {phone}"
 
@@ -1049,22 +1053,8 @@ async def execute_raksh_service(
     delay_seconds = svc.get_delay_seconds(params.get("delay_seconds"))
 
     async def execute_with_selected_speed():
-        if service_type == "forced_ref_ai":
-            # أرسل تحدياً مستقلاً لكل حساب في الطلب. لا ننتظر نتيجة الحساب
-            # السابق ولا نفرض فاصلاً بين الحسابات؛ callback كل رسالة يحمل
-            # token خاصاً بها ويرجع الاختيار إلى الحساب الصحيح.
-            return await _execute_raksh_parallel(
-                svc,
-                shuffled,
-                params,
-                user_id,
-                quantity,
-                progress_callback,
-                service_type,
-                max_concurrent=max(1, min(quantity, len(shuffled))),
-                batch_delay_seconds=0,
-                order_id=order_id,
-            )
+        # جميع الخدمات تبدأ الحساب الأول فوراً، ثم تطلق كل حساب تالٍ حسب
+        # الفاصل المختار؛ الحسابات السابقة يمكنها مواصلة التحقق بالتوازي.
         return await _execute_raksh_parallel(
             svc,
             shuffled,
@@ -1286,6 +1276,12 @@ async def _execute_raksh_sequential(
     await _remove_invalid_raksh_sessions(failed_phones)
     return success_count, success_phones, success_details, failed_phones, failed_details
 
+async def _process_raksh_results_as_completed(tasks, result_callback):
+    """معالجة نتائج الحسابات بترتيب اكتمالها بدلاً من ترتيب إطلاقها."""
+    for completed_task in asyncio.as_completed(tasks):
+        await result_callback(await completed_task)
+
+
 async def _execute_raksh_parallel(
     svc: RakshService,
     sessions: List[Dict],
@@ -1437,6 +1433,7 @@ async def _execute_raksh_parallel(
 
     async def process_wave(wave, results):
         nonlocal completed_count, success_count
+        previous_completed_count = completed_count
         for session, result in zip(wave, results):
             phone = session["phone_number"]
             if isinstance(result, BaseException):
@@ -1501,7 +1498,7 @@ async def _execute_raksh_parallel(
             if order_id:
                 _mark_raksh_order_item_result(order_id, phone, ok, msg)
 
-        if progress_callback:
+        if progress_callback and completed_count != previous_completed_count:
             await progress_callback(
                 completed_count,
                 quantity,
@@ -1539,27 +1536,55 @@ async def _execute_raksh_parallel(
                 batch_delay_seconds,
             )
             wave_is_first = wave_number == 1 and success_count == 0
-            async def gather_wave():
-                return await asyncio.gather(
-                    *(
-                        execute_one(
+
+            async def execute_and_capture(session, index, is_first):
+                try:
+                    result = await execute_one(
+                        session,
+                        index,
+                        is_first=is_first,
+                    )
+                except Exception as exc:
+                    result = (
+                        False,
+                        f"❌ خطأ من {session.get('phone_number')}: {str(exc)[:80]}",
+                    )
+                return session, result
+
+            async def gather_wave(
+                wave_sessions=tuple(wave),
+                first_in_wave=wave_is_first,
+            ):
+                account_tasks = [
+                    asyncio.create_task(
+                        execute_and_capture(
                             session,
                             index,
-                            is_first=(wave_is_first and index == 0),
+                            is_first=(first_in_wave and index == 0),
                         )
-                        for index, session in enumerate(wave)
-                    ),
-                    return_exceptions=True,
+                    )
+                    for index, session in enumerate(wave_sessions)
+                ]
+
+                async def process_completed_account(account_result):
+                    session, result = account_result
+                    await process_wave([session], [result])
+
+                # سجّل كل حساب فور انتهائه بدلاً من انتظار أبطأ حساب في
+                # الدفعة؛ هذا مهم خصوصاً للتحققات التي تنتظر ضغط المستخدم.
+                await _process_raksh_results_as_completed(
+                    account_tasks,
+                    process_completed_account,
                 )
+
             task = asyncio.create_task(gather_wave())
-            scheduled.append((wave, task))
+            scheduled.append(task)
             planned += len(wave)
             if pool and planned < quantity and batch_delay_seconds:
                 await asyncio.sleep(batch_delay_seconds)
 
-        for wave, task in scheduled:
-            results = await task
-            await process_wave(wave, results)
+        for task in scheduled:
+            await task
 
     await _remove_invalid_raksh_sessions(failed_phones)
     return success_count, success_phones, success_details, failed_phones, failed_details
@@ -1805,6 +1830,19 @@ def raksh_speed_prompt_text() -> str:
     )
 
 
+def _should_prompt_raksh_speed(service_type: str) -> bool:
+    """اعرض اختيار الفاصل لكل خدمة رشق مسجلة."""
+    return service_type in RAKSH_SERVICES
+
+
+def _needs_raksh_speed_selection(context, skip_speed_selection: bool) -> bool:
+    """لا تطلب اختيار الفاصل مجدداً بعد اختياره لنفس الطلب."""
+    return (
+        not skip_speed_selection
+        and (context.user_data or {}).get("raksh_delay_seconds") is None
+    )
+
+
 def raksh_confirm_kb(
     service_type: str,
     quantity: int,
@@ -2046,9 +2084,11 @@ async def _handle_raksh_callback_impl(
         )
         return
 
-    if data.startswith("raksh:pay:") and not skip_speed_selection:
+    if data.startswith("raksh:pay:") and _needs_raksh_speed_selection(
+        context, skip_speed_selection
+    ):
         parts = data.split(":")
-        if len(parts) == 5:
+        if len(parts) == 5 and _should_prompt_raksh_speed(parts[3]):
             await _show_raksh_speed_selection(
                 query,
                 context,
@@ -2403,6 +2443,14 @@ async def _handle_raksh_callback_impl(
                             reply_markup=raksh_menu_kb(is_own),
                         )
                         return
+                    if _needs_raksh_speed_selection(context, skip_speed_selection):
+                        await _show_raksh_speed_selection(
+                            query,
+                            context,
+                            data,
+                            service_type,
+                        )
+                        return
                     await query.edit_message_text(
                         "🎁 *الخدمة مجانية ضمن صلاحية الإعفاء الحالية*\n\n"
                         f"الخدمة: {svc.config.name}\n"
@@ -2437,6 +2485,14 @@ async def _handle_raksh_callback_impl(
                             reply_markup=raksh_menu_kb(is_own),
                         )
                         return
+                    if _needs_raksh_speed_selection(context, skip_speed_selection):
+                        await _show_raksh_speed_selection(
+                            query,
+                            context,
+                            data,
+                            service_type,
+                        )
+                        return
                     await query.edit_message_text(
                         "✅ *تم التأكيد — الخدمة مجانية*\n\n"
                         "⏳ جاري بدء التنفيذ...",
@@ -2465,6 +2521,14 @@ async def _handle_raksh_callback_impl(
                             reply_markup=raksh_menu_kb(is_own),
                         )
                         return
+                    if _needs_raksh_speed_selection(context, skip_speed_selection):
+                        await _show_raksh_speed_selection(
+                            query,
+                            context,
+                            data,
+                            service_type,
+                        )
+                        return
                     await query.edit_message_text(
                         "✅ *تم التأكيد — الخدمة مجانية*\n\n"
                         "⏳ جاري بدء التنفيذ...",
@@ -2485,7 +2549,8 @@ async def _handle_raksh_callback_impl(
             if (
                 parts
                 and parts[0] == "payment"
-                and not skip_speed_selection
+                and _needs_raksh_speed_selection(context, skip_speed_selection)
+                and _should_prompt_raksh_speed(service_type)
             ):
                 await _show_raksh_speed_selection(
                     query,
@@ -2568,6 +2633,16 @@ async def _handle_raksh_callback_impl(
             or quantity > svc.get_request_limit(user.id)
         ):
             await query.answer("⚠️ انتهت صلاحية الإعفاء أو الطلب غير صالح.", show_alert=True)
+            return
+        if _should_prompt_raksh_speed(service_type) and _needs_raksh_speed_selection(
+            context, skip_speed_selection
+        ):
+            await _show_raksh_speed_selection(
+                query,
+                context,
+                data,
+                service_type,
+            )
             return
         await query.edit_message_text(
             "✅ *تم التأكيد — الخدمة مجانية*\n\n"
@@ -3777,9 +3852,22 @@ async def _run_raksh_order(
         logger.warning(f"⏳ لا توجد جلسات لطلب الرشق {order_id}; سيعاد فحصه لاحقاً")
         return
 
+    last_progress_state = None
+    last_progress_update = 0.0
+
     async def update_progress(current, total, success, failed):
+        nonlocal last_progress_state, last_progress_update
         if not progress_msg:
             return
+        state = (current, total, success, failed)
+        if state == last_progress_state:
+            return
+        now = asyncio.get_running_loop().time()
+        # لا نرسل تعديلات متقاربة جداً إلى تيليغرام؛ مع ذلك لا ننتظر
+        # اكتمال الدفعة كي تظهر الحسابات المنجزة تدريجياً.
+        if current < total and now - last_progress_update < 0.8:
+            return
+        last_progress_update = now
         try:
             await progress_msg.edit_text(
                 f"⏳ *جاري التنفيذ...*\n\n"
@@ -3788,6 +3876,7 @@ async def _run_raksh_order(
                 f"❌ فشل: {failed}",
                 parse_mode=ParseMode.MARKDOWN,
             )
+            last_progress_state = state
         except Exception:
             pass
 
