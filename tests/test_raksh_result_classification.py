@@ -90,6 +90,25 @@ class RakshResultClassificationTests(unittest.TestCase):
                 self.assertFalse(ok)
                 self.assertEqual(error, message)
 
+    def test_comment_send_failure_is_not_reclassified_as_success(self):
+        classify = self._load_classifier()
+
+        for error in (
+            "ChatWriteForbiddenError: You can't send messages in this chat",
+            "فشل التعليق: المستخدم محظور من الكتابة في المجموعة",
+            "network error",
+        ):
+            with self.subTest(error=error):
+                ok, message = classify(
+                    "comment",
+                    "+964000000000",
+                    False,
+                    error,
+                )
+
+                self.assertFalse(ok)
+                self.assertEqual(error, message)
+
     def test_real_success_remains_success(self):
         classify = self._load_classifier()
 
