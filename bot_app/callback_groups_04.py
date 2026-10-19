@@ -96,6 +96,8 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             return
 
         if data == "os:ban_menu" and is_own:
+            reset_owner_flow(context)
+            context.user_data.pop("ban_target_id", None)
             with db_conn() as c:
                 banned_count = c.execute("SELECT COUNT(*) as cnt FROM users WHERE banned=1").fetchone()["cnt"]
             await q.edit_message_text(
@@ -112,7 +114,8 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             return
 
         if data == "os:ban_member" and is_own:
-            context.user_data["state"] = "os_await_ban_target"
+            reset_owner_flow(context, state="os_await_ban_target")
+            context.user_data.pop("ban_target_id", None)
             await q.edit_message_text(
                 "🚫 *حظر عضو*\n\nأرسل الـ ID الرقمي للعضو أو @يوزرنيم:",
                 parse_mode=ParseMode.MARKDOWN,
@@ -121,7 +124,8 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             return
 
         if data == "os:unban_member" and is_own:
-            context.user_data["state"] = "os_await_unban_target"
+            reset_owner_flow(context, state="os_await_unban_target")
+            context.user_data.pop("ban_target_id", None)
             await q.edit_message_text(
                 "🔓 *رفع حظر عضو*\n\nأرسل الـ ID الرقمي للعضو أو @يوزرنيم:",
                 parse_mode=ParseMode.MARKDOWN,
@@ -134,9 +138,10 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             found = unban_user_db(target_id)
             target = get_user(target_id)
             if found and target:
-                uname = f"@{target['username']}" if target.get("username") else f"ID: {target_id}"
+                uname = f"@{md_escape(target['username'])}" if target.get("username") else f"ID: {target_id}"
+                name = md_escape(target.get("full_name") or "")
                 await q.edit_message_text(
-                    f"✅ *تم رفع الحظر عن:* {target.get('full_name', '')} ({uname})",
+                    f"✅ *تم رفع الحظر عن:* {name} ({uname})",
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:ban_menu")]]),
                 )
@@ -312,19 +317,23 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                     [InlineKeyboardButton("➕ منح نقاط لعضو", callback_data="os:give_points")],
                     [InlineKeyboardButton("➖ خصم نقاط من عضو", callback_data="os:deduct_points")],
                     [InlineKeyboardButton("💎 منح مجوهرات لعضو", callback_data="os:give_jewels")],
+                    [InlineKeyboardButton("➖ خصم مجوهرات من عضو", callback_data="os:deduct_jewels")],
                     [InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")],
                 ])
             )
             return
 
-        if data == "os:give_jewels" and is_own:
+        if data in ("os:give_jewels", "os:deduct_jewels") and is_own:
+            jewels_mode = "deduct" if data == "os:deduct_jewels" else "give"
+            action = "خصم" if jewels_mode == "deduct" else "منح"
             begin_owner_flow(
                 context,
                 "jewels",
                 "os_await_jewels_target",
+                jewels_mode=jewels_mode,
             )
             await q.edit_message_text(
-                "💎 *منح مجوهرات*\n\nأرسل ID المستخدم أو @يوزرنيم:",
+                f"💎 *{action} مجوهرات*\n\nأرسل ID المستخدم أو @يوزرنيم:",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton("🔙 إلغاء", callback_data="os:manage_points")
