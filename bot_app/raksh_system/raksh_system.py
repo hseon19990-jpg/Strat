@@ -120,13 +120,13 @@ def _is_raksh_account_or_session_failure(message: str) -> bool:
 def _classify_raksh_result(
     service_type: str, phone: str, ok: bool, message: str
 ) -> Tuple[bool, str]:
-    """رفض مشكلة الحساب فقط واحتساب بقية نتائج خدمات الرشق نجاحاً."""
+    """احتساب الإرسال الفعلي لخدمات التعليق والتفاعل؛ ورفض مشاكل الحساب."""
     if ok:
         return True, message
-    # التعليق لا ينجح إلا إذا أكد Telegram إرسال الرسالة فعلياً. أخطاء
-    # صلاحيات الكتابة في مجموعة النقاش وأي خطأ إرسال آخر تبقى فشلاً.
-    if service_type == "comment":
-        return False, message or f"❌ تعذر إرسال التعليق من الحساب {phone}"
+    # التعليق والتفاعل المميز لا ينجحان إلا إذا أكد Telegram إتمام الإرسال.
+    # أخطاء صلاحيات الكتابة أو إرسال التفاعل تبقى فشلاً.
+    if service_type in {"comment", "premium_reaction"}:
+        return False, message or f"❌ تعذر تنفيذ {service_type} من الحساب {phone}"
     if _is_raksh_account_or_session_failure(message):
         return False, message or f"❌ مشكلة في الحساب {phone}"
 
@@ -1756,7 +1756,13 @@ def raksh_reaction_kb(service_type: str, reactions: Optional[List[str]] = None):
     buttons = []
     row = []
     
-    if reactions:
+    if service_type == "premium_reaction":
+        reaction_items = [
+            (f"custom_{_custom_reaction_document_id(reaction)}", reaction)
+            for reaction in (reactions or [])
+            if _custom_reaction_document_id(reaction) is not None
+        ]
+    elif reactions:
         reaction_items = [(r, r) for r in reactions]
     else:
         reaction_items = list(RAKSH_REACTIONS.items())
@@ -1785,12 +1791,13 @@ def raksh_reaction_kb(service_type: str, reactions: Optional[List[str]] = None):
     if row:
         buttons.append(row)
     
-    buttons.append([
-        InlineKeyboardButton(
-            "🎲 عشوائي",
-            callback_data=f"raksh:reaction:{service_type}:random"
-        )
-    ])
+    if service_type != "premium_reaction" or reaction_items:
+        buttons.append([
+            InlineKeyboardButton(
+                "🎲 عشوائي",
+                callback_data=f"raksh:reaction:{service_type}:random"
+            )
+        ])
     buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="raksh_menu")])
     return InlineKeyboardMarkup(buttons)
 
@@ -2376,6 +2383,13 @@ async def _handle_raksh_callback_impl(
         parts = data.split(":")
         service_type = parts[2]
         reaction_key = parts[3]
+
+        if service_type == "premium_reaction":
+            await query.answer(
+                "⚠️ هذا الاختيار من الواجهة القديمة. ابدأ خدمة التفاعل المميز مجدداً.",
+                show_alert=True,
+            )
+            return
         
         if reaction_key == "paid":
             reaction = RAKSH_PAID_REACTION
@@ -2383,14 +2397,6 @@ async def _handle_raksh_callback_impl(
             reaction = f"{RAKSH_CUSTOM_REACTION_PREFIX}{reaction_key[7:]}"
         else:
             reaction = RAKSH_REACTIONS.get(reaction_key, reaction_key)
-        
-        if service_type == "premium_reaction":
-            available_reactions = context.user_data.get("raksh_available_reactions") or []
-            if reaction_key == "random":
-                reaction = "random"
-            elif available_reactions and reaction not in available_reactions:
-                await query.answer("⚠️ هذا التفاعل غير متاح في المنشور.", show_alert=True)
-                return
         
         context.user_data["raksh_reaction"] = reaction
         context.user_data["raksh_step"] = "quantity"
