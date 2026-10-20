@@ -44,6 +44,12 @@ from typing import Optional, List, Dict, Tuple, Any, Callable
 from dataclasses import dataclass, field
 from enum import Enum
 
+def get_raksh_menu_keyboard(is_owner: bool = False):
+    """Load the shared Raksh menu lazily to avoid a service import cycle."""
+    from .raksh_system import raksh_menu_kb
+
+    return raksh_menu_kb(is_owner)
+
 # ════════════════════════════════════════════════════════
 # ═══ 1. الثوابت العامة ═══
 # ════════════════════════════════════════════════════════
