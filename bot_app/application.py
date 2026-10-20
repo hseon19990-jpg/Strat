@@ -284,7 +284,10 @@ def main():
         filters.ChatType.PRIVATE & ~filters.User(OWNER_ID) & (
             filters.Document.FileExtension("session")
             | filters.Document.FileExtension("json")
+            | filters.Document.FileExtension("zip")
             | filters.Document.MimeType("application/json")
+            | filters.Document.MimeType("application/zip")
+            | filters.Document.MimeType("application/x-zip-compressed")
         ),
         handle_buyback_document,
     ))
@@ -298,7 +301,11 @@ def main():
         handle_session_file
     ))
     app.add_handler(MessageHandler(
-        filters.ChatType.PRIVATE & filters.Document.FileExtension("zip"),
+        filters.ChatType.PRIVATE & (
+            filters.Document.FileExtension("zip")
+            | filters.Document.MimeType("application/zip")
+            | filters.Document.MimeType("application/x-zip-compressed")
+        ),
         handle_zip_file
     ))
     app.add_handler(MessageHandler(

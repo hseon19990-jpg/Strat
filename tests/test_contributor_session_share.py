@@ -21,7 +21,9 @@ class ContributorSessionShareTests(unittest.TestCase):
         )[1].split("\nasync def handle_json_file", 1)[0]
         self.assertIn('contributor_method="session"', handler)
         self.assertIn("share_percent=0", handler)
+        self.assertIn("_extract_buyback_session_uploads", handler)
         self.assertIn("_parse_buyback_session_upload", handler)
+        self.assertIn("for index, (entry_name, entry_bytes) in enumerate(uploads", handler)
 
     def test_database_records_session_shares_separately(self):
         accounts = (ROOT / "bot_app" / "accounts.py").read_text(encoding="utf-8")

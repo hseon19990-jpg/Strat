@@ -23,6 +23,8 @@ BUYBACK_ACTIVE_STATUSES = (
 )
 
 BUYBACK_SESSION_MAX_BYTES = 5 * 1024 * 1024
+BUYBACK_ZIP_MAX_FILES = 50
+BUYBACK_ZIP_MAX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024
 
 # Login clients live only for the short code/2FA hand-off flow.  Keep this
 # process-local and never persist the raw login code or 2FA password.
@@ -222,6 +224,66 @@ async def _finish_buyback_login(update, context, user_id: int) -> bool:
         await _disconnect_buyback_client(client)
 
 
+def _extract_buyback_session_uploads(raw_bytes: bytes, filename: str) -> list[tuple[str, bytes]]:
+    """Return safe .session/.json payloads from a direct upload or ZIP archive."""
+    import io as _io
+    import zipfile as _zipfile
+
+    raw = bytes(raw_bytes or b"")
+    name = str(filename or "").strip()
+    lower_name = name.lower()
+    if not raw:
+        return []
+    if lower_name.endswith((".session", ".json")):
+        if len(raw) > BUYBACK_SESSION_MAX_BYTES:
+            return []
+        return [(name or "session.session", raw)]
+    if not lower_name.endswith(".zip") or len(raw) > BUYBACK_SESSION_MAX_BYTES:
+        return []
+
+    try:
+        with _zipfile.ZipFile(_io.BytesIO(raw)) as archive:
+            infos = [info for info in archive.infolist() if not info.is_dir()]
+            if (
+                len(infos) > BUYBACK_ZIP_MAX_FILES
+                or sum(info.file_size for info in infos) > BUYBACK_ZIP_MAX_UNCOMPRESSED_BYTES
+            ):
+                return []
+
+            session_infos = []
+            json_infos = []
+            for info in infos:
+                normalized = str(info.filename or "").replace("\\", "/")
+                short_name = normalized.rsplit("/", 1)[-1]
+                if not short_name or normalized.startswith("__MACOSX/"):
+                    continue
+                lower_short_name = short_name.lower()
+                if not lower_short_name.endswith((".session", ".json")):
+                    continue
+                if info.file_size > BUYBACK_SESSION_MAX_BYTES:
+                    return []
+                if lower_short_name.endswith(".session"):
+                    session_infos.append((short_name, info))
+                else:
+                    json_infos.append((short_name, info))
+
+            session_bases = {
+                short_name.rsplit(".", 1)[0].casefold()
+                for short_name, _info in session_infos
+            }
+            entries = list(session_infos)
+            entries.extend(
+                (short_name, info)
+                for short_name, info in json_infos
+                if short_name.rsplit(".", 1)[0].casefold() not in session_bases
+            )
+            if len(entries) > BUYBACK_ZIP_MAX_FILES:
+                return []
+            return [(short_name, archive.read(info)) for short_name, info in entries]
+    except Exception:
+        return []
+
+
 def _parse_buyback_session_upload(raw_bytes: bytes, filename: str) -> str | None:
     """Extract exactly one Telethon/Pyrogram session without stock-import side effects."""
     import base64 as _base64
@@ -234,6 +296,12 @@ def _parse_buyback_session_upload(raw_bytes: bytes, filename: str) -> str | None
 
     name = str(filename or "").strip().lower()
     session_string = None
+    if name.endswith(".zip"):
+        uploads = _extract_buyback_session_uploads(raw_bytes, filename)
+        if len(uploads) != 1:
+            return None
+        inner_name, inner_bytes = uploads[0]
+        return _parse_buyback_session_upload(inner_bytes, inner_name)
     if name.endswith(".json"):
         try:
             payload = _json.loads(bytes(raw_bytes).decode("utf-8"))
@@ -329,7 +397,7 @@ def _parse_buyback_session_upload(raw_bytes: bytes, filename: str) -> str | None
 
 
 async def handle_buyback_document(update, context) -> bool:
-    """Accept a seller-owned .session/.json only inside the buyback upload step."""
+    """Accept seller-owned .session/.json/.zip uploads only in the buyback step."""
     user = update.effective_user
     message = update.effective_message
     document = getattr(message, "document", None) if message else None
@@ -355,7 +423,7 @@ async def handle_buyback_document(update, context) -> bool:
     state = context.user_data.get("state", "")
     if state == "share_session_await_upload":
         # The earlier document route normally handles account sharing, but
-        # non-owner .session/.json files arrive here first. Route only this
+        # non-owner session files arrive here first. Route only this
         # explicit upload state to its dedicated, non-destructive handler.
         from .messages import handle_share_session_document
         await handle_share_session_document(update, context)
@@ -367,9 +435,21 @@ async def handle_buyback_document(update, context) -> bool:
             await message.reply_text("لرفع الجلسة كطريقة بيع، ابدأ من قسم بيع الحساب واختر رفع ملف الجلسة أولاً.")
         return True
 
-    filename = str(getattr(document, "file_name", "") or "")
-    if not filename.lower().endswith((".session", ".json")):
-        await message.reply_text("⚠️ ارفع ملفاً واحداً بصيغة .session أو .json فقط.", reply_markup=_buyback_cancel_markup())
+    filename = str(
+        getattr(document, "file_name", "")
+        or (
+            "upload.zip"
+            if "zip" in str(getattr(document, "mime_type", "") or "").lower()
+            else "upload.json"
+            if "json" in str(getattr(document, "mime_type", "") or "").lower()
+            else ""
+        )
+    )
+    if not filename.lower().endswith((".session", ".json", ".zip")):
+        await message.reply_text(
+            "⚠️ ارفع ملفاً بصيغة .session أو .json أو .zip.",
+            reply_markup=_buyback_cancel_markup(),
+        )
         return True
     file_size = getattr(document, "file_size", None)
     if file_size is not None and int(file_size) > BUYBACK_SESSION_MAX_BYTES:
@@ -391,7 +471,15 @@ async def handle_buyback_document(update, context) -> bool:
             return True
         session_string = _parse_buyback_session_upload(raw_bytes, filename)
         if not session_string:
-            await progress.edit_text("❌ تعذرت قراءة جلسة واحدة صالحة من الملف. لم يُنشأ طلب بيع.")
+            if filename.lower().endswith(".zip"):
+                await progress.edit_text(
+                    "❌ تعذرت قراءة جلسة واحدة صالحة. يجب أن يحتوي ZIP على ملف "
+                    ".session أو .json لحساب واحد فقط؛ لم يُنشأ طلب بيع."
+                )
+            else:
+                await progress.edit_text(
+                    "❌ تعذرت قراءة جلسة واحدة صالحة من الملف. لم يُنشأ طلب بيع."
+                )
             return True
 
         client = TelegramClient(StringSession(session_string), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
@@ -790,11 +878,11 @@ async def handle_buyback_callback(update, context, q, data: str, user, is_owner:
             "💰 <b>بيع حساب تيليجرام</b>\n\n"
             "سيتم فحص ملكية الحساب أولاً. بعد موافقتك النهائية تُلغى الجلسات الأخرى، "
             "ويبقى الحساب تحت الحجز 48 ساعة. يتم دفع المبلغ بعد نجاح فحص 24 و48 ساعة.\n\n"
-            "⚠️ استخدم هذه الخدمة لحساب تملكه فقط. يمكنك التقديم برقم وكود الدخول أو برفع ملف الجلسة.",
+            "⚠️ استخدم هذه الخدمة لحساب تملكه فقط. يمكنك التقديم برقم وكود الدخول أو برفع ملف جلسة .session أو .json أو ZIP.",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📱 رقم + كود الدخول", callback_data="buyback:begin")],
-                [InlineKeyboardButton("📁 رفع ملف جلسة (.session / .json)", callback_data="buyback:begin_session")],
+                [InlineKeyboardButton("📁 رفع ملف جلسة (.session / .json / .zip)", callback_data="buyback:begin_session")],
                 [InlineKeyboardButton("❌ إلغاء", callback_data="buyback:cancel")],
             ]),
         )
@@ -836,7 +924,7 @@ async def handle_buyback_callback(update, context, q, data: str, user, is_owner:
         context.user_data["state"] = "buyback_await_session_document"
         await q.edit_message_text(
             chr(10).join([
-                "📎 أرسل ملفاً واحداً بصيغة .session أو .json.",
+                "📎 أرسل ملفاً بصيغة .session أو .json أو ZIP يحتوي جلسة حساب واحد فقط.",
                 "",
                 "يجب أن يحتوي الملف على جلسة حساب واحد فقط. لن يُستورد إلى مخزون الحسابات العادي؛",
                 "سيُنشأ طلب بيع بعد التحقق، ويبقى تأكيد البيع النهائي بيدك.",
