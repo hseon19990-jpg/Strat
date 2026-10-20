@@ -5504,20 +5504,23 @@ async def handle_share_session_document(update: Update, context: ContextTypes.DE
 
     filename = str(
         getattr(document, "file_name", "")
-        or ("upload.json" if getattr(document, "mime_type", "") == "application/json" else "")
+        or (
+            "upload.zip"
+            if "zip" in str(getattr(document, "mime_type", "") or "").lower()
+            else "upload.json"
+            if "json" in str(getattr(document, "mime_type", "") or "").lower()
+            else ""
+        )
     )
-    if not filename.lower().endswith((".session", ".json")):
-        await message.reply_text("⚠️ ارفع ملفاً واحداً بصيغة `.session` أو `.json`.")
+    if not filename.lower().endswith((".session", ".json", ".zip")):
+        await message.reply_text("⚠️ ارفع ملفاً بصيغة `.session` أو `.json` أو `.zip`.")
         return
     file_size = getattr(document, "file_size", None)
     if file_size is not None and int(file_size) > SHARE_SESSION_MAX_BYTES:
         await message.reply_text("⚠️ حجم الملف أكبر من الحد المسموح (5 ميغابايت).")
         return
 
-    progress = await message.reply_text("⏳ جارٍ قراءة ملف الجلسة والتحقق منه...")
-    client = None
-    saved_account = False
-    phone = ""
+    progress = await message.reply_text("⏳ جارٍ قراءة ملفات الجلسة والتحقق منها...")
     try:
         telegram_file = await context.bot.get_file(document.file_id)
         raw_bytes = bytes(await telegram_file.download_as_bytearray())
@@ -5525,85 +5528,113 @@ async def handle_share_session_document(update: Update, context: ContextTypes.DE
             await progress.edit_text("⚠️ حجم الملف أكبر من الحد المسموح (5 ميغابايت).")
             return
 
-        # Reuse the existing side-effect-free parser; unlike stock import it does
-        # not rotate the session, sign out other devices, or alter account settings.
-        from .buyback import _parse_buyback_session_upload
-
-        session_string = _parse_buyback_session_upload(raw_bytes, filename)
-        if not session_string:
-            await progress.edit_text(
-                "❌ تعذرت قراءة جلسة واحدة صالحة من الملف. "
-                "استخدم ملف `.session` أو `.json` يحتوي جلسة واحدة."
-            )
-            return
-
-        client = TelegramClient(
-            StringSession(session_string),
-            int(TELEGRAM_API_ID),
-            TELEGRAM_API_HASH,
+        # Reuse only the safe parsers. Never use the owner's ZIP importer here:
+        # that path can rotate sessions and sign out other devices.
+        from .buyback import (
+            _extract_buyback_session_uploads,
+            _parse_buyback_session_upload,
         )
-        await asyncio.wait_for(client.connect(), timeout=20)
-        if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
-            await progress.edit_text(
-                "❌ الجلسة منتهية أو غير صالحة. لم تتم إضافة أي حساب؛ ارفع جلسة أخرى."
-            )
-            return
-        me = await asyncio.wait_for(client.get_me(), timeout=15)
-        phone = str(getattr(me, "phone", "") or "").strip()
-        if phone and not phone.startswith("+"):
-            phone = f"+{phone}"
-        if not phone or not phone[1:].isdigit():
-            await progress.edit_text(
-                "❌ تعذر تحديد رقم الهاتف المرتبط بالجلسة؛ لم تتم إضافتها."
-            )
-            return
 
-        added, reason = add_contributor_account(
-            int(user.id),
-            phone,
-            client.session.save(),
-            share_percent=0,
-            contributor_method="session",
-        )
-        if not added:
+        uploads = _extract_buyback_session_uploads(raw_bytes, filename)
+        if not uploads:
             await progress.edit_text(
-                f"⚠️ لم تتم إضافة الجلسة:\n{reason}\n\nلم يتم تغيير إعدادات الحساب."
+                "❌ لم أجد ملفات جلسات صالحة. ZIP يجب أن يحتوي ملفات "
+                "`.session` أو `.json`، بحد أقصى 50 ملفاً صالحاً."
             )
             return
-        saved_account = True
+        successful_phones = []
+        failures = []
+        for index, (entry_name, entry_bytes) in enumerate(uploads, start=1):
+            client = None
+            short_name = str(entry_name or "session").replace("\n", " ")[:80]
+            try:
+                session_string = _parse_buyback_session_upload(entry_bytes, entry_name)
+                if not session_string:
+                    failures.append(f"{short_name}: تعذرت قراءة الجلسة.")
+                    continue
+                client = TelegramClient(
+                    StringSession(session_string),
+                    int(TELEGRAM_API_ID),
+                    TELEGRAM_API_HASH,
+                )
+                await asyncio.wait_for(client.connect(), timeout=20)
+                if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+                    failures.append(f"{short_name}: الجلسة منتهية أو غير صالحة.")
+                    continue
+                me = await asyncio.wait_for(client.get_me(), timeout=15)
+                phone = str(getattr(me, "phone", "") or "").strip()
+                if phone and not phone.startswith("+"):
+                    phone = f"+{phone}"
+                if not phone or not phone[1:].isdigit():
+                    failures.append(f"{short_name}: تعذر تحديد رقم الهاتف.")
+                    continue
+
+                added, reason = add_contributor_account(
+                    int(user.id),
+                    phone,
+                    client.session.save(),
+                    share_percent=0,
+                    contributor_method="session",
+                )
+                if added:
+                    successful_phones.append(phone)
+                else:
+                    failures.append(f"{short_name}: {reason}")
+            except asyncio.TimeoutError:
+                failures.append(f"{short_name}: انتهت مهلة الاتصال.")
+            except Exception as exc:
+                logger.warning(
+                    "تعذر التحقق من جلسة مشاركة العضو %s: %s",
+                    user.id,
+                    type(exc).__name__,
+                )
+                failures.append(f"{short_name}: تعذر التحقق من الجلسة.")
+            finally:
+                if client is not None:
+                    try:
+                        await client.disconnect()
+                    except Exception:
+                        pass
+            if index % 5 == 0 and index < len(uploads):
+                try:
+                    await progress.edit_text(
+                        f"⏳ تم فحص {index} من {len(uploads)} جلسة..."
+                    )
+                except Exception:
+                    pass
 
         context.user_data["state"] = "share_session_await_upload"
-        await progress.edit_text(
-            f"✅ تمت إضافة جلسة الحساب `{phone}` للرشق فقط.\n"
-            "ستتمكن من الرشق مجاناً بحساباتك المشاركة، أما استخدام حسابات أخرى فيبقى مدفوعاً.\n"
-            "ارفع جلسة أخرى أو استخدم /cancel للانتهاء.",
-            parse_mode=ParseMode.MARKDOWN,
+        summary = [
+            f"📦 انتهت معالجة الملف: تمت إضافة {len(successful_phones)} من أصل {len(uploads)} جلسة."
+        ]
+        if successful_phones:
+            summary.append("✅ الحسابات المضافة: " + "، ".join(successful_phones[:20]))
+            if len(successful_phones) > 20:
+                summary.append(f"و{len(successful_phones) - 20} حساباً إضافياً.")
+        if failures:
+            summary.append(f"⚠️ تعذر إضافة {len(failures)} جلسة:")
+            summary.extend(f"• {failure}" for failure in failures[:15])
+            if len(failures) > 15:
+                summary.append(f"و{len(failures) - 15} ملفات أخرى.")
+            summary.append("لم تُغيّر إعدادات الحسابات التي تعذرت إضافتها.")
+        summary.append(
+            "ارفع ملفاً آخر أو استخدم /cancel للانتهاء. "
+            "يمكنك الرشق مجاناً بحساباتك المشاركة فقط."
         )
-    except asyncio.TimeoutError:
-        await progress.edit_text("⏳ انتهت مهلة الاتصال بتيليجرام. حاول رفع الجلسة مرة أخرى.")
+        result_text = "\n".join(summary)
+        if len(result_text) > 3900:
+            result_text = result_text[:3850] + "\n…"
+        await progress.edit_text(result_text)
     except Exception as exc:
         logger.warning(
             "تعذر التحقق من جلسة مشاركة العضو %s: %s",
             user.id,
             type(exc).__name__,
         )
-        if saved_account:
-            context.user_data["state"] = "share_session_await_upload"
-            await message.reply_text(
-                f"✅ تمت إضافة جلسة الحساب `{phone}` للرشق فقط. "
-                "ارفع جلسة أخرى أو استخدم /cancel للانتهاء.",
-                parse_mode=ParseMode.MARKDOWN,
-            )
-        else:
-            await progress.edit_text(
-                "❌ تعذر التحقق من الجلسة. لم يتم حفظها؛ تأكد من سلامة الملف ثم أعد المحاولة."
-            )
-    finally:
-        if client is not None:
-            try:
-                await client.disconnect()
-            except Exception:
-                pass
+        await progress.edit_text(
+            "❌ تعذر إكمال معالجة الملف. قد تكون بعض الجلسات أُضيفت بالفعل؛ "
+            "راجع قسم مشاركة الجلسة قبل إعادة الرفع لتجنب التكرار."
+        )
 
 
 async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):

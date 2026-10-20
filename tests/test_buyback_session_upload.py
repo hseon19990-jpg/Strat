@@ -1,10 +1,12 @@
 import ast
 import base64
 import json
+import io
 import os
 import sqlite3
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
@@ -12,24 +14,34 @@ BUYBACK = ROOT / "bot_app" / "buyback.py"
 APPLICATION = ROOT / "bot_app" / "application.py"
 
 
-def _load_session_parser():
+def _load_session_upload_helpers():
     tree = ast.parse(BUYBACK.read_text(encoding="utf-8"))
-    node = next(
+    nodes = [
         item
         for item in tree.body
         if isinstance(item, ast.FunctionDef)
-        and item.name == "_parse_buyback_session_upload"
-    )
+        and item.name in {
+            "_extract_buyback_session_uploads",
+            "_parse_buyback_session_upload",
+        }
+    ]
     namespace = {
         "_TG_DC": {2: ("149.154.167.51", 443)},
         "_maybe_convert_session": lambda value: value,
         "pyrogram_json_to_telethon": lambda payload: "pyrogram-session",
+        "BUYBACK_SESSION_MAX_BYTES": 5 * 1024 * 1024,
+        "BUYBACK_ZIP_MAX_FILES": 50,
+        "BUYBACK_ZIP_MAX_UNCOMPRESSED_BYTES": 50 * 1024 * 1024,
     }
     exec(
-        compile(ast.Module(body=[node], type_ignores=[]), str(BUYBACK), "exec"),
+        compile(ast.Module(body=nodes, type_ignores=[]), str(BUYBACK), "exec"),
         namespace,
     )
-    return namespace["_parse_buyback_session_upload"]
+    return namespace
+
+
+def _load_session_parser():
+    return _load_session_upload_helpers()["_parse_buyback_session_upload"]
 
 
 class BuybackSessionUploadTests(unittest.TestCase):
@@ -91,6 +103,34 @@ class BuybackSessionUploadTests(unittest.TestCase):
         unpacked = base64.urlsafe_b64decode(converted[1:].encode("ascii"))
         self.assertEqual(unpacked[7:], auth_key)
 
+    def test_zip_accepts_exactly_one_session(self):
+        parse = _load_session_parser()
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w") as zipped:
+            zipped.writestr("sessions/member.json", json.dumps("zip-session"))
+        self.assertEqual(
+            "zip-session",
+            parse(archive.getvalue(), "seller.zip"),
+        )
+
+    def test_buyback_zip_rejects_multiple_sessions_instead_of_choosing_one(self):
+        parse = _load_session_parser()
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w") as zipped:
+            zipped.writestr("first.json", json.dumps("first-session"))
+            zipped.writestr("second.json", json.dumps("second-session"))
+        self.assertIsNone(parse(archive.getvalue(), "seller.zip"))
+
+    def test_zip_extractor_pairs_session_with_same_named_metadata_json(self):
+        extract = _load_session_upload_helpers()["_extract_buyback_session_uploads"]
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w") as zipped:
+            zipped.writestr("accounts/member.session", b"sqlite-session")
+            zipped.writestr("accounts/member.json", json.dumps({"twofa_password": "metadata"}))
+            zipped.writestr("accounts/other.json", json.dumps("other-session"))
+        entries = extract(archive.getvalue(), "seller.zip")
+        self.assertEqual(["member.session", "other.json"], [name for name, _raw in entries])
+
     def test_upload_route_is_registered_before_owner_import_handlers(self):
         buyback_source = BUYBACK.read_text(encoding="utf-8")
         app_source = APPLICATION.read_text(encoding="utf-8")
@@ -99,7 +139,10 @@ class BuybackSessionUploadTests(unittest.TestCase):
         self.assertIn('callback_data="buyback:session_consent"', buyback_source)
         self.assertIn('"buyback_await_session_document"', buyback_source)
         self.assertIn("~filters.User(OWNER_ID)", app_source)
-        self.assertIn("update.message.document and state.startswith(\"buyback_\")", message_source)
+        self.assertIn('filters.Document.FileExtension("zip")', app_source)
+        self.assertIn('filters.Document.MimeType("application/zip")', app_source)
+        self.assertIn('if state != "buyback_await_session_document":', buyback_source)
+        self.assertIn('if state == "share_session_await_upload":', buyback_source)
         self.assertLess(app_source.index("handle_buyback_document"), app_source.index("handle_json_file"))
 
 
