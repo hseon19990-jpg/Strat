@@ -2399,9 +2399,10 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             else:
                 context.user_data["state"] = "await_currency_exchange_points"
                 prompt = (
-                    f"💰 كل مجوهرة تكلف {rate:,} نقطة.\n"
+                    f"💰 كل {rate:,} نقطة = 1 مجوهرة.\n"
                     f"رصيد النقاط: {int(db_user.get('points') or 0):,}\n\n"
-                    "أرسل عدد المجوهرات الصحيحة التي تريد الحصول عليها:"
+                    "أرسل عدد النقاط التي تريد دفعها لتحويلها إلى مجوهرات.\n"
+                    "سيُخصم هذا العدد نفسه، ويُحسب مقدار المجوهرات حسب السعر أعلاه."
                 )
             await q.edit_message_text(
                 prompt,
@@ -2445,11 +2446,16 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
 
             await q.answer("⏳ جارٍ تنفيذ التحويل.")
             try:
+                amount = (
+                    pending["jewels_amount"]
+                    if pending["direction"] == "jewels_to_points"
+                    else pending["points_amount"]
+                )
                 result = perform_currency_exchange(
                     user.id,
                     request_id,
                     pending["direction"],
-                    pending["jewels_amount"],
+                    amount,
                     pending["rate"],
                 )
             except Exception:
@@ -2503,7 +2509,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             else:
                 summary = (
                     f"💰 خُصم: {quote['points_amount']:,} نقطة\n"
-                    f"💎 أُضيف: {quote['jewels_amount']:,} مجوهرة"
+                    f"💎 أُضيف: {fmt_jewel_amount(quote['jewels_amount'])} مجوهرة"
                 )
             await q.edit_message_text(
                 "✅ تم التحويل بنجاح!\n\n"

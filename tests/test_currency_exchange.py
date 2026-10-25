@@ -17,6 +17,7 @@ def _load_exchange_helpers(db_conn=None, settings=None):
         "DEFAULT_JEWELS_TO_POINTS_RATE",
         "DEFAULT_POINTS_TO_JEWELS_RATE",
         "parse_currency_exchange_amount",
+        "ROUND_DOWN",
         "get_currency_exchange_rates",
         "calculate_currency_exchange",
         "perform_currency_exchange",
@@ -33,6 +34,7 @@ def _load_exchange_helpers(db_conn=None, settings=None):
     configured_settings = settings or {}
     namespace = {
         "Decimal": Decimal,
+        "ROUND_DOWN": __import__("decimal").ROUND_DOWN,
         "db_conn": db_conn,
         "get_setting": lambda key: configured_settings.get(key),
     }
@@ -136,11 +138,24 @@ class CurrencyExchangeTests(unittest.TestCase):
         )
         self.assertEqual(
             calculate("points_to_jewels", 1, 7000)["points_amount"],
-            7000,
+            1,
+        )
+        self.assertEqual(
+            calculate("points_to_jewels", 14000, 7000)["jewels_amount"],
+            Decimal("2.000000"),
+        )
+        self.assertEqual(
+            calculate("points_to_jewels", 5000, 7000)["jewels_amount"],
+            Decimal("0.714285"),
+        )
+        self.assertEqual(
+            calculate("points_to_jewels", 5000, 7000)["points_amount"],
+            5000,
         )
         self.assertIsNone(calculate("unknown", 1, 10))
         self.assertIsNone(calculate("jewels_to_points", 1, 0))
         self.assertIsNone(calculate("jewels_to_points", 500000, 5000))
+        self.assertIsNone(calculate("points_to_jewels", 1, 1000001))
 
     def test_exchange_rates_are_independently_configurable(self):
         rates = _load_exchange_helpers(
@@ -170,17 +185,25 @@ class CurrencyExchangeTests(unittest.TestCase):
         self.assertEqual(database.balance["jewels"], Decimal("1"))
 
     def test_points_to_jewels_and_insufficient_balance(self):
-        database = FakeExchangeDatabase(points=7000, jewels=0)
+        database = FakeExchangeDatabase(points=14000, jewels=0)
         perform = _load_exchange_helpers(database)["perform_currency_exchange"]
-        result = perform(99, "request-2", "points_to_jewels", 1, 7000)
+        result = perform(99, "request-2", "points_to_jewels", 14000, 7000)
 
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["balance"]["points"], 0)
-        self.assertEqual(result["balance"]["jewels"], Decimal("1"))
+        self.assertEqual(result["balance"]["jewels"], Decimal("2"))
+
+        fractional_db = FakeExchangeDatabase(points=5000, jewels=0)
+        fractional = _load_exchange_helpers(fractional_db)["perform_currency_exchange"](
+            99, "request-4", "points_to_jewels", 5000, 7000
+        )
+        self.assertEqual(fractional["status"], "completed")
+        self.assertEqual(fractional["balance"]["points"], 0)
+        self.assertEqual(fractional["balance"]["jewels"], Decimal("0.714285"))
 
         insufficient_db = FakeExchangeDatabase(points=6999, jewels=0)
         insufficient = _load_exchange_helpers(insufficient_db)["perform_currency_exchange"](
-            99, "request-3", "points_to_jewels", 1, 7000
+            99, "request-3", "points_to_jewels", 7000, 7000
         )
         self.assertEqual(insufficient["status"], "insufficient_points")
         self.assertEqual(insufficient_db.balance["points"], 6999)
@@ -208,6 +231,8 @@ class CurrencyExchangeTests(unittest.TestCase):
         self.assertIn("CREATE TABLE IF NOT EXISTS currency_exchange_transactions", database)
         self.assertIn("('jewels_to_points_rate', '5000')", database)
         self.assertIn("('points_to_jewels_rate', '7000')", database)
+        self.assertIn("أرسل عدد النقاط التي تريد دفعها لتحويلها إلى مجوهرات.", callbacks)
+        self.assertIn("fmt_jewel_amount(quote['jewels_amount'])", messages)
 
 
 if __name__ == "__main__":

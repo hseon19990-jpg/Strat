@@ -1218,9 +1218,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rate = get_currency_exchange_rates()[direction]
         quote = calculate_currency_exchange(direction, amount, rate)
         if quote is None:
-            await update.message.reply_text(
-                "⚠️ قيمة التحويل أكبر من الحد المسموح للنقاط. أرسل كمية أقل."
-            )
+            if direction == "points_to_jewels":
+                minimum_points = (rate + 999_999) // 1_000_000
+                await update.message.reply_text(
+                    "⚠️ المبلغ أقل من الحد الذي ينتج 0.000001 مجوهرة على الأقل "
+                    f"حسب السعر الحالي. أرسل {minimum_points:,} نقطة أو أكثر."
+                )
+            else:
+                await update.message.reply_text(
+                    "⚠️ قيمة التحويل أكبر من الحد المسموح للنقاط. أرسل كمية أقل."
+                )
             return
 
         db_user = get_user(user.id) or {}
@@ -1262,7 +1269,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             summary = (
                 f"💰 سيُخصم: {quote['points_amount']:,} نقطة\n"
-                f"💎 ستُضاف: {quote['jewels_amount']:,} مجوهرة"
+                f"💎 ستُضاف: {fmt_jewel_amount(quote['jewels_amount'])} مجوهرة"
             )
         await update.message.reply_text(
             "📋 مراجعة التحويل:\n\n"
