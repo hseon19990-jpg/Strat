@@ -15,6 +15,7 @@ def _load_menu_helpers():
         "MENU_ACTIONS_CANNOT_HIDE",
         "visible_main_menu_items",
         "menu_action_cannot_hide",
+        "owner_settings_with_purchase_rate_after_sale",
     }
     nodes = []
     for node in tree.body:
@@ -103,6 +104,41 @@ class OwnerMenuManagementTests(unittest.TestCase):
         self.assertNotIn('callback_data="os:toggle_phone_verification"', owner_settings)
         self.assertNotIn('callback_data="os:openai_api"', owner_settings)
         self.assertNotIn('callback_data="mb_menu:owner_settings"', owner_settings)
+
+    def test_purchase_rate_button_is_clear_and_next_to_sale_rate(self):
+        helpers = _load_menu_helpers()
+        items = [
+            {"id": 10, "action_value": "os:edit_jewel_to_points_rate"},
+            {"id": 11, "action_value": "os:other"},
+            {"id": 12, "action_value": "os:edit_points_to_jewel_rate"},
+        ]
+        ordered = helpers["owner_settings_with_purchase_rate_after_sale"](items)
+        self.assertEqual(
+            [item["action_value"] for item in ordered],
+            [
+                "os:edit_jewel_to_points_rate",
+                "os:edit_points_to_jewel_rate",
+                "os:other",
+            ],
+        )
+
+        services = SERVICES.read_text(encoding="utf-8")
+        self.assertIn(
+            '("💰 سعر شراء الجوهرة بالنقاط", "os:edit_points_to_jewel_rate", 2)',
+            services,
+        )
+        self.assertIn(
+            "POINTS_TO_JEWELS_RATE_BUTTON_MIGRATION_SETTING",
+            services,
+        )
+        self.assertIn(
+            'UPDATE menu_items SET enabled=1',
+            services,
+        )
+        self.assertIn(
+            '("owner_settings", "os:edit_points_to_jewel_rate")',
+            services,
+        )
 
 
 if __name__ == "__main__":

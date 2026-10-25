@@ -811,7 +811,7 @@ def owner_settings_kb():
                 )
             elif btn.callback_data == "os:edit_points_to_jewel_rate":
                 row[i] = InlineKeyboardButton(
-                    f"{btn.text} — {_currency_rates['points_to_jewels']:,} نقطة = 1 💎",
+                    f"{btn.text} — 1 💎 مقابل {_currency_rates['points_to_jewels']:,} نقطة",
                     callback_data=btn.callback_data,
                 )
     _buyback_on = is_buyback_visible()
