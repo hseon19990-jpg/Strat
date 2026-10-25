@@ -1341,8 +1341,14 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             menu, mid = rest.rsplit(":", 1)
             mid = int(mid)
             with db_conn() as c:
-                row = c.execute("SELECT enabled FROM menu_items WHERE id=? AND menu=?", (mid, menu)).fetchone()
+                row = c.execute(
+                    "SELECT enabled, action_value FROM menu_items WHERE id=? AND menu=?",
+                    (mid, menu),
+                ).fetchone()
                 if row:
+                    if menu_action_cannot_hide(row["action_value"]):
+                        await q.answer("🔒 هذا زر أساسي ولا يمكن إخفاؤه.", show_alert=True)
+                        return
                     new_enabled = 0 if row["enabled"] else 1
                     c.execute("UPDATE menu_items SET enabled=? WHERE id=? AND menu=?", (new_enabled, mid, menu))
             await q.answer("✅ تم التحديث")
