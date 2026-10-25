@@ -83,6 +83,9 @@ DEFAULT_RAKSH_ACCOUNTS_LABEL = "خدمات تيليجرام أسطورية"
 ALL_POSTS_REACTIONS_MENU_MIGRATION_SETTING = (
     "raksh_all_posts_reactions_menu_exposed"
 )
+POINTS_TO_JEWELS_RATE_BUTTON_MIGRATION_SETTING = (
+    "owner_points_to_jewels_rate_button_exposed_v1"
+)
 
 def get_raksh_accounts_label() -> str:
     """يعيد الاسم المخصص لقسم حسابات الرشق مع قيمة افتراضية آمنة."""
@@ -188,6 +191,35 @@ def visible_main_menu_items(items, is_owner: bool):
 def menu_action_cannot_hide(action_value: str) -> bool:
     """Protect the owner controls and navigation needed to reopen their menus."""
     return action_value in MENU_ACTIONS_CANNOT_HIDE
+
+
+def owner_settings_with_purchase_rate_after_sale(items):
+    """Keep the two jewel exchange rates together in the owner settings menu."""
+    ordered = list(items)
+    purchase_index = next(
+        (
+            i for i, item in enumerate(ordered)
+            if item["action_value"] == "os:edit_points_to_jewel_rate"
+        ),
+        -1,
+    )
+    sale_index = next(
+        (
+            i for i, item in enumerate(ordered)
+            if item["action_value"] == "os:edit_jewel_to_points_rate"
+        ),
+        -1,
+    )
+    if purchase_index < 0 or sale_index < 0:
+        return ordered
+
+    purchase_item = ordered.pop(purchase_index)
+    sale_index = next(
+        i for i, item in enumerate(ordered)
+        if item["action_value"] == "os:edit_jewel_to_points_rate"
+    )
+    ordered.insert(sale_index + 1, purchase_item)
+    return ordered
 
 
 # These controls are rendered in owner_settings_kb with dynamic status text,
@@ -406,7 +438,7 @@ BUILTIN_DEFAULTS = {
         ("⭐ سعر النجمة شحن", "os:edit_star_rate", 2),
         ("🏆 سعر نجمة الجوائز", "os:edit_exchange_rate", 2),
         ("💎 سعر الجوهرة بالنقاط", "os:edit_jewel_to_points_rate", 2),
-        ("💰 سعر تحويل النقاط إلى جواهر", "os:edit_points_to_jewel_rate", 2),
+        ("💰 سعر شراء الجوهرة بالنقاط", "os:edit_points_to_jewel_rate", 2),
         ("📦 باقات الاستبدال بنجوم", "os:manage_star_packages", 1),
         ("📱 سعر رقم تيلغرام", "os:edit_number_cost", 2),
         ("⭐ سعر رقم بالنجوم", "os:edit_number_stars", 2),
@@ -556,9 +588,12 @@ def seed_menu_items(menu: str):
                 WHERE menu='owner_settings'
                   AND action_type='builtin'
                   AND action_value='os:edit_points_to_jewel_rate'
-                  AND label='💰 تكلفة الجوهرة بالنقاط'
+                  AND label IN (
+                    '💰 تكلفة الجوهرة بالنقاط',
+                    '💰 سعر تحويل النقاط إلى جواهر'
+                  )
                 """,
-                ("💰 سعر تحويل النقاط إلى جواهر",),
+                ("💰 سعر شراء الجوهرة بالنقاط",),
             )
     if menu == "legendary_services":
         with db_conn() as c:
@@ -603,6 +638,31 @@ def seed_menu_items(menu: str):
                         (menu, label, "builtin", value, width, next_order)
                     )
                     next_order += 1
+
+    if (
+        menu == "owner_settings"
+        and get_setting(POINTS_TO_JEWELS_RATE_BUTTON_MIGRATION_SETTING) != "1"
+    ):
+        # The setting was added after many existing owner menus were created.
+        # Expose it beside the sell-rate control once, without overriding later
+        # visibility or ordering choices made by the owner.
+        with db_conn() as c:
+            c.execute(
+                "UPDATE menu_items SET enabled=1 "
+                "WHERE menu=? AND action_type='builtin' AND action_value=?",
+                ("owner_settings", "os:edit_points_to_jewel_rate"),
+            )
+            rows = c.execute(
+                "SELECT id, action_value FROM menu_items "
+                "WHERE menu='owner_settings' ORDER BY sort_order, id"
+            ).fetchall()
+            ordered = owner_settings_with_purchase_rate_after_sale(rows)
+            for sort_order, item in enumerate(ordered):
+                c.execute(
+                    "UPDATE menu_items SET sort_order=? WHERE id=?",
+                    (sort_order, item["id"]),
+                )
+        set_setting(POINTS_TO_JEWELS_RATE_BUTTON_MIGRATION_SETTING, "1")
 
     if (
         menu == "raksh_menu"
