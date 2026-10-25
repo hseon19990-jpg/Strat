@@ -406,7 +406,7 @@ BUILTIN_DEFAULTS = {
         ("⭐ سعر النجمة شحن", "os:edit_star_rate", 2),
         ("🏆 سعر نجمة الجوائز", "os:edit_exchange_rate", 2),
         ("💎 سعر الجوهرة بالنقاط", "os:edit_jewel_to_points_rate", 2),
-        ("💰 تكلفة الجوهرة بالنقاط", "os:edit_points_to_jewel_rate", 2),
+        ("💰 سعر تحويل النقاط إلى جواهر", "os:edit_points_to_jewel_rate", 2),
         ("📦 باقات الاستبدال بنجوم", "os:manage_star_packages", 1),
         ("📱 سعر رقم تيلغرام", "os:edit_number_cost", 2),
         ("⭐ سعر رقم بالنجوم", "os:edit_number_stars", 2),
@@ -546,6 +546,19 @@ def seed_menu_items(menu: str):
                 f"DELETE FROM menu_items WHERE menu='services_menu' AND action_type='builtin' AND action_value IN "
                 f"({','.join('?' for _ in old_cats)})",
                 old_cats
+            )
+    if menu == "owner_settings":
+        with db_conn() as c:
+            c.execute(
+                """
+                UPDATE menu_items
+                SET label=?
+                WHERE menu='owner_settings'
+                  AND action_type='builtin'
+                  AND action_value='os:edit_points_to_jewel_rate'
+                  AND label='💰 تكلفة الجوهرة بالنقاط'
+                """,
+                ("💰 سعر تحويل النقاط إلى جواهر",),
             )
     if menu == "legendary_services":
         with db_conn() as c:

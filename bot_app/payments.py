@@ -8,7 +8,7 @@ domain.
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN
 
 JEWEL_STAR_TOPUP_MAX = 10000
 JEWEL_STAR_TOPUP_PRESETS = (3, 10, 50, 100)
@@ -47,19 +47,31 @@ def get_currency_exchange_rates():
 
 
 def calculate_currency_exchange(direction, amount, rate):
-    """Build a whole-jewel exchange quote and reject values that exceed points storage."""
+    """Build a quote; points-to-jewels accepts an exact points budget."""
     amount = parse_currency_exchange_amount(amount)
     rate = parse_currency_exchange_amount(rate)
     if amount is None or rate is None:
         return None
     if direction not in {"jewels_to_points", "points_to_jewels"}:
         return None
-    points_amount = amount * rate
+
+    if direction == "jewels_to_points":
+        jewels_amount = Decimal(amount)
+        points_amount = amount * rate
+    else:
+        points_amount = amount
+        jewels_amount = (Decimal(points_amount) / Decimal(rate)).quantize(
+            Decimal("0.000001"),
+            rounding=ROUND_DOWN,
+        )
+        if jewels_amount <= 0 or jewels_amount > CURRENCY_EXCHANGE_MAX_JEWELS:
+            return None
+
     if points_amount > CURRENCY_EXCHANGE_MAX_POINTS:
         return None
     return {
         "direction": direction,
-        "jewels_amount": amount,
+        "jewels_amount": jewels_amount,
         "points_amount": points_amount,
         "rate": rate,
     }

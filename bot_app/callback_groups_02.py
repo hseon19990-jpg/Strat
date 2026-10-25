@@ -2473,8 +2473,10 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             context.user_data["state"] = "os_await_points_to_jewels_rate"
             current = get_currency_exchange_rates()["points_to_jewels"]
             await q.edit_message_text(
-                f"💰 تكلفة المجوهرة الحالية: {current:,} نقطة لكل 1 مجوهرة.\n\n"
-                "أرسل عدد النقاط لكل مجوهرة (رقم صحيح أكبر من صفر):"
+                f"💰 معدل تحويل النقاط الحالي: {current:,} نقطة = 1 مجوهرة.\n\n"
+                "أرسل عدد النقاط اللازمة للحصول على مجوهرة واحدة "
+                "(رقم صحيح أكبر من صفر).\n"
+                "العضو يدخل عدد النقاط التي يريد دفعها، ويُحسب مقدار المجوهرات وفق هذا المعدل:"
             )
             return
 
