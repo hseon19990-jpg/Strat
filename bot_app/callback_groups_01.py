@@ -2361,6 +2361,161 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             await q.edit_message_text(asiacell_txt, reply_markup=InlineKeyboardMarkup(kb_rows))
             return
 
+        if data == "currency_exchange":
+            context.user_data.pop("currency_exchange_pending", None)
+            context.user_data["state"] = "main_menu"
+            rates = get_currency_exchange_rates()
+            db_user = get_user(user.id) or {}
+            points = int(db_user.get("points") or 0)
+            jewels = db_user.get("jewels") or 0
+            await q.edit_message_text(
+                "↔️ *تحويل بين النقاط والمجوهرات*\n\n"
+                f"💎 كل 1 مجوهرة = {rates['jewels_to_points']:,} نقطة\n"
+                f"💰 كل {rates['points_to_jewels']:,} نقطة = 1 مجوهرة\n\n"
+                f"رصيدك: {points:,} نقطة | {fmt_jewel_amount(jewels)} مجوهرة\n\n"
+                "اختر اتجاه التحويل:",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("💎 تحويل مجوهرات إلى نقاط", callback_data="cx:start:jewels_to_points")],
+                    [InlineKeyboardButton("💰 تحويل نقاط إلى مجوهرات", callback_data="cx:start:points_to_jewels")],
+                    [InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")],
+                ]),
+            )
+            return
+
+        if data in {
+            "cx:start:jewels_to_points",
+            "cx:start:points_to_jewels",
+        }:
+            direction = data.rsplit(":", 1)[-1]
+            rates = get_currency_exchange_rates()
+            rate = rates[direction]
+            db_user = get_user(user.id) or {}
+            if direction == "jewels_to_points":
+                context.user_data["state"] = "await_currency_exchange_jewels"
+                prompt = (
+                    f"💎 كل مجوهرة = {rate:,} نقطة.\n"
+                    f"رصيد المجوهرات: {fmt_jewel_amount(db_user.get('jewels') or 0)}\n\n"
+                    "أرسل عدد المجوهرات الصحيحة التي تريد تحويلها:"
+                )
+            else:
+                context.user_data["state"] = "await_currency_exchange_points"
+                prompt = (
+                    f"💰 كل مجوهرة تكلف {rate:,} نقطة.\n"
+                    f"رصيد النقاط: {int(db_user.get('points') or 0):,}\n\n"
+                    "أرسل عدد المجوهرات الصحيحة التي تريد الحصول عليها:"
+                )
+            await q.edit_message_text(
+                prompt,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 إلغاء", callback_data="currency_exchange")
+                ]]),
+            )
+            return
+
+        if data == "cx:cancel":
+            context.user_data.pop("currency_exchange_pending", None)
+            context.user_data["state"] = "main_menu"
+            await q.edit_message_text(
+                "❌ تم إلغاء التحويل.",
+                reply_markup=main_menu_kb(is_own),
+            )
+            return
+
+        if data.startswith("cx:confirm:"):
+            request_id = data.rsplit(":", 1)[-1]
+            pending = context.user_data.get("currency_exchange_pending") or {}
+            if (
+                pending.get("request_id") != request_id
+                or pending.get("user_id") != user.id
+                or context.user_data.get("state") != "confirm_currency_exchange"
+            ):
+                await q.answer("⚠️ انتهت صلاحية طلب التحويل.", show_alert=True)
+                return
+
+            rates = get_currency_exchange_rates()
+            if rates.get(pending.get("direction")) != pending.get("rate"):
+                context.user_data.pop("currency_exchange_pending", None)
+                context.user_data["state"] = "main_menu"
+                await q.edit_message_text(
+                    "⚠️ تغيّر سعر التحويل قبل التأكيد. افتح التحويل من جديد لمراجعة السعر الحالي.",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🔄 فتح التحويل", callback_data="currency_exchange")
+                    ]]),
+                )
+                return
+
+            await q.answer("⏳ جارٍ تنفيذ التحويل.")
+            try:
+                result = perform_currency_exchange(
+                    user.id,
+                    request_id,
+                    pending["direction"],
+                    pending["jewels_amount"],
+                    pending["rate"],
+                )
+            except Exception:
+                logger.exception("تعذر تأكيد تحويل رصيد للمستخدم %s", user.id)
+                await q.edit_message_text(
+                    "⚠️ لم أتمكن من تأكيد حالة التحويل الآن. أعد المحاولة من الزر نفسه؛ "
+                    "لن يُكرر النظام إضافة الرصيد أو خصمه إذا كانت العملية قد اكتملت.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔁 إعادة التحقق", callback_data=f"cx:confirm:{request_id}")],
+                        [InlineKeyboardButton("❌ إلغاء", callback_data="cx:cancel")],
+                    ]),
+                )
+                return
+
+            if result.get("status") == "duplicate":
+                context.user_data.pop("currency_exchange_pending", None)
+                context.user_data["state"] = "main_menu"
+                message = (
+                    "ℹ️ تمت معالجة طلب التحويل هذا مسبقاً؛ لم يُكرر النظام الخصم أو الإضافة."
+                    if result.get("previous_status") == "completed"
+                    else "ℹ️ انتهت محاولة التحويل هذه مسبقاً. ابدأ طلباً جديداً لمراجعة رصيدك."
+                )
+                await q.edit_message_text(message, reply_markup=main_menu_kb(is_own))
+                return
+
+            if result.get("status") != "completed":
+                context.user_data.pop("currency_exchange_pending", None)
+                context.user_data["state"] = "main_menu"
+                status_messages = {
+                    "insufficient_jewels": "💎 رصيد المجوهرات غير كافٍ لإتمام التحويل.",
+                    "insufficient_points": "💰 رصيد النقاط غير كافٍ لإتمام التحويل.",
+                    "points_limit": "⚠️ لا يمكن إتمام التحويل لأن رصيد النقاط سيبلغ الحد الأقصى.",
+                    "jewels_limit": "⚠️ لا يمكن إضافة كمية مجوهرات أكبر إلى هذا الرصيد.",
+                    "user_missing": "⚠️ لم يتم العثور على حسابك في قاعدة البيانات.",
+                }
+                await q.edit_message_text(
+                    status_messages.get(result.get("status"), "⚠️ لم يكتمل التحويل. ابدأ من جديد."),
+                    reply_markup=main_menu_kb(is_own),
+                )
+                return
+
+            context.user_data.pop("currency_exchange_pending", None)
+            context.user_data["state"] = "main_menu"
+            quote = result["quote"]
+            balance = result["balance"]
+            if quote["direction"] == "jewels_to_points":
+                summary = (
+                    f"💎 خُصم: {quote['jewels_amount']:,} مجوهرة\n"
+                    f"💰 أُضيف: {quote['points_amount']:,} نقطة"
+                )
+            else:
+                summary = (
+                    f"💰 خُصم: {quote['points_amount']:,} نقطة\n"
+                    f"💎 أُضيف: {quote['jewels_amount']:,} مجوهرة"
+                )
+            await q.edit_message_text(
+                "✅ تم التحويل بنجاح!\n\n"
+                f"{summary}\n\n"
+                f"رصيدك الآن: {balance['points']:,} نقطة | "
+                f"{fmt_jewel_amount(balance['jewels'])} مجوهرة",
+                reply_markup=main_menu_kb(is_own),
+            )
+            return
+
         if data == "exchange_points":
             await q.edit_message_text("🏆 *استبدال النقاط بجوائز:*",
                                        parse_mode=ParseMode.MARKDOWN, reply_markup=exchange_kb())

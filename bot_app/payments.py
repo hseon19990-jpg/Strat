@@ -12,6 +12,143 @@ from decimal import Decimal
 
 JEWEL_STAR_TOPUP_MAX = 10000
 JEWEL_STAR_TOPUP_PRESETS = (3, 10, 50, 100)
+CURRENCY_EXCHANGE_MAX_INPUT = 1_000_000_000
+CURRENCY_EXCHANGE_MAX_POINTS = 2_147_483_647
+CURRENCY_EXCHANGE_MAX_JEWELS = Decimal("99999999999999.999999")
+DEFAULT_JEWELS_TO_POINTS_RATE = 5000
+DEFAULT_POINTS_TO_JEWELS_RATE = 7000
+
+
+def parse_currency_exchange_amount(value):
+    """Parse a positive whole-number exchange amount in Arabic or Latin digits."""
+    raw = str(value or "").strip().translate(str.maketrans(
+        "٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹",
+        "01234567890123456789",
+    ))
+    try:
+        amount = int(raw.replace(",", "").replace("٬", ""))
+    except (TypeError, ValueError):
+        return None
+    return amount if 1 <= amount <= CURRENCY_EXCHANGE_MAX_INPUT else None
+
+
+def get_currency_exchange_rates():
+    """Return the independently configurable rates, falling back to safe defaults."""
+    jewels_to_points = parse_currency_exchange_amount(
+        get_setting("jewels_to_points_rate")
+    )
+    points_to_jewels = parse_currency_exchange_amount(
+        get_setting("points_to_jewels_rate")
+    )
+    return {
+        "jewels_to_points": jewels_to_points or DEFAULT_JEWELS_TO_POINTS_RATE,
+        "points_to_jewels": points_to_jewels or DEFAULT_POINTS_TO_JEWELS_RATE,
+    }
+
+
+def calculate_currency_exchange(direction, amount, rate):
+    """Build a whole-jewel exchange quote and reject values that exceed points storage."""
+    amount = parse_currency_exchange_amount(amount)
+    rate = parse_currency_exchange_amount(rate)
+    if amount is None or rate is None:
+        return None
+    if direction not in {"jewels_to_points", "points_to_jewels"}:
+        return None
+    points_amount = amount * rate
+    if points_amount > CURRENCY_EXCHANGE_MAX_POINTS:
+        return None
+    return {
+        "direction": direction,
+        "jewels_amount": amount,
+        "points_amount": points_amount,
+        "rate": rate,
+    }
+
+
+def perform_currency_exchange(user_id, request_id, direction, amount, rate):
+    """Atomically exchange balances and record an idempotent transaction."""
+    quote = calculate_currency_exchange(direction, amount, rate)
+    request_id = str(request_id or "").strip()
+    if not quote or not request_id:
+        return {"status": "invalid"}
+
+    with db_conn() as c:
+        inserted = c.execute(
+            """
+            INSERT INTO currency_exchange_transactions
+                (request_id, user_id, direction, jewels_amount, points_amount, rate, status)
+            VALUES (%s, %s, %s, %s, %s, %s, 'pending')
+            ON CONFLICT (request_id) DO NOTHING
+            RETURNING id
+            """,
+            (
+                request_id,
+                user_id,
+                direction,
+                quote["jewels_amount"],
+                quote["points_amount"],
+                quote["rate"],
+            ),
+        ).fetchone()
+        if not inserted:
+            existing = c.execute(
+                "SELECT status FROM currency_exchange_transactions WHERE request_id=%s",
+                (request_id,),
+            ).fetchone()
+            return {
+                "status": "duplicate",
+                "previous_status": existing["status"] if existing else None,
+            }
+
+        balance = c.execute(
+            "SELECT points, jewels FROM users WHERE user_id=%s FOR UPDATE",
+            (user_id,),
+        ).fetchone()
+        status = "user_missing"
+        new_points = None
+        new_jewels = None
+        if balance:
+            current_points = int(balance.get("points") or 0)
+            current_jewels = Decimal(str(balance.get("jewels") or 0))
+            jewels_amount = Decimal(quote["jewels_amount"])
+            points_amount = quote["points_amount"]
+
+            if direction == "jewels_to_points":
+                if current_jewels < jewels_amount:
+                    status = "insufficient_jewels"
+                elif current_points + points_amount > CURRENCY_EXCHANGE_MAX_POINTS:
+                    status = "points_limit"
+                else:
+                    new_jewels = current_jewels - jewels_amount
+                    new_points = current_points + points_amount
+                    status = "completed"
+            elif current_points < points_amount:
+                status = "insufficient_points"
+            elif current_jewels + jewels_amount > CURRENCY_EXCHANGE_MAX_JEWELS:
+                status = "jewels_limit"
+            else:
+                new_points = current_points - points_amount
+                new_jewels = current_jewels + jewels_amount
+                status = "completed"
+
+        if status == "completed":
+            c.execute(
+                "UPDATE users SET points=%s, jewels=%s WHERE user_id=%s",
+                (new_points, new_jewels, user_id),
+            )
+        c.execute(
+            "UPDATE currency_exchange_transactions SET status=%s WHERE id=%s",
+            (status, inserted["id"]),
+        )
+        return {
+            "status": status,
+            "quote": quote,
+            "balance": (
+                {"points": new_points, "jewels": new_jewels}
+                if status == "completed"
+                else None
+            ),
+        }
 
 
 def parse_jewel_star_topup_amount(value):

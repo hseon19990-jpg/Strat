@@ -2454,6 +2454,24 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             await q.edit_message_text(f"🏆 سعر نجمة الجوائز الحالي: {cur} نقطة\n\nأرسل القيمة الجديدة:")
             return
 
+        if data == "os:edit_jewel_to_points_rate" and is_own:
+            context.user_data["state"] = "os_await_jewels_to_points_rate"
+            current = get_currency_exchange_rates()["jewels_to_points"]
+            await q.edit_message_text(
+                f"💎 معدل تحويل المجوهرات إلى نقاط الحالي: 1 مجوهرة = {current:,} نقطة.\n\n"
+                "أرسل عدد النقاط لكل مجوهرة (رقم صحيح أكبر من صفر):"
+            )
+            return
+
+        if data == "os:edit_points_to_jewel_rate" and is_own:
+            context.user_data["state"] = "os_await_points_to_jewels_rate"
+            current = get_currency_exchange_rates()["points_to_jewels"]
+            await q.edit_message_text(
+                f"💰 تكلفة المجوهرة الحالية: {current:,} نقطة لكل 1 مجوهرة.\n\n"
+                "أرسل عدد النقاط لكل مجوهرة (رقم صحيح أكبر من صفر):"
+            )
+            return
+
         if data == "os:edit_exchange_msg" and is_own:
             context.user_data["state"] = "os_await_exchange_msg"
             cur = get_setting("exchange_success_msg") or "(لا توجد رسالة مضافة حالياً)"
