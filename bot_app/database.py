@@ -529,6 +529,20 @@ def init_db():
               created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
           )""")
           c.execute("""
+          CREATE TABLE IF NOT EXISTS currency_exchange_transactions (
+              id            BIGSERIAL PRIMARY KEY,
+              request_id    TEXT NOT NULL UNIQUE,
+              user_id       BIGINT NOT NULL,
+              direction     TEXT NOT NULL CHECK (
+                  direction IN ('jewels_to_points', 'points_to_jewels')
+              ),
+              jewels_amount NUMERIC(20,6) NOT NULL CHECK (jewels_amount > 0),
+              points_amount BIGINT NOT NULL CHECK (points_amount > 0),
+              rate          BIGINT NOT NULL CHECK (rate > 0),
+              status        TEXT NOT NULL DEFAULT 'pending',
+              created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )""")
+          c.execute("""
           CREATE TABLE IF NOT EXISTS number_star_purchases (
               telegram_payment_id TEXT PRIMARY KEY,
               user_id             BIGINT NOT NULL,
@@ -950,6 +964,8 @@ def init_db():
               ('referral_points', '30'),
               ('star_to_points', '250'),
               ('raksh_points_per_jewel', '1000'),
+              ('jewels_to_points_rate', '5000'),
+              ('points_to_jewels_rate', '7000'),
               ('exchange_star_rate', '2000'),
               ('telegram_number_cost', '5000'),
               ('telegram_number_stars', '18'),

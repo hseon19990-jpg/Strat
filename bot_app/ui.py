@@ -2269,6 +2269,7 @@ def exchange_kb():
             "SELECT id, name, quantity, points_cost FROM custom_prizes WHERE active=1 ORDER BY id"
         ).fetchall()
     rows = [
+        [InlineKeyboardButton("↔️ تحويل بين النقاط والمجوهرات", callback_data="currency_exchange")],
         [InlineKeyboardButton("⭐ استبدال نقاط بنجوم", callback_data="exchange:stars")],
         [InlineKeyboardButton("📱 شراء رقم تيلغرام",  callback_data="exchange:number")],
         [InlineKeyboardButton("📱 شراء رقم بالنجوم", callback_data="exchange:number_stars")],

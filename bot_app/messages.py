@@ -1199,6 +1199,83 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
+    if state in {
+        "await_currency_exchange_jewels",
+        "await_currency_exchange_points",
+    }:
+        amount = parse_currency_exchange_amount(text)
+        if amount is None:
+            await update.message.reply_text(
+                f"⚠️ أرسل عدداً صحيحاً موجباً لا يتجاوز {CURRENCY_EXCHANGE_MAX_INPUT:,}."
+            )
+            return
+
+        direction = (
+            "jewels_to_points"
+            if state == "await_currency_exchange_jewels"
+            else "points_to_jewels"
+        )
+        rate = get_currency_exchange_rates()[direction]
+        quote = calculate_currency_exchange(direction, amount, rate)
+        if quote is None:
+            await update.message.reply_text(
+                "⚠️ قيمة التحويل أكبر من الحد المسموح للنقاط. أرسل كمية أقل."
+            )
+            return
+
+        db_user = get_user(user.id) or {}
+        current_points = int(db_user.get("points") or 0)
+        current_jewels = Decimal(str(db_user.get("jewels") or 0))
+        if direction == "jewels_to_points" and current_jewels < Decimal(amount):
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text(
+                f"💎 رصيدك {fmt_jewel_amount(current_jewels)} مجوهرة، "
+                f"ولا يكفي لتحويل {amount:,} مجوهرة.",
+                reply_markup=main_menu_kb(is_own),
+            )
+            return
+        if direction == "points_to_jewels" and current_points < quote["points_amount"]:
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text(
+                f"💰 تحتاج إلى {quote['points_amount']:,} نقطة، ورصيدك {current_points:,} نقطة.",
+                reply_markup=main_menu_kb(is_own),
+            )
+            return
+
+        from uuid import uuid4
+
+        request_id = uuid4().hex
+        context.user_data["currency_exchange_pending"] = {
+            "request_id": request_id,
+            "user_id": user.id,
+            "direction": direction,
+            "jewels_amount": quote["jewels_amount"],
+            "points_amount": quote["points_amount"],
+            "rate": rate,
+        }
+        context.user_data["state"] = "confirm_currency_exchange"
+        if direction == "jewels_to_points":
+            summary = (
+                f"💎 سيُخصم: {quote['jewels_amount']:,} مجوهرة\n"
+                f"💰 ستُضاف: {quote['points_amount']:,} نقطة"
+            )
+        else:
+            summary = (
+                f"💰 سيُخصم: {quote['points_amount']:,} نقطة\n"
+                f"💎 ستُضاف: {quote['jewels_amount']:,} مجوهرة"
+            )
+        await update.message.reply_text(
+            "📋 مراجعة التحويل:\n\n"
+            f"{summary}\n"
+            f"السعر: {rate:,} نقطة لكل مجوهرة\n\n"
+            "اضغط التأكيد لتنفيذ التحويل؛ لا يمكن التراجع بعده.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ تأكيد التحويل", callback_data=f"cx:confirm:{request_id}")],
+                [InlineKeyboardButton("❌ إلغاء", callback_data="cx:cancel")],
+            ]),
+        )
+        return
+
     if state == "await_charge_points_amount":
         try:
             pts = int(text)
@@ -2610,6 +2687,29 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_setting("exchange_star_rate", str(val))
         await update.message.reply_text(f"✅ سعر نجمة الجوائز = {val} نقطة.", reply_markup=owner_settings_kb())
         context.user_data["state"] = "main_menu"
+        return
+
+    if is_own and state in {
+        "os_await_jewels_to_points_rate",
+        "os_await_points_to_jewels_rate",
+    }:
+        val = parse_currency_exchange_amount(text)
+        if val is None:
+            await update.message.reply_text(
+                f"⚠️ أرسل رقماً صحيحاً من 1 إلى {CURRENCY_EXCHANGE_MAX_INPUT:,}."
+            )
+            return
+        if state == "os_await_jewels_to_points_rate":
+            set_setting("jewels_to_points_rate", str(val))
+            setting_label = f"1 مجوهرة = {val:,} نقطة"
+        else:
+            set_setting("points_to_jewels_rate", str(val))
+            setting_label = f"{val:,} نقطة = 1 مجوهرة"
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(
+            f"✅ تم تحديث سعر التحويل: {setting_label}.",
+            reply_markup=owner_settings_kb(),
+        )
         return
 
     if is_own and state == "os_await_exchange_msg":
