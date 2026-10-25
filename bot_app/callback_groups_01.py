@@ -2375,11 +2375,9 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 f"رصيدك: {points:,} نقطة | {fmt_jewel_amount(jewels)} مجوهرة\n\n"
                 "اختر اتجاه التحويل:",
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("💎 تحويل مجوهرات إلى نقاط", callback_data="cx:start:jewels_to_points")],
-                    [InlineKeyboardButton("💰 تحويل نقاط إلى مجوهرات", callback_data="cx:start:points_to_jewels")],
-                    [InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")],
-                ]),
+                reply_markup=InlineKeyboardMarkup(
+                    build_kb_rows(get_menu_items("currency_exchange"))
+                ),
             )
             return
 

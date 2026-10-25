@@ -8,7 +8,7 @@ ROOT = Path(__file__).parents[1]
 PAYMENTS = ROOT / "bot_app" / "payments.py"
 
 
-def _load_exchange_helpers(db_conn=None):
+def _load_exchange_helpers(db_conn=None, settings=None):
     tree = ast.parse(PAYMENTS.read_text(encoding="utf-8"))
     names = {
         "CURRENCY_EXCHANGE_MAX_INPUT",
@@ -17,6 +17,7 @@ def _load_exchange_helpers(db_conn=None):
         "DEFAULT_JEWELS_TO_POINTS_RATE",
         "DEFAULT_POINTS_TO_JEWELS_RATE",
         "parse_currency_exchange_amount",
+        "get_currency_exchange_rates",
         "calculate_currency_exchange",
         "perform_currency_exchange",
     }
@@ -29,7 +30,12 @@ def _load_exchange_helpers(db_conn=None):
             for target in node.targets
         ):
             nodes.append(node)
-    namespace = {"Decimal": Decimal, "db_conn": db_conn}
+    configured_settings = settings or {}
+    namespace = {
+        "Decimal": Decimal,
+        "db_conn": db_conn,
+        "get_setting": lambda key: configured_settings.get(key),
+    }
     exec(
         compile(ast.Module(body=nodes, type_ignores=[]), str(PAYMENTS), "exec"),
         namespace,
@@ -136,6 +142,18 @@ class CurrencyExchangeTests(unittest.TestCase):
         self.assertIsNone(calculate("jewels_to_points", 1, 0))
         self.assertIsNone(calculate("jewels_to_points", 500000, 5000))
 
+    def test_exchange_rates_are_independently_configurable(self):
+        rates = _load_exchange_helpers(
+            settings={
+                "jewels_to_points_rate": "1200",
+                "points_to_jewels_rate": "8500",
+            }
+        )["get_currency_exchange_rates"]()
+        self.assertEqual(
+            rates,
+            {"jewels_to_points": 1200, "points_to_jewels": 8500},
+        )
+
     def test_jewels_to_points_updates_both_balances_once(self):
         database = FakeExchangeDatabase(points=100, jewels=2)
         perform = _load_exchange_helpers(database)["perform_currency_exchange"]
@@ -177,7 +195,11 @@ class CurrencyExchangeTests(unittest.TestCase):
         database = (ROOT / "bot_app" / "database.py").read_text(encoding="utf-8")
 
         self.assertIn('("↔️ تحويل بين النقاط والمجوهرات", "currency_exchange", 2)', services)
+        self.assertIn('"currency_exchange",\n', services)
+        self.assertIn('"cx:start:jewels_to_points"', services)
+        self.assertIn('"cx:start:points_to_jewels"', services)
         self.assertIn('callback_data="currency_exchange"', ui)
+        self.assertIn('build_kb_rows(get_menu_items("currency_exchange"))', callbacks)
         self.assertIn('data.startswith("cx:confirm:")', callbacks)
         self.assertIn('"os:edit_jewel_to_points_rate"', services)
         self.assertIn('"os:edit_points_to_jewel_rate"', services)
