@@ -71,6 +71,27 @@ class OwnerMenuManagementTests(unittest.TestCase):
         self.assertIn('("🧩 إضافة/إزالة خيار", "mb_menu:owner_settings", 1)', services)
         self.assertIn('("🔙 القائمة الرئيسية", "main_menu", 2)', services)
 
+    def test_currency_exchange_buttons_are_available_in_button_manager(self):
+        services = SERVICES.read_text(encoding="utf-8")
+        callbacks = (ROOT / "bot_app" / "callback_groups_01.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('"currency_exchange",', services)
+        self.assertIn('"currency_exchange": [', services)
+        self.assertIn(
+            '("💎 تحويل مجوهرات إلى نقاط", "cx:start:jewels_to_points", 1)',
+            services,
+        )
+        self.assertIn(
+            '("💰 تحويل نقاط إلى مجوهرات", "cx:start:points_to_jewels", 1)',
+            services,
+        )
+        self.assertIn(
+            'build_kb_rows(get_menu_items("currency_exchange"))',
+            callbacks,
+        )
+
     def test_settings_menu_shows_exchange_rates_without_duplicate_static_buttons(self):
         ui = UI.read_text(encoding="utf-8")
         owner_settings = ui.split("def owner_settings_kb():", 1)[1].split(

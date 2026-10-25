@@ -139,6 +139,7 @@ MENU_LABELS = {
     "collect_points": "تجميع نقاط",
     "contact_support": "تواصل مع الدعم",
     "services_menu": "قائمة الخدمات",
+    "currency_exchange": "تحويل النقاط والمجوهرات",
 }
 MENU_LABELS.update({v: f"خدمات: {lbl.split(' ', 1)[1]}" for lbl, v in SERVICE_PLATFORMS})
 MENU_LABELS.update({f"cat:{k}": f"قائمة فئة: {v}" for k, v in CATEGORY_MAP.items()})
@@ -158,6 +159,7 @@ SERVICES_MENU_CATEGORIES = [
 
 MANAGEABLE_MENUS = [
     "main",
+    "currency_exchange",
     "owner_settings",
     "services_menu",
     "legendary_services",
@@ -328,6 +330,11 @@ BUILTIN_DEFAULTS = {
         ("🔑 إحالة بوت اجباري", "forced_ref", 2),
         ("🧩 تعديل أزرار الواجهة", "mb_menu:main", 1),
         ("⚙️ إعدادات المالك", "owner_settings", 1),
+    ],
+    "currency_exchange": [
+        ("💎 تحويل مجوهرات إلى نقاط", "cx:start:jewels_to_points", 1),
+        ("💰 تحويل نقاط إلى مجوهرات", "cx:start:points_to_jewels", 1),
+        ("🔙 رجوع", "main_menu", 1),
     ],
     "services_menu": [(label, value, 2) for label, value in SERVICE_PLATFORMS],
     "legendary_services": LEGENDARY_SERVICE_OPTIONS,
