@@ -164,6 +164,30 @@ MANAGEABLE_MENUS = [
     "raksh_menu",
 ] + [v for _, v in SERVICE_PLATFORMS] + [f"cat:{k}" for k in CATEGORY_MAP]
 
+OWNER_ONLY_MAIN_ACTIONS = {"mb_menu:main", "owner_settings"}
+MENU_ACTIONS_CANNOT_HIDE = {
+    "mb_menu:main",
+    "mb_menu:owner_settings",
+    "main_menu",
+    "owner_settings",
+}
+
+
+def visible_main_menu_items(items, is_owner: bool):
+    """Keep owner controls out of member menus while sharing the stored layout."""
+    if is_owner:
+        return items
+    return [
+        item for item in items
+        if item["action_value"] not in OWNER_ONLY_MAIN_ACTIONS
+    ]
+
+
+def menu_action_cannot_hide(action_value: str) -> bool:
+    """Protect the owner controls and navigation needed to reopen their menus."""
+    return action_value in MENU_ACTIONS_CANNOT_HIDE
+
+
 # These controls are rendered in owner_settings_kb with dynamic status text,
 # but they are still ordinary owner buttons. Keeping their definitions in the
 # same menu_items store makes them visible to the button manager as well.
@@ -302,6 +326,8 @@ BUILTIN_DEFAULTS = {
         ("🏆 مسابقة الدعوة", "referral_contest_view", 2),
         ("📧 احصل على نقاط مقابل إيميل جيميل", "gmail_points", 1),
         ("🔑 إحالة بوت اجباري", "forced_ref", 2),
+        ("🧩 تعديل أزرار الواجهة", "mb_menu:main", 1),
+        ("⚙️ إعدادات المالك", "owner_settings", 1),
     ],
     "services_menu": [(label, value, 2) for label, value in SERVICE_PLATFORMS],
     "legendary_services": LEGENDARY_SERVICE_OPTIONS,
@@ -440,6 +466,8 @@ BUILTIN_DEFAULTS = {
         ("👥 الأعضاء المقيدين", "os:restricted_members", 1),
         ("💰 تعديل أسعار الخدمات الأسطورية", "legendary:price_settings", 1),
         ("🌐 استيراد الخدمات من المواقع", "import_services", 1),
+        ("🧩 إضافة/إزالة خيار", "mb_menu:owner_settings", 1),
+        ("🔙 القائمة الرئيسية", "main_menu", 2),
     ],
 }
 
@@ -654,17 +682,25 @@ def render_mb_menu_screen(menu: str):
             f"{state_icon} {_menu_item_display_label(it)}",
             callback_data="noop",
         )])
+        toggle_button = (
+            InlineKeyboardButton("🔒 أساسي", callback_data="noop")
+            if menu_action_cannot_hide(it["action_value"])
+            else InlineKeyboardButton(
+                "🗑" if it["enabled"] else "♻️",
+                callback_data=f"mb_toggle:{menu}:{it['id']}",
+            )
+        )
         rows.append([
             InlineKeyboardButton("⬆️", callback_data=f"mb_up:{menu}:{it['id']}"),
             InlineKeyboardButton("⬇️", callback_data=f"mb_down:{menu}:{it['id']}"),
             InlineKeyboardButton(width_icon, callback_data=f"mb_width:{menu}:{it['id']}"),
             InlineKeyboardButton("✏️ الاسم", callback_data=f"mb_rename:{menu}:{it['id']}"),
-            InlineKeyboardButton("🗑" if it["enabled"] else "♻️", callback_data=f"mb_toggle:{menu}:{it['id']}"),
+            toggle_button,
         ])
     rows.append([InlineKeyboardButton("➕ إضافة زر جديد", callback_data=f"mb_add:{menu}")])
     rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="os:manage_buttons")])
     text = (f"🧩 *أزرار: {MENU_LABELS.get(menu, menu)}*\n\n"
-            f"✅ ظاهر | 🚫 مخفي — اضغط 🗑 للإخفاء و♻️ للإظهار مجدداً.")
+            f"✅ ظاهر | 🚫 مخفي | 🔒 أساسي لا يمكن إخفاؤه — اضغط 🗑 للإخفاء و♻️ للإظهار مجدداً.")
     return text, InlineKeyboardMarkup(rows)
 
 def _menu_item_display_label(item):

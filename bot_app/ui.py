@@ -159,7 +159,7 @@ def main_menu_kb(
     is_number_admin_user=False,
 ):
     # المالك والأعضاء يستخدمون قائمة main نفسها وبنفس الأسماء والترتيب.
-    menu_items = get_menu_items("main")
+    menu_items = visible_main_menu_items(get_menu_items("main"), is_owner)
     if not is_legendary_services_visible():
         menu_items = [
             item for item in menu_items
@@ -171,9 +171,6 @@ def main_menu_kb(
             if item["action_value"] != "buyback:start"
         ]
     rows = build_kb_rows(menu_items)
-    if is_owner:
-        rows.append([InlineKeyboardButton("🧩 تعديل أزرار الواجهة", callback_data="mb_menu:main")])
-        rows.append([InlineKeyboardButton("⚙️ إعدادات المالك", callback_data="owner_settings")])
     if is_supervisor_user:
         rows.append([InlineKeyboardButton("🛡 لوحة المشرف", callback_data="sv:panel")])
     if is_number_admin_user:
@@ -767,6 +764,7 @@ async def show_orders_section(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 def owner_settings_kb():
     rows = build_kb_rows(get_menu_items("owner_settings"))
+    _currency_rates = get_currency_exchange_rates()
     _maint_on = is_maintenance_on()
     _maint_suffix = " (مفعل ✅)" if _maint_on else " (مغلق ❌)"
     _numex_on = is_number_exchange_on()
@@ -777,10 +775,6 @@ def owner_settings_kb():
     _verify_suffix = f" ({_mandatory_active} قناة ✅)" if _mandatory_active > 0 else " (مغلق ❌)"
     _phone_verify_on = int(get_setting("phone_verification_enabled") or "1")
     _captcha_on = int(get_setting("captcha_enabled") or "0")
-    rows.append([InlineKeyboardButton(
-        f"📱 التحقق برقم الهاتف ({'مفعّل ✅' if _phone_verify_on else 'معطّل ❌'})",
-        callback_data="os:toggle_phone_verification"
-    )])
     _openai_db_key, _openai_env_key = get_openai_api_key_details()
     if _openai_db_key:
         _openai_suffix = "محفوظ ✅"
@@ -788,10 +782,6 @@ def owner_settings_kb():
         _openai_suffix = "من متغير البيئة ✅"
     else:
         _openai_suffix = "غير مضبوط ❌"
-    rows.append([InlineKeyboardButton(
-        f"🤖 مفتاح OpenAI ({_openai_suffix})",
-        callback_data="os:openai_api",
-    )])
     for row in rows:
         for i, btn in enumerate(row):
             if btn.callback_data == "os:toggle_maintenance":
@@ -813,6 +803,16 @@ def owner_settings_kb():
                 row[i] = InlineKeyboardButton(
                     f"🔐 التحقق ({'مفعّل ✅' if _captcha_on else 'معطّل ❌'})",
                     callback_data="os:toggle_captcha",
+                )
+            elif btn.callback_data == "os:edit_jewel_to_points_rate":
+                row[i] = InlineKeyboardButton(
+                    f"{btn.text} — 1 💎 = {_currency_rates['jewels_to_points']:,} نقطة",
+                    callback_data=btn.callback_data,
+                )
+            elif btn.callback_data == "os:edit_points_to_jewel_rate":
+                row[i] = InlineKeyboardButton(
+                    f"{btn.text} — {_currency_rates['points_to_jewels']:,} نقطة = 1 💎",
+                    callback_data=btn.callback_data,
                 )
     _buyback_on = is_buyback_visible()
     _buyback_suffix = f" (ظاهر للأعضاء {'✅' if _buyback_on else '❌'})"
@@ -848,8 +848,6 @@ def owner_settings_kb():
                     f"{btn.text}: {_buyback_restricted_price_label}",
                     callback_data=btn.callback_data,
                 )
-    rows.append([InlineKeyboardButton("🧩 إضافة/إزالة خيار", callback_data="mb_menu:owner_settings")])
-    rows.append([InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")])
     return InlineKeyboardMarkup(rows)
 
 def _account_info_counts() -> tuple[int, int, int, int]:
