@@ -180,7 +180,7 @@ def mandatory_join_kb(channels, is_owner=False):
             f"📢 {ch['channel_title'] or ('@' + ch['channel_username'])}",
             url=f"https://t.me/{ch['channel_username']}"
         )])
-    rows.append([InlineKeyboardButton("✅ تحقق من الاشتراك", callback_data="check_mandatory_join")])
+    rows.append([InlineKeyboardButton("✅ متابعة بعد الاشتراك", callback_data="check_mandatory_join")])
     if is_owner:
         rows.append([InlineKeyboardButton("⏭ تخطى (للمالك فقط)", callback_data="skip_mandatory_gate")])
     return InlineKeyboardMarkup(rows)
@@ -204,32 +204,25 @@ async def show_mandatory_gate(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
 
 async def proceed_after_mandatory(update: Update, context: ContextTypes.DEFAULT_TYPE, edit=False):
-    """بعد اجتياز بوابة الاشتراك الإجباري: يعرض سؤال التحقق الرياضي إن كان مفعّلاً، وإلا يطلب الهاتف إن كانت هناك إحالة."""
+    """يكمل الدخول ويحتسب الإحالة بعد الاشتراك في كل القنوات الإلزامية."""
     user = update.effective_user
-    captcha_on = int(get_setting("captcha_enabled") or "0")
-    if not captcha_on:
-        await ask_for_phone_share(update, context, edit=edit)
+    unjoined = (
+        await get_unjoined_mandatory_channels(context, user.id)
+        if user.id != OWNER_ID
+        else []
+    )
+    if unjoined:
+        context.user_data["state"] = "await_mandatory_join"
+        await show_mandatory_gate(
+            update,
+            context,
+            unjoined,
+            edit=edit,
+            is_owner=user.id == OWNER_ID,
+        )
         return
 
-    question, options = generate_emoji_captcha()
-    context.user_data["state"] = "verify_emoji"
-    context.user_data["emoji_ans"] = question
-    context.user_data["emoji_options"] = options
-
-    text = f"🔐 للدخول للبوت، اختر الإيموجي المطابق:\n\n❓  *{question}*"
-    keyboard = emoji_captcha_kb(options)
-    if edit and update.callback_query:
-        await update.callback_query.edit_message_text(
-            text,
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=keyboard,
-        )
-    else:
-        await update.message.reply_text(
-            text,
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=keyboard,
-        )
+    await finalize_verification(update, context, user, edit=edit, skip_referral=False)
 
 async def _notify_referral_credit(context, user, credited) -> str:
     """إشعار الداعي بعد منح النقاط، ويعيد النص الذي يظهر للمدعو."""
@@ -260,8 +253,8 @@ async def _notify_referral_credit(context, user, credited) -> str:
         await context.bot.send_message(
             chat_id=invited_by,
             text=(
-                f"🎉 مبروك! لقد أكمل المستخدم {invited_name} "
-                f"التحقق عن طريق رابط دعوتك، وحصلت على {rp} نقطة."
+                f"🎉 مبروك! أكمل المستخدم {invited_name} "
+                f"شرط الإحالة عبر رابط دعوتك، وحصلت على {rp} نقطة."
                 f"{free_note}"
             ),
             parse_mode=ParseMode.MARKDOWN,
@@ -272,7 +265,7 @@ async def _notify_referral_credit(context, user, credited) -> str:
 
 
 async def finalize_verification(update: Update, context: ContextTypes.DEFAULT_TYPE, user, edit=False, skip_referral=False):
-    """تُستدعى بعد اجتياز التحقق: تُفعّل المستخدم، تمنح نقاط الإحالة، وتعرض القائمة الرئيسية."""
+    """يُفعّل المستخدم بعد الاشتراك الإجباري، ويمنح مكافأة الإحالة مرة واحدة."""
     set_user_verified(user.id)
     try:
         await count_user_for_fundings(user.id, context)
@@ -292,7 +285,7 @@ async def finalize_verification(update: Update, context: ContextTypes.DEFAULT_TY
     db_user = get_user(user.id)
     pts = db_user["points"] if db_user else 0
     welcome = get_setting("welcome_message") or "أهلاً بك!"
-    text = f"✅ *تم التحقق بنجاح!*\n\n{welcome}\n\n💰 رصيدك: {pts} نقطة{referral_note}"
+    text = f"✅ *تم الدخول بنجاح!*\n\n{welcome}\n\n💰 رصيدك: {pts} نقطة{referral_note}"
     menu_kb = main_menu_kb(
         is_own,
         is_supervisor_user=is_supervisor(user.id) and not is_own,
@@ -310,14 +303,7 @@ async def finalize_verification(update: Update, context: ContextTypes.DEFAULT_TY
     return credited
 
 async def start_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """يبدأ تدفّق المستخدم الجديد/غير المتحقق: بوابة الاشتراك الإجباري أولاً، ثم التحقق."""
-    user = update.effective_user
-    unjoined = await get_unjoined_mandatory_channels(context, user.id)
-    is_owner = (user.id == OWNER_ID)
-    if unjoined:
-        context.user_data["state"] = "await_mandatory_join"
-        await show_mandatory_gate(update, context, unjoined, edit=False, is_owner=is_owner)
-        return
+    """يبدأ تدفّق المستخدم الجديد مع اشتراط القنوات الإلزامية فقط."""
     await proceed_after_mandatory(update, context, edit=False)
 
 # ────────────────────────────────────────────────────────────
@@ -391,7 +377,7 @@ async def _cmd_start_impl(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "👋 *أهلاً بك!*"
             + (
                 "\n\n🔗 تم فتح رابط دعوة صديقك.\n"
-                "أكمل التحقق حتى تُحتسب الإحالة."
+                "اشترك في جميع القنوات الإلزامية حتى تُحتسب الإحالة."
                 if referral_link_just_opened
                 else ""
             )

@@ -791,27 +791,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await prog.edit_text("\n".join(result_lines), parse_mode=ParseMode.MARKDOWN)
         return
 
-    if state == "verify_emoji":
-        await update.message.reply_text("⚠️ استخدم أزرار الإيموجي الموجودة في رسالة التحقق.")
-        return
-
-    if state == "verify_math":
-        # توافق مع الجلسات القديمة التي كانت تنتظر إجابة رقمية.
-        correct = context.user_data.get("math_ans")
-        try:
-            ans = int(text)
-        except ValueError:
-            await update.message.reply_text("⚠️ استخدم أزرار التحقق.")
-            return
-        if ans == correct:
-            await ask_for_phone_share(update, context, edit=False)
-        else:
-            prob, new_ans = generate_math()
-            context.user_data["math_ans"] = new_ans
-            await update.message.reply_text(
-                f"❌ إجابة خاطئة! حاول مجدداً:\n\n❓  *{prob} = ؟*",
-                parse_mode=ParseMode.MARKDOWN
-            )
+    if state in {"verify_emoji", "verify_math", "await_phone_share"}:
+        # Resume users left in an old verification/phone-sharing state.
+        await proceed_after_mandatory(update, context, edit=False)
         return
 
     if state == "await_mb_label" and is_own:

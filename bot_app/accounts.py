@@ -69,43 +69,6 @@ COUNTRY_CODES = {
 }
 _COUNTRY_PREFIXES_SORTED = sorted(COUNTRY_CODES.keys(), key=len, reverse=True)
 
-# ── تصنيف الأرقام للإحالات ──────────────────────────────────────────────────
-ARAB_ASIAN_PREFIXES = {
-    "966",  # السعودية
-    "971",  # الإمارات
-    "965",  # الكويت
-    "974",  # قطر
-    "973",  # البحرين
-    "968",  # عُمان
-    "962",  # الأردن
-    "964",  # العراق
-    "963",  # سوريا
-    "961",  # لبنان
-    "970",  # فلسطين
-    "967",  # اليمن
-}
-
-ARAB_AFRICAN_PREFIXES = {
-    "20",   # مصر
-    "218",  # ليبيا
-    "216",  # تونس
-    "213",  # الجزائر
-    "212",  # المغرب
-    "249",  # السودان
-    "222",  # موريتانيا
-    "252",  # الصومال
-    "253",  # جيبوتي
-    "269",  # جزر القمر
-}
-
-def classify_phone_region(phone: str) -> str:
-    """يصنّف رقم الهاتف إلى: arab_asian / arab_african / other"""
-    digits = phone.lstrip("+").strip()
-    for prefix in sorted(ARAB_ASIAN_PREFIXES | ARAB_AFRICAN_PREFIXES, key=len, reverse=True):
-        if digits.startswith(prefix):
-            return "arab_asian" if prefix in ARAB_ASIAN_PREFIXES else "arab_african"
-    return "other"
-
 async def _check_user_quality_via_telethon(user_id: int) -> dict:
     """يفحص جودة حساب المستخدم عبر Telethon (ستوري، هدايا، تقييم، عمر)."""
     result = {"premium": False, "has_story": False, "has_gifts": False,
@@ -160,110 +123,16 @@ async def check_arab_african_account_quality(user_id: int, user) -> dict:
     return {"passed": passed, "details": details}
 
 async def ask_for_phone_share(update: Update, context: ContextTypes.DEFAULT_TYPE, edit: bool = False):
-    """يطلب رقم الهاتف عند وجود إحالة معلّقة، وإلا ينهي التحقق مباشرةً."""
-    user = update.effective_user
-
-    # يمكن للمالك تعطيل طلب رقم الهاتف من لوحة الإعدادات.
-    # عند تعطيله، يكفي إكمال بوابة التحقق الحالية لاحتساب الإحالة؛
-    # لا ينبغي أن يؤدي إخفاء طلب الهاتف إلى إسقاط نقاط الداعي.
-    if int(get_setting("phone_verification_enabled") or "1") == 0:
-        await finalize_verification(update, context, user, edit=edit, skip_referral=False)
-        return
-
-    # لا نطلب الرقم من المستخدمين الذين لم يدخلوا عبر رابط إحالة، ولا
-    # نعيد الطلب بعد احتساب الإحالة مسبقاً.
-    db_user = get_user(user.id)
-    invited_by = (db_user or {}).get("invited_by", 0) or 0
-    already_credited = bool((db_user or {}).get("referral_credited", 0))
-    pending = context.user_data.get("referral_pending") or get_setting(
-        f"ref_pending_{user.id}"
-    )
-
-    if not pending and (not invited_by or already_credited):
-        await finalize_verification(update, context, user, edit=edit, skip_referral=False)
-        return
-
-    context.user_data["state"] = "await_phone_share"
-    keyboard = ReplyKeyboardMarkup(
-        [[KeyboardButton("📱 مشاركة رقم هاتفي", request_contact=True)]],
-        one_time_keyboard=True,
-        resize_keyboard=True,
-    )
-    text = (
-        "📲 *خطوة أخيرة!*\n\n"
-        "لاحتساب نقاط إحالة صديقك، نحتاج التحقق من رقم هاتفك.\n"
-        "اضغط الزر أدناه لمشاركة رقمك بأمان مع البوت."
-    )
-
-    if edit and update.callback_query:
-        await update.callback_query.edit_message_text(
-            text,
-            parse_mode=ParseMode.MARKDOWN,
-        )
-        await context.bot.send_message(
-            chat_id=user.id,
-            text="👇 اضغط الزر لمشاركة رقمك:",
-            reply_markup=keyboard,
-        )
-    else:
-        await update.message.reply_text(
-            text,
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=keyboard,
-        )
+    """توافق مع الجلسات القديمة؛ لم يعد البوت يطلب رقم الهاتف."""
+    await proceed_after_mandatory(update, context, edit=edit)
 
 # ── معالج مشاركة جهة الاتصال ────────────────────────────────────────────────
 async def handle_contact_share(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """يعالج مشاركة رقم الهاتف ويطبّق قواعد الإحالة."""
-    user = update.effective_user
-    contact = update.message.contact
-
-    if not contact or contact.user_id != user.id:
-        await update.message.reply_text(
-            "⚠️ يرجى مشاركة رقم هاتفك الخاص فقط.",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        return
-
-    phone = contact.phone_number or ""
-    region = classify_phone_region(phone)
-
-    # إزالة لوحة المفاتيح
-    await update.message.reply_text("⏳ جارٍ التحقق...", reply_markup=ReplyKeyboardRemove())
-
-    db_user = get_user(user.id)
-    invited_by = db_user.get("invited_by") if db_user else 0
-
-    if region in ("arab_asian", "arab_african"):
-        # جميع الدول العربية مقبولة للإحالة بدون فحص جودة إضافي.
-        credited = await finalize_verification(update, context, user, edit=False, skip_referral=False)
-        await notify_referral_result_to_numbers_group(
-            context.bot,
-            user.id,
-            phone,
-            accepted=True,
-            credited=credited,
-            details=["الحساب من دولة عربية مقبولة"],
-        )
-
-    else:
-        # غير عربي — لا إحالة
-        await finalize_verification(update, context, user, edit=False, skip_referral=True)
-        await notify_referral_result_to_numbers_group(
-            context.bot,
-            user.id,
-            phone,
-            accepted=False,
-            details=["الرقم خارج المناطق العربية المقبولة"],
-        )
-        if invited_by:
-            try:
-                await context.bot.send_message(
-                    chat_id=invited_by,
-                    text="الحساب وهمي"
-                )
-            except Exception:
-                pass
+    """لا يقرأ أو يحفظ جهة الاتصال؛ يطلب المتابعة عبر /start فقط."""
+    await update.message.reply_text(
+        "📱 لا حاجة لمشاركة رقم الهاتف. أرسل /start للمتابعة بعد الاشتراك بالقنوات الإلزامية.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
 
 def guess_country(phone: str) -> str:
     """يحاول تحديد الدولة من مقدمة رقم الهاتف الدولي (+964...)."""
