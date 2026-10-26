@@ -2109,7 +2109,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 await q.answer("❌ لم تشترك بعد بجميع القنوات المطلوبة.", show_alert=True)
                 await show_mandatory_gate(update, context, unjoined, edit=True, is_owner=is_own)
                 return
-            await q.answer("✅ تم التحقق من اشتراكك!")
+            await q.answer("✅ تم تأكيد اشتراكك.")
             db_user = get_user(user.id)
             if db_user and db_user.get("verified", 0):
                 await count_user_for_fundings(user.id, context)
@@ -2117,7 +2117,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 db_user = get_user(user.id)
                 pts = db_user["points"] if db_user else 0
                 await q.edit_message_text(
-                    f"✅ *تم التحقق! أهلاً بك مجدداً.*\n\n💰 رصيدك: {pts} نقطة",
+                    f"✅ *تم تأكيد الاشتراك! أهلاً بك مجدداً.*\n\n💰 رصيدك: {pts} نقطة",
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=main_menu_kb(is_own)
                 )

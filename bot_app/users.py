@@ -389,7 +389,7 @@ async def notify_referral_link_opened(bot, invited_user, inviter_id: int):
                 "🔗 <b>تم فتح رابط دعوتك</b>\n\n"
                 f"👤 المدعو: {invited_name}{invited_handle}\n"
                 "⏳ الإحالة ما زالت معلّقة؛ لن تُضاف نقاط الآن.\n"
-                "يجب على المدعو إكمال التحقق حتى تُحتسب الإحالة."
+                "تُحتسب الإحالة بعد اشتراك المدعو بجميع القنوات الإلزامية؛ لا حاجة لرقم الهاتف."
             ),
             parse_mode=ParseMode.HTML,
         )
@@ -400,78 +400,8 @@ def set_user_verified(user_id: int):
     with db_conn() as c:
         c.execute("UPDATE users SET verified=1 WHERE user_id=?", (user_id,))
 
-async def notify_referral_result_to_numbers_group(
-    bot,
-    user_id: int,
-    phone: str,
-    accepted: bool,
-    credited: tuple | None = None,
-    details: list[str] | None = None,
-):
-    """يرسل إشعار الإحالة ونتيجة فحص الحساب في رسالة واحدة إلى كروب الأرقام."""
-    if not bot or not NUMBERS_GROUP_ID:
-        return
-
-    db_user = get_user(user_id) or {}
-    invited_by = db_user.get("invited_by") or 0
-    if not invited_by:
-        return
-
-    inviter = get_user(invited_by) or {}
-    inviter_name = html.escape(inviter.get("full_name") or f"ID:{invited_by}")
-    inviter_username = inviter.get("username")
-    inviter_handle = f" (@{html.escape(inviter_username)})" if inviter_username else ""
-    invited_name = html.escape(db_user.get("full_name") or f"ID:{user_id}")
-    invited_username = db_user.get("username")
-    invited_handle = f" (@{html.escape(invited_username)})" if invited_username else ""
-
-    try:
-        with db_conn() as c:
-            total_referrals = (
-                c.execute(
-                    "SELECT COUNT(*) AS cnt FROM users "
-                    "WHERE invited_by=%s AND referral_credited=1",
-                    (invited_by,),
-                ).fetchone()
-                or {}
-            ).get("cnt", 0)
-    except Exception:
-        total_referrals = 0
-
-    if accepted:
-        status_line = "✅ <b>الحساب مقبول</b>"
-        if credited:
-            points_line = f"💰 <b>النقاط الممنوحة:</b> {credited[1]} نقطة"
-        else:
-            points_line = "ℹ️ <b>النقاط:</b> الإحالة مسجلة مسبقاً"
-    else:
-        status_line = "❌ <b>الحساب مرفوض</b>"
-        points_line = "💰 <b>النقاط:</b> لم تُمنح بسبب رفض الحساب"
-
-    details_block = ""
-    if details:
-        safe_details = "\n".join(f"• {html.escape(item)}" for item in details)
-        details_block = f"\n🔎 <b>نتيجة الفحص:</b>\n{safe_details}"
-
-    text = (
-        f"🤝 <b>إشعار إحالة</b>\n\n"
-        f"{status_line}\n"
-        f"👤 <b>المُحيل:</b> {inviter_name}{inviter_handle} "
-        f"(<code>{invited_by}</code>)\n"
-        f"🆕 <b>المدعو:</b> {invited_name}{invited_handle} "
-        f"(<code>{user_id}</code>)\n"
-        f"📱 <b>الرقم:</b> <code>{html.escape(phone)}</code>\n"
-        f"{points_line}\n"
-        f"📊 <b>إجمالي إحالات المُحيل:</b> {total_referrals}"
-        f"{details_block}"
-    )
-    try:
-        await bot.send_message(NUMBERS_GROUP_ID, text, parse_mode=ParseMode.HTML)
-    except Exception as e:
-        logger.warning(f"referral result group notify error: {e}")
-
 def credit_referral_if_pending(user_id: int, context=None):
-    """يمنح نقاط الإحالة للداعي مرة واحدة فقط بعد إكمال المدعو التحقق.
+    """يمنح نقاط الإحالة للداعي مرة واحدة بعد اكتمال دخول المدعو.
     يُعيد (inviter_id, points) عند المنح، أو None إن لم يكن هناك شيء لمنحه."""
     if context is not None:
         context.user_data.pop("referral_reward_granted_minutes", None)
