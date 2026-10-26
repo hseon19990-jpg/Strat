@@ -226,7 +226,6 @@ def owner_settings_with_purchase_rate_after_sale(items):
 # but they are still ordinary owner buttons. Keeping their definitions in the
 # same menu_items store makes them visible to the button manager as well.
 OWNER_SETTINGS_EXTRA_DEFAULTS = [
-    ("📱 التحقق برقم الهاتف", "os:toggle_phone_verification", 1),
     ("🤖 مفتاح OpenAI", "os:openai_api", 1),
     ("👑 إعدادات الخدمات الأسطورية", "legendary:settings", 1),
     ("💰 بيع حسابات تيليجرام", "os:toggle_buyback_visible", 2),
@@ -490,7 +489,6 @@ BUILTIN_DEFAULTS = {
         ("💎 تعليمات شحن المجوهرات — العملات الإلكترونية", "os:edit_jewels_ewallet", 2),
         ("✏️ نص زر الدعم بالقائمة", "os:edit_support_label", 2),
         ("📢 رسالة جماعية", "os:broadcast", 2),
-        ("🔐 تفعيل/تعطيل التحقق", "os:toggle_captcha", 2),
         ("📊 إحصائيات", "os:stats", 2),
         ("🛠 وضع الصيانة", "os:toggle_maintenance", 2),
         ("📱 استبدال الأرقام", "os:toggle_number_exchange", 2),

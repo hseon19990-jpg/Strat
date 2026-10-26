@@ -10,29 +10,8 @@ globals().update({key: value for key, value in vars(_shared).items() if not key.
 async def _handle_callback_group_04(update, context, q, data, user, is_own, is_supervisor_cb, _gmail_verification_done):
     if True:
         if data.startswith("verify_emoji:"):
-            if context.user_data.get("state") != "verify_emoji":
-                await q.answer("⚠️ انتهت جلسة التحقق.", show_alert=True)
-                return
-            try:
-                selected_index = int(data.split(":", 1)[1])
-                options = context.user_data.get("emoji_options") or []
-                selected = options[selected_index]
-            except (ValueError, IndexError, TypeError):
-                await q.answer("⚠️ زر تحقق غير صالح.", show_alert=True)
-                return
-            if selected == context.user_data.get("emoji_ans"):
-                await q.answer("✅ إجابة صحيحة")
-                await ask_for_phone_share(update, context, edit=True)
-            else:
-                question, new_options = generate_emoji_captcha()
-                context.user_data["emoji_ans"] = question
-                context.user_data["emoji_options"] = new_options
-                await q.answer("❌ إجابة خاطئة", show_alert=True)
-                await q.edit_message_text(
-                    f"🔐 للدخول للبوت، اختر الإيموجي المطابق:\n\n❓  *{question}*",
-                    parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=emoji_captcha_kb(new_options)
-                )
+            await q.answer("تم إلغاء التحقق؛ يكفي الاشتراك بالقنوات الإلزامية.")
+            await proceed_after_mandatory(update, context, edit=True)
             return
         if data == "os:cancel_order" and is_own:
             context.user_data["state"] = "os_await_cancel_order"
@@ -392,16 +371,13 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             )
             return
 
-        if data == "os:toggle_phone_verification" and is_own:
-            current = int(get_setting("phone_verification_enabled") or "1")
-            new_val = "0" if current else "1"
-            set_setting("phone_verification_enabled", new_val)
-            status = "مفعّل ✅" if new_val == "1" else "معطّل ❌"
+        if data in {"os:toggle_phone_verification", "os:toggle_captcha"} and is_own:
+            await q.answer("تم إلغاء التحقق من الهاتف والكابتشا.")
             await q.edit_message_text(
-                f"📱 *التحقق برقم الهاتف الآن: {status}*\n\n"
-                f"{'سيطلب البوت رقم الهاتف عند وجود إحالة معلّقة' if new_val == '1' else 'لن يطلب البوت رقم الهاتف، ولن تُحتسب مكافأة الإحالة تلقائياً'}",
+                "📢 لم يعد البوت يطلب رقم الهاتف أو الكابتشا. "
+                "تُحتسب الإحالة بعد الاشتراك في القنوات الإلزامية.",
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=owner_settings_kb()
+                reply_markup=owner_settings_kb(),
             )
             return
 
@@ -442,19 +418,6 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                 ]]),
             )
             return
-        if data == "os:toggle_captcha" and is_own:
-            current = int(get_setting("captcha_enabled") or "0")
-            new_val = "0" if current else "1"
-            set_setting("captcha_enabled", new_val)
-            status = "مفعّل ✅" if new_val == "1" else "معطّل ❌"
-            await q.edit_message_text(
-                f"🔐 *التحقق الرياضي الآن: {status}*\n\n"
-                f"{'سيظهر السؤال للمستخدمين الجدد عند /start' if new_val == '1' else 'لن يظهر أي سؤال للمستخدمين الجدد'}",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=owner_settings_kb()
-            )
-            return
-
         if data == "os:toggle_maintenance" and is_own:
             current = int(get_setting("maintenance_mode") or "0")
             new_val = "0" if current else "1"

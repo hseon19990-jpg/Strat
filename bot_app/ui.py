@@ -763,7 +763,19 @@ async def show_orders_section(update: Update, context: ContextTypes.DEFAULT_TYPE
                                          reply_markup=InlineKeyboardMarkup(kb_rows))
 
 def owner_settings_kb():
-    rows = build_kb_rows(get_menu_items("owner_settings"))
+    disabled_verification_items = {
+        "os:toggle_phone_verification",
+        "os:toggle_captcha",
+    }
+    rows = [
+        [
+            btn
+            for btn in row
+            if btn.callback_data not in disabled_verification_items
+        ]
+        for row in build_kb_rows(get_menu_items("owner_settings"))
+    ]
+    rows = [row for row in rows if row]
     _currency_rates = get_currency_exchange_rates()
     _maint_on = is_maintenance_on()
     _maint_suffix = " (مفعل ✅)" if _maint_on else " (مغلق ❌)"
@@ -773,8 +785,6 @@ def owner_settings_kb():
     _legendary_suffix = " (ظاهر للأعضاء ✅)" if _legendary_on else " (مخفي عن الأعضاء ❌)"
     _mandatory_active = count_active_mandatory_channels()
     _verify_suffix = f" ({_mandatory_active} قناة ✅)" if _mandatory_active > 0 else " (مغلق ❌)"
-    _phone_verify_on = int(get_setting("phone_verification_enabled") or "1")
-    _captcha_on = int(get_setting("captcha_enabled") or "0")
     _openai_db_key, _openai_env_key = get_openai_api_key_details()
     if _openai_db_key:
         _openai_suffix = "محفوظ ✅"
@@ -799,11 +809,6 @@ def owner_settings_kb():
                     base_label + _legendary_suffix,
                     callback_data="os:toggle_legendary_services",
                 )
-            elif btn.callback_data == "os:toggle_captcha":
-                row[i] = InlineKeyboardButton(
-                    f"🔐 التحقق ({'مفعّل ✅' if _captcha_on else 'معطّل ❌'})",
-                    callback_data="os:toggle_captcha",
-                )
             elif btn.callback_data == "os:edit_jewel_to_points_rate":
                 row[i] = InlineKeyboardButton(
                     f"{btn.text} — 1 💎 = {_currency_rates['jewels_to_points']:,} نقطة",
@@ -820,13 +825,7 @@ def owner_settings_kb():
     _buyback_restricted_price_label = format_buyback_price(_buyback_price(restricted=True))
     for row in rows:
         for i, btn in enumerate(row):
-            if btn.callback_data == "os:toggle_phone_verification":
-                base_label = btn.text.split(" (")[0]
-                row[i] = InlineKeyboardButton(
-                    base_label + f" ({'مفعّل ✅' if _phone_verify_on else 'معطّل ❌'})",
-                    callback_data=btn.callback_data,
-                )
-            elif btn.callback_data == "os:openai_api":
+            if btn.callback_data == "os:openai_api":
                 base_label = btn.text.split(" (")[0]
                 row[i] = InlineKeyboardButton(
                     base_label + f" ({_openai_suffix})",
