@@ -7,6 +7,7 @@ domain.
 from .referrals import run_referral_tasks_job
 from .reaction_operations import run_reaction_ops_job
 from .raksh_system.common import cleanup_expired_raksh_channel_memberships
+from .storage_cleanup import cleanup_transient_storage_job
 from types import SimpleNamespace
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
@@ -531,6 +532,8 @@ def main():
 
     if app.job_queue:
         app.job_queue.run_repeating(check_pending_orders_job, interval=300, first=30)
+        app.job_queue.run_repeating(cleanup_transient_storage_job, interval=86400, first=300)
+        logger.info("🧹 تم تفعيل تنظيف البيانات المؤقتة يومياً")
         logger.info("⏱️ تم تفعيل الفحص الدوري لحالة الطلبات (كل 5 دقائق)")
         app.job_queue.run_repeating(retry_pending_session_resets, interval=600, first=90)
         logger.info("🔒 تم تفعيل إعادة المحاولة الدورية لطرد جلسات الأرقام (كل 10 دقائق)")
