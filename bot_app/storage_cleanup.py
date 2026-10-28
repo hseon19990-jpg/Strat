@@ -75,14 +75,16 @@ def cleanup_transient_storage_data() -> dict[str, int]:
         )
         deleted["activity"] = int(c.rowcount or 0)
 
-        # Only uncharged, abandoned intents expire. Paid/completed intents and
-        # any intent with a Telegram charge id remain available for reconciliation.
+        # Only abandoned intents with no payment method expire. An invoice may have
+        # been paid while its Telegram update is delayed, so awaiting/processing
+        # and failed intents stay available for reconciliation.
         c.execute(
             """
             DELETE FROM smm_payment_intents
             WHERE created_at < NOW() - (%s * INTERVAL '1 day')
               AND telegram_payment_id IS NULL
-              AND status IN ('pending', 'awaiting_payment', 'cancelled', 'failed')
+              AND payment_method IS NULL
+              AND status IN ('pending', 'cancelled')
             """,
             (TRANSIENT_RETENTION_DAYS,),
         )
