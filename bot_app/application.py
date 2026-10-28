@@ -532,8 +532,8 @@ def main():
 
     if app.job_queue:
         app.job_queue.run_repeating(check_pending_orders_job, interval=300, first=30)
-        app.job_queue.run_repeating(cleanup_transient_storage_job, interval=86400, first=300)
-        logger.info("🧹 تم تفعيل تنظيف البيانات المؤقتة يومياً")
+        app.job_queue.run_repeating(cleanup_transient_storage_job, interval=21600, first=60)
+        logger.info("🧹 تم تفعيل تنظيف البيانات المؤقتة بدفعات كل 6 ساعات")
         logger.info("⏱️ تم تفعيل الفحص الدوري لحالة الطلبات (كل 5 دقائق)")
         app.job_queue.run_repeating(retry_pending_session_resets, interval=600, first=90)
         logger.info("🔒 تم تفعيل إعادة المحاولة الدورية لطرد جلسات الأرقام (كل 10 دقائق)")
