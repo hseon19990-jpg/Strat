@@ -89,7 +89,10 @@ class StorageCleanupTests(unittest.TestCase):
         self.assertEqual(activity_params, (14,))
         self.assertEqual(payment_params, (14,))
         self.assertIn("telegram_payment_id is null", payment_sql.lower())
+        self.assertIn("payment_method is null", payment_sql.lower())
         self.assertIn("'cancelled'", payment_sql.lower())
+        self.assertNotIn("'awaiting_payment'", payment_sql.lower())
+        self.assertNotIn("'failed'", payment_sql.lower())
         self.assertNotIn("'completed'", payment_sql.lower())
 
 
