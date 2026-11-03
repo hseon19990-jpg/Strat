@@ -276,8 +276,31 @@ def init_db():
           CREATE TABLE IF NOT EXISTS referral_free_access (
               user_id     BIGINT PRIMARY KEY,
               free_until  TIMESTAMPTZ NOT NULL,
+              free_pass_id BIGINT NOT NULL DEFAULT 0,
               updated_at  TIMESTAMPTZ DEFAULT NOW()
           )""")
+          c.execute(
+              "ALTER TABLE referral_free_access "
+              "ADD COLUMN IF NOT EXISTS free_pass_id BIGINT NOT NULL DEFAULT 0"
+          )
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS referral_free_raksh_reservations (
+              id                  BIGSERIAL PRIMARY KEY,
+              user_id             BIGINT NOT NULL,
+              pass_id             BIGINT NOT NULL,
+              source_type         TEXT NOT NULL,
+              source_id           TEXT NOT NULL,
+              service_type        TEXT NOT NULL,
+              reserved_quantity   INTEGER NOT NULL DEFAULT 0,
+              used_quantity       INTEGER NOT NULL DEFAULT 0,
+              settled_at          TIMESTAMPTZ,
+              created_at          TIMESTAMPTZ DEFAULT NOW(),
+              UNIQUE (user_id, pass_id, source_type, source_id)
+          )""")
+          c.execute("""
+          CREATE INDEX IF NOT EXISTS referral_free_raksh_reservations_pass_idx
+          ON referral_free_raksh_reservations (user_id, pass_id, settled_at)
+          """)
           # The first version stored temporary free access beside the points
           # tier. Preserve that data while moving the two settings into
           # independent sections and tables.
@@ -349,6 +372,7 @@ def init_db():
                position      INTEGER NOT NULL,
                stock_id      BIGINT,
                phone_number  TEXT NOT NULL,
+               is_referral_free BOOLEAN NOT NULL DEFAULT FALSE,
                status        TEXT NOT NULL DEFAULT 'pending',
                attempts      INTEGER NOT NULL DEFAULT 0,
                result_message TEXT,
@@ -356,6 +380,10 @@ def init_db():
                updated_at    TIMESTAMPTZ DEFAULT NOW(),
                UNIQUE(order_id, phone_number)
            )""")
+          c.execute(
+              "ALTER TABLE raksh_order_items "
+              "ADD COLUMN IF NOT EXISTS is_referral_free BOOLEAN NOT NULL DEFAULT FALSE"
+          )
           c.execute("""
            CREATE TABLE IF NOT EXISTS raksh_contributor_earnings (
                id               BIGSERIAL PRIMARY KEY,

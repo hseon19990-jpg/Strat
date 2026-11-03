@@ -1395,20 +1395,16 @@ def deduct_points(user_id: int, pts: int) -> bool:
 
 
 def service_points_cost(user_id: int, pts: int) -> int:
-    """التكلفة الفعلية لخدمة: صفر أثناء مكافأة الإحالة المؤقتة."""
+    """تكلفة الخدمات العامة؛ حصة الإحالة تخص الرشق بالحسابات فقط."""
     try:
         amount = max(0, int(pts or 0))
     except (TypeError, ValueError):
         amount = 0
-    if amount <= 0:
-        return 0
-    if has_active_referral_free_access(int(user_id)):
-        return 0
     return amount
 
 
 def deduct_service_points(user_id: int, pts: int) -> bool:
-    """خصم تكلفة خدمة، مع احترام الإعفاء المؤقت دون تجاوز حظر النقاط."""
+    """خصم تكلفة خدمة عامة؛ إعفاء الإحالة يطبق على الرشق بالحسابات فقط."""
     return deduct_points(user_id, service_points_cost(user_id, pts))
 
 

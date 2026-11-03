@@ -9,9 +9,12 @@ import re
 import html
 import time
 import asyncio
+import uuid
 
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
+
+REFERRAL_FREE_RAKSH_ACCOUNT_LIMIT = 250
 
 def _normalize_desc(desc: str) -> str:
     """يُطبّع الاختصارات الشائعة في أوصاف خدمات SMM إلى العربية.
@@ -564,6 +567,7 @@ def _grant_daily_referral_free_access(c, user_id: int) -> int:
         VALUES (%s, NOW() + (%s * INTERVAL '1 minute'))
         ON CONFLICT (user_id) DO UPDATE SET
             free_until=NOW() + (%s * INTERVAL '1 minute'),
+            free_pass_id=referral_free_access.free_pass_id + 1,
             updated_at=NOW()
         """,
         (int(user_id), minutes, minutes),
@@ -607,6 +611,180 @@ def has_active_referral_free_access(user_id: int) -> bool:
         return bool(row)
     except Exception:
         logger.exception("تعذر فحص إعفاء الإحالة المؤقت")
+        return False
+
+
+def _referral_free_raksh_remaining(limit: int, used: int, reserved: int) -> int:
+    """حساب الحصة المتبقية من الحسابات الناجحة والحجوزات الجارية."""
+    try:
+        return max(
+            0,
+            int(limit) - max(0, int(used or 0)) - max(0, int(reserved or 0)),
+        )
+    except (TypeError, ValueError):
+        return 0
+
+
+def get_referral_free_raksh_remaining(user_id: int) -> int:
+    """عدد الحسابات المجانية المتاحة في نافذة الإحالة الحالية."""
+    try:
+        refresh_daily_referral_free_access(int(user_id))
+        with db_conn() as c:
+            access = c.execute(
+                """
+                SELECT r.free_pass_id
+                FROM users u
+                JOIN referral_free_access r ON r.user_id=u.user_id
+                WHERE u.user_id=%s
+                  AND COALESCE(u.referral_points_blocked, 0)=0
+                  AND r.free_until>NOW()
+                """,
+                (int(user_id),),
+            ).fetchone()
+            if not access:
+                return 0
+            totals = c.execute(
+                """
+                SELECT
+                    COALESCE(SUM(used_quantity), 0) AS used_quantity,
+                    COALESCE(SUM(
+                        CASE WHEN settled_at IS NULL
+                             THEN reserved_quantity ELSE 0 END
+                    ), 0) AS reserved_quantity
+                FROM referral_free_raksh_reservations
+                WHERE user_id=%s AND pass_id=%s
+                """,
+                (int(user_id), int(access["free_pass_id"] or 0)),
+            ).fetchone()
+        return _referral_free_raksh_remaining(
+            REFERRAL_FREE_RAKSH_ACCOUNT_LIMIT,
+            totals["used_quantity"] if totals else 0,
+            totals["reserved_quantity"] if totals else 0,
+        )
+    except Exception:
+        logger.exception("تعذر حساب حصة الرشق المجانية")
+        return 0
+
+
+def reserve_referral_free_raksh_quota(
+    user_id: int,
+    quantity: int,
+    source_type: str,
+    service_type: str,
+) -> dict:
+    """يحجز عدداً من وحدات الحصة بالتزامن الآمن حتى تنتهي عملية الرشق."""
+    try:
+        requested = max(0, int(quantity or 0))
+    except (TypeError, ValueError):
+        requested = 0
+    if requested <= 0:
+        return {"reservation_id": None, "pass_id": None, "quantity": 0}
+
+    try:
+        refresh_daily_referral_free_access(int(user_id))
+        with db_conn() as c:
+            access = c.execute(
+                """
+                SELECT r.free_pass_id
+                FROM users u
+                JOIN referral_free_access r ON r.user_id=u.user_id
+                WHERE u.user_id=%s
+                  AND COALESCE(u.referral_points_blocked, 0)=0
+                  AND r.free_until>NOW()
+                FOR UPDATE OF r
+                """,
+                (int(user_id),),
+            ).fetchone()
+            if not access:
+                return {"reservation_id": None, "pass_id": None, "quantity": 0}
+
+            pass_id = int(access["free_pass_id"] or 0)
+            totals = c.execute(
+                """
+                SELECT
+                    COALESCE(SUM(used_quantity), 0) AS used_quantity,
+                    COALESCE(SUM(
+                        CASE WHEN settled_at IS NULL
+                             THEN reserved_quantity ELSE 0 END
+                    ), 0) AS reserved_quantity
+                FROM referral_free_raksh_reservations
+                WHERE user_id=%s AND pass_id=%s
+                """,
+                (int(user_id), pass_id),
+            ).fetchone()
+            available = _referral_free_raksh_remaining(
+                REFERRAL_FREE_RAKSH_ACCOUNT_LIMIT,
+                totals["used_quantity"] if totals else 0,
+                totals["reserved_quantity"] if totals else 0,
+            )
+            reserved_quantity = min(requested, available)
+            if reserved_quantity <= 0:
+                return {
+                    "reservation_id": None,
+                    "pass_id": pass_id,
+                    "quantity": 0,
+                }
+
+            reservation = c.execute(
+                """
+                INSERT INTO referral_free_raksh_reservations
+                    (user_id, pass_id, source_type, source_id, service_type,
+                     reserved_quantity)
+                VALUES (%s,%s,%s,%s,%s,%s)
+                RETURNING id
+                """,
+                (
+                    int(user_id),
+                    pass_id,
+                    str(source_type or "raksh"),
+                    uuid.uuid4().hex,
+                    str(service_type or ""),
+                    reserved_quantity,
+                ),
+            ).fetchone()
+        return {
+            "reservation_id": int(reservation["id"]),
+            "pass_id": pass_id,
+            "quantity": reserved_quantity,
+        }
+    except Exception:
+        logger.exception("تعذر حجز حصة الرشق المجانية")
+        return {"reservation_id": None, "pass_id": None, "quantity": 0}
+
+
+def settle_referral_free_raksh_reservation(
+    reservation_id: int | None,
+    successful_free_accounts: int,
+    connection=None,
+) -> bool:
+    """يستهلك الناجح فقط ويحرر بقية الحجز، بأمان عند تكرار الإنهاء."""
+    if not reservation_id:
+        return False
+    try:
+        successful = max(0, int(successful_free_accounts or 0))
+    except (TypeError, ValueError):
+        successful = 0
+    def _settle(c):
+        return c.execute(
+            """
+            UPDATE referral_free_raksh_reservations
+            SET used_quantity=LEAST(reserved_quantity, %s),
+                reserved_quantity=0,
+                settled_at=NOW()
+            WHERE id=%s AND settled_at IS NULL
+            RETURNING id
+            """,
+            (successful, int(reservation_id)),
+        ).fetchone()
+
+    try:
+        if connection is not None:
+            return bool(_settle(connection))
+        with db_conn() as c:
+            updated = _settle(c)
+        return bool(updated)
+    except Exception:
+        logger.exception("تعذر إنهاء حصة الرشق المجانية")
         return False
 
 def _referral_counter_reset_at():

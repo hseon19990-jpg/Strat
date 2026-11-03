@@ -40,6 +40,7 @@ def load_function(connection, name):
         "db_conn": lambda: connection,
         "USAGE_RETENTION_DAYS": 2,
         "TRANSIENT_RETENTION_DAYS": 14,
+        "REFERRAL_QUOTA_RETENTION_DAYS": 14,
         "MAX_ROWS_PER_TABLE_PER_RUN": 500,
     }
     exec(
@@ -59,18 +60,19 @@ class StorageCleanupTests(unittest.TestCase):
             [
                 "raksh_execution_usage",
                 "daily_gift_claims",
+                "referral_free_raksh_reservations",
                 "temporary_gifts",
                 "activity",
                 "smm_payment_intents",
             ],
         )
-        self.assertEqual(list(deleted.values()), [1, 2, 3, 4, 5])
+        self.assertEqual(list(deleted.values()), [1, 2, 3, 4, 5, 6])
         sql = "\n".join(query for query, _ in connection.queries).lower()
         self.assertNotIn("delete from users", sql)
         self.assertNotIn("delete from orders", sql)
         self.assertNotIn("delete from raksh_orders", sql)
         self.assertNotIn("delete from jewel_transactions", sql)
-        self.assertEqual(len(connection.queries), 5)
+        self.assertEqual(len(connection.queries), 6)
         for query, params in connection.queries:
             self.assertIn("limit %s", query.lower())
             self.assertEqual(params[-1], 500)
@@ -97,9 +99,13 @@ class StorageCleanupTests(unittest.TestCase):
     def test_two_week_cleanup_preserves_paid_payment_records(self):
         connection = FakeConnection()
         load_function(connection, "cleanup_transient_storage_data")()
-        gift_sql, gift_params = connection.queries[2]
-        activity_sql, activity_params = connection.queries[3]
-        payment_sql, payment_params = connection.queries[4]
+        quota_sql, quota_params = connection.queries[2]
+        gift_sql, gift_params = connection.queries[3]
+        activity_sql, activity_params = connection.queries[4]
+        payment_sql, payment_params = connection.queries[5]
+        self.assertEqual(quota_params, (14, 500))
+        self.assertIn("from referral_free_raksh_reservations", quota_sql.lower())
+        self.assertIn("created_at < now() - (%s * interval '1 day')", quota_sql.lower())
         self.assertEqual(gift_params, (14, 500))
         self.assertEqual(activity_params, (14, 500))
         self.assertEqual(payment_params, (14, 500))

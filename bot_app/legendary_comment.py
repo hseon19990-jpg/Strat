@@ -19,6 +19,12 @@ from . import shared as _shared
 
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
+from .users import (
+    get_referral_free_raksh_remaining,
+    reserve_referral_free_raksh_quota,
+    settle_referral_free_raksh_reservation,
+)
+
 from urllib.parse import urlparse
 import asyncio
 import time
@@ -118,6 +124,21 @@ def get_service_price(service_type: str, include_channel: bool = True) -> int:
 def get_service_channel_price(service_type: str) -> int:
     """Get channel price for a service (points)."""
     return PRICES.get(service_type, {}).get("channel", 0)
+
+
+def _legendary_points_cost(
+    service_type: str,
+    quantity: int,
+    free_quantity: int,
+    has_channel: bool,
+) -> int:
+    paid_quantity = max(0, int(quantity or 0) - int(free_quantity or 0))
+    if paid_quantity <= 0:
+        return 0
+    cost = paid_quantity * get_service_price(service_type, include_channel=False)
+    if has_channel:
+        cost += get_service_channel_price(service_type)
+    return cost
 
 
 def get_stars_price(service_type: str, quantity: int) -> int:
@@ -1856,11 +1877,15 @@ async def legendary_handle_text(update, context, text: str) -> bool:
         
         service_name = get_service_display_name(service_type)
         stars_cost = get_stars_price(service_type, quantity)
-        points_cost = get_service_price(service_type, include_channel=False) * quantity
-        channel_cost = get_service_channel_price(service_type)
         has_channel = bool(context.user_data.get("legendary_channel_ref"))
-        if has_channel:
-            points_cost += channel_cost
+        free_quantity = min(
+            quantity,
+            get_referral_free_raksh_remaining(user.id),
+        )
+        points_cost = _legendary_points_cost(
+            service_type, quantity, free_quantity, has_channel
+        )
+        channel_cost = get_service_channel_price(service_type)
         channel_display = f"+{channel_cost} نقطة" if has_channel and channel_cost > 0 else "مجانية"
         
         # Fix description based on service type
@@ -1878,7 +1903,16 @@ async def legendary_handle_text(update, context, text: str) -> bool:
             "بعد تأكيد الدفع سيبدأ التنفيذ بالحسابات المتاحة، "
             "وسأرسل لك إشعاراً عند بدء العمل واكتماله."
         )
-        await show_payment_options(update, context, service_type, quantity, stars_cost, points_cost, has_channel)
+        await show_payment_options(
+            update,
+            context,
+            service_type,
+            quantity,
+            stars_cost,
+            points_cost,
+            has_channel,
+            free_quantity=free_quantity,
+        )
         return True
     
     # --- Delay input (owner only) ---
@@ -1903,12 +1937,25 @@ async def legendary_handle_text(update, context, text: str) -> bool:
         service_type = context.user_data.get("legendary_service_type", "comment")
         quantity = context.user_data.get("legendary_quantity", 1)
         stars_cost = get_stars_price(service_type, quantity)
-        points_cost = get_service_price(service_type, include_channel=False) * quantity
         has_channel = bool(context.user_data.get("legendary_channel_ref"))
-        if has_channel:
-            points_cost += get_service_channel_price(service_type)
+        free_quantity = min(
+            quantity,
+            get_referral_free_raksh_remaining(user.id),
+        )
+        points_cost = _legendary_points_cost(
+            service_type, quantity, free_quantity, has_channel
+        )
         
-        await show_payment_options(update, context, service_type, quantity, stars_cost, points_cost, has_channel)
+        await show_payment_options(
+            update,
+            context,
+            service_type,
+            quantity,
+            stars_cost,
+            points_cost,
+            has_channel,
+            free_quantity=free_quantity,
+        )
         return True
     
     # --- Premium reaction: get reactions from post ---
@@ -1937,7 +1984,16 @@ async def legendary_handle_text(update, context, text: str) -> bool:
     return False
 
 
-async def show_payment_options(update, context, service_type, quantity, stars_cost, points_cost, has_channel):
+async def show_payment_options(
+    update,
+    context,
+    service_type,
+    quantity,
+    stars_cost,
+    points_cost,
+    has_channel,
+    free_quantity=0,
+):
     """Show payment options to user."""
     actor = getattr(update, "effective_user", None)
     if actor is None and getattr(update, "callback_query", None):
@@ -1956,7 +2012,11 @@ async def show_payment_options(update, context, service_type, quantity, stars_co
     
     payment_rows = [
         [InlineKeyboardButton(f"⭐ دفع بالنجوم ({stars_cost} نجمة)", callback_data="legendary:pay:stars")],
-        [InlineKeyboardButton(f"💰 دفع بالنقاط ({points_cost} نقطة)", callback_data="legendary:pay:points")],
+        [InlineKeyboardButton(
+            f"💰 دفع بالنقاط ({points_cost} نقطة)"
+            + (f" — {free_quantity} حساب مجاني" if free_quantity else ""),
+            callback_data="legendary:pay:points",
+        )],
     ]
     if is_owner:
         payment_rows.append([
@@ -1968,14 +2028,21 @@ async def show_payment_options(update, context, service_type, quantity, stars_co
         f"💎 *اختر طريقة الدفع:*\n\n"
         f"🔢 العدد: {quantity} {unit_label}\n"
         f"📺 القناة: {'مضافة' if has_channel else 'لا'}\n\n"
-        f"⭐ *بالنجوم:* {stars_cost} نجمة (القناة مجانية!)\n"
-        f"💰 *بالنقاط:* {points_cost} نقطة\n\n"
-        f"اختر طريقة الدفع:",
+        + (
+            f"🎁 ضمن الحصة المجانية: {free_quantity} حساب\n"
+            if free_quantity
+            else ""
+        )
+        + "\n"
+        + f"⭐ *بالنجوم:* {stars_cost} نجمة (القناة مجانية!)\n"
+        + f"💰 *بالنقاط:* {points_cost} نقطة\n\n"
+        + f"اختر طريقة الدفع:",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=InlineKeyboardMarkup(payment_rows)
     )
     context.user_data["legendary_stars_cost"] = stars_cost
     context.user_data["legendary_points_cost"] = points_cost
+    context.user_data["legendary_free_quantity"] = free_quantity
     context.user_data["state"] = "legendary_payment_confirm"
 
 
@@ -2110,23 +2177,86 @@ async def execute_legendary_order(update, context, q, is_own: bool, payment_meth
             return await q.edit_message_text(text, **kwargs)
         return await q.edit_text(text, **kwargs)
     
-    if payment_method == "points":
-        points_cost = service_points_cost(requester_id, points_cost)
-        if not deduct_points(requester_id, points_cost):
-            await edit_order_message("❌ لم يعد رصيدك كافياً.")
-            context.user_data["state"] = "main_menu"
-            return
-    
     sessions = _get_sessions_for_request(is_owner=is_own)
     if not sessions:
-        if payment_method == "points":
-            add_points(requester_id, points_cost)
         await edit_order_message(
             "❌ لا توجد حسابات متاحة.",
             reply_markup=legendary_services_back_kb(),
         )
         context.user_data["state"] = "main_menu"
         return
+
+    reservation = {"reservation_id": None, "pass_id": None, "quantity": 0}
+    free_quantity = 0
+    if payment_method == "points":
+        reservation = reserve_referral_free_raksh_quota(
+            requester_id,
+            quantity,
+            "legendary_order",
+            service_type,
+        )
+        free_quantity = int(reservation.get("quantity") or 0)
+        actual_points_cost = _legendary_points_cost(
+            service_type,
+            quantity,
+            free_quantity,
+            bool(channel_ref),
+        )
+        if actual_points_cost != int(points_cost or 0):
+            settle_referral_free_raksh_reservation(
+                reservation.get("reservation_id"), 0
+            )
+            context.user_data["legendary_points_cost"] = actual_points_cost
+            context.user_data["legendary_free_quantity"] = free_quantity
+            context.user_data["legendary_pending_payment"] = "points"
+            context.user_data["state"] = "legendary_payment_review"
+            free_note = (
+                f"🎁 ضمن الحصة المجانية: {free_quantity} حساب\n"
+                if free_quantity
+                else ""
+            )
+            await edit_order_message(
+                "📋 *تغيّرت الحصة قبل بدء الطلب*\n\n"
+                f"{free_note}"
+                f"التكلفة المحدّثة: {actual_points_cost} نقطة\n"
+                "لم يتم الخصم. أكّد السعر الجديد للمتابعة.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton(
+                            "✅ تأكيد السعر الجديد",
+                            callback_data="legendary:confirm:points",
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            "❌ إلغاء",
+                            callback_data="legendary:payment_cancel",
+                        )
+                    ],
+                ]),
+            )
+            return
+        points_cost = actual_points_cost
+        if not deduct_points(requester_id, points_cost):
+            settle_referral_free_raksh_reservation(
+                reservation.get("reservation_id"), 0
+            )
+            await edit_order_message("❌ لم يعد رصيدك كافياً.")
+            context.user_data["state"] = "main_menu"
+            return
+
+    # Fix the selected set before execute_batch reorders it; the free share is
+    # attached to these account slots, not to arbitrary later successes.
+    sessions = list(sessions)
+    if not is_own:
+        random.shuffle(sessions)
+    sessions = sessions[:quantity]
+    free_phones = {
+        str(session.get("phone_number") or "").strip()
+        for session in sessions[:free_quantity]
+        if session.get("phone_number")
+    }
     
     # The requester must always receive a start notification, including the
     # owner. Group notifications remain restricted to non-owner requests.
@@ -2181,21 +2311,36 @@ async def execute_legendary_order(update, context, q, is_own: bool, payment_meth
         except Exception:
             pass
     
-    success_count, success_phones, failed_details = await execute_batch(
-        service_type=service_type,
-        quantity=quantity,
-        sessions=sessions,
-        params=params,
-        is_owner=is_own,
-        custom_delay=custom_delay,
-        progress_callback=update_progress,
-    )
+    try:
+        success_count, success_phones, failed_details = await execute_batch(
+            service_type=service_type,
+            quantity=quantity,
+            sessions=sessions,
+            params=params,
+            is_owner=is_own,
+            custom_delay=custom_delay,
+            progress_callback=update_progress,
+        )
+    except Exception:
+        settle_referral_free_raksh_reservation(
+            reservation.get("reservation_id"), 0
+        )
+        raise
     
     failed_count = quantity - success_count
+    free_success_count = len(set(success_phones) & free_phones)
+    paid_success_count = max(0, success_count - free_success_count)
+    settle_referral_free_raksh_reservation(
+        reservation.get("reservation_id"), free_success_count
+    )
     refund_points = 0
     
-    if failed_count > 0 and payment_method == "points":
-        refund_points = failed_count * get_service_price(service_type, include_channel=False)
+    paid_failed_count = max(0, quantity - free_quantity - paid_success_count)
+    if paid_failed_count > 0 and payment_method == "points":
+        refund_points = min(
+            points_cost,
+            paid_failed_count * get_service_price(service_type, include_channel=False),
+        )
         if refund_points > 0:
             add_points(requester_id, refund_points)
     

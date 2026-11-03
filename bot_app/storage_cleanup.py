@@ -11,6 +11,8 @@ logger = logging.getLogger(__name__)
 USAGE_RETENTION_DAYS = 2
 # Keep non-critical audit-like records for two weeks.
 TRANSIENT_RETENTION_DAYS = 14
+# Referral quota rows cannot affect a pass after the pass window has expired.
+REFERRAL_QUOTA_RETENTION_DAYS = 14
 # Limit write load and WAL growth when an old table has accumulated a backlog.
 MAX_ROWS_PER_TABLE_PER_RUN = 500
 
@@ -122,6 +124,25 @@ def cleanup_transient_storage_data() -> dict[str, int]:
             (MAX_ROWS_PER_TABLE_PER_RUN,),
         )
         deleted["daily_gift_claims"] = int(c.rowcount or 0)
+
+        # A referral pass lasts at most one hour; old reservations cannot
+        # reduce a later pass because every grant receives a new pass_id.
+        c.execute(
+            """
+            WITH expired AS (
+                SELECT id
+                FROM referral_free_raksh_reservations
+                WHERE created_at < NOW() - (%s * INTERVAL '1 day')
+                ORDER BY created_at, id
+                LIMIT %s
+            )
+            DELETE FROM referral_free_raksh_reservations AS reservations
+            USING expired
+            WHERE reservations.id = expired.id
+            """,
+            (REFERRAL_QUOTA_RETENTION_DAYS, MAX_ROWS_PER_TABLE_PER_RUN),
+        )
+        deleted["referral_free_raksh_reservations"] = int(c.rowcount or 0)
 
         # The points are already credited; keep expired gift metadata for 14 days.
         # Deleting a gift cascades only to its temporary per-gift claim list.
