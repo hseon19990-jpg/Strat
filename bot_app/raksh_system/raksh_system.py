@@ -152,37 +152,11 @@ def get_raksh_total(service_type: str, quantity: int, payment_method: str) -> in
 
 
 def is_raksh_free_user(user_id: int, service_type: str) -> bool:
-    """هل يملك المستخدم إعفاءً دائماً لخدمة أو إعفاء إحالات مؤقتاً؟"""
-    try:
-        refresh_daily_referral_free_access(int(user_id))
-        with db_conn() as c:
-            row = c.execute(
-                """
-                SELECT 1
-                FROM raksh_free_access
-                WHERE user_id=%s AND service_type=%s AND enabled=1
-                """,
-                (int(user_id), str(service_type)),
-            ).fetchone()
-            referral_row = c.execute(
-                """
-                SELECT 1
-                FROM users u
-                JOIN referral_free_access r ON r.user_id=u.user_id
-                WHERE u.user_id=%s
-                  AND COALESCE(u.referral_points_blocked, 0)=0
-                  AND r.free_until>NOW()
-                """,
-                (int(user_id),),
-            ).fetchone()
-        return bool(row or referral_row)
-    except Exception:
-        logger.exception(
-            "فشل فحص الإعفاء المجاني لخدمة الرشق %s للمستخدم %s",
-            service_type,
-            user_id,
-        )
-        return False
+    """هل الخدمة مجانية دائماً أم توجد حصة إحالة مجانية متبقية؟"""
+    return bool(
+        is_raksh_permanent_free_user(user_id, service_type)
+        or get_referral_free_raksh_remaining(int(user_id)) > 0
+    )
 
 
 def is_raksh_permanent_free_user(user_id: int, service_type: str) -> bool:
@@ -397,6 +371,7 @@ def _create_raksh_order(
     total_cost: int,
     params: Dict,
     sessions: List[Dict],
+    referral_free_quantity: int = 0,
 ) -> int:
     """حفظ طلب الرشق وحساباته قبل بدء أي تنفيذ."""
     serialized_params = json.dumps(params or {}, ensure_ascii=False, default=str)
@@ -420,7 +395,8 @@ def _create_raksh_order(
         order_id = int(row["id"])
 
         seen_phones = set()
-        for position, session in enumerate(sessions):
+        position = 0
+        for session in sessions:
             phone = str(session.get("phone_number") or "").strip()
             if not phone or phone in seen_phones:
                 continue
@@ -428,12 +404,23 @@ def _create_raksh_order(
             c.execute(
                 """
                 INSERT INTO raksh_order_items
-                    (order_id, position, stock_id, phone_number)
-                VALUES (%s, %s, %s, %s)
+                    (order_id, position, stock_id, phone_number,
+                     is_referral_free)
+                VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT (order_id, phone_number) DO NOTHING
                 """,
-                (order_id, position, session.get("id"), phone),
+                (
+                    order_id,
+                    position,
+                    session.get("id"),
+                    phone,
+                    bool(
+                        payment_method == "points"
+                        and position < max(0, int(referral_free_quantity or 0))
+                    ),
+                ),
             )
+            position += 1
     return order_id
 
 
@@ -471,6 +458,8 @@ def _cancel_user_raksh_order(user_id: int, order_id: int) -> Dict:
     """إلغاء طلب يملكه المستخدم وإيقاف الحسابات التي لم تكتمل."""
     refund = 0
     success_count = 0
+    paid_success_count = 0
+    free_success_count = 0
     quantity = 0
     payment_method = "points"
     contributor_credits = []
@@ -487,16 +476,30 @@ def _cancel_user_raksh_order(user_id: int, order_id: int) -> Dict:
         quantity = int(order["quantity"] or 0)
         payment_method = order["payment_method"]
         success_row = c.execute(
-            "SELECT COUNT(*) AS count FROM raksh_order_items WHERE order_id=%s AND status='success'",
+            """
+            SELECT COUNT(*) AS count,
+                   COUNT(*) FILTER (
+                       WHERE status='success' AND is_referral_free
+                   ) AS free_success_count,
+                   COUNT(*) FILTER (
+                       WHERE status='success' AND NOT is_referral_free
+                   ) AS paid_success_count
+            FROM raksh_order_items
+            WHERE order_id=%s AND status='success'
+            """,
             (order_id,),
         ).fetchone()
         success_count = int(success_row["count"] or 0)
+        free_success_count = int(success_row["free_success_count"] or 0)
+        paid_success_count = int(success_row["paid_success_count"] or 0)
         if payment_method == "points":
             try:
                 refund = max(
                     0,
                     int(order["total_cost"] or 0)
-                    - get_raksh_total(order["service_type"], success_count, "points"),
+                    - get_raksh_total(
+                        order["service_type"], paid_success_count, "points"
+                    ),
                 )
             except Exception:
                 refund = 0
@@ -522,8 +525,19 @@ def _cancel_user_raksh_order(user_id: int, order_id: int) -> Dict:
             int(order_id),
             payment_method,
             int(order["total_cost"] or 0),
-            success_count,
+            paid_success_count,
             refund,
+        )
+        order_params = order.get("params") or {}
+        if isinstance(order_params, str):
+            try:
+                order_params = json.loads(order_params)
+            except (TypeError, ValueError):
+                order_params = {}
+        settle_referral_free_raksh_reservation(
+            order_params.get("_referral_free_reservation_id"),
+            free_success_count,
+            connection=c,
         )
         c.execute(
             """
@@ -1311,11 +1325,14 @@ async def _execute_raksh_parallel(
     is_all_posts_service = service_type == "all_posts_reactions"
     # خدمة الإحالة مع التحقق تستخدم حساباً واحداً لكل تحقق مطلوب. لا نضيف
     # حساباً بديلاً بعد بدء الطلب، حتى يبقى طلب 10 = 10 حسابات و10 تحديات.
-    fixed_account_count = service_type == "forced_ref_ai"
+    fixed_account_count = (
+        service_type == "forced_ref_ai"
+        or bool(params.get("_fixed_account_count"))
+    )
 
     def queue_immediate_replacement() -> bool:
         """ضع حساباً صالحاً في نفس الدفعة بعد تجاوز حساب مجمد."""
-        if not is_all_posts_service:
+        if not is_all_posts_service or fixed_account_count:
             return False
 
         occupied_phones = (
@@ -1439,6 +1456,7 @@ async def _execute_raksh_parallel(
             # account first, then replace it from the available stock.
             if (
                 is_all_posts_service
+                and not fixed_account_count
                 and not ok
                 and not is_raksh_frozen_account_error(msg)
             ):
@@ -1463,12 +1481,12 @@ async def _execute_raksh_parallel(
                     continue
 
             if not ok and is_raksh_frozen_account_error(msg):
-                if is_all_posts_service:
+                if is_all_posts_service and not fixed_account_count:
                     _reset_raksh_order_item_for_retry(order_id, phone)
                     queue_immediate_replacement()
                     logger.info("⏭️ تم تجاوز الحساب المجمد %s واستبداله فورياً", phone)
                     continue
-                if service_type != "forced_ref_ai":
+                if service_type != "forced_ref_ai" and not fixed_account_count:
                     _reset_raksh_order_item_for_retry(order_id, phone)
                     queue_immediate_replacement()
                     logger.info("⏭️ تم تجاوز الحساب المجمد %s", phone)
@@ -2438,7 +2456,7 @@ async def _handle_raksh_callback_impl(
                 )
                 return
 
-            if is_raksh_free_user(user.id, service_type):
+            if is_raksh_permanent_free_user(user.id, service_type):
                 _free_parts = data[len(prefix):].split(":")
                 if _free_parts[0] == "payment" and len(_free_parts) >= 4:
                     try:
@@ -2623,7 +2641,7 @@ async def _handle_raksh_callback_impl(
         svc = RAKSH_SERVICES.get(service_type)
         if (
             not svc
-            or not is_raksh_free_user(user.id, service_type)
+            or not is_raksh_permanent_free_user(user.id, service_type)
             or quantity < 1
             or quantity > svc.get_request_limit(user.id)
         ):
@@ -2672,7 +2690,7 @@ async def _handle_raksh_callback_impl(
             await query.answer("⚠️ الخدمة أو العدد غير صالح.", show_alert=True)
             return
 
-        if is_raksh_free_user(user.id, service_type):
+        if is_raksh_permanent_free_user(user.id, service_type):
             if quantity > svc.get_request_limit(user.id):
                 await query.edit_message_text(
                     "⚠️ لا يمكن قبول هذا الطلب حالياً. حاول لاحقاً.",
@@ -2730,15 +2748,27 @@ async def _handle_raksh_callback_impl(
                 )
             )
         else:
-            total = _get_contextual_raksh_total(svc, quantity, "points", channel_count, context)
+            free_quantity = min(
+                quantity,
+                get_referral_free_raksh_remaining(user.id),
+            )
+            billable_quantity = quantity - free_quantity
+            total = _get_contextual_raksh_total(
+                svc, billable_quantity, "points", channel_count, context
+            )
             db_user = get_user(user.id)
             points = db_user["points"] if db_user else 0
             await query.edit_message_text(
                 f"💰 *الدفع بالنقاط*\n\n"
                 f"الخدمة: {svc.config.name}\n"
                 f"العدد: {quantity}\n"
-                f"التكلفة: *{total} نقطة*\n"
-                f"رصيدك: *{points} نقطة*\n\n"
+                + (
+                    f"🎁 المجاني من الحصة: {free_quantity} حساب\n"
+                    if free_quantity
+                    else ""
+                )
+                + f"التكلفة: *{total} نقطة*\n"
+                + f"رصيدك: *{points} نقطة*\n\n"
                 "اضغط تأكيد للمتابعة:",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=raksh_confirm_kb(
@@ -2783,13 +2813,27 @@ async def _handle_raksh_callback_impl(
         
         channel_count = len(context.user_data.get("raksh_channels") or [])
         svc = RAKSH_SERVICES.get(service_type)
+        free_quantity = 0
+        billable_quantity = quantity
+        if payment_method == "points" and not is_raksh_permanent_free_user(
+            user.id, service_type
+        ):
+            free_quantity = min(
+                quantity,
+                get_referral_free_raksh_remaining(user.id),
+            )
+            billable_quantity = quantity - free_quantity
         total_cost = (
-            _get_contextual_raksh_total(svc, quantity, payment_method, channel_count, context)
+            _get_contextual_raksh_total(
+                svc, billable_quantity, payment_method, channel_count, context
+            )
             if svc
-            else get_raksh_total(service_type, quantity, payment_method)
+            else get_raksh_total(service_type, billable_quantity, payment_method)
         )
-        if payment_method == "points":
-            total_cost = service_points_cost(user.id, total_cost)
+        if payment_method == "points" and is_raksh_permanent_free_user(
+            user.id, service_type
+        ):
+            total_cost = 0
         if button_total != total_cost:
             logger.info(f"تحديث سعر الرشق: {service_type} {quantity}")
         
@@ -3558,7 +3602,13 @@ async def _run_all_posts_reactions_order(context, order: Dict, progress_msg=None
             if completed_row:
                 success_row = c.execute(
                     """
-                    SELECT COUNT(*) AS count
+                    SELECT COUNT(*) AS count,
+                           COUNT(*) FILTER (
+                               WHERE is_referral_free
+                           ) AS free_success_count,
+                           COUNT(*) FILTER (
+                               WHERE NOT is_referral_free
+                           ) AS paid_success_count
                     FROM raksh_order_items
                     WHERE order_id=%s AND status='success'
                     """,
@@ -3569,8 +3619,17 @@ async def _run_all_posts_reactions_order(context, order: Dict, progress_msg=None
                     order_id,
                     order.get("payment_method") or "points",
                     int(order.get("total_cost") or 0),
-                    int(success_row["count"] or 0) if success_row else 0,
+                    int(success_row["paid_success_count"] or 0)
+                    if success_row
+                    else 0,
                     0,
+                )
+                settle_referral_free_raksh_reservation(
+                    params.get("_referral_free_reservation_id"),
+                    int(success_row["free_success_count"] or 0)
+                    if success_row
+                    else 0,
+                    connection=c,
                 )
         for credit in contributor_credits:
             if credit["points"] <= 0:
@@ -3906,6 +3965,27 @@ async def _run_raksh_order(
     if _is_raksh_order_cancelled(order_id):
         return
 
+    with db_conn() as c:
+        quota_result = c.execute(
+            """
+            SELECT COUNT(*) FILTER (
+                       WHERE status='success' AND is_referral_free
+                   ) AS free_success_count,
+                   COUNT(*) FILTER (
+                       WHERE status='success' AND NOT is_referral_free
+                   ) AS paid_success_count
+            FROM raksh_order_items
+            WHERE order_id=%s
+            """,
+            (order_id,),
+        ).fetchone()
+    free_success_count = (
+        int(quota_result["free_success_count"] or 0) if quota_result else 0
+    )
+    paid_success_count = (
+        int(quota_result["paid_success_count"] or 0) if quota_result else 0
+    )
+
     identity_phones = success_phones[:20] + failed_phones[:10]
     account_identities = await _collect_raksh_account_identities(
         sessions,
@@ -3935,7 +4015,10 @@ async def _run_raksh_order(
     if payment_method == "points":
         refund = max(
             0,
-            total_cost - get_raksh_total(order["service_type"], success_count, "points"),
+            total_cost
+            - get_raksh_total(
+                order["service_type"], paid_success_count, "points"
+            ),
         )
 
     result_text = (
@@ -3961,12 +4044,23 @@ async def _run_raksh_order(
             (refund, special_count, result_text, order_id),
         ).fetchone()
         if completed_row:
+            order_params = order.get("params") or {}
+            if isinstance(order_params, str):
+                try:
+                    order_params = json.loads(order_params)
+                except (TypeError, ValueError):
+                    order_params = {}
+            settle_referral_free_raksh_reservation(
+                order_params.get("_referral_free_reservation_id"),
+                free_success_count,
+                connection=c,
+            )
             contributor_credits = _credit_raksh_contributors(
                 c,
                 order_id,
                 payment_method,
                 total_cost,
-                success_count,
+                paid_success_count,
                 refund,
             )
 
@@ -4061,18 +4155,85 @@ async def _start_raksh_execution(
     if payment_method == "contributor_free":
         params["_contributor_only"] = True
         params["_contributor_share_percent"] = 0
+    referral_free_quantity = 0
+    referral_free_reservation_id = None
+    if payment_method == "points":
+        if is_raksh_permanent_free_user(user.id, service_type):
+            actual_cost = 0
+        else:
+            reservation = reserve_referral_free_raksh_quota(
+                user.id,
+                quantity,
+                "raksh_order",
+                service_type,
+            )
+            referral_free_quantity = int(reservation.get("quantity") or 0)
+            referral_free_reservation_id = reservation.get("reservation_id")
+            billable_quantity = max(0, int(quantity) - referral_free_quantity)
+            channel_count = len(context.user_data.get("raksh_channels") or [])
+            actual_cost = (
+                _get_contextual_raksh_total(
+                    svc,
+                    billable_quantity,
+                    "points",
+                    channel_count,
+                    context,
+                )
+                if svc
+                else get_raksh_total(service_type, billable_quantity, "points")
+            )
+
+        if actual_cost > int(total_cost or 0):
+            if total_cost:
+                add_points(user.id, int(total_cost))
+            settle_referral_free_raksh_reservation(
+                referral_free_reservation_id, 0
+            )
+            await progress_msg.edit_text(
+                "⚠️ تغيّرت الحصة المجانية قبل تثبيت الطلب؛ لم يُخصم شيء. "
+                "أعد فتح الخدمة لتأكيد السعر المحدّث.",
+                reply_markup=raksh_menu_kb(user.id == OWNER_ID),
+            )
+            _clear_raksh_state(context)
+            return
+        if actual_cost < int(total_cost or 0):
+            add_points(user.id, int(total_cost) - actual_cost)
+        total_cost = actual_cost
+        if referral_free_quantity:
+            params["_referral_free_quantity"] = referral_free_quantity
+            params["_referral_free_reservation_id"] = referral_free_reservation_id
+            # Keep this request to exactly its allocated account slots:
+            # failed free accounts may be retried in a new free order instead
+            # of being replaced by extra paid accounts in the same order.
+            params["_fixed_account_count"] = True
+            await progress_msg.edit_text(
+                "✅ تم تثبيت الطلب.\n\n"
+                f"🎁 الحسابات المجانية المحجوزة: {referral_free_quantity}\n"
+                f"💳 الحسابات المدفوعة: {max(0, quantity - referral_free_quantity)}\n"
+                f"💰 النقاط المخصومة: {total_cost}",
+                reply_markup=raksh_menu_kb(user.id == OWNER_ID),
+            )
     # يُحفظ صاحب الطلب داخل params حتى تصل كابتشا التحقق اليدوي إلى الطالب
     # الصحيح، حتى لو استُؤنف الطلب بعد إعادة تشغيل البوت.
     params["requester_id"] = int(user.id)
-    order_id = _create_raksh_order(
-        user.id,
-        service_type,
-        quantity,
-        payment_method,
-        total_cost,
-        params,
-        sessions,
-    )
+    try:
+        order_id = _create_raksh_order(
+            user.id,
+            service_type,
+            quantity,
+            payment_method,
+            total_cost,
+            params,
+            sessions,
+            referral_free_quantity=referral_free_quantity,
+        )
+    except Exception:
+        settle_referral_free_raksh_reservation(
+            referral_free_reservation_id, 0
+        )
+        if payment_method == "points" and total_cost:
+            add_points(user.id, total_cost)
+        raise
     await _send_raksh_order_to_group(
         context.bot,
         user.id,

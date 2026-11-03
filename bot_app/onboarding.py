@@ -232,7 +232,8 @@ async def _notify_referral_credit(context, user, credited) -> str:
     invited_by, rp = credited
     free_minutes = int(context.user_data.pop("referral_reward_granted_minutes", 0) or 0)
     free_note = (
-        f"\n🎁 حصلت أيضاً على رشق مجاني لكل الخدمات لمدة {free_minutes} دقيقة."
+        f"\n🎁 حصلت أيضاً على رشق مجاني حتى 250 حساباً ناجحاً عبر خدمات الرشق "
+        f"لمدة {free_minutes} دقيقة (لا يشمل مواقع الرشق)."
         if free_minutes > 0
         else ""
     )

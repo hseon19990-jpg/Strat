@@ -180,25 +180,40 @@ class CommentService(RakshService):
             context.user_data["raksh_step"] = "payment"
 
             channel_count = len(context.user_data.get("raksh_channels") or [])
-            points_cost = self.get_total(quantity, "points", channel_count)
+            points_cost, free_quantity = self.get_points_quote(
+                user.id, quantity, channel_count
+            )
             stars_cost = self.get_total(quantity, "stars", channel_count)
             extra_channel_cost = max(
                 0, channel_count - self.config.channel_free_limit
             ) * self.config.channel_extra_point_price
+            if quantity <= free_quantity:
+                extra_channel_cost = 0
 
             await update.message.reply_text(
                 f"📋 *تفاصيل الطلب*\n\n"
                 f"🔗 الرابط: `{context.user_data['raksh_link']}`\n"
                 f"✍️ التعليق: `{context.user_data['raksh_comment']}`\n"
                 f"🔢 العدد: {quantity}\n\n"
-                f"📢 القنوات الإجبارية: {channel_count}\n"
-                f"➕ تكلفة القنوات الإضافية: {extra_channel_cost} نقطة\n\n"
-                f"💳 *اختر طريقة الدفع:*",
+                + (
+                    f"🎁 ضمن الحصة المجانية: {free_quantity} حساب\n"
+                    if free_quantity
+                    else ""
+                )
+                + "\n"
+                + f"📢 القنوات الإجبارية: {channel_count}\n"
+                + f"➕ تكلفة القنوات الإضافية: {extra_channel_cost} نقطة\n\n"
+                + f"💳 *اختر طريقة الدفع:*",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
                     [
                         InlineKeyboardButton(
-                            f"💰 دفع بالنقاط ({points_cost} نقطة)",
+                            f"💰 دفع بالنقاط ({points_cost} نقطة)"
+                            + (
+                                f" — {free_quantity} حساب مجاني"
+                                if free_quantity
+                                else ""
+                            ),
                             callback_data=f"raksh:pay:points:{self.service_type}:{quantity}"
                         )
                     ],

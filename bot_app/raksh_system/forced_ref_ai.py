@@ -312,7 +312,9 @@ class ForcedRefAIService(RakshService):
             context.user_data["raksh_quantity"] = quantity
             context.user_data["raksh_step"] = "payment"
 
-            points_cost = self.get_total(quantity, "points", len(context.user_data.get("raksh_channels") or []))
+            points_cost, free_quantity = self.get_points_quote(
+                user.id, quantity, len(context.user_data.get("raksh_channels") or [])
+            )
             stars_cost = self.get_total(quantity, "stars", len(context.user_data.get("raksh_channels") or []))
 
             await update.message.reply_text(
@@ -325,7 +327,8 @@ class ForcedRefAIService(RakshService):
                 reply_markup=InlineKeyboardMarkup([
                     [
                         InlineKeyboardButton(
-                            f"💰 دفع بالنقاط ({points_cost} نقطة)",
+                            f"💰 دفع بالنقاط ({points_cost} نقطة)"
+                            + (f" — {free_quantity} حساب مجاني" if free_quantity else ""),
                             callback_data=f"{self.get_callback_prefix()}:payment:points:{quantity}:{points_cost}"
                         )
                     ],
@@ -391,8 +394,13 @@ class ForcedRefAIService(RakshService):
                 return True
 
             total_cost = self.get_total(quantity, payment_method, len(context.user_data.get("raksh_channels") or []))
+            free_quantity = 0
             if payment_method == "points":
-                total_cost = service_points_cost(user.id, total_cost)
+                total_cost, free_quantity = self.get_points_quote(
+                    user.id,
+                    quantity,
+                    len(context.user_data.get("raksh_channels") or []),
+                )
             await query.edit_message_text(
                 f"📋 *تأكيد الطلب*\n\n"
                 f"📢 القنوات الإجبارية: {len(context.user_data.get('raksh_channels', []))} قناة\n"
@@ -438,6 +446,13 @@ class ForcedRefAIService(RakshService):
                 return True
 
             total_cost = self.get_total(quantity, payment_method, len(context.user_data.get("raksh_channels") or []))
+            free_quantity = 0
+            if payment_method == "points":
+                total_cost, free_quantity = self.get_points_quote(
+                    user.id,
+                    quantity,
+                    len(context.user_data.get("raksh_channels") or []),
+                )
 
             if payment_method == "points":
                 if not deduct_points(user.id, total_cost):

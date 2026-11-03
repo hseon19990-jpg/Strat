@@ -111,7 +111,9 @@ class PollService(RakshService):
 
             context.user_data["raksh_quantity"] = quantity
             context.user_data["raksh_step"] = "payment"
-            points_cost = self.get_total(quantity, "points", len(context.user_data.get("raksh_channels") or []))
+            points_cost, free_quantity = self.get_points_quote(
+                user.id, quantity, len(context.user_data.get("raksh_channels") or [])
+            )
             stars_cost = self.get_total(quantity, "stars", len(context.user_data.get("raksh_channels") or []))
 
             await update.message.reply_text(
@@ -119,13 +121,23 @@ class PollService(RakshService):
                 f"🔗 الرابط: `{context.user_data['raksh_link']}`\n"
                 f"🔢 الخيار: {context.user_data['raksh_poll_option']}\n"
                 f"📦 العدد: {quantity}\n"
-                f"💰 السعر بالنقاط: {points_cost} نقطة\n"
-                f"⭐ السعر بالنجوم: {stars_cost} نجمة\n\n"
-                "اختر طريقة الدفع:",
+                + (
+                    f"🎁 ضمن الحصة المجانية: {free_quantity} حساب\n"
+                    if free_quantity
+                    else ""
+                )
+                + f"💰 السعر بالنقاط: {points_cost} نقطة\n"
+                + f"⭐ السعر بالنجوم: {stars_cost} نجمة\n\n"
+                + "اختر طريقة الدفع:",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton(
-                        f"💰 دفع بالنقاط ({points_cost} نقطة)",
+                        f"💰 دفع بالنقاط ({points_cost} نقطة)"
+                        + (
+                            f" — {free_quantity} حساب مجاني"
+                            if free_quantity
+                            else ""
+                        ),
                         callback_data=f"raksh:pay:points:{self.service_type}:{quantity}",
                     )],
                     [InlineKeyboardButton(

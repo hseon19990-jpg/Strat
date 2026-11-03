@@ -298,21 +298,37 @@ class AllPostsReactionsService(RakshService):
             context.user_data["raksh_duration_days"] = duration_days
             context.user_data["raksh_reaction"] = "random"
             context.user_data["raksh_step"] = "payment"
-            points_cost = self.get_total_for_duration(quantity, "points", duration_days)
+            free_quantity = min(
+                quantity,
+                get_referral_free_raksh_remaining(user.id),
+            )
+            points_cost = self.get_total_for_duration(
+                quantity - free_quantity, "points", duration_days
+            )
             stars_cost = self.get_total_for_duration(quantity, "stars", duration_days)
             await update.message.reply_text(
                 "📋 *تفاصيل الطلب*\n\n"
                 f"🔗 الرابط: {context.user_data['raksh_link']}\n"
                 f"👥 الحسابات لكل منشور: {quantity}\n"
                 f"🗓 المدة: {duration_days} يوم\n\n"
-                f"💰 التكلفة: {points_cost} نقطة أو {stars_cost} نجمة\n\n"
-                f"سيتم ضم {quantity} حساباً إلى القناة قبل بدء التفاعل.\n"
-                "كل منشور جديد سيتفاعل عليه هذا العدد من الحسابات طوال المدة.\n\n"
-                "💳 *اختر طريقة الدفع:*",
+                + (
+                    f"🎁 ضمن الحصة المجانية: {free_quantity} حساب\n"
+                    if free_quantity
+                    else ""
+                )
+                + f"💰 التكلفة: {points_cost} نقطة أو {stars_cost} نجمة\n\n"
+                + f"سيتم ضم {quantity} حساباً إلى القناة قبل بدء التفاعل.\n"
+                + "كل منشور جديد سيتفاعل عليه هذا العدد من الحسابات طوال المدة.\n\n"
+                + "💳 *اختر طريقة الدفع:*",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton(
-                        f"💰 دفع بالنقاط ({points_cost} نقطة)",
+                        f"💰 دفع بالنقاط ({points_cost} نقطة)"
+                        + (
+                            f" — {free_quantity} حساب مجاني"
+                            if free_quantity
+                            else ""
+                        ),
                         callback_data=f"raksh:pay:points:{self.service_type}:{quantity}",
                     )],
                     [InlineKeyboardButton(

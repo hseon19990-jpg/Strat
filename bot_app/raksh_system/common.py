@@ -19,6 +19,9 @@ from ..users import (
     get_setting,
     set_setting,
     refresh_daily_referral_free_access,
+    get_referral_free_raksh_remaining,
+    reserve_referral_free_raksh_quota,
+    settle_referral_free_raksh_reservation,
 )
 from ..ui import main_menu_kb
 from telethon import TelegramClient, functions
@@ -1433,6 +1436,20 @@ class RakshService:
                 extra_channels = 0
             total += extra_channels * extra_channel_price
         return total
+
+    def get_points_quote(
+        self, user_id: int, quantity: int, channel_count: int = 0
+    ) -> Tuple[int, int]:
+        """السعر بالنقاط بعد تطبيق الحصة المجانية على أول الحسابات المتاحة."""
+        requested = max(0, int(quantity or 0))
+        free_quantity = min(
+            requested,
+            get_referral_free_raksh_remaining(int(user_id)),
+        )
+        return (
+            self.get_total(requested - free_quantity, "points", channel_count),
+            free_quantity,
+        )
 
     def get_rate_text(self, payment_method: str) -> str:
         config = self.get_price_config()
