@@ -179,19 +179,23 @@ def main():
     # Railway can occasionally take longer to establish or return a Telegram
     # API connection. Configure both request clients: get_me() and normal bot
     # calls use the default client, while long polling uses the updates client.
+    # Pool exhaustion fix: the previous 32-connection pool with 120s read
+    # timeout was filled by background Raksh/report sends, so /start and other
+    # user replies failed with "Pool timeout" and the bot looked dead.
+    # A much larger pool plus short read timeouts frees stuck connections fast.
     telegram_request = HTTPXRequest(
-        connection_pool_size=32,
-        read_timeout=120,
-        connect_timeout=60,
-        write_timeout=60,
-        pool_timeout=60,
+        connection_pool_size=256,
+        read_timeout=30,
+        connect_timeout=20,
+        write_timeout=30,
+        pool_timeout=30,
     )
     updates_request = HTTPXRequest(
-        connection_pool_size=2,
-        read_timeout=120,
-        connect_timeout=60,
-        write_timeout=60,
-        pool_timeout=60,
+        connection_pool_size=4,
+        read_timeout=60,
+        connect_timeout=20,
+        write_timeout=30,
+        pool_timeout=30,
     )
 
     telegram_bot = ResilientExtBot(
@@ -205,7 +209,7 @@ def main():
         .updater(polling_updater)
         # Bound handler concurrency so Telegram API work cannot grow far
         # beyond the shared request pool under bursts of updates.
-        .concurrent_updates(16)
+        .concurrent_updates(64)
         .build()
     )
 
