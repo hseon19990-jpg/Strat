@@ -98,6 +98,8 @@ async def pre_checkout_router(update: Update, context: ContextTypes.DEFAULT_TYPE
     payload = update.pre_checkout_query.invoice_payload or ""
     if payload.startswith("raksh_stars:"):
         await raksh_pre_checkout(update, context)
+    elif payload.startswith("tgnum_stars:"):
+        await tgnum_pre_checkout(update, context)
     else:
         await pre_checkout(update, context)
 
@@ -107,6 +109,8 @@ async def successful_payment_router(update: Update, context: ContextTypes.DEFAUL
     payload = update.message.successful_payment.invoice_payload or ""
     if payload.startswith("raksh_stars:"):
         await raksh_successful_payment(update, context)
+    elif payload.startswith("tgnum_stars:"):
+        await tgnum_successful_payment(update, context)
     else:
         await successful_payment(update, context)
 

@@ -170,6 +170,11 @@ def main_menu_kb(
             item for item in menu_items
             if item["action_value"] != "buyback:start"
         ]
+    if not is_owner and not is_tgnum_visible():
+        menu_items = [
+            item for item in menu_items
+            if item["action_value"] != "tgnum:start"
+        ]
     rows = build_kb_rows(menu_items)
     if is_supervisor_user:
         rows.append([InlineKeyboardButton("🛡 لوحة المشرف", callback_data="sv:panel")])

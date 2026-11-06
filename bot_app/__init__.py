@@ -18,6 +18,7 @@ _SECTION_NAMES = (
     "security",
     "number_admin",
     "buyback",
+    "tg_numbers",
     "services",
     "legendary_comment",
     "ui",

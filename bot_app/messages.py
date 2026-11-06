@@ -239,6 +239,19 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+    if state.startswith("tgnum_") or state.startswith("os_tgnum_"):
+        try:
+            if await handle_tgnum_text(update, context, text):
+                return
+        except Exception as exc:
+            logger.exception("فشل معالجة أرقام تلي للمستخدم %s: %s", user.id, exc)
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text(
+                "⚠️ حدث خطأ أثناء المعالجة. حاول مجدداً.",
+                reply_markup=main_menu_kb(is_own),
+            )
+            return
+
     if state.startswith("buyback_"):
         try:
             if await handle_buyback_text(update, context, text):

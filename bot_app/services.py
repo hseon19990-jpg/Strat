@@ -227,6 +227,7 @@ def owner_settings_with_purchase_rate_after_sale(items):
 # same menu_items store makes them visible to the button manager as well.
 OWNER_SETTINGS_EXTRA_DEFAULTS = [
     ("🤖 مفتاح OpenAI", "os:openai_api", 1),
+    ("📲 إعدادات أرقام تلي", "tgnum:admin", 1),
     ("👑 إعدادات الخدمات الأسطورية", "legendary:settings", 1),
     ("💰 بيع حسابات تيليجرام", "os:toggle_buyback_visible", 2),
     ("📋 طلبات البيع", "buyback:owner:list", 2),
@@ -339,6 +340,7 @@ BUILTIN_DEFAULTS = {
          ("📱 تأجير أرقامي", "contributor_accounts", 2),
          ("📤 مشاركة حساب", "share_account:menu", 2),
         ("💰 بيع حساب تيليجرام", "buyback:start", 2),
+        ("📲 أرقام تلي كل دول العالم", "tgnum:start", 1),
         ("👑 خدمات تيليجرام أسطورية", "legendary_services", 1),
         ("🦇 تمويل قناتك حقيقي", "fund_channel", 1),
         ("👻 رابط دعوة", "referral", 1),

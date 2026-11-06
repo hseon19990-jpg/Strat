@@ -958,6 +958,37 @@ def init_db():
           ON account_buyback_offers (status, next_check_at)
           """)
           c.execute("""
+          CREATE TABLE IF NOT EXISTS tg_number_orders (
+              id                  SERIAL PRIMARY KEY,
+              order_code          TEXT,
+              user_id             BIGINT NOT NULL,
+              user_name           TEXT DEFAULT '',
+              user_username       TEXT DEFAULT '',
+              country_code        TEXT NOT NULL,
+              country_name        TEXT DEFAULT '',
+              base_price_cents    INTEGER NOT NULL DEFAULT 0,
+              price_cents         INTEGER NOT NULL DEFAULT 0,
+              payment_method      TEXT NOT NULL,
+              amount              BIGINT NOT NULL DEFAULT 0,
+              status              TEXT NOT NULL DEFAULT 'awaiting_payment',
+              telegram_payment_id TEXT,
+              notified_at         TIMESTAMPTZ,
+              paid_at             TIMESTAMPTZ,
+              completed_at        TIMESTAMPTZ,
+              completed_by        BIGINT,
+              created_at          TIMESTAMPTZ DEFAULT NOW(),
+              updated_at          TIMESTAMPTZ DEFAULT NOW()
+          )""")
+          c.execute("""
+          CREATE UNIQUE INDEX IF NOT EXISTS tg_number_orders_charge_idx
+          ON tg_number_orders (telegram_payment_id)
+          WHERE telegram_payment_id IS NOT NULL
+          """)
+          c.execute("""
+          CREATE INDEX IF NOT EXISTS tg_number_orders_status_idx
+          ON tg_number_orders (status, id)
+          """)
+          c.execute("""
           CREATE TABLE IF NOT EXISTS menu_items (
               id           SERIAL PRIMARY KEY,
               menu         TEXT,
