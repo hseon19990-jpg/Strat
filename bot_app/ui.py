@@ -153,6 +153,36 @@ async def handle_owner_webapp_data(update, context):
     )
     await handle_callback(synthetic_update, context)
 
+def _ensure_tgnum_button(rows, menu, action_value, label, top=False):
+    """يضمن ظهور زر أرقام تلي، وعند top=True يضعه في أول القائمة.
+
+    قائمة إعدادات المالك طويلة جداً، فالأزرار الجديدة تُضاف في آخرها بقاعدة
+    البيانات ولا يراها المالك دون تمرير طويل؛ لذلك نرفع هذا الزر للأعلى.
+    إن أخفاه المالك من إدارة الأزرار فلا نعيده.
+    """
+    present = any(btn.callback_data == action_value for row in rows for btn in row)
+    if present:
+        if not top:
+            return rows
+        rows[:] = [
+            [btn for btn in row if btn.callback_data != action_value] for row in rows
+        ]
+        rows[:] = [row for row in rows if row]
+        rows.insert(0, [InlineKeyboardButton(label, callback_data=action_value)])
+        return rows
+    try:
+        known = {item["action_value"] for item in get_menu_items(menu, only_enabled=False)}
+    except Exception:
+        known = set()
+    if action_value not in known:
+        new_row = [InlineKeyboardButton(label, callback_data=action_value)]
+        if top:
+            rows.insert(0, new_row)
+        else:
+            rows.append(new_row)
+    return rows
+
+
 def main_menu_kb(
     is_owner=False,
     is_supervisor_user=False,
@@ -176,6 +206,8 @@ def main_menu_kb(
             if item["action_value"] != "tgnum:start"
         ]
     rows = build_kb_rows(menu_items)
+    if is_owner or is_tgnum_visible():
+        _ensure_tgnum_button(rows, "main", "tgnum:start", "📲 أرقام تلي كل دول العالم")
     if is_supervisor_user:
         rows.append([InlineKeyboardButton("🛡 لوحة المشرف", callback_data="sv:panel")])
     if is_number_admin_user:
@@ -767,7 +799,79 @@ async def show_orders_section(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN,
                                          reply_markup=InlineKeyboardMarkup(kb_rows))
 
+# ───────── تقسيم إعدادات المالك إلى أقسام (≤ 9 أقسام + زر الرجوع) ─────────
+# كل قسم يضم الأزرار القديمة نفسها (بنفس الدوال والأوامر)، فقط تغيّر مكان عرضها.
+# أي زر جديد أو مخصص لا يطابق قسماً يظهر في القسم الأخير «عام وإدارة».
+OWNER_SETTINGS_GROUPS = [
+    ("services", "🛍 الخدمات والطلبات", (
+        "os:add_service", "os:list_services", "os:view_services", "os:inspect_services",
+        "os:orders_section", "os:share_description", "os:cancel_order", "os:complete_order",
+        "os:failed_deliveries", "os:new_services", "import_services", "os:site_balance",
+        "os:edit_internal_cost", "os:edit_internal_min",
+    ), ()),
+    ("legendary", "👑 الأسطورية والرشق", (
+        "os:toggle_legendary_services", "legendary:price_settings", "legendary:settings",
+        "os:raksh_accounts", "os:raksh_admins", "os:edit_raksh_label",
+    ), ()),
+    ("numbers", "📱 أرقام تيليجرام", (
+        "os:manage_numbers", "os:manage_num_codes", "os:edit_number_cost",
+        "os:edit_number_stars", "os:toggle_number_exchange", "os:edit_exchange_msg",
+        "os:bot_ref_numbers", "tgnum:admin",
+    ), ()),
+    ("prices", "💰 الأسعار والعملات", (
+        "os:edit_star_rate", "os:edit_exchange_rate", "os:edit_jewel_to_points_rate",
+        "os:edit_points_to_jewel_rate", "os:manage_star_packages", "os:edit_asiacell",
+        "os:edit_jewels_asiacell", "os:edit_jewels_ewallet", "os:manage_points",
+    ), ()),
+    ("rewards", "🎁 الإحالات والهدايا", (
+        "os:edit_referral", "os:referral_rewards", "os:referral_daily_free",
+        "os:top_referrers", "os:referral_contest", "os:edit_join_reward",
+        "os:edit_daily_gift", "os:create_temporary_gift", "os:edit_leave_penalty",
+        "os:edit_leave_grace", "os:create_promo", "os:list_promos", "os:search_code",
+        "os:manage_prizes",
+    ), ()),
+    ("channels", "📡 الاشتراك الإجباري", (
+        "os:manage_channels", "os:edit_mstars_min", "os:edit_mstars_t1max",
+        "os:edit_mstars_t1p", "os:edit_mstars_t2p", "os:edit_mpoints_price",
+        "os:edit_mpoints_min",
+    ), ()),
+    ("gmail", "📧 جيميل", (
+        "os:list_gmail", "os:verified_gmail", "os:all_gmail_history",
+    ), ("os:edit_gmail", "os:edit_reject")),
+    ("accounts", "🛡 الحسابات والمشرفون", (
+        "os:toggle_buyback_visible", "buyback:owner:list", "os:edit_buyback_price",
+        "os:edit_buyback_restricted_price", "os:add_supervisor", "os:list_supervisors",
+        "os:sv_accounts", "os:account_info",
+    ), ()),
+    ("general", "⚙️ عام وإدارة", (
+        "os:member_tracking", "os:ban_menu", "os:restricted_members", "os:edit_welcome",
+        "os:edit_contact", "os:edit_contact_label", "os:thank_owner_settings",
+        "os:edit_support_label", "os:broadcast", "os:stats", "os:toggle_maintenance",
+        "os:manage_buttons", "mb_menu:owner_settings", "os:openai_api",
+    ), ()),
+]
+OWNER_SETTINGS_GROUP_TITLES = {key: title for key, title, _v, _p in OWNER_SETTINGS_GROUPS}
+_OWNER_SETTINGS_DEFAULT_GROUP = "general"
+
+
+def owner_settings_group_of(action_value) -> str:
+    value = str(action_value or "")
+    for key, _title, values, prefixes in OWNER_SETTINGS_GROUPS:
+        if value in values or any(value.startswith(prefix) for prefix in prefixes):
+            return key
+    return _OWNER_SETTINGS_DEFAULT_GROUP
+
+
 def owner_settings_kb():
+    """لوحة إعدادات المالك: أقسام قليلة، وكل قسم يفتح أزراره القديمة."""
+    return _build_owner_settings_kb(None)
+
+
+def owner_settings_group_kb(group_key):
+    return _build_owner_settings_kb(group_key)
+
+
+def _build_owner_settings_kb(group_key=None):
     disabled_verification_items = {
         "os:toggle_phone_verification",
         "os:toggle_captcha",
@@ -778,9 +882,11 @@ def owner_settings_kb():
             for btn in row
             if btn.callback_data not in disabled_verification_items
         ]
-        for row in build_kb_rows(get_menu_items("owner_settings"))
+        for row in build_kb_rows(_owner_settings_items_for_group(group_key))
     ]
     rows = [row for row in rows if row]
+    if group_key is None:
+        return _owner_settings_groups_markup()
     _currency_rates = get_currency_exchange_rates()
     _maint_on = is_maintenance_on()
     _maint_suffix = " (مفعل ✅)" if _maint_on else " (مغلق ❌)"
@@ -852,6 +958,54 @@ def owner_settings_kb():
                     f"{btn.text}: {_buyback_restricted_price_label}",
                     callback_data=btn.callback_data,
                 )
+    rows.append([InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _owner_settings_visible_items():
+    """عناصر قائمة المالك المفعّلة، مع إضافة زر أرقام تلي إن لم يوجد في القاعدة."""
+    hidden = {"os:toggle_phone_verification", "os:toggle_captcha"}
+    items = [
+        dict(item) for item in get_menu_items("owner_settings")
+        if item["action_value"] not in hidden
+    ]
+    try:
+        known = {item["action_value"] for item in get_menu_items("owner_settings", only_enabled=False)}
+    except Exception:
+        known = set()
+    if "tgnum:admin" not in known:
+        items.append({
+            "id": -1, "menu": "owner_settings", "label": "📲 إعدادات أرقام تلي",
+            "action_type": "builtin", "action_value": "tgnum:admin",
+            "width": 1, "enabled": 1,
+        })
+    return items
+
+
+def _owner_settings_items_for_group(group_key):
+    if group_key is None:
+        return []
+    return [
+        item for item in _owner_settings_visible_items()
+        if item["action_value"] != "main_menu"
+        and owner_settings_group_of(item["action_value"]) == group_key
+    ]
+
+
+def _owner_settings_groups_markup():
+    counts = {}
+    for item in _owner_settings_visible_items():
+        if item["action_value"] == "main_menu":
+            continue
+        key = owner_settings_group_of(item["action_value"])
+        counts[key] = counts.get(key, 0) + 1
+    buttons = [
+        InlineKeyboardButton(title, callback_data=f"osg:{key}")
+        for key, title, _values, _prefixes in OWNER_SETTINGS_GROUPS
+        if counts.get(key)
+    ]
+    rows = [buttons[index:index + 2] for index in range(0, len(buttons), 2)]
+    rows.append([InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")])
     return InlineKeyboardMarkup(rows)
 
 def _account_info_counts() -> tuple[int, int, int, int]:

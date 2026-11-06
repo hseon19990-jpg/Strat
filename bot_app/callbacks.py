@@ -251,6 +251,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as _gate_err:
             logger.warning(f"⚠️ خطأ في فحص القنوات الإجبارية (callback) للمستخدم {user.id}: {_gate_err}")
 
+    if data.startswith("osg:") and is_own:
+        _group_key = data.split(":", 1)[1]
+        _group_title = OWNER_SETTINGS_GROUP_TITLES.get(_group_key)
+        if _group_title:
+            reset_owner_flow(context)
+            await q.edit_message_text(
+                f"⚙️ *إعدادات المالك — {_group_title}:*",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=owner_settings_group_kb(_group_key),
+            )
+            return
+
     if data.startswith("tgnum:"):
         if await handle_tgnum_callback(update, context, q, data, user, is_own):
             return
