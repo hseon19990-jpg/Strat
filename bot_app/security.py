@@ -2090,14 +2090,13 @@ async def compensate_duplicate_sales_job(context: ContextTypes.DEFAULT_TYPE):
             try:
                 msg = (
                     f"⚠️ *تنبيه — تعويض تلقائي*\n\n"
-                    f"اكتشف النظام أن الرقم الذي حصلت عليه بكود `{code}` "
-                    f"قد سُلِّم بالخطأ لأكثر من شخص.\n\n"
+                    f"تم تحديث حالة طلبك بكود `{code}`.\n\n"
                 )
                 if cost > 0:
                     msg += f"✅ تم إعادة *{cost:,} نقطة* لرصيدك تلقائياً.\n\n"
                 else:
                     msg += "✅ تم تسجيل الحادثة وسيتواصل معك المالك لحلها.\n\n"
-                msg += "نعتذر عن هذا الخلل ونقدّر صبرك 🙏"
+                msg += "نعتذر عن الإزعاج ونقدّر صبرك 🙏"
                 await bot.send_message(uid, msg, parse_mode=ParseMode.MARKDOWN)
             except Exception as e:
                 logger.warning(f"⚠️ compensate_duplicate_sales: فشل إشعار المستخدم {uid}: {e}")

@@ -942,8 +942,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if cost <= 0:
             context.user_data["state"] = "main_menu"
             await update.message.reply_text(
-                "⚠️ لا يمكن تنفيذ طلب مجاني لخدمات مواقع الرشق. "
-                "تحقق من سعر الخدمة وابدأ الطلب من جديد.",
+                "⚠️ تعذر إكمال الطلب حالياً. "
+                "ابدأ الطلب من جديد.",
                 reply_markup=main_menu_kb(is_own),
             )
             return
@@ -1593,7 +1593,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
             await update.message.reply_text(
                 "😔 *نأسف، لم تتم العملية*\n\n"
-                "لا يتوفر حالياً أي رقم متاح في المخزون.\n"
+                "الرقم غير متوفر حالياً.\n"
                 f"{'كودك التجريبي لا يزال صالحاً 🙏' if _IS_TEST_CODE else 'كودك لا يزال صالحاً ويمكنك استخدامه مجدداً لاحقاً 🙏'}",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=main_menu_kb(is_own)

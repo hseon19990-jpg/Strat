@@ -263,6 +263,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+    if data.startswith("mmg:"):
+        _mmg_key = data.split(":", 1)[1]
+        _mmg_kb = main_menu_group_kb(_mmg_key, effective_is_own)
+        if _mmg_kb is not None:
+            context.user_data["state"] = "main_menu"
+            await q.edit_message_text(
+                MAIN_MENU_GROUPS[_mmg_key]["title"],
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=_mmg_kb,
+            )
+            return
+
     if data.startswith("tgnum:"):
         if await handle_tgnum_callback(update, context, q, data, user, is_own):
             return

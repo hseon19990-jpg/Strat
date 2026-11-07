@@ -183,12 +183,33 @@ def _ensure_tgnum_button(rows, menu, action_value, label, top=False):
     return rows
 
 
-def main_menu_kb(
-    is_owner=False,
-    is_supervisor_user=False,
-    is_number_admin_user=False,
-):
-    # المالك والأعضاء يستخدمون قائمة main نفسها وبنفس الأسماء والترتيب.
+# ───────────── تجميع أزرار القائمة الرئيسية في أزرار رئيسية ─────────────
+# لتصغير الواجهة: الأزرار المذكورة هنا تختفي من الشاشة الأولى وتظهر داخل
+# زر مجمّع واحد. يمكنك تغيير المحتوى بتعديل القوائم التالية فقط.
+# الأزرار تبقى مأخوذة من إعدادات المالك (الأسماء/الإخفاء/الترتيب) كما هي.
+MAIN_MENU_GROUPS = {
+    "gifts": {
+        "label": "🎁 الهدايا والمكافآت",
+        "title": "🎁 *الهدايا والمكافآت*\n\nاختر من القائمة:",
+        "actions": (
+            "daily_gift", "temporary_gift", "use_promo", "exchange_points",
+            "top_ref_today", "referral_contest_view", "gmail_points",
+            "forced_ref", "thank_owner",
+        ),
+    },
+    "wallet": {
+        "label": "💼 حسابي ومحفظتي",
+        "title": "💼 *حسابي ومحفظتي*\n\nاختر من القائمة:",
+        "actions": (
+            "my_info", "my_numbers", "collect_points", "currency_exchange",
+            "transfer_points", "contributor_accounts", "share_account:menu",
+            "buyback:start",
+        ),
+    },
+}
+
+
+def _filtered_main_menu_items(is_owner=False):
     menu_items = visible_main_menu_items(get_menu_items("main"), is_owner)
     if not is_legendary_services_visible():
         menu_items = [
@@ -205,7 +226,66 @@ def main_menu_kb(
             item for item in menu_items
             if item["action_value"] != "tgnum:start"
         ]
-    rows = build_kb_rows(menu_items)
+    return menu_items
+
+
+def _group_of_action(action_value):
+    for key, group in MAIN_MENU_GROUPS.items():
+        if action_value in group["actions"]:
+            return key
+    return None
+
+
+def main_menu_group_kb(group_key, is_owner=False):
+    """أزرار شاشة داخل زر مجمّع، أو None إن كان المفتاح غير معروف."""
+    if group_key not in MAIN_MENU_GROUPS:
+        return None
+    items = [
+        item for item in _filtered_main_menu_items(is_owner)
+        if _group_of_action(item["action_value"]) == group_key
+    ]
+    rows = build_kb_rows(items)
+    rows.append([InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")])
+    return InlineKeyboardMarkup(rows)
+
+
+def main_menu_kb(
+    is_owner=False,
+    is_supervisor_user=False,
+    is_number_admin_user=False,
+):
+    # المالك والأعضاء يستخدمون قائمة main نفسها وبنفس الأسماء والترتيب.
+    menu_items = _filtered_main_menu_items(is_owner)
+
+    # الأزرار المجمّعة تُخفى من الشاشة الأولى ويظهر بدلها زر واحد لكل مجموعة.
+    top_items = []
+    present_groups = []
+    for item in menu_items:
+        group_key = _group_of_action(item["action_value"])
+        if group_key is None:
+            top_items.append(item)
+        elif group_key not in present_groups:
+            present_groups.append(group_key)
+
+    rows = build_kb_rows(top_items)
+    # أزرار المجموعات قبل أزرار الدعم والإحالة: نضعها في صف واحد جنباً إلى جنب.
+    if present_groups:
+        group_row = [
+            InlineKeyboardButton(
+                MAIN_MENU_GROUPS[key]["label"], callback_data=f"mmg:{key}"
+            )
+            for key in present_groups
+        ]
+        # نضعها قبل آخر صف إن وُجد زر الدعم، وإلا في النهاية.
+        insert_at = len(rows)
+        for index, row in enumerate(rows):
+            if any(
+                getattr(btn, "callback_data", None) == "contact_support"
+                for btn in row
+            ):
+                insert_at = index
+                break
+        rows.insert(insert_at, group_row)
     if is_owner or is_tgnum_visible():
         _ensure_tgnum_button(rows, "main", "tgnum:start", "📲 أرقام تلي كل دول العالم")
     if is_supervisor_user:

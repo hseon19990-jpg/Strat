@@ -2443,7 +2443,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                     await context.bot.send_message(
                         uid,
                         f"✅ *تعويض تلقائي*\n\n"
-                        f"اكتشف النظام أن عمليتك `{pe['order_code'] or pe_id}` لم تكتمل.\n"
+                        f"تم تحديث حالة طلبك `{pe['order_code'] or pe_id}`.\n"
                         f"💰 تم إعادة *{pts:,} نقطة* لرصيدك تلقائياً.\n\n"
                         f"نعتذر عن الإزعاج 🙏",
                         parse_mode=ParseMode.MARKDOWN

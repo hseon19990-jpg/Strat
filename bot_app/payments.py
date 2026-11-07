@@ -538,7 +538,7 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 intent_id, "jewels_refunded", str(result.get("error") or "provider_error")
             )
             await update.message.reply_text(
-                f"⚠️ تعذّر إرسال الطلب إلى موقع الرشق؛ أُضيفت "
+                f"⚠️ تعذّر تنفيذ الطلب حالياً؛ أُضيفت "
                 f"{fmt_jewel_amount(payment.total_amount)} جواهر إلى رصيدك.",
                 reply_markup=main_menu_kb(is_own),
             )
@@ -977,7 +977,7 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         (charge_id,)
                     )
                 await update.message.reply_text(
-                    "✅ تم استلام الدفع، لكن لا يوجد حالياً رقم صالح في المخزون.\n"
+                    "✅ تم استلام الدفع، لكن الرقم غير متوفر حالياً.\n"
                     "تم حفظ طلبك وسيتم تسليمه عند توفر رقم.",
                     reply_markup=main_menu_kb(is_own)
                 )

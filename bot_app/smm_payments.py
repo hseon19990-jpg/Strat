@@ -387,7 +387,7 @@ async def execute_smm_payment_intent(
     try:
         await context.bot.send_message(
             user_id,
-            "✅ تم إرسال طلبك إلى موقع الرشق.\n\n"
+            "✅ تم قبول طلبك.\n\n"
             f"🔹 الخدمة: {html.escape(service_name, quote=False)}\n"
             f"🔢 الكمية: {quantity}\n"
             f"💳 المدفوع: {paid_text}\n"

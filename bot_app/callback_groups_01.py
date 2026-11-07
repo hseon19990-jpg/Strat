@@ -896,8 +896,8 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             if cost <= 0:
                 context.user_data["state"] = "main_menu"
                 await q.edit_message_text(
-                    "⚠️ لا يمكن تنفيذ طلب مجاني لخدمات مواقع الرشق. "
-                    "ابدأ الطلب من جديد بعد التحقق من سعر الخدمة.",
+                    "⚠️ تعذر إكمال الطلب حالياً. "
+                    "ابدأ الطلب من جديد.",
                     reply_markup=main_menu_kb(is_own),
                 )
                 return
@@ -956,7 +956,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                         payload=f"smm_stars:{intent_id}",
                         provider_token="",
                         currency="XTR",
-                        prices=[LabeledPrice("خدمة مواقع الرشق", int(intent["cost_stars"]))],
+                        prices=[LabeledPrice("الخدمة", int(intent["cost_stars"]))],
                     )
                 except Exception:
                     reset_smm_stars_invoice(intent_id, user.id)
@@ -1036,7 +1036,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                         )
                         return
                     await q.edit_message_text(
-                        "⚠️ تعذر إرسال الطلب إلى موقع الرشق، وأُعيدت المجوهرات إلى رصيدك.",
+                        "⚠️ تعذر تنفيذ الطلب حالياً، وأُعيدت المجوهرات إلى رصيدك.",
                         reply_markup=main_menu_kb(is_own),
                     )
                     return
@@ -1075,7 +1075,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 await q.edit_message_text("❌ تم إلغاء الطلب.", reply_markup=main_menu_kb(is_own))
             else:
                 await q.answer(
-                    "تم إيقاف الدفع بالنقاط لخدمات مواقع الرشق. ابدأ الطلب مجدداً واختر النجوم أو المجوهرات.",
+                    "هذه الخدمة تُدفع بالنجوم أو المجوهرات فقط. ابدأ الطلب مجدداً واختر إحداهما.",
                     show_alert=True,
                 )
             return
@@ -2734,7 +2734,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             add_points(user.id, cost)
             await q.edit_message_text(
                 "😔 *نأسف، لم تتم العملية*\n\n"
-                "لا يتوفر حالياً أي رقم متاح في المخزون.\n"
+                "الرقم غير متوفر حالياً.\n"
                 f"تم إعادة *{cost:,} نقطة* إلى رصيدك كاملةً.\n\n"
                 "يمكنك المحاولة مجدداً في وقت لاحق 🙏",
                 parse_mode=ParseMode.MARKDOWN,
