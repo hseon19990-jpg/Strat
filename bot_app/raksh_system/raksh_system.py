@@ -4147,7 +4147,7 @@ async def _start_raksh_execution(
         sessions = sessions[:quantity]
     if not sessions:
         await progress_msg.edit_text(
-            "❌ لا توجد حسابات متاحة.",
+            "⚠️ الخدمة غير متاحة حالياً. حاول لاحقاً.",
             reply_markup=raksh_menu_kb(user.id == OWNER_ID),
         )
         if payment_method == "points":
