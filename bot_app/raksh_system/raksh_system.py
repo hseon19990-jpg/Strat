@@ -454,8 +454,10 @@ def _is_raksh_order_cancelled(order_id: Optional[int]) -> bool:
     return bool(row and row["status"] == "cancelled")
 
 
-def _cancel_user_raksh_order(user_id: int, order_id: int) -> Dict:
-    """إلغاء طلب يملكه المستخدم وإيقاف الحسابات التي لم تكتمل."""
+def _cancel_user_raksh_order(user_id: int, order_id: int, no_refund: bool = False) -> Dict:
+    """إلغاء طلب يملكه المستخدم وإيقاف الحسابات التي لم تكتمل.
+
+    no_refund=True: إلغاء إداري عقابي دون أي تعويض للمستخدم."""
     refund = 0
     success_count = 0
     paid_success_count = 0
@@ -492,7 +494,7 @@ def _cancel_user_raksh_order(user_id: int, order_id: int) -> Dict:
         success_count = int(success_row["count"] or 0)
         free_success_count = int(success_row["free_success_count"] or 0)
         paid_success_count = int(success_row["paid_success_count"] or 0)
-        if payment_method == "points":
+        if payment_method == "points" and not no_refund:
             try:
                 refund = max(
                     0,
@@ -504,9 +506,11 @@ def _cancel_user_raksh_order(user_id: int, order_id: int) -> Dict:
             except Exception:
                 refund = 0
 
-        cancel_reason = "أُلغي من المستخدم"
+        cancel_reason = "أُلغي من الإدارة بسبب مخالفة (بدون تعويض)" if no_refund else "أُلغي من المستخدم"
         result_text = (
-            f"❌ أُلغي الطلب #{order_id}.\n"
+            f"❌ أُلغي الطلب #{order_id}"
+            + (" من الإدارة بسبب مخالفة ودون تعويض." if no_refund else ".")
+            + "\n"
             f"✅ المنجز قبل الإلغاء: {success_count}/{quantity}"
         )
         if refund > 0:
