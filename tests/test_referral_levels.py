@@ -8,6 +8,7 @@ USERS = Path(__file__).parents[1] / "bot_app" / "users.py"
 NAMES = {
     "get_referral_reward_type", "parse_referral_jewels", "get_referral_level1_jewels",
     "fmt_referral_amount", "_credit_referral_reward", "credit_referral_if_pending",
+    "referral_fraud_protection_enabled",
 }
 
 
