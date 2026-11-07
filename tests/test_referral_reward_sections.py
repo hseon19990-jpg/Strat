@@ -40,3 +40,12 @@ class ReferralRewardSectionsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReferralDailyWindowTests(unittest.TestCase):
+    def test_free_tier_counts_only_referrals_of_current_utc_day(self):
+        users = USERS.read_text(encoding="utf-8")
+        self.assertIn("credited_at >= (", users)
+        self.assertIn("date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'", users)
+        self.assertIn("(NOW() AT TIME ZONE 'UTC')::date", users)
+
