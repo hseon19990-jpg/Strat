@@ -1204,6 +1204,16 @@ async def handle_member_leave(update: Update, context: ContextTypes.DEFAULT_TYPE
     member_user = cmu.new_chat_member.user
     if member_user.is_bot:
         return
+    # تسجيل لحظة الانضمام للقنوات الإجبارية (لحماية الإحالات من الانضمام الآلي)
+    try:
+        _was_out = old_status in ("left", "kicked")
+        _now_in = new_status in ("member", "administrator", "creator")
+        if _was_out and _now_in and cmu.chat.username:
+            record_mandatory_join(
+                member_user.id, cmu.chat.username, int(cmu.date.timestamp())
+            )
+    except Exception as _join_exc:
+        logger.warning(f"record_mandatory_join error: {_join_exc}")
     was_in = old_status in ("member", "administrator", "creator", "restricted")
     now_out = new_status in ("left", "kicked")
     if not (was_in and now_out):

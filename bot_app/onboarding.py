@@ -224,8 +224,77 @@ async def proceed_after_mandatory(update: Update, context: ContextTypes.DEFAULT_
 
     await finalize_verification(update, context, user, edit=edit, skip_referral=False)
 
+REFERRAL_FRAUD_MESSAGE = (
+    "⚠️ *إشعار رسمي من الإدارة*\n\n"
+    "نُحيطك علماً بأنه رُصد على حسابك نشاط مخالف ضمن نظام الإحالات؛ "
+    "إذ انضم أحد المدعوين عبر رابطك إلى عدد من القنوات الإجبارية في الثانية نفسها، "
+    "وهو نمط يدل على استخدام وسائل آلية أو تلاعب.\n\n"
+    "لدينا نظام متقدّم لكشف الغش والرشق، وقد جرى تصنيف حسابك ضمن الحسابات الراشقة المخالفة. "
+    "وعليه، تم اتخاذ الإجراءات الآتية:\n"
+    "• تصفير رصيدك من النقاط والجواهر.\n"
+    "• إلغاء جميع طلبات الرشق الجارية لديك، سواء في مواقع الرشق أو في خدمات الرشق.\n\n"
+    "ونؤكد أنه لن يتم تعويضك عن أي من هذه الطلبات بأي شكل من الأشكال، "
+    "ولن يُنظر في أي طلب مراجعة أو تواصل مع المشرفين بهذا الشأن.\n\n"
+    "إدارة البوت"
+)
+
+
+async def _handle_referral_fraud(context, user, info: dict) -> None:
+    """ينفّذ بقية عقوبة الغش: إيقاف الطلبات الجارية، إشعار الداعي، وإبلاغ المالك."""
+    inviter_id = int(info["inviter_id"])
+    # أمر الإلغاء لدى موقع الرشق (إن كان يدعمه) — أفضل جهد دون أي تعويض
+    for panel, api_order_id, _code in info.get("smm_cancelled", []):
+        if not api_order_id:
+            continue
+        try:
+            await asyncio.to_thread(smm_request, "cancel", panel=panel, orders=str(api_order_id))
+        except Exception as exc:
+            logger.warning(f"⚠️ تعذر طلب إلغاء {api_order_id} لدى موقع الرشق: {exc}")
+    raksh_cancelled = 0
+    try:
+        from .raksh_system.raksh_system import _cancel_user_raksh_order
+        for order_id in info.get("raksh_order_ids", []):
+            try:
+                result = await asyncio.to_thread(
+                    _cancel_user_raksh_order, inviter_id, int(order_id), True
+                )
+                if result.get("status") == "cancelled":
+                    raksh_cancelled += 1
+            except Exception as exc:
+                logger.warning(f"⚠️ تعذر إلغاء طلب الرشق {order_id}: {exc}")
+    except Exception as exc:
+        logger.warning(f"⚠️ تعذر تحميل إلغاء طلبات الرشق: {exc}")
+    try:
+        await context.bot.send_message(
+            chat_id=inviter_id, text=REFERRAL_FRAUD_MESSAGE, parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as exc:
+        logger.warning(f"⚠️ فشل إرسال إشعار الغش للمستخدم {inviter_id}: {exc}")
+    if OWNER_ID:
+        try:
+            await context.bot.send_message(
+                chat_id=OWNER_ID,
+                text=(
+                    "🛡 حماية الإحالات: تم رصد انضمام جماعي في ثانية واحدة\n"
+                    f"👤 الداعي: {inviter_id}\n"
+                    f"🆔 المدعو: {user.id}\n"
+                    f"📡 انضم في {info['joined']} من {info['total']} قنوات إجبارية معاً\n"
+                    f"💰 النقاط قبل التصفير: {info['points_before']:,}\n"
+                    f"💎 الجواهر قبل التصفير: {fmt_referral_amount('jewels', info['jewels_before'])}\n"
+                    f"🧾 طلبات موقع الرشق الملغاة: {len(info.get('smm_cancelled', []))}\n"
+                    f"⚙️ طلبات خدمات الرشق الملغاة: {raksh_cancelled}"
+                ),
+            )
+        except Exception as exc:
+            logger.warning(f"⚠️ فشل إبلاغ المالك بحالة الغش: {exc}")
+
+
 async def _notify_referral_credit(context, user, credited) -> str:
     """إشعار الداعي بعد منح النقاط، ويعيد النص الذي يظهر للمدعو."""
+    fraud_info = context.user_data.pop("referral_fraud", None)
+    if fraud_info:
+        await _handle_referral_fraud(context, user, fraud_info)
+        return ""
     if not credited:
         return ""
 

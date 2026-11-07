@@ -58,6 +58,10 @@ def _referral_levels_text() -> str:
         "",
         f"نوع المكافأة الحالي: *{type_label}* (نوع واحد فقط يُمنح)",
         "",
+        "🛡 حماية الإحالات: " + ("مفعّلة" if referral_fraud_protection_enabled() else "معطّلة")
+        + " — عند انضمام المدعو في نفس الثانية إلى 50% أو أكثر من القنوات الإجبارية (قناتان على الأقل) "
+        "تُصفَّر نقاط وجواهر الداعي وتُلغى طلباته الجارية دون تعويض.",
+        "",
         "المستوى 1 = من دعاه العضو مباشرة.",
         "المستوى 2 فما فوق = من دعاهم مدعوّو العضو، وهكذا.",
         "",
@@ -82,6 +86,11 @@ def _referral_levels_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(
             "🔄 التحويل إلى جواهر" if rt == "points" else "🔄 التحويل إلى نقاط",
             callback_data="os:ref_type_toggle",
+        )],
+        [InlineKeyboardButton(
+            "🛡 الحماية: مفعّلة ✅ (اضغط للتعطيل)" if referral_fraud_protection_enabled()
+            else "🛡 الحماية: معطّلة ❌ (اضغط للتفعيل)",
+            callback_data="os:ref_fraud_toggle",
         )],
         [InlineKeyboardButton("✏️ المستوى 1 — نقاط", callback_data="os:edit_referral")],
         [InlineKeyboardButton("✏️ المستوى 1 — جواهر", callback_data="os:ref_l1_jewels")],
@@ -2430,6 +2439,15 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
         if data == "os:referral_levels" and is_own:
             await q.edit_message_text(
                 _referral_levels_text(),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=_referral_levels_kb(),
+            )
+            return
+
+        if data == "os:ref_fraud_toggle" and is_own:
+            set_setting("referral_fraud_protection", "0" if referral_fraud_protection_enabled() else "1")
+            await q.edit_message_text(
+                "✅ تم تغيير حالة الحماية.\n\n" + _referral_levels_text(),
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=_referral_levels_kb(),
             )

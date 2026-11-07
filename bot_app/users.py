@@ -10,6 +10,7 @@ import html
 import time
 import asyncio
 import uuid
+import random
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from . import shared as _shared
@@ -500,6 +501,127 @@ def _credit_referral_reward(c, user_id: int, reward_type: str, amount, level: in
         )
 
 
+def referral_fraud_protection_enabled() -> bool:
+    """هل حماية الإحالات (كشف الانضمام الآلي للقنوات الإجبارية) مفعّلة؟"""
+    return (get_setting("referral_fraud_protection") or "0").strip() == "1"
+
+
+def record_mandatory_join(user_id: int, channel_username: str, joined_ts) -> None:
+    """يسجّل لحظة انضمام (بالثانية) لقناة إجبارية، ليُكشف الانضمام الجماعي في ثانية واحدة."""
+    channel = (channel_username or "").lstrip("@").strip().lower()
+    if not channel or not user_id:
+        return
+    with db_conn() as c:
+        row = c.execute(
+            "SELECT 1 FROM mandatory_channels "
+            "WHERE LOWER(channel_username)=%s AND funding_type='mandatory'",
+            (channel,),
+        ).fetchone()
+        if not row:
+            return
+        c.execute(
+            "INSERT INTO mandatory_join_events (user_id, channel_username, joined_second) "
+            "VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
+            (int(user_id), channel, int(joined_ts)),
+        )
+        if random.random() < 0.01:
+            c.execute(
+                "DELETE FROM mandatory_join_events "
+                "WHERE created_at < NOW() - INTERVAL '30 days'"
+            )
+
+
+def _detect_same_second_mandatory_joins(c, user_id: int):
+    """يُرجع (انضم_معاً، أكبر_عدد_في_ثانية_واحدة، إجمالي_القنوات) أو None.
+
+    الشرط: انضمام المدعو في نفس الثانية إلى 50% أو أكثر من القنوات الإجبارية
+    الفعّالة، وبحد أدنى قناتان (حتى لا تُعدّ قناة واحدة غشاً).
+    """
+    channels = [
+        (r["channel_username"] or "").lstrip("@").strip().lower()
+        for r in c.execute(
+            "SELECT channel_username FROM mandatory_channels "
+            "WHERE active=1 AND funding_type='mandatory'"
+        ).fetchall()
+    ]
+    channels = [ch for ch in channels if ch]
+    total = len(channels)
+    if total < 2:
+        return None
+    needed = max(2, -(-total // 2))  # ceil(total * 0.5)
+    placeholders = ",".join(["%s"] * total)
+    row = c.execute(
+        "SELECT joined_second, COUNT(DISTINCT channel_username) AS cnt "
+        "FROM mandatory_join_events "
+        f"WHERE user_id=%s AND channel_username IN ({placeholders}) "
+        "GROUP BY joined_second ORDER BY cnt DESC LIMIT 1",
+        (int(user_id), *channels),
+    ).fetchone()
+    best = int((row or {}).get("cnt", 0) or 0)
+    if best >= needed:
+        return (best, total)
+    return None
+
+
+def _punish_referral_fraud(c, inviter_id: int, invited_id: int, joined: int, total: int) -> dict:
+    """يصفّر نقاط وجواهر الداعي ويلغي طلباته الجارية دون أي تعويض."""
+    before = c.execute(
+        "SELECT points, jewels FROM users WHERE user_id=%s", (inviter_id,)
+    ).fetchone() or {}
+    c.execute(
+        "UPDATE users SET points=LEAST(points,0), jewels=LEAST(COALESCE(jewels,0),0) "
+        "WHERE user_id=%s",
+        (inviter_id,),
+    )
+    old_jewels = Decimal(str(before.get("jewels") or 0))
+    if old_jewels > 0:
+        c.execute(
+            "INSERT INTO jewel_transactions "
+            "(user_id,amount,transaction_type,admin_id,reference) "
+            "VALUES (%s,%s,%s,%s,%s)",
+            (inviter_id, -old_jewels, "fraud_reset", None, f"referral_fraud:{invited_id}"),
+        )
+    smm_rows = c.execute(
+        "SELECT o.id, o.order_code, o.api_order_id, s.panel AS panel "
+        "FROM orders o LEFT JOIN services s ON s.id=o.service_id "
+        "WHERE o.user_id=%s AND o.status='pending'",
+        (inviter_id,),
+    ).fetchall()
+    smm_cancelled = []
+    for o in smm_rows:
+        c.execute(
+            "UPDATE orders SET status='cancelled', refund_points=0, "
+            "partial_refund_pts=0, refund_jewels=0 WHERE id=%s AND status='pending'",
+            (o["id"],),
+        )
+        smm_cancelled.append(
+            (o.get("panel") or 1, o.get("api_order_id") or "", o.get("order_code") or "")
+        )
+    raksh_ids = [
+        int(r["id"])
+        for r in c.execute(
+            "SELECT id FROM raksh_orders "
+            "WHERE user_id=%s AND status IN ('pending','running')",
+            (inviter_id,),
+        ).fetchall()
+    ]
+    c.execute(
+        "INSERT INTO referral_fraud_log "
+        "(inviter_id, invited_id, joined_count, total_channels) VALUES (%s,%s,%s,%s)",
+        (inviter_id, invited_id, joined, total),
+    )
+    return {
+        "inviter_id": inviter_id,
+        "invited_id": invited_id,
+        "joined": joined,
+        "total": total,
+        "smm_cancelled": smm_cancelled,
+        "raksh_order_ids": raksh_ids,
+        "points_before": int(before.get("points") or 0),
+        "jewels_before": old_jewels,
+    }
+
+
 def credit_referral_if_pending(user_id: int, context=None):
     """يمنح مكافأة الإحالة للداعي مرة واحدة بعد اكتمال دخول المدعو.
 
@@ -512,6 +634,7 @@ def credit_referral_if_pending(user_id: int, context=None):
         context.user_data.pop("referral_reward_granted_minutes", None)
         context.user_data.pop("referral_upper_rewards", None)
         context.user_data.pop("referral_reward_type", None)
+        context.user_data.pop("referral_fraud", None)
     reward_type = get_referral_reward_type()
     upper_rewards = []
     with db_conn() as c:
@@ -538,6 +661,15 @@ def credit_referral_if_pending(user_id: int, context=None):
         )
         if c.rowcount == 0:
             return None
+
+        # ── حماية الإحالات: انضمام جماعي في ثانية واحدة للقنوات الإجبارية ──
+        if referral_fraud_protection_enabled() and invited_by != globals().get("OWNER_ID"):
+            fraud = _detect_same_second_mandatory_joins(c, user_id)
+            if fraud:
+                info = _punish_referral_fraud(c, invited_by, user_id, fraud[0], fraud[1])
+                if context is not None:
+                    context.user_data["referral_fraud"] = info
+                return None
 
         # ── المستوى الأول ──
         if reward_type == "jewels":

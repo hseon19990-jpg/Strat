@@ -257,6 +257,28 @@ def init_db():
               created_at  TIMESTAMPTZ DEFAULT NOW()
           )""")
           c.execute("""
+          CREATE TABLE IF NOT EXISTS mandatory_join_events (
+              id               BIGSERIAL PRIMARY KEY,
+              user_id          BIGINT NOT NULL,
+              channel_username TEXT NOT NULL,
+              joined_second    BIGINT NOT NULL,
+              created_at       TIMESTAMPTZ DEFAULT NOW(),
+              UNIQUE (user_id, channel_username, joined_second)
+          )""")
+          c.execute("""
+          CREATE INDEX IF NOT EXISTS mandatory_join_events_user_idx
+          ON mandatory_join_events (user_id, joined_second)
+          """)
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS referral_fraud_log (
+              id            BIGSERIAL PRIMARY KEY,
+              inviter_id    BIGINT NOT NULL,
+              invited_id    BIGINT NOT NULL,
+              joined_count  INTEGER NOT NULL DEFAULT 0,
+              total_channels INTEGER NOT NULL DEFAULT 0,
+              created_at    TIMESTAMPTZ DEFAULT NOW()
+          )""")
+          c.execute("""
           CREATE TABLE IF NOT EXISTS referral_reward_claims (
               user_id     BIGINT NOT NULL,
               tier_id     INTEGER NOT NULL REFERENCES referral_reward_tiers(id) ON DELETE CASCADE,
@@ -1029,6 +1051,7 @@ def init_db():
               ('daily_gift_points', '100'),
               ('referral_points', '30'),
               ('referral_reward_type', 'points'),
+              ('referral_fraud_protection', '0'),
               ('referral_jewels', '0'),
               ('star_to_points', '250'),
               ('raksh_points_per_jewel', '1000'),
