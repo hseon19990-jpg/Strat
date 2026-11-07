@@ -344,6 +344,9 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if route == "/partner/ref-status":
+            self._partner_ref_status()
+            return
         if route not in {"/", "/health", "/healthz"}:
             self.send_response(404)
             self.end_headers()
@@ -355,6 +358,41 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+    def _partner_ref_status(self):
+        """GET /partner/ref-status?uid=<id> مع ترويسة X-Partner-Key.
+
+        يستخدمه بوت الإيميلات للتحقق أن المستخدم فتح هذا البوت وكان جديداً. يتطلب متغير البيئة PARTNER_API_KEY، وبدونه تُرفض كل الطلبات.
+        """
+        import hmac as _hmac
+        import json as _json
+        from urllib.parse import urlsplit, parse_qs
+
+        def reply(code, payload):
+            body = _json.dumps(payload).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
+        expected = os.getenv("PARTNER_API_KEY", "").strip()
+        provided = (self.headers.get("X-Partner-Key") or "").strip()
+        if not expected or not _hmac.compare_digest(expected, provided):
+            reply(403, {"error": "forbidden"})
+            return
+        query = parse_qs(urlsplit(self.path).query)
+        try:
+            uid = int((query.get("uid") or [""])[0])
+        except ValueError:
+            reply(400, {"error": "bad_uid"})
+            return
+        try:
+            reply(200, partner_ref_status(uid))
+        except Exception:
+            logger.exception("❌ فشل partner_ref_status")
+            reply(500, {"error": "server_error"})
 
     def do_HEAD(self):
         route = self.path.split("?", 1)[0]

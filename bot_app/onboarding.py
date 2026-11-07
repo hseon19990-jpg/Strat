@@ -393,6 +393,12 @@ async def _cmd_start_impl(update: Update, context: ContextTypes.DEFAULT_TYPE):
     invited_by = requested_invited_by if requested_invited_by != user.id else 0
 
     previous_user = get_user(user.id) or {}
+    # وقت أول /start للمستخدم الجديد، يطلبه بوت الإيميلات للتحقق من الجدة.
+    if not previous_user:
+        try:
+            record_first_seen(user.id)
+        except Exception:
+            logger.exception("❌ تعذر تسجيل وقت أول فتح للمستخدم")
     previous_invited_by = previous_user.get("invited_by") or 0
     db_user = get_or_create_user(user.id, user.username or "", user.full_name or "", invited_by)
     is_own = (user.id == OWNER_ID)

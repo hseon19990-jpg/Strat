@@ -8,6 +8,36 @@ domain.
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
+def record_first_seen(user_id: int) -> None:
+    """يسجّل وقت أول /start للمستخدم (UTC) مرة واحدة فقط.
+
+    يستخدمه بوت الإيميلات للتأكد أن المستخدم كان جديداً في هذا البوت وقت
+    دخوله عبر الرابط: يقارن هذا الوقت بوقت دخوله البوت الآخر.
+    """
+    with db_conn() as c:
+        c.execute(
+            "INSERT INTO first_seen (user_id) VALUES (?) "
+            "ON CONFLICT (user_id) DO NOTHING",
+            (int(user_id),),
+        )
+
+
+def partner_ref_status(user_id: int) -> dict:
+    """started: هل المستخدم موجود هنا؟ first_seen: وقت أول /start بـ UTC (أو None
+    للمستخدمين القدامى الذين سبقوا هذه الميزة، فيُعدّون غير جدد)."""
+    with db_conn() as c:
+        row = c.execute(
+            "SELECT first_seen_at FROM first_seen WHERE user_id=?", (int(user_id),)
+        ).fetchone()
+        if row:
+            return {"started": True,
+                    "first_seen": row["first_seen_at"].strftime("%Y-%m-%dT%H:%M:%S+00:00")}
+        old = c.execute(
+            "SELECT 1 AS x FROM users WHERE user_id=?", (int(user_id),)
+        ).fetchone()
+    return {"started": bool(old), "first_seen": None}
+
+
 def get_pool():
     global _pool
     if _pool is None:
@@ -151,6 +181,11 @@ def init_db():
               joined_at    TEXT DEFAULT CURRENT_DATE,
               bot_user_num INTEGER,
               verified     INTEGER DEFAULT 0
+          )""")
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS first_seen (
+              user_id       BIGINT PRIMARY KEY,
+              first_seen_at TIMESTAMP NOT NULL DEFAULT (NOW() AT TIME ZONE 'UTC')
           )""")
           c.execute("""
           CREATE TABLE IF NOT EXISTS orders (
