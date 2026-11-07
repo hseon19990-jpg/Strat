@@ -2577,7 +2577,7 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
         if data == "os:edit_exchange_rate" and is_own:
             context.user_data["state"] = "os_await_exchange_rate"
             cur = get_setting("exchange_star_rate") or "2000"
-            await q.edit_message_text(f"🏆 سعر نجمة الجوائز الحالي: {cur} نقطة\n\nأرسل القيمة الجديدة:")
+            await q.edit_message_text(f"🏆 سعر نجمة الجوائز الحالي: {cur} جوهرة\n\nأرسل القيمة الجديدة (بالجواهر):")
             return
 
         if data == "os:edit_jewel_to_points_rate" and is_own:
@@ -2947,7 +2947,7 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                 for row in manual_rows:
                     phone = row["phone_number"]
                     pe = c.execute(
-                        "SELECT id, user_id, points_cost, compensated_at FROM prize_exchanges "
+                        "SELECT id, user_id, points_cost, COALESCE(cost_currency,'points') AS cost_currency, compensated_at FROM prize_exchanges "
                         "WHERE prize_value=%s AND prize_type IN ('telegram_number','telegram_number_code','telegram_number_stars') "
                         "AND status='completed' ORDER BY id DESC LIMIT 1",
                         (phone,)
@@ -2974,11 +2974,11 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                         ).rowcount
                         if rows_m == 0:
                             continue
-                        add_points(uid, pts)
+                        refund_exchange_cost(uid, pts, pe["cost_currency"], reference=f"manual_number_deleted:{pe_id_m}")
                         compensated += 1
-                        buyers_notified.append((uid, phone, pts))
+                        buyers_notified.append((uid, phone, pts, pe["cost_currency"]))
         
-            for uid, phone, pts in buyers_notified:
+            for uid, phone, pts, _cur in buyers_notified:
                 try:
                     await context.bot.send_message(
                         chat_id=uid,
@@ -2988,7 +2988,7 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                             f"عزيزي العميل،\n"
                             f"الرقم الذي حصلت عليه `{phone}` تبيّن أنه أُضيف يدوياً "
                             f"ولا يضمن وصولك الكامل للحساب (بدون جلسة أو 2FA).\n\n"
-                            f"✅ *تم تعويضك فوراً بـ {pts:,} نقطة* أُضيفت لرصيدك.\n\n"
+                            f"✅ *تم تعويضك فوراً بـ {pts:,} {exchange_unit(_cur)}* أُضيفت لرصيدك.\n\n"
                             f"يمكنك استخدامها لشراء رقم جديد متاح بالكامل.\n"
                             f"نعتذر عن الإزعاج 🙏"
                         ),
@@ -2999,7 +2999,7 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
         
             summary = (
                 f"🗑️ *تم حذف {deleted_count} رقم يدوي*\n\n"
-                f"💰 *عُوِّض {compensated} مشترٍ* وأُعيدت لهم نقاطهم كاملةً.\n"
+                f"💰 *عُوِّض {compensated} مشترٍ* وأُعيد لهم رصيدهم كاملاً.\n"
             )
             if deleted_count - compensated > 0:
                 summary += f"📦 *{deleted_count - compensated}* رقم لم يُباع (لا يحتاج تعويض)."

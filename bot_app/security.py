@@ -1378,6 +1378,29 @@ def deduct_jewels(
         )
     return updated["jewels"]
 
+def get_user_jewels(user_id: int) -> Decimal:
+    """رصيد المجوهرات الحالي للمستخدم (0 إن لم يوجد)."""
+    with db_conn() as c:
+        row = c.execute("SELECT jewels FROM users WHERE user_id=%s", (user_id,)).fetchone()
+    try:
+        return Decimal(str((row or {}).get("jewels") or 0))
+    except (InvalidOperation, TypeError, ValueError):
+        return Decimal(0)
+
+
+def exchange_unit(currency) -> str:
+    """اسم وحدة التكلفة في عمليات الاستبدال المسجلة."""
+    return "جوهرة" if currency == "jewels" else "نقطة"
+
+
+def refund_exchange_cost(user_id: int, amount, currency, reference: str = "") -> None:
+    """يعيد تكلفة عملية استبدال بنفس العملة التي دُفعت بها."""
+    if currency == "jewels":
+        add_jewels(user_id, amount, reference=reference or "exchange_refund")
+    else:
+        add_points(user_id, amount)
+
+
 def deduct_points(user_id: int, pts: int) -> bool:
     """خصم نقاط بشكل ذري باستخدام UPDATE مشروط — آمن للاستخدام المتزامن.
     إذا كان المستخدم مقيّداً (referral_points_blocked) يُرجع False مباشرةً دون خصم."""
@@ -2031,6 +2054,7 @@ async def compensate_duplicate_sales_job(context: ContextTypes.DEFAULT_TYPE):
                     array_agg(id          ORDER BY created_at ASC) AS pe_ids,
                     array_agg(user_id     ORDER BY created_at ASC) AS user_ids,
                     array_agg(points_cost ORDER BY created_at ASC) AS costs,
+                    array_agg(COALESCE(cost_currency, 'points') ORDER BY created_at ASC) AS currencies,
                     array_agg(order_code  ORDER BY created_at ASC) AS codes
                 FROM prize_exchanges
                 WHERE prize_type IN ('telegram_number', 'telegram_number_code', 'telegram_number_stars')
@@ -2047,6 +2071,7 @@ async def compensate_duplicate_sales_job(context: ContextTypes.DEFAULT_TYPE):
         pe_ids   = dupe["pe_ids"]
         user_ids = dupe["user_ids"]
         costs    = dupe["costs"]
+        currencies = dupe["currencies"]
         codes    = dupe["codes"]
         phone    = dupe["prize_value"]
 
@@ -2054,6 +2079,7 @@ async def compensate_duplicate_sales_job(context: ContextTypes.DEFAULT_TYPE):
             pe_id = pe_ids[i]
             uid   = user_ids[i]
             cost  = int(costs[i] or 0)
+            cur   = currencies[i] or "points"
             code  = codes[i] or str(pe_id)
 
             # ─── حماية من التعويض المزدوج — تحقق أنه لم يُعوَّض مسبقاً ───
@@ -2085,7 +2111,7 @@ async def compensate_duplicate_sales_job(context: ContextTypes.DEFAULT_TYPE):
                 continue
 
             if cost > 0:
-                add_points(uid, cost)
+                refund_exchange_cost(uid, cost, cur, reference=f"duplicate_sale:{pe_id}")
 
             try:
                 msg = (
@@ -2093,7 +2119,7 @@ async def compensate_duplicate_sales_job(context: ContextTypes.DEFAULT_TYPE):
                     f"تم تحديث حالة طلبك بكود `{code}`.\n\n"
                 )
                 if cost > 0:
-                    msg += f"✅ تم إعادة *{cost:,} نقطة* لرصيدك تلقائياً.\n\n"
+                    msg += f"✅ تم إعادة *{cost:,} {exchange_unit(cur)}* لرصيدك تلقائياً.\n\n"
                 else:
                     msg += "✅ تم تسجيل الحادثة وسيتواصل معك المالك لحلها.\n\n"
                 msg += "نعتذر عن الإزعاج ونقدّر صبرك 🙏"

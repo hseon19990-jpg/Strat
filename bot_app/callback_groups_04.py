@@ -689,7 +689,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             for pkg in packages:
                 status = "✅" if pkg["active"] else "❌"
                 cost = pkg["stars"] * rate
-                lines.append(f"{status} {pkg['stars']} نجمة = {cost} نقطة")
+                lines.append(f"{status} {pkg['stars']} نجمة = {cost:,} جوهرة")
             rows = []
             for pkg in packages:
                 tog = "❌ تعطيل" if pkg["active"] else "✅ تفعيل"
@@ -724,7 +724,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             for pkg in packages:
                 status = "✅" if pkg["active"] else "❌"
                 cost = pkg["stars"] * rate
-                lines.append(f"{status} {pkg['stars']} نجمة = {cost} نقطة")
+                lines.append(f"{status} {pkg['stars']} نجمة = {cost:,} جوهرة")
             rows = []
             for pkg in packages:
                 tog = "❌ تعطيل" if pkg["active"] else "✅ تفعيل"
@@ -759,8 +759,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                 await q.edit_message_text("⚠️ هذه الجائزة لم تعد متاحة.", reply_markup=back_kb("exchange_points"))
                 return
             cost = prize["points_cost"]
-            db_user = get_user(user.id)
-            pts = db_user["points"] if db_user else 0
+            pts = get_user_jewels(user.id)
             qty_txt = f" × {prize['quantity']}" if prize["quantity"] and prize["quantity"] > 1 else ""
         
             if not confirmed:
@@ -774,10 +773,10 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                 ]
                 await q.edit_message_text(
                     f"🎁 *{prize['name']}{qty_txt}*\n\n"
-                    f"💰 التكلفة: *{cost:,} نقطة*\n"
-                    f"💎 رصيدك الحالي: {pts:,} نقطة\n\n"
+                    f"💎 التكلفة: *{cost:,} جوهرة*\n"
+                    f"💎 رصيدك الحالي: {fmt_jewel_amount(pts)} جوهرة\n\n"
                     + ("✅ يمكنك الطلب — اضغط تأكيد للمتابعة." if can_afford else
-                       f"❌ تحتاج {cost - pts:,} نقطة إضافية."),
+                       f"❌ تحتاج {fmt_jewel_amount(cost - pts)} جوهرة إضافية."),
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=InlineKeyboardMarkup(confirm_kb)
                 )
@@ -786,14 +785,14 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             if pts < cost:
                 await q.edit_message_text("❌ رصيدك غير كافٍ!", reply_markup=back_kb("exchange_points"))
                 return
-            if not deduct_points(user.id, cost):
-                await q.edit_message_text("❌ حدث خطأ في خصم النقاط.", reply_markup=back_kb("exchange_points"))
+            if deduct_jewels(user.id, cost, reference=f"exchange_custom:{prize_id}") is None:
+                await q.edit_message_text("❌ رصيدك غير كافٍ.", reply_markup=back_kb("exchange_points"))
                 return
             code = next_order_code(user.id)
             with db_conn() as c:
                 pe = c.execute(
-                    "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,status,order_code) "
-                    "VALUES (%s,%s,%s,%s,'pending',%s) RETURNING id",
+                    "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,cost_currency,status,order_code) "
+                    "VALUES (%s,%s,%s,%s,'jewels','pending',%s) RETURNING id",
                     (user.id, "custom", f"{prize['name']}{qty_txt}", cost, code)
                 ).fetchone()
             custom_msg = get_setting("exchange_success_msg") or ""
@@ -801,7 +800,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             await q.edit_message_text(
                 f"✅ *تمت العملية بنجاح!*\n\n"
                 f"🎁 الجائزة: {prize['name']}{qty_txt}\n"
-                f"💰 التكلفة: {cost:,} نقطة\n\n"
+                f"💎 التكلفة: {cost:,} جوهرة\n\n"
                 + (f"{custom_msg}\n\n" if custom_msg else "")
                 + "سيتواصل معك المالك قريباً.",
                 parse_mode=ParseMode.MARKDOWN,
@@ -817,7 +816,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                 f"🎁 <b>طلب جائزة مخصصة</b>\n"
                 f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
                 f"🎀 {prize['name']}{qty_txt}\n"
-                f"💰 {cost:,} نقطة\n"
+                f"💎 {cost:,} جوهرة\n"
                 f"📌 {code}"
             )
             return
@@ -1522,7 +1521,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                 st = "✅" if p["active"] else "❌"
                 rows.append([
                     InlineKeyboardButton(
-                        f"{st} {p['name']} × {p['quantity']} — {p['points_cost']:,} نقطة",
+                        f"{st} {p['name']} × {p['quantity']} — {p['points_cost']:,} جوهرة",
                         callback_data=f"os:toggle_prize:{p['id']}"
                     ),
                     InlineKeyboardButton("🗑", callback_data=f"os:del_prize:{p['id']}")
@@ -1549,7 +1548,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             name = context.user_data.get("prize_name", "")
             await q.edit_message_text(
                 f"🎀 *الجائزة:* {name}\n\n"
-                f"الخطوة 2/2 — أرسل *عدد النقاط* اللازمة للحصول عليها:\n"
+                f"الخطوة 2/2 — أرسل *عدد الجواهر* اللازمة للحصول عليها:\n"
                 f"مثال: `1000`",
                 parse_mode=ParseMode.MARKDOWN
             )
@@ -1567,7 +1566,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                 st = "✅" if p["active"] else "❌"
                 rows.append([
                     InlineKeyboardButton(
-                        f"{st} {p['name']} × {p['quantity']} — {p['points_cost']:,} نقطة",
+                        f"{st} {p['name']} × {p['quantity']} — {p['points_cost']:,} جوهرة",
                         callback_data=f"os:toggle_prize:{p['id']}"
                     ),
                     InlineKeyboardButton("🗑", callback_data=f"os:del_prize:{p['id']}")
@@ -1589,7 +1588,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                 st = "✅" if p["active"] else "❌"
                 rows.append([
                     InlineKeyboardButton(
-                        f"{st} {p['name']} × {p['quantity']} — {p['points_cost']:,} نقطة",
+                        f"{st} {p['name']} × {p['quantity']} — {p['points_cost']:,} جوهرة",
                         callback_data=f"os:toggle_prize:{p['id']}"
                     ),
                     InlineKeyboardButton("🗑", callback_data=f"os:del_prize:{p['id']}")
@@ -2293,7 +2292,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
         
             with db_conn() as c:
                 old_pending = c.execute(
-                    "SELECT pe.id, pe.user_id, pe.prize_type, pe.prize_value, pe.points_cost, "
+                    "SELECT pe.id, pe.user_id, pe.prize_type, pe.prize_value, pe.points_cost, COALESCE(pe.cost_currency,'points') AS cost_currency, "
                     "       pe.order_code, pe.created_at, pe.compensated_at, pe.compensated_pts, "
                     "       pe.compensated_reason, u.full_name "
                     "FROM prize_exchanges pe "
@@ -2329,7 +2328,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                     lines.append(
                         f"📌 <code>{r['order_code'] or r['id']}</code>\n"
                         f"   👤 <a href='tg://user?id={uid}'>{name}</a>\n"
-                        f"   💰 يستحق: {pts:,} نقطة\n"
+                        f"   💰 يستحق: {pts:,} {exchange_unit(r['cost_currency'])}\n"
                         f"   📅 {_fmt_dt(r['created_at'])}"
                     )
             else:
@@ -2376,7 +2375,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             if needs_comp:
                 total_pts = sum(r["points_cost"] or 0 for r in needs_comp)
                 action_rows.append([InlineKeyboardButton(
-                    f"🤖 تعويض {len(needs_comp)} مظلوم تلقائياً ({total_pts:,} نقطة)",
+                    f"🤖 تعويض {len(needs_comp)} مظلوم تلقائياً",
                     callback_data="admin:auto_compensate_all"
                 )])
             for r in needs_comp[:5]:
@@ -2385,7 +2384,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                 pts  = r["points_cost"] or 0
                 name = (r["full_name"] or f"ID:{uid}")[:20]
                 action_rows.append([InlineKeyboardButton(
-                    f"↩️ {pts:,} نقطة → {name}",
+                    f"↩️ {pts:,} {exchange_unit(r['cost_currency'])} → {name}",
                     callback_data=f"admin:refund_pe:{pe_id}"
                 )])
             action_rows.append([InlineKeyboardButton("🔄 تحديث", callback_data="os:failed_deliveries")])
@@ -2401,7 +2400,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
         if data == "admin:auto_compensate_all" and is_own:
             with db_conn() as c:
                 pending_cases = c.execute(
-                    "SELECT id, user_id, points_cost, order_code "
+                    "SELECT id, user_id, points_cost, COALESCE(cost_currency,'points') AS cost_currency, order_code "
                     "FROM prize_exchanges "
                     "WHERE status = 'pending' "
                     "  AND prize_type IN ('telegram_number','telegram_number_code','telegram_number_stars') "
@@ -2422,6 +2421,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                 pe_id = pe["id"]
                 uid   = pe["user_id"]
                 pts   = int(pe["points_cost"] or 0)
+                cur   = pe["cost_currency"]
                 if pts <= 0:
                     skipped += 1
                     continue
@@ -2436,7 +2436,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                 if updated == 0:
                     skipped += 1
                     continue
-                add_points(uid, pts)
+                refund_exchange_cost(uid, pts, cur, reference=f"auto_compensate:{pe_id}")
                 compensated += 1
                 total_pts   += pts
                 try:
@@ -2444,7 +2444,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                         uid,
                         f"✅ *تعويض تلقائي*\n\n"
                         f"تم تحديث حالة طلبك `{pe['order_code'] or pe_id}`.\n"
-                        f"💰 تم إعادة *{pts:,} نقطة* لرصيدك تلقائياً.\n\n"
+                        f"💰 تم إعادة *{pts:,} {exchange_unit(cur)}* لرصيدك تلقائياً.\n\n"
                         f"نعتذر عن الإزعاج 🙏",
                         parse_mode=ParseMode.MARKDOWN
                     )
@@ -2454,7 +2454,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             await q.edit_message_text(
                 f"✅ <b>تم تعويض المظلومين</b>\n\n"
                 f"👤 عدد المعوَّضين: <b>{compensated}</b>\n"
-                f"💰 إجمالي النقاط الموزَّعة: <b>{total_pts:,}</b>\n"
+                f"💰 إجمالي المبالغ الموزَّعة: <b>{total_pts:,}</b>\n"
                 f"⏭ متخطَّى (عُوِّضوا مسبقاً): {skipped}",
                 parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup([
@@ -2468,7 +2468,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             pe_id = int(data.split(":")[-1])
             with db_conn() as c:
                 pe = c.execute(
-                    "SELECT id, user_id, points_cost, status, order_code, "
+                    "SELECT id, user_id, points_cost, COALESCE(cost_currency,'points') AS cost_currency, status, order_code, "
                     "       compensated_at, compensated_pts, compensated_reason "
                     "FROM prize_exchanges WHERE id=%s", (pe_id,)
                 ).fetchone()
@@ -2492,6 +2492,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                 return
             pts = int(pe["points_cost"] or 0)
             uid = pe["user_id"]
+            cur = pe["cost_currency"]
             with db_conn() as c:
                 c.execute(
                     "UPDATE prize_exchanges SET status='refunded_by_owner', "
@@ -2504,16 +2505,16 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                 await q.answer("⚠️ تم تعويض هذه العملية للتو من مكان آخر. لا داعي للتكرار.", show_alert=True)
                 return
             if pts > 0:
-                add_points(uid, pts)
+                refund_exchange_cost(uid, pts, cur, reference=f"owner_refund:{pe_id}")
             try:
                 await context.bot.send_message(
                     uid,
-                    f"✅ *إعادة نقاط*\n\nأعاد المالك نقاطك لعملية `{pe['order_code'] or pe_id}`.\n"
-                    f"💰 أُعيد إليك: *{pts:,} نقطة*.\n\nنعتذر عن الإزعاج 🙏",
+                    f"✅ *إعادة رصيد*\n\nأعاد المالك رصيدك لعملية `{pe['order_code'] or pe_id}`.\n"
+                    f"💰 أُعيد إليك: *{pts:,} {exchange_unit(cur)}*.\n\nنعتذر عن الإزعاج 🙏",
                     parse_mode=ParseMode.MARKDOWN
                 )
             except Exception:
                 pass
-            await q.answer(f"✅ تمت إعادة {pts:,} نقطة للمستخدم {uid}.", show_alert=True)
+            await q.answer(f"✅ تمت إعادة {pts:,} {exchange_unit(cur)} للمستخدم {uid}.", show_alert=True)
             return
     return True

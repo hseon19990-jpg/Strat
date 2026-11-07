@@ -3233,7 +3233,7 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
         if data == "os:edit_number_cost" and is_own:
             context.user_data["state"] = "os_await_number_cost"
             cur = get_setting("telegram_number_cost") or "5000"
-            await q.edit_message_text(f"📱 سعر رقم تيلغرام الحالي: {cur} نقطة\n\nأرسل القيمة الجديدة:")
+            await q.edit_message_text(f"📱 سعر رقم تيلغرام الحالي: {cur} جوهرة\n\nأرسل القيمة الجديدة (بالجواهر):")
             return
 
         if data == "os:edit_number_stars" and is_own:

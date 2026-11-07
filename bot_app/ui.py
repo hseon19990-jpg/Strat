@@ -47,7 +47,7 @@ def supervisor_panel_kb():
 _OWNER_MAIN_MENU_LAYOUT = [
     [("👑 خدماتنا الملكية 👠", "legendary_services"), ("🐸 عروض حصرية وموثوقة 👑", "services_menu")],
     [("🏰 تحويل قناتك بدقة", "fund_channel")],
-    [("🎁 استبدل نقاطك بهدايا فاخرة 💍", "exchange_points")],
+    [("🎁 استبدل جواهرك بهدايا فاخرة 💍", "exchange_points")],
     [("🎁 هدية يومية", "daily_gift")],
     [("🎁 هدية مؤقتة", "temporary_gift")],
     [("🧸 شارك الفرحة مع رابط دعوة 🦋", "referral"), ("💳 شحن نقاط", "charge_points")],
@@ -2507,7 +2507,7 @@ def exchange_kb():
         ).fetchall()
     rows = [
         [InlineKeyboardButton("↔️ تحويل بين النقاط والمجوهرات", callback_data="currency_exchange")],
-        [InlineKeyboardButton("⭐ استبدال نقاط بنجوم", callback_data="exchange:stars")],
+        [InlineKeyboardButton("⭐ استبدال جواهر بنجوم", callback_data="exchange:stars")],
         [InlineKeyboardButton("📱 شراء رقم تيلغرام",  callback_data="exchange:number")],
         [InlineKeyboardButton("📱 شراء رقم بالنجوم", callback_data="exchange:number_stars")],
         [InlineKeyboardButton("🎟 شراء عبر كود",       callback_data="exchange:num_code")],

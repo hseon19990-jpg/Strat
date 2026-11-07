@@ -2540,7 +2540,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             return
 
         if data == "exchange_points":
-            await q.edit_message_text("🏆 *استبدال النقاط بجوائز:*",
+            await q.edit_message_text("🏆 *استبدال الجواهر بجوائز:*",
                                        parse_mode=ParseMode.MARKDOWN, reply_markup=exchange_kb())
             return
 
@@ -2559,69 +2559,69 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             for pkg in packages:
                 stars = pkg["stars"]
                 cost = stars * rate
-                rows.append([InlineKeyboardButton(f"⭐ {stars} نجمة = {cost} نقطة", callback_data=f"exchange:pkg:{stars}")])
+                rows.append([InlineKeyboardButton(f"⭐ {stars} نجمة = {cost:,} جوهرة", callback_data=f"exchange:pkg:{stars}")])
             rows += contact_owner_row()
             rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="exchange_points")])
             await q.edit_message_text(
-                f"⭐ *استبدال نقاط بنجوم*\n\n"
-                f"💡 سعر النجمة الواحدة: {rate} نقطة\n\n"
+                f"⭐ *استبدال جواهر بنجوم*\n\n"
+                f"💡 سعر النجمة الواحدة: {rate:,} جوهرة\n\n"
                 f"اختر الباقة المطلوبة:",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup(rows)
             )
             return
 
-            if data == "exchange_confirm:stars":
-                if context.user_data.get("state") != "confirm_exchange_stars":
-                    await q.answer("⚠️ انتهت صلاحية طلب الاستبدال.", show_alert=True)
-                    return
-                stars = int(context.user_data.get("exchange_stars_count", 0))
-                data = f"exchange:pkg:{stars}:confirm"
-            if data == "exchange_cancel:stars":
-                context.user_data["state"] = "main_menu"
-                await q.edit_message_text("❌ تم إلغاء استبدال النقاط.", reply_markup=main_menu_kb(is_own))
+        if data == "exchange_confirm:stars":
+            if context.user_data.get("state") != "confirm_exchange_stars":
+                await q.answer("⚠️ انتهت صلاحية طلب الاستبدال.", show_alert=True)
                 return
+            stars = int(context.user_data.get("exchange_stars_count", 0))
+            data = f"exchange:pkg:{stars}:confirm"
+        if data == "exchange_cancel:stars":
+            context.user_data["state"] = "main_menu"
+            await q.edit_message_text("❌ تم إلغاء الاستبدال.", reply_markup=main_menu_kb(is_own))
+            return
 
         if data.startswith("exchange:pkg:"):
             stars = int(data.split(":")[2])
             rate = int(get_setting("exchange_star_rate") or "2000")
             cost = stars * rate
-            db_user = get_user(user.id)
-            pts = db_user["points"] if db_user else 0
+            jw = get_user_jewels(user.id)
             confirmed = len(data.split(":") ) == 4 and data.endswith(":confirm")
             if not confirmed:
                 await q.edit_message_text(
-                    f"📋 *تأكيد استبدال النقاط بنجوم*\n\n⭐ الباقة: *{stars} نجمة*\n💰 الخصم: *{cost:,} نقطة*\n💎 الرصيد بعد العملية تقريباً: *{pts - cost:,} نقطة*\n\n⚠️ سيتم تسجيل الطلب لدى الإدارة بعد التأكيد.",
+                    f"📋 *تأكيد استبدال الجواهر بنجوم*\n\n⭐ الباقة: *{stars} نجمة*\n💎 الخصم: *{cost:,} جوهرة*\n💎 الرصيد بعد العملية تقريباً: *{fmt_jewel_amount(jw - cost)} جوهرة*\n\n⚠️ سيتم تسجيل الطلب لدى الإدارة بعد التأكيد.",
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تأكيد الخصم والطلب", callback_data=f"exchange:pkg:{stars}:confirm")], [InlineKeyboardButton("❌ إلغاء", callback_data="exchange:stars")]])
                 )
                 return
-            if pts < cost:
+            if jw < cost:
                 kb_rows = contact_owner_row() + [[InlineKeyboardButton("🔙 رجوع", callback_data="exchange:stars")]]
                 await q.edit_message_text(
-                    f"❌ *نقاطك غير كافية!*\n\n"
-                    f"⭐ تحتاج: {cost} نقطة\n"
-                    f"💎 رصيدك: {pts} نقطة",
+                    f"❌ *جواهرك غير كافية!*\n\n"
+                    f"⭐ تحتاج: {cost:,} جوهرة\n"
+                    f"💎 رصيدك: {fmt_jewel_amount(jw)} جوهرة",
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=InlineKeyboardMarkup(kb_rows)
                 )
                 return
-            if not deduct_points(user.id, cost):
-                await q.edit_message_text("❌ حدث خطأ في خصم النقاط.", reply_markup=back_kb("exchange:stars"))
+            if deduct_jewels(user.id, cost, reference=f"exchange_stars:{stars}") is None:
+                await q.edit_message_text("❌ رصيدك غير كافٍ.", reply_markup=back_kb("exchange:stars"))
                 return
             code = next_order_code(user.id)
             with db_conn() as c:
                 pe = c.execute(
-                    "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,status,order_code) "
-                    "VALUES (%s,%s,%s,%s,'pending',%s) RETURNING id",
+                    "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,cost_currency,status,order_code) "
+                    "VALUES (%s,%s,%s,%s,'jewels','pending',%s) RETURNING id",
                     (user.id, "stars", str(stars), cost, code)
                 ).fetchone()
+            context.user_data["state"] = "main_menu"
             custom_msg = get_setting("exchange_success_msg") or ""
             result_kb_rows = contact_owner_row() + [[InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="main_menu")]]
             await q.edit_message_text(
                 f"✅ *تمت العملية بنجاح!*\n\n"
                 f"⭐ طلب {stars} نجمة مسجل\n"
-                f"💰 التكلفة: {cost} نقطة\n\n"
+                f"💎 التكلفة: {cost:,} جوهرة\n\n"
                 + (f"{custom_msg}\n\n" if custom_msg else "")
                 + "سيتواصل معك المالك قريباً.",
                 parse_mode=ParseMode.MARKDOWN,
@@ -2636,7 +2636,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 context, pe["id"],
                 f"⭐ <b>طلب شراء نجوم (جائزة)</b>\n"
                 f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
-                f"⭐ {stars} نجمة مقابل {cost} نقطة\n"
+                f"⭐ {stars} نجمة مقابل {cost:,} جوهرة\n"
                 f"📌 {code}"
             )
             return
@@ -2646,24 +2646,24 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 await q.answer("🔒 استبدال الأرقام مغلق حالياً. تواصل مع المالك.", show_alert=True)
                 return
             cost = int(get_setting("telegram_number_cost") or "5000")
-            db_user = get_user(user.id)
-            if db_user["points"] < cost:
+            jw = get_user_jewels(user.id)
+            if jw < cost:
                 kb_rows = contact_owner_row() + [[InlineKeyboardButton("🔙 رجوع", callback_data="exchange_points")]]
                 await q.edit_message_text(
-                    f"❌ نقاطك غير كافية! تحتاج {cost} نقطة ولديك {db_user['points']} نقطة.",
+                    f"❌ جواهرك غير كافية! تحتاج {cost:,} جوهرة ولديك {fmt_jewel_amount(jw)} جوهرة.",
                     reply_markup=InlineKeyboardMarkup(kb_rows)
                 )
                 return
             confirmed = data.endswith(":confirm")
             if not confirmed:
                 await q.edit_message_text(
-                    f"📋 *تأكيد شراء رقم تيلغرام*\n\n💰 التكلفة: *{cost:,} نقطة*\n💎 رصيدك الحالي: *{db_user['points']:,} نقطة*\n\n⚠️ سيتم خصم النقاط ثم محاولة تسليم رقم صالح تلقائياً.",
+                    f"📋 *تأكيد شراء رقم تيلغرام*\n\n💎 التكلفة: *{cost:,} جوهرة*\n💎 رصيدك الحالي: *{fmt_jewel_amount(jw)} جوهرة*\n\n⚠️ سيتم خصم الجواهر ثم محاولة تسليم رقم صالح تلقائياً.",
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تأكيد الخصم والشراء", callback_data="exchange:number:confirm")], [InlineKeyboardButton("❌ إلغاء", callback_data="exchange_points")]])
                 )
                 return
-            if not deduct_points(user.id, cost):
-                await q.edit_message_text("❌ حدث خطأ في خصم النقاط.", reply_markup=back_kb("exchange_points"))
+            if deduct_jewels(user.id, cost, reference="exchange_number") is None:
+                await q.edit_message_text("❌ رصيدك غير كافٍ.", reply_markup=back_kb("exchange_points"))
                 return
             code = next_order_code(user.id)
         
@@ -2673,8 +2673,8 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 session_str = auto["session_string"]
                 with db_conn() as c:
                     pe = c.execute(
-                        "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,status,order_code) "
-                        "VALUES (%s,%s,%s,%s,'completed',%s) RETURNING id",
+                        "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,cost_currency,status,order_code) "
+                        "VALUES (%s,%s,%s,%s,'jewels','completed',%s) RETURNING id",
                         (user.id, "telegram_number", auto_number, cost, code)
                     ).fetchone()
                 display_number = auto_number.lstrip("+")
@@ -2719,23 +2719,23 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                             f"📱 <b>شراء رقم تيلغرام — تسليم تلقائي ✅</b>\n"
                             f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
                             f"📱 الرقم: <code>{auto_number}</code>\n"
-                            f"💰 {cost:,} نقطة\n"
+                            f"💎 {cost:,} جوهرة\n"
                             f"📌 {code}"
                         ),
                         group_text_html=(
                             f"📱 <b>شراء رقم تيلغرام — تسليم تلقائي ✅</b>\n"
                             f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
-                            f"💰 {cost:,} نقطة\n"
+                            f"💎 {cost:,} جوهرة\n"
                             f"📌 {code}"
                         ),
                     )
                 return
         
-            add_points(user.id, cost)
+            add_jewels(user.id, cost, reference="exchange_number_refund")
             await q.edit_message_text(
                 "😔 *نأسف، لم تتم العملية*\n\n"
                 "الرقم غير متوفر حالياً.\n"
-                f"تم إعادة *{cost:,} نقطة* إلى رصيدك كاملةً.\n\n"
+                f"تم إعادة *{cost:,} جوهرة* إلى رصيدك كاملةً.\n\n"
                 "يمكنك المحاولة مجدداً في وقت لاحق 🙏",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([[
@@ -2853,7 +2853,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 await q.edit_message_text(
                     "📱 *ارقامي*\n\n"
                     "لم تقم بشراء أي رقم حتى الآن.\n\n"
-                    "اذهب إلى *استبدال نقاط بجوائز* لشراء رقم.",
+                    "اذهب إلى *استبدال جواهر بجوائز* لشراء رقم.",
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=back_kb()
                 )

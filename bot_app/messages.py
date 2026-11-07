@@ -1351,11 +1351,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         rate = int(get_setting("exchange_star_rate") or "2000")
         cost = stars * rate
-        db_user = get_user(user.id)
-        pts = db_user["points"] if db_user else 0
+        pts = get_user_jewels(user.id)
         if pts < cost:
             await update.message.reply_text(
-                f"❌ *نقاطك غير كافية!*\n\n⭐ تحتاج: {cost} نقطة\n💎 رصيدك: {pts} نقطة",
+                f"❌ *جواهرك غير كافية!*\n\n⭐ تحتاج: {cost:,} جوهرة\n💎 رصيدك: {fmt_jewel_amount(pts)} جوهرة",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=main_menu_kb(is_own)
             )
@@ -1365,7 +1364,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["exchange_stars_cost"] = cost
         context.user_data["state"] = "confirm_exchange_stars"
         await update.message.reply_text(
-            f"📋 *تأكيد استبدال النقاط بنجوم*\n\n⭐ المطلوب: *{stars} نجمة*\n💰 الخصم: *{cost:,} نقطة*\n💎 رصيدك بعد العملية تقريباً: *{pts - cost:,} نقطة*\n\n⚠️ سيتم تسجيل طلب النجوم لدى الإدارة بعد التأكيد.",
+            f"📋 *تأكيد استبدال الجواهر بنجوم*\n\n⭐ المطلوب: *{stars} نجمة*\n💎 الخصم: *{cost:,} جوهرة*\n💎 رصيدك بعد العملية تقريباً: *{fmt_jewel_amount(pts - cost)} جوهرة*\n\n⚠️ سيتم تسجيل طلب النجوم لدى الإدارة بعد التأكيد.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تأكيد الخصم والطلب", callback_data="exchange_confirm:stars")], [InlineKeyboardButton("❌ إلغاء", callback_data="exchange_cancel:stars")]])
         )
@@ -2752,7 +2751,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ أرسل رقماً.")
             return
         set_setting("exchange_star_rate", str(val))
-        await update.message.reply_text(f"✅ سعر نجمة الجوائز = {val} نقطة.", reply_markup=owner_settings_kb())
+        await update.message.reply_text(f"✅ سعر نجمة الجوائز = {val} جوهرة.", reply_markup=owner_settings_kb())
         context.user_data["state"] = "main_menu"
         return
 
@@ -3825,7 +3824,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ أرسل رقماً.")
             return
         set_setting("telegram_number_cost", str(val))
-        await update.message.reply_text(f"✅ سعر رقم تيلغرام = {val} نقطة.", reply_markup=owner_settings_kb())
+        await update.message.reply_text(f"✅ سعر رقم تيلغرام = {val} جوهرة.", reply_markup=owner_settings_kb())
         context.user_data["state"] = "main_menu"
         return
 
@@ -4521,7 +4520,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "os_await_prize_cost"
         await update.message.reply_text(
             f"🎀 *الجائزة:* {context.user_data['prize_name']} × {qty}\n\n"
-            f"الخطوة 2/2 — أرسل *عدد النقاط* اللازمة للحصول عليها:\n"
+            f"الخطوة 2/2 — أرسل *عدد الجواهر* اللازمة للحصول عليها:\n"
             f"مثال: `1000`",
             parse_mode=ParseMode.MARKDOWN
         )
@@ -4548,7 +4547,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"✅ *تمت إضافة الجائزة بنجاح!*\n\n"
             f"🎀 الاسم: {name}{qty_txt}\n"
-            f"💰 التكلفة: {cost:,} نقطة",
+            f"💎 التكلفة: {cost:,} جوهرة",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=owner_settings_kb()
         )
@@ -5386,7 +5385,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rate = int(get_setting("exchange_star_rate") or "2000")
         cost = stars * rate
         await update.message.reply_text(
-            f"✅ *تمت إضافة الباقة بنجاح!*\n\n⭐ {stars} نجمة = {cost} نقطة",
+            f"✅ *تمت إضافة الباقة بنجاح!*\n\n⭐ {stars} نجمة = {cost:,} جوهرة",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=owner_settings_kb()
         )
