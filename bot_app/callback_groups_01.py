@@ -1962,6 +1962,28 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             )
             return
 
+        if data == "get_25_jewels":
+            redirect_url = (get_setting("gmail_redirect_url") or "").strip()
+            text = (
+                "💎 *الحصول على 25 جوهرة*\n\n"
+                "يجب عليك الذهاب لبوت الايميلات، "
+                "ويمكنك البيع للحصول على 25 نجمة."
+            )
+            rows = []
+            if redirect_url:
+                rows.append([
+                    InlineKeyboardButton("📧 رابط بوت الايميلات", url=redirect_url)
+                ])
+            else:
+                text += "\n\n⚠️ رابط بوت الايميلات غير متوفر حالياً."
+            rows.append([InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")])
+            await q.edit_message_text(
+                text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup(rows),
+            )
+            return
+
         if data == "gmail_points":
             redirect_url = (get_setting("gmail_redirect_url") or "").strip()
             text = (

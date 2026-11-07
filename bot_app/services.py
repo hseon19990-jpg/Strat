@@ -360,6 +360,7 @@ BUILTIN_DEFAULTS = {
         ("💌 شكر المالك", "thank_owner", 2),
         ("🏆 مسابقة الدعوة", "referral_contest_view", 2),
         ("📧 احصل على نقاط مقابل إيميل جيميل", "gmail_points", 1),
+        ("💎 الحصول على 25 جوهرة", "get_25_jewels", 1),
         ("🔑 إحالة بوت اجباري", "forced_ref", 2),
         ("🧩 تعديل أزرار الواجهة", "mb_menu:main", 1),
         ("⚙️ إعدادات المالك", "owner_settings", 1),
@@ -695,6 +696,9 @@ def seed_menu_items(menu: str):
                     )
 
     if menu == "main":
+        _place_get_25_jewels_in_middle()
+
+    if menu == "main":
         # Keep the two main service entry points together in the first row,
         # including existing databases whose old rows were full-width.
         with db_conn() as c:
@@ -721,6 +725,51 @@ def seed_menu_items(menu: str):
                     "WHERE id=? AND menu='main'",
                     (first_order + 1, by_value["raksh_menu"]["id"]),
                 )
+
+GET_25_JEWELS_ACTION = "get_25_jewels"
+GET_25_JEWELS_POSITION_SETTING = "get_25_jewels_middle_position_v1"
+
+
+def _place_get_25_jewels_in_middle():
+    """يضع زر «الحصول على 25 جوهرة» مرة واحدة في منتصف أزرار القائمة الرئيسية.
+
+    يُحتسب المنتصف من الأزرار الظاهرة في الشاشة الأولى (غير المجمّعة)، وبعدها
+    يبقى ترتيب الزر بيد المالك من إدارة الأزرار دون أن نعيده.
+    """
+    if get_setting(GET_25_JEWELS_POSITION_SETTING) == "1":
+        return
+    from .ui import MAIN_MENU_GROUPS  # استيراد متأخر لتفادي الدوران
+
+    grouped = {a for g in MAIN_MENU_GROUPS.values() for a in g["actions"]}
+    with db_conn() as c:
+        rows = c.execute(
+            "SELECT id, action_value FROM menu_items WHERE menu='main' "
+            "ORDER BY sort_order, id"
+        ).fetchall()
+        target = next(
+            (r for r in rows if r["action_value"] == GET_25_JEWELS_ACTION), None
+        )
+        if not target:
+            return
+        others = [r for r in rows if r["id"] != target["id"]]
+        top = [r for r in others if r["action_value"] not in grouped]
+        anchor = top[len(top) // 2 - 1] if len(top) >= 2 else None
+        ordered = []
+        placed = False
+        for r in others:
+            ordered.append(r)
+            if anchor is not None and r["id"] == anchor["id"]:
+                ordered.append(target)
+                placed = True
+        if not placed:
+            ordered.append(target)
+        for order, r in enumerate(ordered):
+            c.execute(
+                "UPDATE menu_items SET sort_order=? WHERE id=? AND menu='main'",
+                (order, r["id"]),
+            )
+    set_setting(GET_25_JEWELS_POSITION_SETTING, "1")
+
 
 def _raksh_menu_order_with_message_before_orders(items):
     """Keep the message action immediately above My Orders in every database."""
@@ -753,14 +802,30 @@ def get_menu_items(menu: str, only_enabled: bool = True):
         q += " ORDER BY sort_order, id"
         return c.execute(q, (menu,)).fetchall()
 
+def _main_menu_group_tags():
+    """action_value -> اسم الزر المجمّع الذي يحتويه في القائمة الرئيسية."""
+    try:
+        from .ui import MAIN_MENU_GROUPS
+    except Exception:
+        return {}
+    return {
+        action: group["label"]
+        for group in MAIN_MENU_GROUPS.values()
+        for action in group["actions"]
+    }
+
+
 def render_mb_menu_screen(menu: str):
     items = get_menu_items(menu, only_enabled=False)
+    group_tags = _main_menu_group_tags() if menu == "main" else {}
     rows = []
     for it in items:
         state_icon = "✅" if it["enabled"] else "🚫"
         width_icon = "▬ عريض" if it["width"] == 1 else "🔲 نصف"
+        group_label = group_tags.get(it["action_value"])
+        suffix = f"  ⟵ داخل {group_label}" if group_label else ""
         rows.append([InlineKeyboardButton(
-            f"{state_icon} {_menu_item_display_label(it)}",
+            f"{state_icon} {_menu_item_display_label(it)}{suffix}",
             callback_data="noop",
         )])
         toggle_button = (
@@ -782,6 +847,9 @@ def render_mb_menu_screen(menu: str):
     rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="os:manage_buttons")])
     text = (f"🧩 *أزرار: {MENU_LABELS.get(menu, menu)}*\n\n"
             f"✅ ظاهر | 🚫 مخفي | 🔒 أساسي لا يمكن إخفاؤه — اضغط 🗑 للإخفاء و♻️ للإظهار مجدداً.")
+    if group_tags:
+        text += ("\n\n📂 الأزرار المكتوب أمامها «داخل …» تظهر للعضو داخل الزر المجمّع "
+                 "في القائمة الرئيسية، وبقية الأزرار تظهر في الشاشة الأولى.")
     return text, InlineKeyboardMarkup(rows)
 
 def _menu_item_display_label(item):
