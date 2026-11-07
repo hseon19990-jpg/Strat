@@ -2524,6 +2524,71 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
+    if is_own and state == "os_await_ref_l1_jewels":
+        try:
+            val = parse_referral_jewels(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً أو عشرياً (0 أو أكبر).")
+            return
+        set_setting("referral_jewels", format(val.normalize(), "f"))
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(
+            f"✅ جواهر المستوى 1 = {fmt_referral_amount('jewels', val)}\n\n" + _referral_levels_text(),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_referral_levels_kb(),
+        )
+        return
+
+    if is_own and state == "os_await_ref_level_num":
+        try:
+            lvl = int(text.strip())
+            if lvl < 2 or lvl > REFERRAL_MAX_LEVELS:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text(f"⚠️ أرسل رقماً من 2 إلى {REFERRAL_MAX_LEVELS}.")
+            return
+        context.user_data["ref_level_num"] = lvl
+        context.user_data["state"] = "os_await_ref_level_points"
+        await update.message.reply_text(f"💰 أرسل عدد *النقاط* للمستوى {lvl} (أرسل 0 لعدم المنح).", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    if is_own and state == "os_await_ref_level_points":
+        try:
+            pts = int(text.strip())
+            if pts < 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل عدداً صحيحاً (0 أو أكبر).")
+            return
+        context.user_data["ref_level_points"] = pts
+        context.user_data["state"] = "os_await_ref_level_jewels"
+        await update.message.reply_text(
+            f"💎 أرسل عدد *الجواهر* للمستوى {context.user_data.get('ref_level_num')} (أرسل 0 لعدم المنح).",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    if is_own and state == "os_await_ref_level_jewels":
+        try:
+            jw = parse_referral_jewels(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً أو عشرياً (0 أو أكبر).")
+            return
+        lvl = int(context.user_data.pop("ref_level_num", 0))
+        pts = int(context.user_data.pop("ref_level_points", 0))
+        context.user_data["state"] = "main_menu"
+        try:
+            upsert_referral_level_reward(lvl, pts, jw)
+        except ValueError:
+            await update.message.reply_text("⚠️ رقم المستوى غير صالح، أعد المحاولة من البداية.", reply_markup=_referral_levels_kb())
+            return
+        await update.message.reply_text(
+            f"✅ تم حفظ المستوى {lvl}.\n\n" + _referral_levels_text(),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_referral_levels_kb(),
+        )
+        return
+
     if is_own and state == "os_await_ref_tier_count":
         try:
             val = int(text)
@@ -2575,7 +2640,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "✅ تم حفظ شريحة إعادة الضبط اليومية:\n"
             f"• الحد: {count} إحالة\n"
-            f"• الحق المجاني: {val} دقيقة يومياً",
+            f"• الحق المجاني: 250 حساب رشق خلال {val} دقيقة، عند بلوغ {count} إحالة خلال يوم واحد (UTC)",
             reply_markup=_referral_daily_free_kb(),
         )
         return

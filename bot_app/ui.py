@@ -824,12 +824,13 @@ OWNER_SETTINGS_GROUPS = [
         "os:edit_jewels_asiacell", "os:edit_jewels_ewallet", "os:manage_points",
     ), ()),
     ("rewards", "🎁 الإحالات والهدايا", (
-        "os:edit_referral", "os:referral_rewards", "os:referral_daily_free",
+        "os:edit_referral", "os:referral_levels", "os:ref_type_toggle", "os:ref_l1_jewels",
+        "os:ref_level_add", "os:referral_rewards", "os:referral_daily_free",
         "os:top_referrers", "os:referral_contest", "os:edit_join_reward",
         "os:edit_daily_gift", "os:create_temporary_gift", "os:edit_leave_penalty",
         "os:edit_leave_grace", "os:create_promo", "os:list_promos", "os:search_code",
         "os:manage_prizes",
-    ), ()),
+    ), ("os:ref_level_del:",)),
     ("channels", "📡 الاشتراك الإجباري", (
         "os:manage_channels", "os:edit_mstars_min", "os:edit_mstars_t1max",
         "os:edit_mstars_t1p", "os:edit_mstars_t2p", "os:edit_mpoints_price",

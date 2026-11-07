@@ -434,6 +434,7 @@ BUILTIN_DEFAULTS = {
         ("📝 تعديل وصف عدة خدمات", "os:share_description", 2),
         ("🎀 جوائز مخصصة", "os:manage_prizes", 2),
         ("🔗 تعديل نقاط الدعوة الأساسية", "os:edit_referral", 2),
+        ("🪜 مستويات الدعوة (نقاط/جواهر)", "os:referral_levels", 2),
         ("🎁 تغيير مكافأة الإحالة عند بلوغ عدد", "os:referral_rewards", 2),
         ("⏱ إعادة الضبط اليومية للإحالات", "os:referral_daily_free", 2),
         ("⭐ سعر النجمة شحن", "os:edit_star_rate", 2),

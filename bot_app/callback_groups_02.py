@@ -48,14 +48,62 @@ def _referral_rewards_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
+def _referral_levels_text() -> str:
+    """نص شاشة مستويات الإحالة ونوع المكافأة."""
+    rt = get_referral_reward_type()
+    type_label = "💎 جواهر" if rt == "jewels" else "💰 نقاط"
+    base_points = get_setting("referral_points") or "30"
+    lines = [
+        "🪜 *مستويات مكافأة رابط الدعوة*",
+        "",
+        f"نوع المكافأة الحالي: *{type_label}* (نوع واحد فقط يُمنح)",
+        "",
+        "المستوى 1 = من دعاه العضو مباشرة.",
+        "المستوى 2 فما فوق = من دعاهم مدعوّو العضو، وهكذا.",
+        "",
+        f"• المستوى 1 نقاط: {base_points} (وتؤثر عليها شرائح مكافأة الإحالة)",
+        f"• المستوى 1 جواهر: {fmt_referral_amount('jewels', get_referral_level1_jewels())}",
+    ]
+    levels = list_referral_level_rewards()
+    if levels:
+        for lv in levels:
+            lines.append(
+                f"• المستوى {lv['level']}: {int(lv['points']):,} نقطة | "
+                f"{fmt_referral_amount('jewels', lv['jewels'])}"
+            )
+    else:
+        lines.append("• لا توجد مستويات إضافية (2 فما فوق).")
+    return "\n".join(lines)
+
+
+def _referral_levels_kb() -> InlineKeyboardMarkup:
+    rt = get_referral_reward_type()
+    rows = [
+        [InlineKeyboardButton(
+            "🔄 التحويل إلى جواهر" if rt == "points" else "🔄 التحويل إلى نقاط",
+            callback_data="os:ref_type_toggle",
+        )],
+        [InlineKeyboardButton("✏️ المستوى 1 — نقاط", callback_data="os:edit_referral")],
+        [InlineKeyboardButton("✏️ المستوى 1 — جواهر", callback_data="os:ref_l1_jewels")],
+        [InlineKeyboardButton("➕ إضافة/تعديل مستوى (2+)", callback_data="os:ref_level_add")],
+    ]
+    for lv in list_referral_level_rewards():
+        rows.append([InlineKeyboardButton(
+            f"🗑 حذف المستوى {lv['level']}",
+            callback_data=f"os:ref_level_del:{lv['level']}",
+        )])
+    rows.append([InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")])
+    return InlineKeyboardMarkup(rows)
+
+
 def _referral_daily_free_text() -> str:
     """نص إدارة الحق المجاني المؤقت الذي يُعاد منحه يومياً."""
     tiers = list_referral_daily_free_tiers()
     lines = [
         "⏱ *إعادة الضبط اليومية للإحالات*",
         "",
-        "يُمنح العضو حق استخدام مجاني مؤقت مرة واحدة يومياً.",
-        "يبدأ الحق عند أول استخدام لخدمة مدفوعة، وتُعاد مدته في اليوم التالي.",
+        "تُحتسب فقط الإحالات المكتملة خلال اليوم الواحد (00:00:00 → 23:59:59 بتوقيت UTC)، ويبدأ العداد من الصفر كل يوم.",
+        "عند بلوغ العدد يحصل العضو على 250 حساب رشق مجاني خلال المدة المحددة؛ ما زاد عن 250 يُدفع، وما لم يُستهلك منها يسقط بانتهاء المدة.",
         "",
     ]
     if not tiers:
@@ -64,7 +112,7 @@ def _referral_daily_free_text() -> str:
         for tier in tiers:
             lines.append(
                 f"• {tier['referral_count']} إحالة → "
-                f"{tier['free_minutes']} دقيقة مجانية يومياً"
+                f"250 حساب مجاني خلال {tier['free_minutes']} دقيقة (يومياً)"
             )
     return "\n".join(lines)
 
@@ -2376,6 +2424,60 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                 f"🔗 نقاط الدعوة الأساسية الحالية: {cur} نقطة\n\n"
                 "أرسل القيمة الجديدة.\n"
                 "يمكنك ضبط الشرائح المتغيرة من زر «شرائح مكافآت الإحالات»."
+            )
+            return
+
+        if data == "os:referral_levels" and is_own:
+            await q.edit_message_text(
+                _referral_levels_text(),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=_referral_levels_kb(),
+            )
+            return
+
+        if data == "os:ref_type_toggle" and is_own:
+            new_type = "points" if get_referral_reward_type() == "jewels" else "jewels"
+            set_setting("referral_reward_type", new_type)
+            await q.edit_message_text(
+                "✅ تم تغيير نوع المكافأة.\n\n" + _referral_levels_text(),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=_referral_levels_kb(),
+            )
+            return
+
+        if data == "os:ref_l1_jewels" and is_own:
+            context.user_data["state"] = "os_await_ref_l1_jewels"
+            await q.edit_message_text(
+                "💎 أرسل عدد الجواهر التي يحصل عليها الداعي عن كل مدعو (المستوى 1).\n"
+                "مثال: `2` أو `0.5`",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 إلغاء", callback_data="os:referral_levels")
+                ]]),
+            )
+            return
+
+        if data == "os:ref_level_add" and is_own:
+            context.user_data["state"] = "os_await_ref_level_num"
+            await q.edit_message_text(
+                f"➕ أرسل رقم المستوى (من 2 إلى {REFERRAL_MAX_LEVELS}).\n"
+                "المستوى 2 = من دعاهم مدعوّو العضو.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 إلغاء", callback_data="os:referral_levels")
+                ]]),
+            )
+            return
+
+        if data.startswith("os:ref_level_del:") and is_own:
+            try:
+                delete_referral_level_reward(int(data.rsplit(":", 1)[1]))
+            except ValueError:
+                await q.answer("⚠️ المستوى غير صالح.", show_alert=True)
+                return
+            await q.edit_message_text(
+                "✅ تم حذف المستوى.\n\n" + _referral_levels_text(),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=_referral_levels_kb(),
             )
             return
 

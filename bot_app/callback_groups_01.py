@@ -4,6 +4,8 @@ Cases stay in their original order. A matching case returns from this group,
 while the sentinel lets the dispatcher continue to the next group.
 """
 
+from decimal import Decimal
+
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
@@ -1307,11 +1309,28 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                     (user.id,)
                 ).fetchone()["cnt"]
             pending_line = f"\n⏳ بانتظار إكمال التحقق: {pending} شخص" if pending else ""
+            _rt = get_referral_reward_type()
+            _l1 = get_referral_level1_jewels() if _rt == "jewels" else int(rp)
+            _levels_lines = ""
+            for _lv in list_referral_level_rewards():
+                _amt = _lv["jewels"] if _rt == "jewels" else _lv["points"]
+                if _amt and Decimal(str(_amt)) > 0:
+                    _levels_lines += f"\n   ↳ المستوى {_lv['level']}: {fmt_referral_amount(_rt, _amt)}"
+            _levels_block = (
+                f"\n🪜 *مكافآت مستويات الشبكة (من دعاهم أصدقاؤك):*{_levels_lines}\n"
+                if _levels_lines else ""
+            )
+            _bal_line = (
+                f"💎 رصيدك: {fmt_jewel_amount(db_user['jewels'] if db_user else 0)} جوهرة"
+                if _rt == "jewels"
+                else f"💰 رصيدك: {db_user['points'] if db_user else 0} نقطة"
+            )
             await q.edit_message_text(
                 f"🔗 *رابط دعوتك الشخصي:*\n\n`{link}`\n\n"
-                f"✅ تحصل على *{rp} نقطة* لكل صديق يُكمل التحقق عبر رابطك\n"
-                f"👥 إحالات مكتملة (حصلت على نقاطها): {credited} شخص{pending_line}\n"
-                f"💰 رصيدك: {db_user['points'] if db_user else 0} نقطة",
+                f"✅ تحصل على *{fmt_referral_amount(_rt, _l1)}* لكل صديق يُكمل التحقق عبر رابطك (المستوى 1)\n"
+                f"{_levels_block}"
+                f"👥 إحالات مكتملة (حصلت على مكافأتها): {credited} شخص{pending_line}\n"
+                f"{_bal_line}",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="referral")]])
             )

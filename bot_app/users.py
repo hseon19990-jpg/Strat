@@ -10,6 +10,7 @@ import html
 import time
 import asyncio
 import uuid
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
@@ -403,11 +404,116 @@ def set_user_verified(user_id: int):
     with db_conn() as c:
         c.execute("UPDATE users SET verified=1 WHERE user_id=?", (user_id,))
 
+REFERRAL_REWARD_TYPES = ("points", "jewels")
+REFERRAL_MAX_LEVELS = 10
+
+
+def get_referral_reward_type() -> str:
+    """نوع مكافأة الإحالة المختار من المالك: points أو jewels (واحد فقط)."""
+    value = (get_setting("referral_reward_type") or "points").strip().lower()
+    return value if value in REFERRAL_REWARD_TYPES else "points"
+
+
+def parse_referral_jewels(value) -> Decimal:
+    """تحويل قيمة الجواهر إلى Decimal صالح (حتى 6 خانات عشرية)، أو ValueError."""
+    try:
+        amount = Decimal(str(value).strip().replace(",", ""))
+        if not amount.is_finite():
+            raise ValueError
+        amount = amount.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+    except (InvalidOperation, ValueError, TypeError):
+        raise ValueError("invalid jewel amount")
+    if amount < 0:
+        raise ValueError("negative jewel amount")
+    return amount
+
+
+def get_referral_level1_jewels() -> Decimal:
+    try:
+        return parse_referral_jewels(get_setting("referral_jewels") or "0")
+    except ValueError:
+        return Decimal("0")
+
+
+def list_referral_level_rewards() -> list[dict]:
+    """مكافآت المستويات 2 فما فوق (نقاط وجواهر لكل مستوى)."""
+    with db_conn() as c:
+        rows = c.execute(
+            "SELECT level, points, jewels FROM referral_level_rewards ORDER BY level"
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def upsert_referral_level_reward(level: int, points: int, jewels) -> None:
+    level = int(level)
+    if level < 2 or level > REFERRAL_MAX_LEVELS:
+        raise ValueError("level out of range")
+    with db_conn() as c:
+        c.execute(
+            """
+            INSERT INTO referral_level_rewards (level, points, jewels)
+            VALUES (%s,%s,%s)
+            ON CONFLICT (level) DO UPDATE SET
+                points=EXCLUDED.points,
+                jewels=EXCLUDED.jewels
+            """,
+            (level, max(0, int(points)), parse_referral_jewels(jewels)),
+        )
+
+
+def delete_referral_level_reward(level: int) -> None:
+    with db_conn() as c:
+        c.execute("DELETE FROM referral_level_rewards WHERE level=%s", (int(level),))
+
+
+def fmt_referral_amount(reward_type: str, amount) -> str:
+    """نص المكافأة: «30 نقطة» أو «💎 2.5 جوهرة»."""
+    if reward_type == "jewels":
+        try:
+            value = Decimal(str(amount or 0)).normalize()
+        except (InvalidOperation, ValueError, TypeError):
+            value = Decimal(0)
+        whole, dot, frac = format(value, "f").partition(".")
+        text = f"{int(whole):,}" + (f".{frac}" if dot else "")
+        return f"💎 {text} جوهرة"
+    return f"{int(amount or 0):,} نقطة"
+
+
+def _credit_referral_reward(c, user_id: int, reward_type: str, amount, level: int, source_id: int) -> None:
+    """يضيف المكافأة (نقاط أو جواهر) داخل نفس معاملة قاعدة البيانات."""
+    if reward_type == "jewels":
+        amount = parse_referral_jewels(amount)
+        c.execute(
+            "UPDATE users SET jewels=COALESCE(jewels,0)+%s WHERE user_id=%s",
+            (amount, user_id),
+        )
+        c.execute(
+            "INSERT INTO jewel_transactions "
+            "(user_id,amount,transaction_type,admin_id,reference) "
+            "VALUES (%s,%s,%s,%s,%s)",
+            (user_id, amount, "referral", None, f"referral:L{level}:from:{source_id}"),
+        )
+    else:
+        c.execute(
+            "UPDATE users SET points=points+%s WHERE user_id=%s",
+            (int(amount), user_id),
+        )
+
+
 def credit_referral_if_pending(user_id: int, context=None):
-    """يمنح نقاط الإحالة للداعي مرة واحدة بعد اكتمال دخول المدعو.
-    يُعيد (inviter_id, points) عند المنح، أو None إن لم يكن هناك شيء لمنحه."""
+    """يمنح مكافأة الإحالة للداعي مرة واحدة بعد اكتمال دخول المدعو.
+
+    نوع المكافأة (نقاط أو جواهر) يحدده المالك. المستوى الأول للداعي المباشر،
+    والمستويات التالية لمن دعا الداعي ثم من دعاه وهكذا حسب إعدادات المالك.
+    يُعيد (inviter_id, amount) للمستوى الأول، أو None إن لم يكن هناك شيء لمنحه.
+    تفاصيل المستويات الأعلى تُوضع في context.user_data["referral_upper_rewards"].
+    """
     if context is not None:
         context.user_data.pop("referral_reward_granted_minutes", None)
+        context.user_data.pop("referral_upper_rewards", None)
+        context.user_data.pop("referral_reward_type", None)
+    reward_type = get_referral_reward_type()
+    upper_rewards = []
     with db_conn() as c:
         row = c.execute(
             "SELECT invited_by, referral_credited, verified FROM users WHERE user_id=%s",
@@ -432,28 +538,65 @@ def credit_referral_if_pending(user_id: int, context=None):
         )
         if c.rowcount == 0:
             return None
-        count_row = c.execute(
-            "SELECT COUNT(*) AS cnt FROM users "
-            "WHERE invited_by=%s AND referral_credited=1",
-            (invited_by,),
-        ).fetchone()
-        referral_count = int((count_row or {}).get("cnt", 0) or 0)
-        tier = c.execute(
-            "SELECT referral_count, points_per_referral "
-            "FROM referral_reward_tiers "
-            "WHERE active=1 AND referral_count<=%s "
-            "ORDER BY referral_count DESC LIMIT 1",
-            (referral_count,),
-        ).fetchone()
-        rp = int(
-            tier["points_per_referral"]
-            if tier is not None
-            else (get_setting("referral_points") or 30)
-        )
-        c.execute("UPDATE users SET points=points+%s WHERE user_id=%s", (rp, invited_by))
+
+        # ── المستوى الأول ──
+        if reward_type == "jewels":
+            rp = get_referral_level1_jewels()
+        else:
+            count_row = c.execute(
+                "SELECT COUNT(*) AS cnt FROM users "
+                "WHERE invited_by=%s AND referral_credited=1",
+                (invited_by,),
+            ).fetchone()
+            referral_count = int((count_row or {}).get("cnt", 0) or 0)
+            tier = c.execute(
+                "SELECT referral_count, points_per_referral "
+                "FROM referral_reward_tiers "
+                "WHERE active=1 AND referral_count<=%s "
+                "ORDER BY referral_count DESC LIMIT 1",
+                (referral_count,),
+            ).fetchone()
+            rp = int(
+                tier["points_per_referral"]
+                if tier is not None
+                else (get_setting("referral_points") or 30)
+            )
+        if rp > 0:
+            _credit_referral_reward(c, invited_by, reward_type, rp, 1, user_id)
         minutes = _grant_daily_referral_free_access(c, invited_by)
-        if context is not None and minutes:
-            context.user_data["referral_reward_granted_minutes"] = minutes
+
+        # ── المستويات 2 فما فوق ──
+        level_rows = c.execute(
+            "SELECT level, points, jewels FROM referral_level_rewards ORDER BY level"
+        ).fetchall()
+        level_map = {int(r["level"]): r for r in level_rows}
+        if level_map:
+            visited = {user_id, invited_by}
+            current = invited_by
+            for level in range(2, max(level_map) + 1):
+                parent_row = c.execute(
+                    "SELECT invited_by FROM users WHERE user_id=%s", (current,)
+                ).fetchone()
+                parent = int((parent_row or {}).get("invited_by", 0) or 0)
+                if not parent or parent in visited:
+                    break
+                visited.add(parent)
+                current = parent
+                cfg = level_map.get(level)
+                if not cfg:
+                    continue
+                amount = cfg["jewels"] if reward_type == "jewels" else cfg["points"]
+                if not amount or Decimal(str(amount)) <= 0:
+                    continue
+                _credit_referral_reward(c, parent, reward_type, amount, level, user_id)
+                upper_rewards.append((parent, level, amount))
+
+        if context is not None:
+            if minutes:
+                context.user_data["referral_reward_granted_minutes"] = minutes
+            context.user_data["referral_reward_type"] = reward_type
+            if upper_rewards:
+                context.user_data["referral_upper_rewards"] = upper_rewards
     return (invited_by, rp)
 
 
@@ -528,7 +671,12 @@ def delete_referral_daily_free_tier(tier_id: int) -> None:
 
 
 def _grant_daily_referral_free_access(c, user_id: int) -> int:
-    """يمنح الحق المجاني مرة واحدة لكل شريحة في كل يوم."""
+    """يمنح الحق المجاني مرة واحدة لكل شريحة في كل يوم (بتوقيت UTC).
+
+    تُحتسب فقط الإحالات المكتملة خلال اليوم الحالي (00:00:00 → 23:59:59 UTC)،
+    ويبدأ العداد من الصفر في اليوم التالي. الحق نفسه حصة 250 حساباً ناجحاً
+    تُستهلك خلال مدة الشريحة، وما لم يُستهلك منها يسقط بانتهاء المدة.
+    """
     eligible = c.execute(
         """
         SELECT t.id, t.free_minutes
@@ -539,6 +687,9 @@ def _grant_daily_referral_free_access(c, user_id: int) -> int:
               SELECT COUNT(*)
               FROM users
               WHERE invited_by=%s AND referral_credited=1
+                AND credited_at >= (
+                    date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+                )
           )
         ORDER BY t.referral_count DESC
         LIMIT 1
@@ -552,7 +703,7 @@ def _grant_daily_referral_free_access(c, user_id: int) -> int:
         """
         INSERT INTO referral_daily_free_claims
             (user_id, tier_id, claim_date)
-        VALUES (%s,%s,CURRENT_DATE)
+        VALUES (%s,%s,(NOW() AT TIME ZONE 'UTC')::date)
         ON CONFLICT (user_id, tier_id, claim_date) DO NOTHING
         """,
         (int(user_id), int(eligible["id"])),

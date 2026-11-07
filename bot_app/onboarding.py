@@ -230,10 +230,13 @@ async def _notify_referral_credit(context, user, credited) -> str:
         return ""
 
     invited_by, rp = credited
+    reward_type = context.user_data.pop("referral_reward_type", None) or get_referral_reward_type()
+    upper_rewards = context.user_data.pop("referral_upper_rewards", None) or []
+    reward_text = fmt_referral_amount(reward_type, rp)
     free_minutes = int(context.user_data.pop("referral_reward_granted_minutes", 0) or 0)
     free_note = (
-        f"\n🎁 حصلت أيضاً على رشق مجاني حتى 250 حساباً ناجحاً عبر خدمات الرشق "
-        f"لمدة {free_minutes} دقيقة (لا يشمل مواقع الرشق)."
+        f"\n🎁 حصلت أيضاً على 250 حساب رشق مجاني خلال {free_minutes} دقيقة "
+        f"(ما زاد عن 250 يُدفع، وما لم يُستخدم يسقط بانتهاء المدة، ولا يشمل مواقع الرشق)."
         if free_minutes > 0
         else ""
     )
@@ -255,14 +258,25 @@ async def _notify_referral_credit(context, user, credited) -> str:
             chat_id=invited_by,
             text=(
                 f"🎉 مبروك! أكمل المستخدم {invited_name} "
-                f"شرط الإحالة عبر رابط دعوتك، وحصلت على {rp} نقطة."
+                f"شرط الإحالة عبر رابط دعوتك، وحصلت على {reward_text}."
                 f"{free_note}"
             ),
             parse_mode=ParseMode.MARKDOWN,
         )
     except Exception as exc:
         logger.warning(f"⚠️ فشل إرسال إشعار الإحالة للمستخدم {invited_by}: {exc}")
-    return f"\n\n🔗 لقد دخلت إلى رابط دعوة صديقك {inviter_name} وقد حصل على {rp} نقطة."
+    for upper_id, upper_level, upper_amount in upper_rewards:
+        try:
+            await context.bot.send_message(
+                chat_id=upper_id,
+                text=(
+                    f"🎉 مبروك! انضم عضو جديد ضمن شبكة دعواتك (المستوى {upper_level})، "
+                    f"وحصلت على {fmt_referral_amount(reward_type, upper_amount)}."
+                ),
+            )
+        except Exception as exc:
+            logger.warning(f"⚠️ فشل إرسال إشعار مستوى الإحالة {upper_level} للمستخدم {upper_id}: {exc}")
+    return f"\n\n🔗 لقد دخلت إلى رابط دعوة صديقك {inviter_name} وقد حصل على {reward_text}."
 
 
 async def finalize_verification(update: Update, context: ContextTypes.DEFAULT_TYPE, user, edit=False, skip_referral=False):

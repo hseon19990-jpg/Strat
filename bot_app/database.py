@@ -250,6 +250,13 @@ def init_db():
               created_at          TIMESTAMPTZ DEFAULT NOW()
           )""")
           c.execute("""
+          CREATE TABLE IF NOT EXISTS referral_level_rewards (
+              level       INTEGER PRIMARY KEY CHECK (level >= 2),
+              points      INTEGER NOT NULL DEFAULT 0,
+              jewels      NUMERIC(20,6) NOT NULL DEFAULT 0,
+              created_at  TIMESTAMPTZ DEFAULT NOW()
+          )""")
+          c.execute("""
           CREATE TABLE IF NOT EXISTS referral_reward_claims (
               user_id     BIGINT NOT NULL,
               tier_id     INTEGER NOT NULL REFERENCES referral_reward_tiers(id) ON DELETE CASCADE,
@@ -1021,6 +1028,8 @@ def init_db():
               ('join_channel_reward', '45'),
               ('daily_gift_points', '100'),
               ('referral_points', '30'),
+              ('referral_reward_type', 'points'),
+              ('referral_jewels', '0'),
               ('star_to_points', '250'),
               ('raksh_points_per_jewel', '1000'),
               ('jewels_to_points_rate', '5000'),
