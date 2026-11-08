@@ -2549,7 +2549,7 @@ def exchange_kb():
         ).fetchall()
     rows = [
         [InlineKeyboardButton("↔️ تحويل بين النقاط والمجوهرات", callback_data="currency_exchange")],
-        [InlineKeyboardButton("⭐ استبدال جواهر بنجوم", callback_data="exchange:stars")],
+        [InlineKeyboardButton("⭐ استبدال جواهر الإحالة بنجوم", callback_data="exchange:stars")],
         [InlineKeyboardButton("📱 شراء رقم تيلغرام",  callback_data="exchange:number")],
         [InlineKeyboardButton("📱 شراء رقم بالنجوم", callback_data="exchange:number_stars")],
         [InlineKeyboardButton("🎟 شراء عبر كود",       callback_data="exchange:num_code")],

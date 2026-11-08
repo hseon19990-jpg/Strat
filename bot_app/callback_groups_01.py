@@ -2591,7 +2591,9 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="exchange_points")])
             await q.edit_message_text(
                 f"⭐ *استبدال جواهر بنجوم*\n\n"
-                f"💡 سعر النجمة الواحدة: {fmt_decimal(rate)} جوهرة\n\n"
+                f"💡 سعر النجمة الواحدة: {fmt_decimal(rate)} جوهرة\n"
+                f"ℹ️ يُستبدل بجواهر الإحالة فقط.\n"
+                f"💎 رصيد جواهر الإحالة: {fmt_jewel_amount(get_user_referral_jewels(user.id))} جوهرة\n\n"
                 f"اختر الباقة المطلوبة:",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup(rows)
@@ -2613,11 +2615,12 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             stars = int(data.split(":")[2])
             rate = get_exchange_star_rate()
             cost = exchange_stars_cost(stars, rate)
-            jw = get_user_jewels(user.id)
+            # النجوم تُشترى بجواهر الإحالة فقط
+            jw = get_user_referral_jewels(user.id)
             confirmed = len(data.split(":") ) == 4 and data.endswith(":confirm")
             if not confirmed:
                 await q.edit_message_text(
-                    f"📋 *تأكيد استبدال الجواهر بنجوم*\n\n⭐ الباقة: *{stars} نجمة*\n💎 الخصم: *{fmt_decimal(cost)} جوهرة*\n💎 الرصيد بعد العملية تقريباً: *{fmt_jewel_amount(jw - cost)} جوهرة*\n\n⚠️ سيتم تسجيل الطلب لدى الإدارة بعد التأكيد.",
+                    f"📋 *تأكيد استبدال الجواهر بنجوم*\n\n⭐ الباقة: *{stars} نجمة*\n💎 الخصم: *{fmt_decimal(cost)} جوهرة*\n💎 رصيد جواهر الإحالة بعد العملية تقريباً: *{fmt_jewel_amount(jw - cost)} جوهرة*\nℹ️ هذه الخدمة تُستبدل بجواهر الإحالة فقط.\n\n⚠️ سيتم تسجيل الطلب لدى الإدارة بعد التأكيد.",
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تأكيد الخصم والطلب", callback_data=f"exchange:pkg:{stars}:confirm")], [InlineKeyboardButton("❌ إلغاء", callback_data="exchange:stars")]])
                 )
@@ -2625,15 +2628,16 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             if jw < cost:
                 kb_rows = contact_owner_row() + [[InlineKeyboardButton("🔙 رجوع", callback_data="exchange:stars")]]
                 await q.edit_message_text(
-                    f"❌ *جواهرك غير كافية!*\n\n"
-                    f"⭐ تحتاج: {fmt_decimal(cost)} جوهرة\n"
-                    f"💎 رصيدك: {fmt_jewel_amount(jw)} جوهرة",
+                    f"❌ *جواهر الإحالة غير كافية!*\n\n"
+                    f"⭐ تحتاج: {fmt_decimal(cost)} جوهرة إحالة\n"
+                    f"💎 رصيد جواهر الإحالة: {fmt_jewel_amount(jw)} جوهرة\n"
+                    f"ℹ️ جواهر الشراء والإهداء والتحويل من النقاط لا تصلح لهذه الخدمة.",
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=InlineKeyboardMarkup(kb_rows)
                 )
                 return
-            if deduct_jewels(user.id, cost, reference=f"exchange_stars:{stars}") is None:
-                await q.edit_message_text("❌ رصيدك غير كافٍ.", reply_markup=back_kb("exchange:stars"))
+            if deduct_referral_jewels(user.id, cost, reference=f"exchange_stars:{stars}") is None:
+                await q.edit_message_text("❌ رصيد جواهر الإحالة غير كافٍ.", reply_markup=back_kb("exchange:stars"))
                 return
             code = next_order_code(user.id)
             with db_conn() as c:

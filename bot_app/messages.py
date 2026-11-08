@@ -1359,10 +1359,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         rate = get_exchange_star_rate()
         cost = exchange_stars_cost(stars, rate)
-        pts = get_user_jewels(user.id)
+        pts = get_user_referral_jewels(user.id)
         if pts < cost:
             await update.message.reply_text(
-                f"❌ *جواهرك غير كافية!*\n\n⭐ تحتاج: {fmt_decimal(cost)} جوهرة\n💎 رصيدك: {fmt_jewel_amount(pts)} جوهرة",
+                f"❌ *جواهر الإحالة غير كافية!*\n\n⭐ تحتاج: {fmt_decimal(cost)} جوهرة إحالة\n💎 رصيد جواهر الإحالة: {fmt_jewel_amount(pts)} جوهرة",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=main_menu_kb(is_own)
             )

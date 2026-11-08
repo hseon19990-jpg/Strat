@@ -1470,8 +1470,8 @@ def refund_exchange_cost(user_id: int, amount, currency, reference: str = "", pr
     """يعيد تكلفة عملية استبدال بنفس العملة التي دُفعت بها."""
     if currency == "jewels":
         add_jewels(user_id, amount, reference=reference or "exchange_refund")
-        if prize_type == "custom":
-            # الجائزة المخصصة دُفعت من جواهر الإحالة، فتعود إليها.
+        if prize_type in ("custom", "stars"):
+            # الجائزة المخصصة والنجوم تُدفع من جواهر الإحالة، فتعود إليها.
             with db_conn() as c:
                 c.execute(
                     "UPDATE users SET referral_jewels=LEAST(COALESCE(jewels,0), "
