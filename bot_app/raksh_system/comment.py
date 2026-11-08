@@ -202,13 +202,13 @@ class CommentService(RakshService):
                 )
                 + "\n"
                 + f"📢 القنوات الإجبارية: {channel_count}\n"
-                + f"➕ تكلفة القنوات الإضافية: {extra_channel_cost} نقطة\n\n"
+                + f"➕ تكلفة القنوات الإضافية: {raksh_cost_text(extra_channel_cost)}\n\n"
                 + f"💳 *اختر طريقة الدفع:*",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
                     [
                         InlineKeyboardButton(
-                            f"💰 دفع بالنقاط ({points_cost} نقطة)"
+                            f"💎 دفع بالجواهر ({raksh_cost_text(points_cost)})"
                             + (
                                 f" — {free_quantity} حساب مجاني"
                                 if free_quantity

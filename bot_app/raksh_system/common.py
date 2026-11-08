@@ -8,13 +8,14 @@ from ..shared import *
 from ..accounts import get_forced_ref_account_count, get_raksh_account_count
 from ..database import db_conn
 from ..security import (
-    add_points,
-    deduct_points,
+    add_jewels,
+    deduct_jewels,
+    get_user_jewels,
     get_user,
     is_user_banned,
     service_points_cost,
 )
-from ..services import get_raksh_accounts_label, md_escape
+from ..services import get_raksh_accounts_label, md_escape, fmt_jewel_amount
 from ..users import (
     get_setting,
     set_setting,
@@ -24,6 +25,45 @@ from ..users import (
     settle_referral_free_raksh_reservation,
 )
 from ..ui import main_menu_kb
+from decimal import Decimal as _Dec, ROUND_CEILING as _ROUND_CEILING
+
+
+def raksh_points_to_jewels(points) -> "_Dec":
+    """يحوّل سعر الرشق المحسوب بالنقاط إلى جواهر (الافتراضي: 1000 نقطة = جوهرة)."""
+    try:
+        per_jewel = _Dec(str(get_setting("raksh_points_per_jewel") or "1000"))
+    except Exception:
+        per_jewel = _Dec(1000)
+    if per_jewel <= 0:
+        per_jewel = _Dec(1000)
+    value = max(_Dec(0), _Dec(str(points or 0)))
+    return (value / per_jewel).quantize(_Dec("0.000001"), rounding=_ROUND_CEILING)
+
+
+def deduct_points(user_id: int, pts) -> bool:
+    """الرشق لا يُدفع بالنقاط: يُخصم ما يعادل السعر من الجواهر فقط."""
+    pts = int(pts or 0)
+    if pts <= 0:
+        return True
+    amount = raksh_points_to_jewels(pts)
+    if amount <= 0:
+        return True
+    return deduct_jewels(user_id, amount, reference="raksh_payment") is not None
+
+
+def add_points(user_id: int, pts) -> None:
+    """استرداد قيمة الرشق جواهر (لا نقاط) بنفس سعر الخصم."""
+    pts = int(pts or 0)
+    if pts <= 0:
+        return
+    amount = raksh_points_to_jewels(pts)
+    if amount > 0:
+        add_jewels(user_id, amount, reference="raksh_refund")
+
+
+def raksh_cost_text(points) -> str:
+    """نص التكلفة بالجواهر لعرضها للعضو."""
+    return f"{fmt_jewel_amount(raksh_points_to_jewels(points))} جوهرة"
 from telethon import TelegramClient, functions
 from telethon.sessions import StringSession
 from telethon.tl.functions.channels import JoinChannelRequest, LeaveChannelRequest

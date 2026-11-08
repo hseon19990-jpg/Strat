@@ -178,7 +178,7 @@ class ForcedRefService(RakshService):
                 reply_markup=InlineKeyboardMarkup([
                     [
                         InlineKeyboardButton(
-                            f"💰 دفع بالنقاط ({points_cost} نقطة)"
+                            f"💎 دفع بالجواهر ({raksh_cost_text(points_cost)})"
                             + (f" — {free_quantity} حساب مجاني" if free_quantity else ""),
                             callback_data=f"raksh_forced_ref:payment:points:{quantity}:{points_cost}"
                         )
@@ -260,8 +260,8 @@ class ForcedRefService(RakshService):
                 f"📢 القنوات الإجبارية: {len(context.user_data.get('raksh_channels', []))} قناة\n"
                 f"🔗 رابط البوت: `{context.user_data.get('raksh_link', '')}`\n"
                 f"🔢 العدد: {quantity}\n"
-                f"💳 طريقة الدفع: {'💰 نقاط' if payment_method == 'points' else '⭐ نجوم'}\n"
-                f"💰 التكلفة: {total_cost} {'نقطة' if payment_method == 'points' else 'نجمة'}\n\n"
+                f"💳 طريقة الدفع: {'💎 جواهر' if payment_method == 'points' else '⭐ نجوم'}\n"
+                f"💰 التكلفة: {raksh_cost_text(total_cost) if payment_method == 'points' else str(total_cost) + ' نجمة'}\n\n"
                 f"*هل تريد تأكيد الطلب؟*",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
@@ -312,20 +312,20 @@ class ForcedRefService(RakshService):
             if payment_method == "points":
                 if not deduct_points(user.id, total_cost):
                     await query.edit_message_text(
-                        "❌ *نقاطك غير كافية!*\n"
-                        f"التكلفة المطلوبة: {total_cost} نقطة",
+                        "❌ *جواهرك غير كافية!*\n"
+                        f"التكلفة المطلوبة: {raksh_cost_text(total_cost)}",
                         parse_mode=ParseMode.MARKDOWN,
                         reply_markup=get_raksh_menu_keyboard(is_own)
                     )
                     return True
                 
                 await query.edit_message_text(
-                    "✅ *تم تأكيد الطلب وخصم النقاط!*\n\n"
+                    "✅ *تم تأكيد الطلب وخصم الجواهر!*\n\n"
                     f"📋 تفاصيل الطلب:\n"
                     f"📢 القنوات الإجبارية: {len(context.user_data.get('raksh_channels', []))} قناة\n"
                     f"🔗 الرابط: `{context.user_data.get('raksh_link', '')}`\n"
                     f"🔢 العدد: {quantity}\n"
-                    f"💰 تم خصم: {total_cost} نقطة\n\n"
+                    f"💎 تم خصم: {raksh_cost_text(total_cost)}\n\n"
                     f"⏳ جاري الانضمام للقنوات وبدء الإحالة...",
                     parse_mode=ParseMode.MARKDOWN
                 )

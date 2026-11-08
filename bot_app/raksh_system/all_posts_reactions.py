@@ -316,14 +316,14 @@ class AllPostsReactionsService(RakshService):
                     if free_quantity
                     else ""
                 )
-                + f"💰 التكلفة: {points_cost} نقطة أو {stars_cost} نجمة\n\n"
+                + f"💎 التكلفة: {raksh_cost_text(points_cost)} أو {stars_cost} نجمة\n\n"
                 + f"سيتم ضم {quantity} حساباً إلى القناة قبل بدء التفاعل.\n"
                 + "كل منشور جديد سيتفاعل عليه هذا العدد من الحسابات طوال المدة.\n\n"
                 + "💳 *اختر طريقة الدفع:*",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton(
-                        f"💰 دفع بالنقاط ({points_cost} نقطة)"
+                        f"💎 دفع بالجواهر ({raksh_cost_text(points_cost)})"
                         + (
                             f" — {free_quantity} حساب مجاني"
                             if free_quantity

@@ -126,13 +126,13 @@ class PollService(RakshService):
                     if free_quantity
                     else ""
                 )
-                + f"💰 السعر بالنقاط: {points_cost} نقطة\n"
+                + f"💎 السعر بالجواهر: {raksh_cost_text(points_cost)}\n"
                 + f"⭐ السعر بالنجوم: {stars_cost} نجمة\n\n"
                 + "اختر طريقة الدفع:",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton(
-                        f"💰 دفع بالنقاط ({points_cost} نقطة)"
+                        f"💎 دفع بالجواهر ({raksh_cost_text(points_cost)})"
                         + (
                             f" — {free_quantity} حساب مجاني"
                             if free_quantity
