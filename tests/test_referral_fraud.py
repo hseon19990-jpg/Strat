@@ -89,6 +89,8 @@ class FakeDb:
             return Res([{"cnt": 1}])
         if sql.startswith("SELECT referral_count, points_per_referral"):
             return Res()
+        if sql.startswith("UPDATE users SET wheel_spins="):
+            return Res()
         if sql.startswith("UPDATE users SET points=points+"):
             self.users[p[1]]["points"] += p[0]
             return Res()

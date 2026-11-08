@@ -11,6 +11,7 @@ def _load_topup_helpers():
     tree = ast.parse(source_path.read_text(encoding="utf-8"))
     names = {
         "JEWEL_STAR_TOPUP_MAX",
+        "JEWEL_STAR_INVOICE_MAX_STARS",
         "parse_jewel_star_topup_amount",
         "validate_jewel_star_invoice",
     }
@@ -58,6 +59,16 @@ class JewelTopupTests(unittest.TestCase):
         self.assertIsNone(validate("jewel_stars:50:123", 123, 50, "USD"))
         self.assertIsNone(validate("jewel_stars:0:123", 123, 0, "XTR"))
         self.assertIsNone(validate("jewel_stars:50:123:extra", 123, 50, "XTR"))
+
+    def test_invoice_with_decimal_price_uses_embedded_star_total(self):
+        validate = _load_topup_helpers()["validate_jewel_star_invoice"]
+        # 50 جوهرة بسعر 0.5 نجمة = 25 نجمة، وبسعر 1.5 = 75 نجمة.
+        self.assertEqual(validate("jewel_stars:50:123:25", 123, 25, "XTR"), 50)
+        self.assertEqual(validate("jewel_stars:50:123:75", 123, 75, "XTR"), 50)
+        self.assertIsNone(validate("jewel_stars:50:123:25", 123, 50, "XTR"))
+        self.assertIsNone(validate("jewel_stars:50:123:0", 123, 0, "XTR"))
+        self.assertIsNone(validate("jewel_stars:50:123:10001", 123, 10001, "XTR"))
+        self.assertIsNone(validate("jewel_stars:50:124:25", 123, 25, "XTR"))
 
     def test_default_menu_and_owner_editors_are_registered(self):
         services = (ROOT / "bot_app" / "services.py").read_text(encoding="utf-8")

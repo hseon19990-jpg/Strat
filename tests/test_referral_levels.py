@@ -57,6 +57,8 @@ class FakeDb:
             return FakeResult([dict(level=k, **v) for k, v in sorted(self.levels.items())])
         if sql.startswith("SELECT invited_by FROM users"):
             return FakeResult([{"invited_by": self.users[params[0]]["invited_by"]}])
+        if sql.startswith("UPDATE users SET wheel_spins="):
+            return FakeResult()
         if sql.startswith("UPDATE users SET points=points+"):
             self.users[params[1]]["points"] += params[0]
             return FakeResult()
