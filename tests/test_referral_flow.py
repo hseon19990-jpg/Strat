@@ -49,6 +49,9 @@ def _load_proceed_after_mandatory(unjoined_channels):
     async def finalize_verification(update, context, user, edit=False, skip_referral=False):
         calls["finalized"] = (user.id, edit, skip_referral)
 
+    async def start_referral_challenge_if_needed(update, context, user, edit=False):
+        return False
+
     namespace = {
         "OWNER_ID": 1,
         "Update": object,
@@ -56,6 +59,7 @@ def _load_proceed_after_mandatory(unjoined_channels):
         "get_unjoined_mandatory_channels": get_unjoined_mandatory_channels,
         "show_mandatory_gate": show_mandatory_gate,
         "finalize_verification": finalize_verification,
+        "start_referral_challenge_if_needed": start_referral_challenge_if_needed,
     }
     exec(
         compile(ast.Module(body=[node], type_ignores=[]), str(ONBOARDING), "exec"),
