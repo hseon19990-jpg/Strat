@@ -13,12 +13,12 @@ USERS = ROOT / "bot_app" / "users.py"
 def _load():
     """يحمّل المنطق الصرف للعجلة دون أي استيراد من البوت أو قاعدة البيانات."""
     tree = ast.parse(SRC.read_text(encoding="utf-8"))
-    wanted_funcs = {"wheel_pick_prize", "validate_wheel_invoice"}
+    wanted_funcs = {"wheel_pick_prize", "validate_wheel_invoice", "_wheel_public_name"}
     wanted_classes = {"WheelEngine"}
     wanted_vars = {
-        "WHEEL_BLOCK_SIZE", "WHEEL_DAILY_BOOST_LIMIT", "WHEEL_TEN_SPINS",
+        "WHEEL_BLOCK_SIZE", "WHEEL_BOOST_INTERVAL_SECONDS", "WHEEL_TEN_SPINS",
         "WHEEL_ROLL_SCALE", "WHEEL_PRIZES", "WHEEL_DISPLAY_ORDER",
-        "WHEEL_RANDOM_WEIGHTS", "WHEEL_REMAINDER_PRIZE",
+        "WHEEL_RANDOM_WEIGHTS", "WHEEL_REMAINDER_PRIZE", "_WHEEL_NAME_STRIP_RE",
     }
     nodes = []
     for node in tree.body:
@@ -30,7 +30,7 @@ def _load():
             isinstance(t, ast.Name) and t.id in wanted_vars for t in node.targets
         ):
             nodes.append(node)
-    ns = {"_secrets": __import__("secrets")}
+    ns = {"_secrets": __import__("secrets"), "re": __import__("re"), "html": __import__("html")}
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(SRC), "exec"), ns)
     return ns
 
@@ -59,37 +59,76 @@ class WheelRulesTests(unittest.TestCase):
     def test_premium_and_weekly_boost_never_win(self):
         w = self.w
         engine = w["WheelEngine"](rng=random.Random(1))
-        seen = Counter(engine.next_prize(f"day{i // 50}") for i in range(200_000))
+        seen = Counter(engine.next_prize(i * 3600.0) for i in range(200_000))
         for key in ("premium3", "premium6", "premium12", "boost_weekly"):
             self.assertEqual(seen[key], 0)
 
     def test_exactly_one_jewel_per_100_spins(self):
         w = self.w
         engine = w["WheelEngine"](rng=random.Random(7))
-        prizes = [engine.next_prize("d") for _ in range(10_000)]
+        prizes = [engine.next_prize(0.0) for _ in range(10_000)]
         for start in range(0, 10_000, 100):
             self.assertEqual(prizes[start:start + 100].count("jewel"), 1, start)
 
     def test_ten_jewel_winners_per_1000(self):
         w = self.w
         engine = w["WheelEngine"](rng=random.Random(3))
-        prizes = [engine.next_prize("d") for _ in range(1000)]
+        prizes = [engine.next_prize(0.0) for _ in range(1000)]
         self.assertEqual(prizes.count("jewel"), 10)
 
-    def test_daily_boost_goes_to_first_four_spins_of_each_day(self):
+    def test_daily_boost_only_once_per_six_hours(self):
         w = self.w
+        gap = w["WHEEL_BOOST_INTERVAL_SECONDS"]
+        self.assertEqual(gap, 6 * 3600)
         engine = w["WheelEngine"](rng=random.Random(5))
-        for day in ("2026-11-08", "2026-11-09", "2026-11-10"):
-            prizes = [engine.next_prize(day) for _ in range(300)]
-            self.assertEqual(prizes.count("boost_daily"), 4)
+        t0 = 1_800_000_000.0
+        wins = []
+        # دورة كل دقيقة لمدة 24 ساعة.
+        for minute in range(24 * 60):
+            now = t0 + minute * 60
+            if engine.next_prize(now) == "boost_daily":
+                wins.append(now)
+        self.assertEqual(len(wins), 4)
+        for earlier, later in zip(wins, wins[1:]):
+            self.assertGreaterEqual(later - earlier, gap)
+
+    def test_daily_boost_closed_inside_six_hours(self):
+        w = self.w
+        engine = w["WheelEngine"](rng=random.Random(9))
+        t0 = 1_800_000_000.0
+        first = [engine.next_prize(t0 + i) for i in range(50)]
+        self.assertEqual(first.count("boost_daily"), 1)
+        later = [engine.next_prize(t0 + 3 * 3600 + i) for i in range(50)]
+        self.assertEqual(later.count("boost_daily"), 0)
+        reopened = [engine.next_prize(t0 + 6 * 3600 + i) for i in range(50)]
+        self.assertEqual(reopened.count("boost_daily"), 1)
 
     def test_daily_boost_not_stolen_by_guaranteed_jewel(self):
         w = self.w
-        # الدورة الأولى هي موضع الجوهرة المضمونة: يجب أن تبقى حصة التعزيز اليومي كاملة.
+        # الدورة الأولى هي موضع الجوهرة المضمونة: يبقى التعزيز اليومي مفتوحاً للدورة التالية.
         engine = w["WheelEngine"](slot_block=0, slot=0, rng=random.Random(2))
-        prizes = [engine.next_prize("d") for _ in range(30)]
+        t0 = 1_800_000_000.0
+        prizes = [engine.next_prize(t0) for _ in range(30)]
         self.assertEqual(prizes[0], "jewel")
-        self.assertEqual(prizes.count("boost_daily"), 4)
+        self.assertEqual(prizes.count("boost_daily"), 1)
+
+    def test_group_name_has_no_id_username_or_link(self):
+        name = self.w["_wheel_public_name"]
+
+        class U:
+            full_name = "𝗨𝗡!𝗖𝗟 | جـيـمـي @QB_IB https://t.me/QB_IB tg://user?id=6438209923"
+            id = 6438209923
+
+        out = name(U())
+        for banned in ("@", "QB_IB", "t.me", "tg://", "6438209923"):
+            self.assertNotIn(banned, out)
+        self.assertIn("جـيـمـي", out)
+
+        class Empty:
+            full_name = "@only_handle"
+            id = 1
+
+        self.assertEqual(name(Empty()), "عضو")
 
     def test_probabilities_match_owner_spec(self):
         w = self.w
