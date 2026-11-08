@@ -1181,6 +1181,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"⚠️ أرسل عدداً صحيحاً من 1 إلى {JEWEL_STAR_TOPUP_MAX:,} مجوهرة."
             )
             return
+        if jewel_star_cost(amount) > JEWEL_STAR_INVOICE_MAX_STARS:
+            await update.message.reply_text(
+                "⚠️ هذه الكمية تتجاوز حد فاتورة النجوم الواحدة. أرسل كمية أقل."
+            )
+            return
         context.user_data["state"] = "main_menu"
         try:
             await send_jewel_star_invoice(context, user, amount)
@@ -1287,14 +1292,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if pts <= 0:
             await update.message.reply_text("⚠️ يجب أن يكون عدد النقاط أكبر من صفر.")
             return
-        rate  = int(get_setting("star_to_points") or "250")
-        stars = math.ceil(pts / rate)
+        rate  = get_star_to_points_rate()
+        stars = max(1, int(math.ceil(Decimal(pts) / rate)))
+        real_pts = star_points(stars, rate)
         context.user_data["charge_stars"] = stars
-        context.user_data["charge_pts"]   = stars * rate
+        context.user_data["charge_pts"]   = real_pts
         context.user_data["state"] = "confirm_charge_stars"
         await update.message.reply_text(
             f"💡 للحصول على {pts} نقطة تحتاج *{stars} ⭐*\n"
-            f"(ستحصل فعلياً على {stars * rate} نقطة)\n\n"
+            f"(ستحصل فعلياً على {real_pts} نقطة)\n\n"
             f"أرسل *نعم* للمتابعة للدفع أو *لا* للإلغاء",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تأكيد وإرسال الفاتورة", callback_data="charge_confirm:stars")], [InlineKeyboardButton("❌ إلغاء", callback_data="charge_cancel:stars")]])
@@ -1310,8 +1316,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if stars <= 0:
             await update.message.reply_text("⚠️ يجب أن يكون عدد النجوم أكبر من صفر.")
             return
-        rate = int(get_setting("star_to_points") or "250")
-        pts  = stars * rate
+        pts  = star_points(stars)
+        if pts <= 0:
+            await update.message.reply_text("⚠️ هذه الكمية أقل من نقطة واحدة، أرسل عدد نجوم أكبر.")
+            return
         context.user_data["charge_stars"] = stars
         context.user_data["charge_pts"]   = pts
         context.user_data["state"] = "confirm_charge_stars"
@@ -1349,12 +1357,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if stars <= 0:
             await update.message.reply_text("⚠️ يجب أن يكون الرقم أكبر من صفر.")
             return
-        rate = int(get_setting("exchange_star_rate") or "2000")
-        cost = stars * rate
+        rate = get_exchange_star_rate()
+        cost = exchange_stars_cost(stars, rate)
         pts = get_user_jewels(user.id)
         if pts < cost:
             await update.message.reply_text(
-                f"❌ *جواهرك غير كافية!*\n\n⭐ تحتاج: {cost:,} جوهرة\n💎 رصيدك: {fmt_jewel_amount(pts)} جوهرة",
+                f"❌ *جواهرك غير كافية!*\n\n⭐ تحتاج: {fmt_decimal(cost)} جوهرة\n💎 رصيدك: {fmt_jewel_amount(pts)} جوهرة",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=main_menu_kb(is_own)
             )
@@ -1364,7 +1372,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["exchange_stars_cost"] = cost
         context.user_data["state"] = "confirm_exchange_stars"
         await update.message.reply_text(
-            f"📋 *تأكيد استبدال الجواهر بنجوم*\n\n⭐ المطلوب: *{stars} نجمة*\n💎 الخصم: *{cost:,} جوهرة*\n💎 رصيدك بعد العملية تقريباً: *{fmt_jewel_amount(pts - cost)} جوهرة*\n\n⚠️ سيتم تسجيل طلب النجوم لدى الإدارة بعد التأكيد.",
+            f"📋 *تأكيد استبدال الجواهر بنجوم*\n\n⭐ المطلوب: *{stars} نجمة*\n💎 الخصم: *{fmt_decimal(cost)} جوهرة*\n💎 رصيدك بعد العملية تقريباً: *{fmt_jewel_amount(pts - cost)} جوهرة*\n\n⚠️ سيتم تسجيل طلب النجوم لدى الإدارة بعد التأكيد.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تأكيد الخصم والطلب", callback_data="exchange_confirm:stars")], [InlineKeyboardButton("❌ إلغاء", callback_data="exchange_cancel:stars")]])
         )
@@ -2513,13 +2521,30 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ─────────────────────────────────────────────────────────────
 
     if is_own and state == "os_await_referral_val":
-        try:
-            val = int(text)
-        except ValueError:
-            await update.message.reply_text("⚠️ أرسل رقماً.")
+        dec = parse_positive_decimal(text)
+        if dec is None and str(text).strip().translate(_ARABIC_DIGITS) in {"0", "0.0"}:
+            dec = Decimal(0)
+        if dec is None:
+            await update.message.reply_text("⚠️ أرسل رقماً (0 أو أكبر)، ويمكن أن يكون عشرياً مثل 0.01.")
             return
-        set_setting("referral_points", str(val))
-        await update.message.reply_text(f"✅ تم تحديث نقاط الدعوة إلى {val} نقطة.", reply_markup=owner_settings_kb())
+        if get_referral_reward_type() == "jewels":
+            # الجواهر تقبل الكسور؛ نخزّن مكافأة المستوى الأول بالجواهر.
+            set_setting("referral_jewels", format(dec.normalize(), "f") if dec else "0")
+            await update.message.reply_text(
+                f"✅ تم تحديث مكافأة الدعوة إلى 💎 {fmt_decimal(dec)} جوهرة.",
+                reply_markup=owner_settings_kb(),
+            )
+        else:
+            if dec != dec.to_integral_value():
+                await update.message.reply_text(
+                    "⚠️ رصيد النقاط أعداد صحيحة، فلا يمكن منح كسر من النقطة.\n"
+                    "للكسور (مثل 0.01) بدّل نوع المكافأة إلى «جواهر» من «مستويات الدعوة» ثم أعد المحاولة."
+                )
+                return
+            set_setting("referral_points", str(int(dec)))
+            await update.message.reply_text(
+                f"✅ تم تحديث نقاط الدعوة إلى {int(dec)} نقطة.", reply_markup=owner_settings_kb()
+            )
         context.user_data["state"] = "main_menu"
         return
 
@@ -2734,24 +2759,34 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if is_own and state == "os_await_star_rate":
-        try:
-            val = int(text)
-        except ValueError:
-            await update.message.reply_text("⚠️ أرسل رقماً.")
+        val = parse_positive_decimal(text)
+        if val is None:
+            await update.message.reply_text("⚠️ أرسل رقماً أكبر من صفر، ويمكن أن يكون عشرياً مثل 0.1.")
             return
-        set_setting("star_to_points", str(val))
-        await update.message.reply_text(f"✅ سعر النجمة (شحن) = {val} نقطة.", reply_markup=owner_settings_kb())
+        set_setting("star_to_points", format(val.normalize(), "f"))
+        await update.message.reply_text(f"✅ سعر النجمة (شحن) = {fmt_decimal(val)} نقطة.", reply_markup=owner_settings_kb())
         context.user_data["state"] = "main_menu"
         return
 
-    if is_own and state == "os_await_exchange_rate":
-        try:
-            val = int(text)
-        except ValueError:
-            await update.message.reply_text("⚠️ أرسل رقماً.")
+    if is_own and state == "os_await_jewel_star_price":
+        val = parse_positive_decimal(text, max_value=Decimal("10000"))
+        if val is None:
+            await update.message.reply_text("⚠️ أرسل رقماً أكبر من صفر، ويمكن أن يكون عشرياً مثل 0.5.")
             return
-        set_setting("exchange_star_rate", str(val))
-        await update.message.reply_text(f"✅ سعر نجمة الجوائز = {val} جوهرة.", reply_markup=owner_settings_kb())
+        set_setting("jewel_star_price", format(val.normalize(), "f"))
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(
+            f"✅ سعر الجوهرة بالنجوم = {fmt_decimal(val)} نجمة.", reply_markup=owner_settings_kb()
+        )
+        return
+
+    if is_own and state == "os_await_exchange_rate":
+        val = parse_positive_decimal(text)
+        if val is None:
+            await update.message.reply_text("⚠️ أرسل رقماً أكبر من صفر، ويمكن أن يكون عشرياً مثل 0.01.")
+            return
+        set_setting("exchange_star_rate", format(val.normalize(), "f"))
+        await update.message.reply_text(f"✅ سعر نجمة الجوائز = {fmt_decimal(val)} جوهرة.", reply_markup=owner_settings_kb())
         context.user_data["state"] = "main_menu"
         return
 
@@ -5382,10 +5417,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         with db_conn() as c:
             c.execute("INSERT INTO exchange_star_packages (stars) VALUES (?)", (stars,))
-        rate = int(get_setting("exchange_star_rate") or "2000")
-        cost = stars * rate
+        rate = get_exchange_star_rate()
+        cost = exchange_stars_cost(stars, rate)
         await update.message.reply_text(
-            f"✅ *تمت إضافة الباقة بنجاح!*\n\n⭐ {stars} نجمة = {cost:,} جوهرة",
+            f"✅ *تمت إضافة الباقة بنجاح!*\n\n⭐ {stars} نجمة = {fmt_decimal(cost)} جوهرة",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=owner_settings_kb()
         )

@@ -11,7 +11,7 @@ import time
 import asyncio
 import uuid
 import random
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, ROUND_DOWN
 
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
@@ -418,7 +418,7 @@ def get_referral_reward_type() -> str:
 def parse_referral_jewels(value) -> Decimal:
     """تحويل قيمة الجواهر إلى Decimal صالح (حتى 6 خانات عشرية)، أو ValueError."""
     try:
-        amount = Decimal(str(value).strip().replace(",", ""))
+        amount = Decimal(str(value).strip().translate(str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹٫،", "01234567890123456789..")).replace(",", ""))
         if not amount.is_finite():
             raise ValueError
         amount = amount.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
@@ -427,6 +427,86 @@ def parse_referral_jewels(value) -> Decimal:
     if amount < 0:
         raise ValueError("negative jewel amount")
     return amount
+
+
+_ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹٫،", "01234567890123456789..")
+
+
+def parse_positive_decimal(value, max_value=Decimal("1000000000")):
+    """يحوّل نصاً مثل 0.01 أو ٠٫١ أو 2000 إلى Decimal أكبر من صفر، وإلا None."""
+    raw = str(value if value is not None else "").strip().translate(_ARABIC_DIGITS)
+    raw = raw.replace(",", "").replace("٬", "").replace(" ", "")
+    if not raw:
+        return None
+    try:
+        amount = Decimal(raw)
+        if not amount.is_finite():
+            return None
+        amount = amount.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    if amount <= 0 or amount > max_value:
+        return None
+    return amount
+
+
+def get_decimal_setting(key: str, default: str) -> Decimal:
+    """قراءة إعداد رقمي قد يكون عشرياً مع الرجوع إلى الافتراضي عند أي خلل."""
+    return parse_positive_decimal(get_setting(key)) or Decimal(str(default))
+
+
+def fmt_decimal(value) -> str:
+    """عرض رقم عشري بلا أصفار زائدة وبفواصل الآلاف: 0.01 / 2,000 / 1.5"""
+    try:
+        number = Decimal(str(value if value is not None else 0))
+        if not number.is_finite():
+            return "0"
+        number = number.normalize()
+    except (InvalidOperation, ValueError, TypeError):
+        return "0"
+    whole, dot, frac = format(number, "f").partition(".")
+    return f"{int(whole):,}" + (f".{frac}" if dot else "")
+
+
+def get_exchange_star_rate() -> Decimal:
+    """سعر نجمة الجوائز بالجواهر (يقبل الكسور مثل 0.5)."""
+    return get_decimal_setting("exchange_star_rate", "2000")
+
+
+def get_star_to_points_rate() -> Decimal:
+    """عدد النقاط التي يحصل عليها العضو مقابل نجمة عند شحن النقاط (يقبل الكسور)."""
+    return get_decimal_setting("star_to_points", "250")
+
+
+def get_jewel_star_price() -> Decimal:
+    """سعر الجوهرة الواحدة بالنجوم عند شحن الجواهر بالنجوم (يقبل الكسور)."""
+    return get_decimal_setting("jewel_star_price", "1")
+
+
+def star_points(stars, rate=None) -> int:
+    """نقاط شحن عدد من النجوم؛ تُقرّب لأسفل لأن رصيد النقاط أعداد صحيحة."""
+    rate = get_star_to_points_rate() if rate is None else Decimal(str(rate))
+    return int((Decimal(int(stars)) * rate).to_integral_value(rounding=ROUND_DOWN))
+
+
+def plain_decimal(value) -> Decimal:
+    """Decimal بلا أصفار زائدة (2000 لا 2000.000000) ليبقى العرض نظيفاً في قاعدة البيانات."""
+    number = Decimal(str(value))
+    return number.quantize(Decimal(1)) if number == number.to_integral_value() else number.normalize()
+
+
+def cost_amount(value, currency):
+    """مبلغ مسجل للاسترداد: كسري للجواهر، وصحيح للنقاط."""
+    number = Decimal(str(value or 0))
+    return plain_decimal(number) if currency == "jewels" else int(number)
+
+
+def exchange_stars_cost(stars, rate=None) -> Decimal:
+    """تكلفة عدد من النجوم بالجواهر بدقة 6 خانات."""
+    rate = get_exchange_star_rate() if rate is None else rate
+    return (Decimal(int(stars)) * Decimal(str(rate))).quantize(
+        Decimal("0.000001"), rounding=ROUND_HALF_UP
+    )
 
 
 def get_referral_level1_jewels() -> Decimal:
@@ -670,6 +750,12 @@ def credit_referral_if_pending(user_id: int, context=None):
                 if context is not None:
                     context.user_data["referral_fraud"] = info
                 return None
+
+        # ── دورة عجلة «دورة وهداية كبيرة» مجانية لكل إحالة صالحة ──
+        c.execute(
+            "UPDATE users SET wheel_spins=COALESCE(wheel_spins,0)+1 WHERE user_id=%s",
+            (invited_by,),
+        )
 
         # ── المستوى الأول ──
         if reward_type == "jewels":

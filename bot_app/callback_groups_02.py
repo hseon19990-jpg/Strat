@@ -2428,12 +2428,19 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
 
         if data == "os:edit_referral" and is_own:
             context.user_data["state"] = "os_await_referral_val"
-            cur = get_setting("referral_points") or "30"
-            await q.edit_message_text(
-                f"🔗 نقاط الدعوة الأساسية الحالية: {cur} نقطة\n\n"
-                "أرسل القيمة الجديدة.\n"
-                "يمكنك ضبط الشرائح المتغيرة من زر «شرائح مكافآت الإحالات»."
-            )
+            if get_referral_reward_type() == "jewels":
+                await q.edit_message_text(
+                    f"🔗 مكافأة الدعوة الأساسية الحالية: 💎 {fmt_decimal(get_referral_level1_jewels())} جوهرة\n\n"
+                    "أرسل القيمة الجديدة، وتقبل الأرقام العشرية مثل 0.01 أو 0.1."
+                )
+            else:
+                cur = get_setting("referral_points") or "30"
+                await q.edit_message_text(
+                    f"🔗 نقاط الدعوة الأساسية الحالية: {cur} نقطة\n\n"
+                    "أرسل القيمة الجديدة (أعداد صحيحة للنقاط).\n"
+                    "للمكافأة بالكسور مثل 0.01 بدّل نوع المكافأة إلى «جواهر» من «مستويات الدعوة».\n"
+                    "يمكنك ضبط الشرائح المتغيرة من زر «شرائح مكافآت الإحالات»."
+                )
             return
 
         if data == "os:referral_levels" and is_own:
@@ -2570,14 +2577,24 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
 
         if data == "os:edit_star_rate" and is_own:
             context.user_data["state"] = "os_await_star_rate"
-            cur = get_setting("star_to_points") or "250"
-            await q.edit_message_text(f"⭐ سعر النجمة (شحن) الحالي: {cur} نقطة\n\nأرسل القيمة الجديدة:")
+            cur = fmt_decimal(get_star_to_points_rate())
+            await q.edit_message_text(f"⭐ سعر النجمة (شحن) الحالي: {cur} نقطة\n\nأرسل القيمة الجديدة (يقبل الأرقام العشرية مثل 0.1 أو 2.5):")
+            return
+
+        if data == "os:edit_jewel_star_price" and is_own:
+            context.user_data["state"] = "os_await_jewel_star_price"
+            cur = fmt_decimal(get_jewel_star_price())
+            await q.edit_message_text(
+                f"💎 سعر الجوهرة الواحدة بالنجوم (عند شحن الجواهر) الحالي: {cur} نجمة\n\n"
+                "أرسل القيمة الجديدة. يقبل الأرقام العشرية مثل 0.5 أو 1.5.\n"
+                "يُقرَّب إجمالي الفاتورة لأعلى لأن نجوم تيليجرام أعداد صحيحة."
+            )
             return
 
         if data == "os:edit_exchange_rate" and is_own:
             context.user_data["state"] = "os_await_exchange_rate"
-            cur = get_setting("exchange_star_rate") or "2000"
-            await q.edit_message_text(f"🏆 سعر نجمة الجوائز الحالي: {cur} جوهرة\n\nأرسل القيمة الجديدة (بالجواهر):")
+            cur = fmt_decimal(get_exchange_star_rate())
+            await q.edit_message_text(f"🏆 سعر نجمة الجوائز الحالي: {cur} جوهرة\n\nأرسل القيمة الجديدة (بالجواهر). يقبل الأرقام العشرية مثل 0.01 أو 0.5:")
             return
 
         if data == "os:edit_jewel_to_points_rate" and is_own:
@@ -2963,7 +2980,7 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                         if pe["compensated_at"]:
                             logger.info(f"⏭ delete_manual_numbers: {phone} عُوِّض مسبقاً، تخطّي.")
                             continue
-                        pts = pe["points_cost"]
+                        pts = cost_amount(pe["points_cost"], pe["cost_currency"])
                         uid = pe["user_id"]
                         pe_id_m = pe["id"]
                         rows_m = c.execute(

@@ -771,10 +771,13 @@ def init_db():
               funding_type     TEXT DEFAULT 'mandatory',
               active           INTEGER DEFAULT 1
           )""")
+          init_wheel_tables(c)
           for _alt in [
               "ALTER TABLE users ADD COLUMN IF NOT EXISTS jewels NUMERIC(20,6) NOT NULL DEFAULT 0",
               "ALTER TABLE users ALTER COLUMN jewels TYPE NUMERIC(20,6) USING jewels::NUMERIC(20,6)",
               "ALTER TABLE jewel_transactions ALTER COLUMN amount TYPE NUMERIC(20,6) USING amount::NUMERIC(20,6)",
+              "ALTER TABLE users ADD COLUMN IF NOT EXISTS wheel_spins INTEGER NOT NULL DEFAULT 0",
+              "ALTER TABLE prize_exchanges ALTER COLUMN points_cost TYPE NUMERIC USING points_cost::NUMERIC",
               "ALTER TABLE orders ADD COLUMN IF NOT EXISTS refund_jewels NUMERIC(20,6) NOT NULL DEFAULT 0",
               "ALTER TABLE orders ADD COLUMN IF NOT EXISTS cost_stars INTEGER NOT NULL DEFAULT 0",
               "ALTER TABLE orders ADD COLUMN IF NOT EXISTS cost_jewels BIGINT NOT NULL DEFAULT 0",
@@ -793,6 +796,7 @@ def init_db():
               "ALTER TABLE prize_exchanges ADD COLUMN IF NOT EXISTS owner_seen BOOLEAN DEFAULT FALSE",
               "ALTER TABLE prize_exchanges ADD COLUMN IF NOT EXISTS compensated_at TIMESTAMPTZ",
               "ALTER TABLE prize_exchanges ADD COLUMN IF NOT EXISTS compensated_pts INTEGER DEFAULT 0",
+              "ALTER TABLE prize_exchanges ALTER COLUMN compensated_pts TYPE NUMERIC USING compensated_pts::NUMERIC",
               "ALTER TABLE prize_exchanges ADD COLUMN IF NOT EXISTS compensated_reason TEXT",
               "ALTER TABLE prize_exchanges ADD COLUMN IF NOT EXISTS cost_currency TEXT DEFAULT 'points'",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS ever_sold BOOLEAN DEFAULT FALSE",
@@ -1090,6 +1094,11 @@ def init_db():
               ('referral_fraud_protection', '0'),
               ('referral_jewels', '0'),
               ('star_to_points', '250'),
+              ('jewel_star_price', '1'),
+              ('wheel_spin_price_stars', '1'),
+              ('wheel_spin_price_jewels', '1'),
+              ('wheel_ten_price_stars', '9'),
+              ('wheel_ten_price_jewels', '9'),
               ('raksh_points_per_jewel', '1000'),
               ('jewels_to_points_rate', '5000'),
               ('points_to_jewels_rate', '7000'),

@@ -8,10 +8,11 @@ domain.
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, ROUND_DOWN, ROUND_UP
 
 JEWEL_STAR_TOPUP_MAX = 10000
 JEWEL_STAR_TOPUP_PRESETS = (3, 10, 50, 100)
+JEWEL_STAR_INVOICE_MAX_STARS = 10000  # حد تيليجرام لفاتورة واحدة
 CURRENCY_EXCHANGE_MAX_INPUT = 1_000_000_000
 CURRENCY_EXCHANGE_MAX_POINTS = 2_147_483_647
 CURRENCY_EXCHANGE_MAX_JEWELS = Decimal("99999999999999.999999")
@@ -180,36 +181,49 @@ def validate_jewel_star_invoice(payload, user_id, total_amount, currency):
     """Return the jewel quantity only for a correctly priced XTR invoice."""
     parts = str(payload or "").split(":")
     if (
-        len(parts) != 3
+        len(parts) not in (3, 4)
         or parts[0] != "jewel_stars"
         or not parts[1].isdigit()
         or not parts[2].isdigit()
+        or (len(parts) == 4 and not parts[3].isdigit())
         or currency != "XTR"
     ):
         return None
     amount = int(parts[1])
+    # الفواتير القديمة بلا حقل رابع: نجمة واحدة لكل مجوهرة.
+    expected_stars = int(parts[3]) if len(parts) == 4 else amount
     if (
         not 1 <= amount <= JEWEL_STAR_TOPUP_MAX
+        or not 1 <= expected_stars <= JEWEL_STAR_INVOICE_MAX_STARS
         or int(parts[2]) != int(user_id)
-        or int(total_amount) != amount
+        or int(total_amount) != expected_stars
     ):
         return None
     return amount
 
 
+def jewel_star_cost(amount, price=None) -> int:
+    """نجوم فاتورة شراء عدد من الجواهر؛ السعر قد يكون عشرياً ويُقرّب الإجمالي لأعلى."""
+    price = get_jewel_star_price() if price is None else Decimal(str(price))
+    return max(1, int((Decimal(int(amount)) * price).to_integral_value(rounding=ROUND_UP)))
+
+
 async def send_jewel_star_invoice(context, user, amount):
-    """Create a Telegram Stars invoice at the fixed rate of one star per jewel."""
+    """Create a Telegram Stars invoice at the owner-configured star price per jewel."""
     amount = parse_jewel_star_topup_amount(amount)
     if amount is None:
         raise ValueError("invalid jewel top-up amount")
+    stars = jewel_star_cost(amount)
+    if stars > JEWEL_STAR_INVOICE_MAX_STARS:
+        raise ValueError("jewel top-up exceeds the Telegram Stars invoice limit")
     await context.bot.send_invoice(
         chat_id=user.id,
         title="شحن مجوهرات",
-        description=f"شراء {amount} مجوهرة مقابل {amount} نجمة",
-        payload=f"jewel_stars:{amount}:{user.id}",
+        description=f"شراء {amount} مجوهرة مقابل {stars} نجمة",
+        payload=f"jewel_stars:{amount}:{user.id}:{stars}",
         provider_token="",
         currency="XTR",
-        prices=[LabeledPrice("مجوهرات", amount)],
+        prices=[LabeledPrice("مجوهرات", stars)],
     )
 
 
@@ -265,7 +279,7 @@ async def handle_jewel_topup_callback(update, context, q, data, user, is_owner):
         ])
         await q.edit_message_text(
             "⭐ *الشحن بالنجوم*\n\n"
-            "سعر كل مجوهرة: *1 نجمة*.\n"
+            f"سعر كل مجوهرة: *{fmt_decimal(get_jewel_star_price())} نجمة*.\n"
             "اختر كمية جاهزة أو أدخل كمية أخرى؛ ستظهر فاتورة Telegram قبل الدفع.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(rows),
@@ -625,14 +639,14 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         "UPDATE jewel_star_transactions "
                         "SET status='completed', stars=%s, jewels_given=%s "
                         "WHERE telegram_payment_id=%s",
-                        (amount, amount, charge_id),
+                        (int(payment.total_amount), amount, charge_id),
                     )
                 else:
                     c.execute(
                         "INSERT INTO jewel_star_transactions "
                         "(user_id,stars,jewels_given,telegram_payment_id,status) "
                         "VALUES (%s,%s,%s,%s,'completed')",
-                        (user.id, amount, amount, charge_id),
+                        (user.id, int(payment.total_amount), amount, charge_id),
                     )
 
         if already_credited:
@@ -646,7 +660,7 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
         jewels_balance = (db_user or {}).get("jewels") or 0
         await update.message.reply_text(
             "✅ تم شحن المجوهرات تلقائياً بنجاح!\n\n"
-            f"⭐ المدفوع: {amount} نجمة\n"
+            f"⭐ المدفوع: {int(payment.total_amount)} نجمة\n"
             f"💎 المضاف: {amount} مجوهرة\n"
             f"💎 رصيدك الحالي: {fmt_jewel_amount(jewels_balance)} مجوهرة",
             reply_markup=main_menu_kb(is_own),
@@ -670,8 +684,7 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text("⚠️ تعذّر التحقق من عملية الدفع.", reply_markup=main_menu_kb(is_own))
             return
 
-        rate = int(get_setting("star_to_points") or "250")
-        pts = stars * rate
+        pts = star_points(stars)
         already_credited = False
 
         # Telegram can retry a successful-payment update. Record and credit in

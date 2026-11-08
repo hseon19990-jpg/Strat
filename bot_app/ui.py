@@ -941,7 +941,7 @@ OWNER_SETTINGS_GROUPS = [
         "os:bot_ref_numbers", "tgnum:admin",
     ), ()),
     ("prices", "💰 الأسعار والعملات", (
-        "os:edit_star_rate", "os:edit_exchange_rate", "os:edit_jewel_to_points_rate",
+        "os:edit_star_rate", "os:edit_exchange_rate", "os:edit_jewel_star_price", "os:edit_jewel_to_points_rate",
         "os:edit_points_to_jewel_rate", "os:manage_star_packages", "os:edit_asiacell",
         "os:edit_jewels_asiacell", "os:edit_jewels_ewallet", "os:manage_points",
     ), ()),
@@ -2527,7 +2527,7 @@ def charge_points_kb():
     ])
 
 def charge_stars_kb():
-    rate = int(get_setting("star_to_points") or "250")
+    rate = fmt_decimal(get_star_to_points_rate())
     quick_amounts = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000]
     quick_rows = []
     for i in range(0, len(quick_amounts), 5):

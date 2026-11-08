@@ -13,6 +13,7 @@ _SECTION_NAMES = (
     "shared",
     "database",
     "users",
+    "wheel",
     "accounts",
     "referrals",
     "security",

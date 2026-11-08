@@ -684,12 +684,12 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
         if data == "os:manage_star_packages" and is_own:
             with db_conn() as c:
                 packages = c.execute("SELECT * FROM exchange_star_packages ORDER BY stars").fetchall()
-            rate = int(get_setting("exchange_star_rate") or "2000")
+            rate = get_exchange_star_rate()
             lines = ["📦 *باقات الاستبدال بنجوم:*\n"]
             for pkg in packages:
                 status = "✅" if pkg["active"] else "❌"
-                cost = pkg["stars"] * rate
-                lines.append(f"{status} {pkg['stars']} نجمة = {cost:,} جوهرة")
+                cost = exchange_stars_cost(pkg["stars"], rate)
+                lines.append(f"{status} {pkg['stars']} نجمة = {fmt_decimal(cost)} جوهرة")
             rows = []
             for pkg in packages:
                 tog = "❌ تعطيل" if pkg["active"] else "✅ تفعيل"
@@ -719,12 +719,12 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                 c.execute("UPDATE exchange_star_packages SET active=? WHERE id=?", (val, pkg_id))
                 packages = c.execute("SELECT * FROM exchange_star_packages ORDER BY stars").fetchall()
             await q.answer("✅ تم التحديث")
-            rate = int(get_setting("exchange_star_rate") or "2000")
+            rate = get_exchange_star_rate()
             lines = ["📦 *باقات الاستبدال بنجوم:*\n"]
             for pkg in packages:
                 status = "✅" if pkg["active"] else "❌"
-                cost = pkg["stars"] * rate
-                lines.append(f"{status} {pkg['stars']} نجمة = {cost:,} جوهرة")
+                cost = exchange_stars_cost(pkg["stars"], rate)
+                lines.append(f"{status} {pkg['stars']} نجمة = {fmt_decimal(cost)} جوهرة")
             rows = []
             for pkg in packages:
                 tog = "❌ تعطيل" if pkg["active"] else "✅ تفعيل"
@@ -2420,7 +2420,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             for pe in pending_cases:
                 pe_id = pe["id"]
                 uid   = pe["user_id"]
-                pts   = int(pe["points_cost"] or 0)
+                pts   = cost_amount(pe["points_cost"], pe["cost_currency"])
                 cur   = pe["cost_currency"]
                 if pts <= 0:
                     skipped += 1
@@ -2490,7 +2490,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             if pe["status"] not in ("pending", "failed"):
                 await q.answer(f"⚠️ حالة العملية: {pe['status']} — لا يمكن استرداد نقاطها.", show_alert=True)
                 return
-            pts = int(pe["points_cost"] or 0)
+            pts = cost_amount(pe["points_cost"], pe["cost_currency"])
             uid = pe["user_id"]
             cur = pe["cost_currency"]
             with db_conn() as c:

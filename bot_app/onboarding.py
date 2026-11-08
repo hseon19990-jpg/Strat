@@ -322,6 +322,7 @@ async def _notify_referral_credit(context, user, credited) -> str:
             text=(
                 f"🎉 مبروك! أكمل المستخدم {invited_name} "
                 f"شرط الإحالة عبر رابط دعوتك، وحصلت على {reward_text}."
+                "\n🎡 وحصلت أيضاً على دورة مجانية في «دورة وهداية كبيرة»."
                 f"{free_note}"
             ),
             parse_mode=ParseMode.MARKDOWN,

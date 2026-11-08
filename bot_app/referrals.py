@@ -3466,7 +3466,7 @@ async def _run_forced_ref_order(order_id, bot_user, start_p, channels, quantity,
                 _stars_paid = int(_order_row.get("cost_stars") or cost_stars or 0)
                 _points_paid = int(_order_row.get("cost_points") or 0)
                 if _payment_kind == "stars" and _stars_paid > 0:
-                    _refund_points = _stars_paid * int(get_setting("star_to_points") or "250")
+                    _refund_points = star_points(_stars_paid)
                 else:
                     _refund_points = _points_paid
                 _sc.execute(
@@ -3519,7 +3519,7 @@ async def _run_forced_ref_order(order_id, bot_user, start_p, channels, quantity,
     _cost_pts_each    = round(_total_cost_pts   / _qty_total_f) if _qty_total_f else 0
     _cost_stars_each  = round(_total_cost_stars / _qty_total_f) if _qty_total_f else 0
 
-    _star_rate = int(get_setting('star_to_points') or '250')
+    _star_rate = get_star_to_points_rate()
 
     _all_channels = ' '.join(filter(None, [_global_ch_str, channels or ''])).strip()
     nums = [dict(r) for r in rows]
@@ -3663,7 +3663,7 @@ async def _run_forced_ref_order(order_id, bot_user, start_p, channels, quantity,
     unfulfilled = max(0, quantity - done - reactivated)
     if unfulfilled > 0:
         if payment_method == 'stars' and _cost_stars_each > 0:
-            refunded_pts = unfulfilled * (_cost_stars_each * _star_rate)
+            refunded_pts = star_points(unfulfilled * _cost_stars_each, _star_rate)
         elif _cost_pts_each > 0:
             refunded_pts = unfulfilled * _cost_pts_each
         if refunded_pts > 0:
@@ -3671,7 +3671,7 @@ async def _run_forced_ref_order(order_id, bot_user, start_p, channels, quantity,
 
     reactiv_refunded_pts = 0
     if reactivated > 0 and payment_method == 'stars' and _cost_stars_each > 0:
-        reactiv_refunded_pts = reactivated * (_cost_stars_each * _star_rate)
+        reactiv_refunded_pts = star_points(reactivated * _cost_stars_each, _star_rate)
         add_points(requester_id, reactiv_refunded_pts)
 
     _fully_completed = (done + reactivated) >= quantity

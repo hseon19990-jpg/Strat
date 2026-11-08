@@ -11,6 +11,9 @@ globals().update({key: value for key, value in vars(_shared).items() if not key.
 
 async def _handle_callback_group_01(update, context, q, data, user, is_own, is_supervisor_cb, _gmail_verification_done):
     if True:
+        if data.startswith("wheel:") and await handle_wheel_callback(update, context, q, data, user, is_own):
+            return
+
         # ────────────────────────────────────────────────────────────────
         # ═══ معالج الخدمات الأسطورية ═══
         # ────────────────────────────────────────────────────────────────
@@ -2339,7 +2342,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 return
 
         if data == "charge:stars":
-            rate = get_setting("star_to_points") or "250"
+            rate = fmt_decimal(get_star_to_points_rate())
             await q.edit_message_text(
                 f"⭐ *الشحن عبر النجوم*\n\n💡 سعر النجمة الواحدة = {rate} نقطة\n\nاختر الكمية أو الطريقة:",
                 parse_mode=ParseMode.MARKDOWN,
@@ -2353,8 +2356,10 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
 
         if data.startswith("charge:quick:"):
             stars = int(data.split(":")[2])
-            rate  = int(get_setting("star_to_points") or "250")
-            pts   = stars * rate
+            pts   = star_points(stars)
+            if pts <= 0:
+                await q.answer("⚠️ هذه الكمية أقل من نقطة واحدة، اختر كمية أكبر.", show_alert=True)
+                return
             confirmed = len(data.split(":") ) == 4 and data.endswith(":confirm")
             if not confirmed:
                 await q.edit_message_text(
@@ -2379,7 +2384,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             return
 
         if data == "charge:by_points":
-            rate = get_setting("star_to_points") or "250"
+            rate = fmt_decimal(get_star_to_points_rate())
             context.user_data["state"] = "await_charge_points_amount"
             await q.edit_message_text(
                 f"💡 *ملاحظة:* سعر النجمة الواحدة = {rate} نقطة\n\nأرسل عدد النقاط التي تريدها:",
@@ -2388,7 +2393,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             return
 
         if data == "charge:by_stars":
-            rate = get_setting("star_to_points") or "250"
+            rate = fmt_decimal(get_star_to_points_rate())
             context.user_data["state"] = "await_charge_stars_amount"
             await q.edit_message_text(
                 f"💡 *ملاحظة:* سعر النجمة الواحدة = {rate} نقطة\n\nأرسل عدد النجوم المراد شحنها:",
@@ -2567,7 +2572,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             return
 
         if data == "exchange:stars":
-            rate = int(get_setting("exchange_star_rate") or "2000")
+            rate = get_exchange_star_rate()
             with db_conn() as c:
                 packages = c.execute("SELECT * FROM exchange_star_packages WHERE active=1 ORDER BY stars").fetchall()
             if not packages:
@@ -2580,13 +2585,13 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             rows = []
             for pkg in packages:
                 stars = pkg["stars"]
-                cost = stars * rate
-                rows.append([InlineKeyboardButton(f"⭐ {stars} نجمة = {cost:,} جوهرة", callback_data=f"exchange:pkg:{stars}")])
+                cost = exchange_stars_cost(stars, rate)
+                rows.append([InlineKeyboardButton(f"⭐ {stars} نجمة = {fmt_decimal(cost)} جوهرة", callback_data=f"exchange:pkg:{stars}")])
             rows += contact_owner_row()
             rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="exchange_points")])
             await q.edit_message_text(
                 f"⭐ *استبدال جواهر بنجوم*\n\n"
-                f"💡 سعر النجمة الواحدة: {rate:,} جوهرة\n\n"
+                f"💡 سعر النجمة الواحدة: {fmt_decimal(rate)} جوهرة\n\n"
                 f"اختر الباقة المطلوبة:",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup(rows)
@@ -2606,13 +2611,13 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
 
         if data.startswith("exchange:pkg:"):
             stars = int(data.split(":")[2])
-            rate = int(get_setting("exchange_star_rate") or "2000")
-            cost = stars * rate
+            rate = get_exchange_star_rate()
+            cost = exchange_stars_cost(stars, rate)
             jw = get_user_jewels(user.id)
             confirmed = len(data.split(":") ) == 4 and data.endswith(":confirm")
             if not confirmed:
                 await q.edit_message_text(
-                    f"📋 *تأكيد استبدال الجواهر بنجوم*\n\n⭐ الباقة: *{stars} نجمة*\n💎 الخصم: *{cost:,} جوهرة*\n💎 الرصيد بعد العملية تقريباً: *{fmt_jewel_amount(jw - cost)} جوهرة*\n\n⚠️ سيتم تسجيل الطلب لدى الإدارة بعد التأكيد.",
+                    f"📋 *تأكيد استبدال الجواهر بنجوم*\n\n⭐ الباقة: *{stars} نجمة*\n💎 الخصم: *{fmt_decimal(cost)} جوهرة*\n💎 الرصيد بعد العملية تقريباً: *{fmt_jewel_amount(jw - cost)} جوهرة*\n\n⚠️ سيتم تسجيل الطلب لدى الإدارة بعد التأكيد.",
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تأكيد الخصم والطلب", callback_data=f"exchange:pkg:{stars}:confirm")], [InlineKeyboardButton("❌ إلغاء", callback_data="exchange:stars")]])
                 )
@@ -2621,7 +2626,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 kb_rows = contact_owner_row() + [[InlineKeyboardButton("🔙 رجوع", callback_data="exchange:stars")]]
                 await q.edit_message_text(
                     f"❌ *جواهرك غير كافية!*\n\n"
-                    f"⭐ تحتاج: {cost:,} جوهرة\n"
+                    f"⭐ تحتاج: {fmt_decimal(cost)} جوهرة\n"
                     f"💎 رصيدك: {fmt_jewel_amount(jw)} جوهرة",
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=InlineKeyboardMarkup(kb_rows)
@@ -2635,7 +2640,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 pe = c.execute(
                     "INSERT INTO prize_exchanges (user_id,prize_type,prize_value,points_cost,cost_currency,status,order_code) "
                     "VALUES (%s,%s,%s,%s,'jewels','pending',%s) RETURNING id",
-                    (user.id, "stars", str(stars), cost, code)
+                    (user.id, "stars", str(stars), plain_decimal(cost), code)
                 ).fetchone()
             context.user_data["state"] = "main_menu"
             custom_msg = get_setting("exchange_success_msg") or ""
@@ -2643,7 +2648,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             await q.edit_message_text(
                 f"✅ *تمت العملية بنجاح!*\n\n"
                 f"⭐ طلب {stars} نجمة مسجل\n"
-                f"💎 التكلفة: {cost:,} جوهرة\n\n"
+                f"💎 التكلفة: {fmt_decimal(cost)} جوهرة\n\n"
                 + (f"{custom_msg}\n\n" if custom_msg else "")
                 + "سيتواصل معك المالك قريباً.",
                 parse_mode=ParseMode.MARKDOWN,
@@ -2658,7 +2663,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 context, pe["id"],
                 f"⭐ <b>طلب شراء نجوم (جائزة)</b>\n"
                 f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
-                f"⭐ {stars} نجمة مقابل {cost:,} جوهرة\n"
+                f"⭐ {stars} نجمة مقابل {fmt_decimal(cost)} جوهرة\n"
                 f"📌 {code}"
             )
             return
