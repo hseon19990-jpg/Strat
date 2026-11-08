@@ -1,0 +1,89 @@
+--- orig/Strat-main/bot_app/callback_groups_01.py	2026-11-08 16:07:30.000000000 +0000
++++ strat/Strat-main/bot_app/callback_groups_01.py	2026-11-08 16:15:06.166863346 +0000
+@@ -2591,7 +2591,9 @@
+             rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="exchange_points")])
+             await q.edit_message_text(
+                 f"⭐ *استبدال جواهر بنجوم*\n\n"
+-                f"💡 سعر النجمة الواحدة: {fmt_decimal(rate)} جوهرة\n\n"
++                f"💡 سعر النجمة الواحدة: {fmt_decimal(rate)} جوهرة\n"
++                f"ℹ️ يُستبدل بجواهر الإحالة فقط.\n"
++                f"💎 رصيد جواهر الإحالة: {fmt_jewel_amount(get_user_referral_jewels(user.id))} جوهرة\n\n"
+                 f"اختر الباقة المطلوبة:",
+                 parse_mode=ParseMode.MARKDOWN,
+                 reply_markup=InlineKeyboardMarkup(rows)
+@@ -2613,11 +2615,12 @@
+             stars = int(data.split(":")[2])
+             rate = get_exchange_star_rate()
+             cost = exchange_stars_cost(stars, rate)
+-            jw = get_user_jewels(user.id)
++            # النجوم تُشترى بجواهر الإحالة فقط
++            jw = get_user_referral_jewels(user.id)
+             confirmed = len(data.split(":") ) == 4 and data.endswith(":confirm")
+             if not confirmed:
+                 await q.edit_message_text(
+-                    f"📋 *تأكيد استبدال الجواهر بنجوم*\n\n⭐ الباقة: *{stars} نجمة*\n💎 الخصم: *{fmt_decimal(cost)} جوهرة*\n💎 الرصيد بعد العملية تقريباً: *{fmt_jewel_amount(jw - cost)} جوهرة*\n\n⚠️ سيتم تسجيل الطلب لدى الإدارة بعد التأكيد.",
++                    f"📋 *تأكيد استبدال الجواهر بنجوم*\n\n⭐ الباقة: *{stars} نجمة*\n💎 الخصم: *{fmt_decimal(cost)} جوهرة*\n💎 رصيد جواهر الإحالة بعد العملية تقريباً: *{fmt_jewel_amount(jw - cost)} جوهرة*\nℹ️ هذه الخدمة تُستبدل بجواهر الإحالة فقط.\n\n⚠️ سيتم تسجيل الطلب لدى الإدارة بعد التأكيد.",
+                     parse_mode=ParseMode.MARKDOWN,
+                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تأكيد الخصم والطلب", callback_data=f"exchange:pkg:{stars}:confirm")], [InlineKeyboardButton("❌ إلغاء", callback_data="exchange:stars")]])
+                 )
+@@ -2625,15 +2628,16 @@
+             if jw < cost:
+                 kb_rows = contact_owner_row() + [[InlineKeyboardButton("🔙 رجوع", callback_data="exchange:stars")]]
+                 await q.edit_message_text(
+-                    f"❌ *جواهرك غير كافية!*\n\n"
+-                    f"⭐ تحتاج: {fmt_decimal(cost)} جوهرة\n"
+-                    f"💎 رصيدك: {fmt_jewel_amount(jw)} جوهرة",
++                    f"❌ *جواهر الإحالة غير كافية!*\n\n"
++                    f"⭐ تحتاج: {fmt_decimal(cost)} جوهرة إحالة\n"
++                    f"💎 رصيد جواهر الإحالة: {fmt_jewel_amount(jw)} جوهرة\n"
++                    f"ℹ️ جواهر الشراء والإهداء والتحويل من النقاط لا تصلح لهذه الخدمة.",
+                     parse_mode=ParseMode.MARKDOWN,
+                     reply_markup=InlineKeyboardMarkup(kb_rows)
+                 )
+                 return
+-            if deduct_jewels(user.id, cost, reference=f"exchange_stars:{stars}") is None:
+-                await q.edit_message_text("❌ رصيدك غير كافٍ.", reply_markup=back_kb("exchange:stars"))
++            if deduct_referral_jewels(user.id, cost, reference=f"exchange_stars:{stars}") is None:
++                await q.edit_message_text("❌ رصيد جواهر الإحالة غير كافٍ.", reply_markup=back_kb("exchange:stars"))
+                 return
+             code = next_order_code(user.id)
+             with db_conn() as c:
+--- orig/Strat-main/bot_app/messages.py	2026-11-08 16:07:30.000000000 +0000
++++ strat/Strat-main/bot_app/messages.py	2026-11-08 16:15:06.171314713 +0000
+@@ -1359,10 +1359,10 @@
+             return
+         rate = get_exchange_star_rate()
+         cost = exchange_stars_cost(stars, rate)
+-        pts = get_user_jewels(user.id)
++        pts = get_user_referral_jewels(user.id)
+         if pts < cost:
+             await update.message.reply_text(
+-                f"❌ *جواهرك غير كافية!*\n\n⭐ تحتاج: {fmt_decimal(cost)} جوهرة\n💎 رصيدك: {fmt_jewel_amount(pts)} جوهرة",
++                f"❌ *جواهر الإحالة غير كافية!*\n\n⭐ تحتاج: {fmt_decimal(cost)} جوهرة إحالة\n💎 رصيد جواهر الإحالة: {fmt_jewel_amount(pts)} جوهرة",
+                 parse_mode=ParseMode.MARKDOWN,
+                 reply_markup=main_menu_kb(is_own)
+             )
+--- orig/Strat-main/bot_app/security.py	2026-11-08 16:07:30.000000000 +0000
++++ strat/Strat-main/bot_app/security.py	2026-11-08 16:15:06.180374410 +0000
+@@ -1470,8 +1470,8 @@
+     """يعيد تكلفة عملية استبدال بنفس العملة التي دُفعت بها."""
+     if currency == "jewels":
+         add_jewels(user_id, amount, reference=reference or "exchange_refund")
+-        if prize_type == "custom":
+-            # الجائزة المخصصة دُفعت من جواهر الإحالة، فتعود إليها.
++        if prize_type in ("custom", "stars"):
++            # الجائزة المخصصة والنجوم تُدفع من جواهر الإحالة، فتعود إليها.
+             with db_conn() as c:
+                 c.execute(
+                     "UPDATE users SET referral_jewels=LEAST(COALESCE(jewels,0), "
+--- orig/Strat-main/bot_app/ui.py	2026-11-08 16:07:30.000000000 +0000
++++ strat/Strat-main/bot_app/ui.py	2026-11-08 16:15:06.185253738 +0000
+@@ -2549,7 +2549,7 @@
+         ).fetchall()
+     rows = [
+         [InlineKeyboardButton("↔️ تحويل بين النقاط والمجوهرات", callback_data="currency_exchange")],
+-        [InlineKeyboardButton("⭐ استبدال جواهر بنجوم", callback_data="exchange:stars")],
++        [InlineKeyboardButton("⭐ استبدال جواهر الإحالة بنجوم", callback_data="exchange:stars")],
+         [InlineKeyboardButton("📱 شراء رقم تيلغرام",  callback_data="exchange:number")],
+         [InlineKeyboardButton("📱 شراء رقم بالنجوم", callback_data="exchange:number_stars")],
+         [InlineKeyboardButton("🎟 شراء عبر كود",       callback_data="exchange:num_code")],
