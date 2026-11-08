@@ -9,7 +9,7 @@
   * دورة مجانية لكل إحالة صالحة، أو شراء دورة بنجمة/جوهرة، أو 10 دورات بـ 9.
   * «مميز» (3/6/12 شهر) و«تعزيز أسبوعي» يظهران في العجلة لكن نسبتهما 0%.
   * ضمان الجوهرة: من كل 100 دورة (عالمياً) يفوز واحد بجوهرة، أي 10 من كل 1000.
-  * التعزيز اليومي: يفوز به أول 4 دورات في كل يوم (بتوقيت العراق).
+  * التعزيز اليومي: يفوز به دورة واحدة فقط كل 6 ساعات (من وقت آخر فوز فعلي به).
 
 This section is loaded with the shared compatibility namespace so existing
 handlers can continue to call each other while the code stays separated by
@@ -23,8 +23,7 @@ import secrets as _secrets
 from decimal import Decimal
 
 WHEEL_BLOCK_SIZE = 100            # كل 100 دورة: جوهرة واحدة مضمونة
-WHEEL_DAILY_BOOST_LIMIT = 4       # أول 4 دورات يومياً تربح التعزيز اليومي
-WHEEL_IRAQ_OFFSET = timedelta(hours=3)
+WHEEL_BOOST_INTERVAL_SECONDS = 6 * 3600   # التعزيز اليومي: فوز واحد كل 6 ساعات
 WHEEL_TEN_SPINS = 10
 WHEEL_ROLL_SCALE = 10_000         # دقة 0.01%
 
@@ -56,7 +55,7 @@ WHEEL_DISPLAY_ORDER = (
 
 # أوزان السحب العشوائي من 10000 (1 = 0.01%). الباقي كله «50 نقطة».
 # لا يظهر هنا: المميز/التعزيز الأسبوعي (0%)، ولا الجوهرة (مضمونة بالكتلة)،
-# ولا التعزيز اليومي (لأول 4 دورات في اليوم).
+# ولا التعزيز اليومي (دورة واحدة كل 6 ساعات).
 WHEEL_RANDOM_WEIGHTS = (
     ("ring", 1),            # 0.01%
     ("rose", 5),            # 0.05%
@@ -83,42 +82,36 @@ def wheel_pick_prize(roll: int, jewel_guarantee: bool = False, daily_boost_open:
 
 
 class WheelEngine:
-    """حالة العجلة العالمية: عدّاد الدورات، موضع الجوهرة المضمونة، وتعزيز اليوم."""
+    """حالة العجلة العالمية: عدّاد الدورات، موضع الجوهرة المضمونة، وآخر فوز بالتعزيز اليومي."""
 
-    def __init__(self, total=0, slot_block=-1, slot=0, day="", day_count=0, rng=None):
+    def __init__(self, total=0, slot_block=-1, slot=0, last_boost_ts=0.0, rng=None):
         self.total = int(total)
         self.slot_block = int(slot_block)
         self.slot = int(slot)
-        self.day = str(day or "")
-        self.day_count = int(day_count)
+        self.last_boost_ts = float(last_boost_ts or 0)
         self.rng = rng or _secrets.SystemRandom()
 
-    def next_prize(self, today: str) -> str:
+    def next_prize(self, now_ts: float) -> str:
         self.total += 1
         block, position = divmod(self.total - 1, WHEEL_BLOCK_SIZE)
         if block != self.slot_block:
             # كتلة جديدة من 100 دورة: نختار عشوائياً أي دورة فيها تفوز بالجوهرة.
             self.slot_block = block
             self.slot = self.rng.randrange(WHEEL_BLOCK_SIZE)
-        if today != self.day:
-            self.day = today
-            self.day_count = 0
 
         jewel_hit = position == self.slot
-        boost_open = (not jewel_hit) and self.day_count < WHEEL_DAILY_BOOST_LIMIT
+        # أول دورة بعد مرور 6 ساعات على آخر فوز بالتعزيز اليومي تفوز به.
+        boost_open = (not jewel_hit) and (
+            now_ts - self.last_boost_ts >= WHEEL_BOOST_INTERVAL_SECONDS
+        )
         prize = wheel_pick_prize(
             self.rng.randrange(WHEEL_ROLL_SCALE),
             jewel_guarantee=jewel_hit,
             daily_boost_open=boost_open,
         )
         if prize == "boost_daily":
-            self.day_count += 1
+            self.last_boost_ts = float(now_ts)
         return prize
-
-
-def wheel_today() -> str:
-    """تاريخ اليوم بتوقيت العراق (تُصفَّر حصة التعزيز اليومي عند منتصف الليل هناك)."""
-    return (datetime.now(timezone.utc) + WHEEL_IRAQ_OFFSET).date().isoformat()
 
 
 def wheel_price(kind: str, count: int) -> int:
@@ -188,13 +181,15 @@ def _wheel_load_engine(c) -> WheelEngine:
         return row["value"] if row and row["value"] not in (None, "") else default
 
     block_s, _, slot_s = str(_get("wheel_jewel_slot", "-1:0")).partition(":")
-    day_s, _, count_s = str(_get("wheel_daily_boost", ":0")).partition(":")
+    try:
+        last_boost_ts = float(_get("wheel_last_boost_ts", "0") or 0)
+    except ValueError:
+        last_boost_ts = 0.0
     return WheelEngine(
         total=int(_get("wheel_total_spins", "0") or 0),
         slot_block=int(block_s or -1),
         slot=int(slot_s or 0),
-        day=day_s,
-        day_count=int(count_s or 0),
+        last_boost_ts=last_boost_ts,
     )
 
 
@@ -202,7 +197,7 @@ def _wheel_save_engine(c, engine: WheelEngine) -> None:
     for key, value in (
         ("wheel_total_spins", str(engine.total)),
         ("wheel_jewel_slot", f"{engine.slot_block}:{engine.slot}"),
-        ("wheel_daily_boost", f"{engine.day}:{engine.day_count}"),
+        ("wheel_last_boost_ts", format(engine.last_boost_ts, ".3f")),
     ):
         c.execute(
             "INSERT INTO settings (key, value) VALUES (%s, %s) "
@@ -217,7 +212,7 @@ def wheel_spin_once(user_id: int, source: str = "free") -> dict:
         # قفل عام: عدّاد الدورات وحصة اليوم وضمان الجوهرة يجب أن تكون متسلسلة.
         c.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", ("wheel_global",))
         engine = _wheel_load_engine(c)
-        prize_key = engine.next_prize(wheel_today())
+        prize_key = engine.next_prize(time.time())
         _wheel_save_engine(c, engine)
         label, kind, value = WHEEL_PRIZES[prize_key]
 
@@ -312,28 +307,53 @@ def wheel_results_text(results: list) -> str:
     return "\n".join(lines)
 
 
+_WHEEL_NAME_STRIP_RE = re.compile(r"(?:https?://\S+|t\.me/\S+|tg://\S+|@\w+)", re.IGNORECASE)
+
+
+def _wheel_public_name(user) -> str:
+    """اسم الفائز للعرض في الكروب: الاسم فقط دون يوزر أو رابط أو آيدي."""
+    raw = getattr(user, "full_name", None) or ""
+    name = _WHEEL_NAME_STRIP_RE.sub("", raw)
+    name = " ".join(name.split())
+    return html.escape(name) if name else "عضو"
+
+
 async def _wheel_notify_owner(context, user, result: dict) -> None:
-    """إشعار المالك بجائزة تحتاج تسليماً يدوياً."""
+    """إشعار بجائزة تحتاج تسليماً يدوياً.
+
+    الكروب: الاسم فقط، بلا آيدي ولا يوزر ولا رابط.
+    المالك (رسالة خاصة): البيانات كاملة مع زر التسليم، لأنه يحتاجها لتسليم الجائزة.
+    """
     name = html.escape(getattr(user, "full_name", None) or str(user.id))
     username = f"@{user.username}" if getattr(user, "username", None) else "—"
-    text = (
+    prize = html.escape(result["label"])
+    group_text = (
+        "🎡 <b>فوز في دورة وهداية كبيرة</b>\n\n"
+        f"👤 {_wheel_public_name(user)}\n"
+        f"🎁 الجائزة: <b>{prize}</b>\n"
+        f"🔖 رقم الجائزة: <code>{result['id']}</code>\n\n"
+        "⚠️ جائزة يدوية: تُسلَّم من المالك."
+    )
+    owner_text = (
         "🎡 <b>فوز في دورة وهداية كبيرة</b>\n\n"
         f"👤 <a href='tg://user?id={user.id}'>{name}</a> ({username})\n"
         f"🆔 <code>{user.id}</code>\n"
-        f"🎁 الجائزة: <b>{html.escape(result['label'])}</b>\n"
+        f"🎁 الجائزة: <b>{prize}</b>\n"
         f"🔖 رقم الجائزة: <code>{result['id']}</code>\n\n"
         "⚠️ جائزة يدوية: تواصل مع الفائز لتسليمها."
     )
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ تم التسليم", callback_data=f"wheel:done:{result['id']}")
     ]])
-    try:
-        await notify_group(context.application, sanitize_group_text(text))
-    except Exception:
-        logger.exception("تعذر إرسال إشعار فوز العجلة إلى كروب الإدارة")
+    if ADMIN_GROUP_ID:
+        try:
+            # إرسال مباشر: notify_group يحذف سطر الاسم كاملاً من رسائل الكروب.
+            await context.bot.send_message(ADMIN_GROUP_ID, group_text, parse_mode=ParseMode.HTML)
+        except Exception:
+            logger.exception("تعذر إرسال إشعار فوز العجلة إلى كروب الإدارة")
     if OWNER_ID:
         try:
-            await context.bot.send_message(OWNER_ID, text, parse_mode=ParseMode.HTML, reply_markup=kb)
+            await context.bot.send_message(OWNER_ID, owner_text, parse_mode=ParseMode.HTML, reply_markup=kb)
         except Exception:
             logger.exception("تعذر إرسال إشعار فوز العجلة إلى المالك")
 
