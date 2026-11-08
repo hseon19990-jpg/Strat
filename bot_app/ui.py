@@ -183,6 +183,46 @@ def _ensure_tgnum_button(rows, menu, action_value, label, top=False):
     return rows
 
 
+CURRENCY_EXCHANGE_ACTION = "currency_exchange"
+CURRENCY_EXCHANGE_LABEL = "↔️ تحويل بين النقاط والمجوهرات"
+
+
+def _place_currency_exchange_button(rows):
+    """يضع زر تحويل النقاط/الجواهر في صف مستقل بمنتصف القائمة الرئيسية.
+
+    يحافظ على اسم الزر كما ضبطه المالك، وإن أخفاه المالك من إدارة الأزرار
+    فلا نعيده. إن لم يكن الزر مسجلاً أصلاً في قاعدة البيانات نضيفه.
+    """
+    button = None
+    for row in rows:
+        for btn in row:
+            if getattr(btn, "callback_data", None) == CURRENCY_EXCHANGE_ACTION:
+                button = btn
+                break
+        if button is not None:
+            break
+    if button is None:
+        try:
+            known = {
+                item["action_value"]
+                for item in get_menu_items("main", only_enabled=False)
+            }
+        except Exception:
+            known = set()
+        if CURRENCY_EXCHANGE_ACTION in known:
+            return rows  # مخفي من المالك عمداً
+        button = InlineKeyboardButton(
+            CURRENCY_EXCHANGE_LABEL, callback_data=CURRENCY_EXCHANGE_ACTION
+        )
+    else:
+        rows[:] = [
+            [b for b in row if b is not button] for row in rows
+        ]
+        rows[:] = [row for row in rows if row]
+    rows.insert(len(rows) // 2, [button])
+    return rows
+
+
 # ───────────── تجميع أزرار القائمة الرئيسية في أزرار رئيسية ─────────────
 # لتصغير الواجهة: الأزرار المذكورة هنا تختفي من الشاشة الأولى وتظهر داخل
 # زر مجمّع واحد. يمكنك تغيير المحتوى بتعديل القوائم التالية فقط.
@@ -201,7 +241,7 @@ MAIN_MENU_GROUPS = {
         "label": "💼 حسابي ومحفظتي",
         "title": "💼 *حسابي ومحفظتي*\n\nاختر من القائمة:",
         "actions": (
-            "my_info", "my_numbers", "collect_points", "currency_exchange",
+            "my_info", "my_numbers", "collect_points",
             "transfer_points", "contributor_accounts", "share_account:menu",
             "buyback:start",
         ),
@@ -286,6 +326,8 @@ def main_menu_kb(
                 insert_at = index
                 break
         rows.insert(insert_at, group_row)
+    # زر تحويل النقاط ↔ الجواهر: صف مستقل في منتصف القائمة الرئيسية.
+    _place_currency_exchange_button(rows)
     if is_owner or is_tgnum_visible():
         _ensure_tgnum_button(rows, "main", "tgnum:start", "📲 أرقام تلي كل دول العالم")
     if is_supervisor_user:
