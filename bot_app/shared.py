@@ -448,6 +448,22 @@ OWNER_ID       = _safe_int_env("OWNER_ID", 0)
 API_KEY        = os.getenv("API_KEY", "")
 ADMIN_GROUP_ID   = _safe_int_env("ADMIN_GROUP_ID", 0)
 NUMBERS_GROUP_ID = _safe_int_env("NUMBERS_GROUP_ID", 0)  # كروب إشعارات الأرقام (منفصل عن كروب الطلبات)
+
+
+_GROUP_MEMBER_LINE_RE = re.compile(
+    r"^[^\n]*(?:tg://user\?id=|🆔|المستخدم\s*:|طلب المستخدم|👤\s*(?:<code>|`)?-?\d{5,}|👤\s*<a\s)[^\n]*\n?",
+    re.MULTILINE,
+)
+_GROUP_INLINE_MEMBER_RE = re.compile(r"\s*\|\s*👤\s*(?:<code>|`)?-?\d{5,}(?:</code>|`)?")
+
+
+def sanitize_group_text(text):
+    """يحذف أي آيدي أو يوزر أو رابط منشن خاص بالعضو من رسائل كروب الطلبات."""
+    if not isinstance(text, str):
+        return text
+    text = _GROUP_INLINE_MEMBER_RE.sub("", text)
+    text = _GROUP_MEMBER_LINE_RE.sub("", text)
+    return text.strip("\n")
 API_URL        = "https://smmmain.com/api/v2"
 
 JUSTANOTHERPANEL_API_KEY = os.getenv("JUSTANOTHERPANEL_API_KEY", "")

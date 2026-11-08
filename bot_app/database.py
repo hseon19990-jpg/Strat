@@ -858,6 +858,46 @@ def init_db():
           ]:
               try: c.execute(_alt)
               except Exception: pass
+          # ── مصدر الجواهر: الجواهر المحصّلة عبر الإحالة وحدها تصلح لاستبدال الجوائز المخصصة ──
+          try:
+              c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_jewels NUMERIC(20,6) NOT NULL DEFAULT 0")
+              c.execute(
+                  """
+                  CREATE OR REPLACE FUNCTION clamp_referral_jewels() RETURNS trigger AS $$
+                  BEGIN
+                      IF NEW.referral_jewels > COALESCE(NEW.jewels, 0) THEN
+                          NEW.referral_jewels := GREATEST(COALESCE(NEW.jewels, 0), 0);
+                      END IF;
+                      RETURN NEW;
+                  END;
+                  $$ LANGUAGE plpgsql
+                  """
+              )
+              c.execute("DROP TRIGGER IF EXISTS users_clamp_referral_jewels ON users")
+              c.execute(
+                  "CREATE TRIGGER users_clamp_referral_jewels BEFORE UPDATE ON users "
+                  "FOR EACH ROW EXECUTE FUNCTION clamp_referral_jewels()"
+              )
+              _done = c.execute(
+                  "SELECT value FROM settings WHERE key='referral_jewels_backfilled'"
+              ).fetchone()
+              if not _done:
+                  c.execute(
+                      """
+                      UPDATE users u SET referral_jewels = LEAST(
+                          COALESCE(u.jewels, 0),
+                          COALESCE((SELECT SUM(t.amount) FROM jewel_transactions t
+                                    WHERE t.user_id = u.user_id
+                                      AND t.transaction_type = 'referral'), 0)
+                      )
+                      """
+                  )
+                  c.execute(
+                      "INSERT INTO settings (key, value) VALUES ('referral_jewels_backfilled','1') "
+                      "ON CONFLICT (key) DO NOTHING"
+                  )
+          except Exception as _rj_err:
+              logger.warning(f"referral_jewels migration: {_rj_err}")
           # السجلات القديمة لا تملك مصدر استيراد محفوظاً. نضع لها تصنيفاً
           # آمناً قابلاً للتعديل: الرقم بلا جلسة = يدوي، والجلسة القديمة = ملف.
           try:

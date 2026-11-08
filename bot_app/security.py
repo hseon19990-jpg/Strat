@@ -8,7 +8,7 @@ domain.
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, ROUND_CEILING
 
 OWNER_FIXED_2FA_PASSWORD = os.getenv("TWOFA_PASSWORD", "محمد")
 
@@ -1378,6 +1378,79 @@ def deduct_jewels(
         )
     return updated["jewels"]
 
+def points_to_service_jewels(points) -> Decimal:
+    """يحوّل سعر الخدمة المحسوب بالنقاط إلى جواهر (الافتراضي: 1000 نقطة = جوهرة)."""
+    try:
+        per_jewel = Decimal(str(get_setting("raksh_points_per_jewel") or "1000"))
+    except Exception:
+        per_jewel = Decimal(1000)
+    if per_jewel <= 0:
+        per_jewel = Decimal(1000)
+    value = max(Decimal(0), Decimal(str(points or 0)))
+    return (value / per_jewel).quantize(Decimal("0.000001"), rounding=ROUND_CEILING)
+
+
+def charge_points_as_jewels(user_id: int, points, reference: str = "service_payment") -> bool:
+    """خدمات الرشق لا تُدفع بالنقاط: يُخصم ما يعادلها من الجواهر. يعيد False عند عدم الكفاية."""
+    if int(points or 0) <= 0:
+        return True
+    amount = points_to_service_jewels(points)
+    if amount <= 0:
+        return True
+    return deduct_jewels(user_id, amount, reference=reference) is not None
+
+
+def refund_points_as_jewels(user_id: int, points, reference: str = "service_refund") -> None:
+    """يستردّ قيمة الخدمة جواهر (لا نقاطاً)."""
+    if int(points or 0) <= 0:
+        return
+    amount = points_to_service_jewels(points)
+    if amount > 0:
+        add_jewels(user_id, amount, reference=reference)
+
+
+def jw_text(points) -> str:
+    """نص السعر بالجواهر لعرضه للعضو."""
+    from .services import fmt_jewel_amount
+    return f"{fmt_jewel_amount(points_to_service_jewels(points))} جوهرة"
+
+
+def get_user_referral_jewels(user_id: int) -> Decimal:
+    """رصيد الجواهر المحصّلة عبر الإحالة فقط (الصالحة لاستبدال الجوائز المخصصة)."""
+    with db_conn() as c:
+        row = c.execute(
+            "SELECT LEAST(COALESCE(jewels,0), COALESCE(referral_jewels,0)) AS rj "
+            "FROM users WHERE user_id=%s",
+            (user_id,),
+        ).fetchone()
+    try:
+        return Decimal(str((row or {}).get("rj") or 0))
+    except (InvalidOperation, TypeError, ValueError):
+        return Decimal(0)
+
+
+def deduct_referral_jewels(user_id: int, amount, reference: str = "") -> Decimal | None:
+    """يخصم من جواهر الإحالة حصراً؛ يعيد None إن لم يكفِ رصيد الإحالة."""
+    amount = _parse_jewel_amount(amount)
+    with db_conn() as c:
+        updated = c.execute(
+            "UPDATE users SET jewels=COALESCE(jewels,0)-%s, "
+            "referral_jewels=COALESCE(referral_jewels,0)-%s "
+            "WHERE user_id=%s AND COALESCE(jewels,0)>=%s "
+            "AND COALESCE(referral_jewels,0)>=%s RETURNING jewels",
+            (amount, amount, user_id, amount, amount),
+        ).fetchone()
+        if not updated:
+            return None
+        c.execute(
+            "INSERT INTO jewel_transactions "
+            "(user_id,amount,transaction_type,reference) "
+            "VALUES (%s,%s,'spend',%s)",
+            (user_id, -amount, reference or None),
+        )
+    return updated["jewels"]
+
+
 def get_user_jewels(user_id: int) -> Decimal:
     """رصيد المجوهرات الحالي للمستخدم (0 إن لم يوجد)."""
     with db_conn() as c:
@@ -1393,10 +1466,18 @@ def exchange_unit(currency) -> str:
     return "جوهرة" if currency == "jewels" else "نقطة"
 
 
-def refund_exchange_cost(user_id: int, amount, currency, reference: str = "") -> None:
+def refund_exchange_cost(user_id: int, amount, currency, reference: str = "", prize_type: str | None = None) -> None:
     """يعيد تكلفة عملية استبدال بنفس العملة التي دُفعت بها."""
     if currency == "jewels":
         add_jewels(user_id, amount, reference=reference or "exchange_refund")
+        if prize_type == "custom":
+            # الجائزة المخصصة دُفعت من جواهر الإحالة، فتعود إليها.
+            with db_conn() as c:
+                c.execute(
+                    "UPDATE users SET referral_jewels=LEAST(COALESCE(jewels,0), "
+                    "COALESCE(referral_jewels,0)+%s) WHERE user_id=%s",
+                    (_parse_jewel_amount(amount), user_id),
+                )
     else:
         add_points(user_id, amount)
 

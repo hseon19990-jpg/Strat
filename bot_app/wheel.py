@@ -328,7 +328,7 @@ async def _wheel_notify_owner(context, user, result: dict) -> None:
         InlineKeyboardButton("✅ تم التسليم", callback_data=f"wheel:done:{result['id']}")
     ]])
     try:
-        await notify_group(context.application, text)
+        await notify_group(context.application, sanitize_group_text(text))
     except Exception:
         logger.exception("تعذر إرسال إشعار فوز العجلة إلى كروب الإدارة")
     if OWNER_ID:

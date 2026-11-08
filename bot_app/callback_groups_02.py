@@ -689,7 +689,6 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             await notify_group(
                 context.application,
                 f"📢 <b>تمويل قناة {ft_label}</b>\n"
-                f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
                 f"📡 القناة: @{channel}\n"
                 f"👥 {member_count:,} عضو\n"
                 f"💰 {cost:,} نقطة ({cost_per} × {member_count:,})\n"

@@ -251,7 +251,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 try:
                     await context.bot.send_message(
                         ADMIN_GROUP_ID,
-                        pending["text"],
+                        sanitize_group_text(pending["text"]),
                         parse_mode=pending.get("parse_mode", "Markdown")
                     )
                     await q.answer("✅ تم إرسال الطلب للكروب", show_alert=False)

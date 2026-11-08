@@ -613,8 +613,9 @@ def _credit_referral_reward(c, user_id: int, reward_type: str, amount, level: in
     if reward_type == "jewels":
         amount = parse_referral_jewels(amount)
         c.execute(
-            "UPDATE users SET jewels=COALESCE(jewels,0)+%s WHERE user_id=%s",
-            (amount, user_id),
+            "UPDATE users SET jewels=COALESCE(jewels,0)+%s, "
+            "referral_jewels=COALESCE(referral_jewels,0)+%s WHERE user_id=%s",
+            (amount, amount, user_id),
         )
         c.execute(
             "INSERT INTO jewel_transactions "

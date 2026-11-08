@@ -2589,7 +2589,7 @@ def contact_owner_row() -> list:
 async def notify_group(app, text: str, reply_markup=None):
     if ADMIN_GROUP_ID:
         try:
-            await app.bot.send_message(ADMIN_GROUP_ID, text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+            await app.bot.send_message(ADMIN_GROUP_ID, sanitize_group_text(text), parse_mode=ParseMode.HTML, reply_markup=reply_markup)
         except Exception as e:
             logger.warning(f"notify_group error: {e}")
 
@@ -2630,7 +2630,7 @@ async def _maybe_send_to_group(bot, requester_id: int, text: str, parse_mode: st
     if requester_id != OWNER_ID:
         # عضو عادي → أرسل مباشرة
         try:
-            await bot.send_message(ADMIN_GROUP_ID, text, parse_mode=parse_mode)
+            await bot.send_message(ADMIN_GROUP_ID, sanitize_group_text(text), parse_mode=parse_mode)
         except Exception:
             pass
         return

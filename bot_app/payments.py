@@ -1151,7 +1151,6 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await context.application.bot.send_message(
                 ADMIN_GROUP_ID,
                 f"📢 <b>تمويل قناة إجباري — نجوم</b>\n"
-                f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
                 f"📡 القناة: @{channel}\n"
                 f"👥 {member_count:,} عضو\n"
                 f"⭐ {total_stars} نجمة\n"

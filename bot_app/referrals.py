@@ -2477,7 +2477,7 @@ async def _mansub_start(update, context, user, q, is_own):
     await q.edit_message_text(
         f'🔑 *الاشتراك الإجباري*\n\n'
         f'📊 الحسابات المتاحة: *{avail}*\n'
-        f'💰 {bp} نقطة/حساب + {cp} نقطة/قناة\n'
+        f'💎 {jw_text(bp)}/حساب + {jw_text(cp)}/قناة\n'
         f'📌 {visnote}\n\n'
         f'📎 *خطوة 1/3* — أرسل رابط إحالة بوتك:\n'
         f'`t.me/BotUsername?start=CODE`\n'
@@ -2547,7 +2547,7 @@ async def _mansub_handle_channels(update, context):
     await update.message.reply_text(
         f'✅ القنوات: `{draft["channels"] or "لا يوجد"}`\n\n'
         f'📊 المتاح: *{avail}* حساب\n'
-        f'💰 سعر/حساب: *{cost_each}* نقطة\n\n'
+        f'💎 سعر/حساب: *{jw_text(cost_each)}*\n\n'
         f'🔢 *خطوة 3/3* — أرسل عدد الحسابات (1 – {avail}):',
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔙 إلغاء', callback_data='cat:start_bot')]])
@@ -2582,10 +2582,10 @@ async def _mansub_handle_qty(update, context, user):
     await update.message.reply_text(
         f'📋 *تأكيد الاشتراك الإجباري:*\n\n'
         f'📌 `@{_bu_m}` | كود: {_code_m}{ch_line}\n'
-        f'🔢 {qty} حساب × {cost_each} نقطة = *{total}* نقطة\n'
-        f'💎 رصيدك: {pts} نقطة\n\n'
+        f'🔢 {qty} حساب × {jw_text(cost_each)} = *{jw_text(total)}*\n'
+        f'💎 رصيدك: {fmt_jewel_amount(get_user_jewels(user.id))} جوهرة\n\n'
         f'⚡ الحسابات تعمل بترتيب عشوائي\n'
-        f'💡 الفاشلة: تُستردّ نقاطها تلقائياً | إعادة التفعيل: لا تعويض',
+        f'💡 الفاشلة: تُستردّ جواهرها تلقائياً | إعادة التفعيل: لا تعويض',
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton('✅ تأكيد', callback_data='confirm_mansub:yes'),
@@ -2617,8 +2617,8 @@ async def _handle_confirm_mansub(update, context, user, q, is_own, data):
         await q.edit_message_text('🔒 حسابك موقوف. تواصل مع المالك.', reply_markup=main_menu_kb(is_own))
         return
     total = service_points_cost(user.id, total)
-    if not deduct_points(user.id, total):
-        await q.edit_message_text('❌ نقاطك غير كافية.', reply_markup=main_menu_kb(is_own))
+    if not charge_points_as_jewels(user.id, total, 'forced_order'):
+        await q.edit_message_text('❌ جواهرك غير كافية.', reply_markup=main_menu_kb(is_own))
         context.user_data['state'] = 'main_menu'
         return
     code = next_order_code(user.id)
@@ -2637,7 +2637,7 @@ async def _handle_confirm_mansub(update, context, user, q, is_own, data):
     await q.edit_message_text(
         f'✅ *تم استلام طلبك!*\n\n'
         f'📌 `@{bot_user}` | كود: {_code_ms}{ch_line}\n'
-        f'🔢 {qty} حساب | 💰 {total} نقطة\n'
+        f'🔢 {qty} حساب | 💎 {jw_text(total)}\n'
         f'🎫 كود: `{code}`\n\n'
         f'⏳ سيبدأ التنفيذ قريباً وستصلك إشعار عند الانتهاء.',
         parse_mode=ParseMode.MARKDOWN,
@@ -2645,7 +2645,7 @@ async def _handle_confirm_mansub(update, context, user, q, is_own, data):
     )
     await _maybe_send_to_group(
         context.bot, user.id,
-        f'🔑 *طلب اشتراك إجباري*\n👤 {user.id}\n📌 `@{bot_user}` | `{start_p if start_p else "بدون كود"}`\n🔢 {qty} | 💰 {total}\n🎫 `{code}`',
+        f'🔑 *طلب اشتراك إجباري*\n📌 `@{bot_user}` | `{start_p if start_p else "بدون كود"}`\n🔢 {qty} | 💰 {total}\n🎫 `{code}`',
         parse_mode='Markdown'
     )
     import asyncio as _aio
@@ -2778,12 +2778,12 @@ async def _run_mansub_order(order_id, bot_user, start_p, channels, quantity, req
     unfulfilled_ms = max(0, quantity - done - reactivated)
     if unfulfilled_ms > 0 and _cost_each > 0:
         refunded_pts = unfulfilled_ms * _cost_each
-        add_points(requester_id, refunded_pts)
+        refund_points_as_jewels(requester_id, refunded_pts, 'forced_order_refund')
 
     with db_conn() as c:
         c.execute("UPDATE mandatory_sub_orders SET status='done' WHERE id=%s", (order_id,))
 
-    _refund_line  = f'\n💰 <b>استرداد تلقائي:</b> {refunded_pts:,} نقطة (عن {unfulfilled_ms} حساب لم يُكتمل)' if refunded_pts > 0 else ''
+    _refund_line  = f'\n💰 <b>استرداد تلقائي:</b> {jw_text(refunded_pts)} (عن {unfulfilled_ms} حساب لم يُكتمل)' if refunded_pts > 0 else ''
     _replaced_line = f'\n🔁 <i>استُبدل {replaced_ms} حساب فاشل بحسابات أخرى</i>' if replaced_ms > 0 else ''
     _reactiv_note = f'\n⚠️ <i>الحسابات التي كان البوت مفعّلاً بها مسبقاً لا تستحق تعويضاً</i>' if reactivated > 0 else ''
     _final_text = (
@@ -2814,7 +2814,7 @@ async def _run_mansub_order(order_id, bot_user, start_p, channels, quantity, req
             pass
     await _maybe_send_to_group(
         context.bot, requester_id,
-        f'🔑 اشتراك إجباري اكتمل | 👤 {requester_id} | @{bot_user} | ✅{done} ❌{failed} 🔄{reactivated} 🔁{replaced_ms} | استرداد {refunded_pts:,}نقطة',
+        f'🔑 اشتراك إجباري اكتمل | @{bot_user} | ✅{done} ❌{failed} 🔄{reactivated} 🔁{replaced_ms} | استرداد {jw_text(refunded_pts)}',
         parse_mode='Markdown'
     )
     if OWNER_ID and requester_id != OWNER_ID:
@@ -2829,7 +2829,7 @@ async def _run_mansub_order(order_id, bot_user, start_p, channels, quantity, req
                 f'🔄 <b>المكرر (مفعّل مسبقاً):</b> {reactivated}\n'
                 f'❌ <b>الملغي (إجمالي):</b> {failed}\n'
                 f'🔁 <b>الحسابات البديلة المستخدمة:</b> {replaced_ms}'
-                + (f'\n💰 استرداد تلقائي: {refunded_pts:,} نقطة' if refunded_pts > 0 else ''),
+                + (f'\n💎 استرداد تلقائي: {jw_text(refunded_pts)}' if refunded_pts > 0 else ''),
                 parse_mode='HTML'
             )
         except Exception:
@@ -2840,7 +2840,7 @@ async def _run_mansub_order(order_id, bot_user, start_p, channels, quantity, req
 # ══════════════════════════════════════════════════════════
 
 async def _forced_ref_start(update, context, user, q, is_own, with_ai: bool = False):
-    """الشاشة الأولى — يختار المستخدم طريقة الدفع (نجوم أو نقاط)."""
+    """الشاشة الأولى — يختار المستخدم طريقة الدفع (نجوم أو جواهر)."""
     if with_ai:
         vis     = get_setting('forced_ref_ai_visible') == '1'
         tgl     = '🔒 إخفاء من الأعضاء' if vis else '🔓 إظهار للأعضاء'
@@ -2864,7 +2864,7 @@ async def _forced_ref_start(update, context, user, q, is_own, with_ai: bool = Fa
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=InlineKeyboardMarkup(own_row + [
             [InlineKeyboardButton('⭐ بنجوم', callback_data=f'forced_ref_pm:stars:{ai_flag}')],
-            [InlineKeyboardButton('💎 بنقاط', callback_data=f'forced_ref_pm:points:{ai_flag}')],
+            [InlineKeyboardButton('💎 بالجواهر', callback_data=f'forced_ref_pm:points:{ai_flag}')],
             [InlineKeyboardButton('🔙 رجوع', callback_data='main_menu')],
         ])
     )
@@ -2883,7 +2883,7 @@ async def _forced_ref_go_channels(q_or_msg, context, draft, *, edit: bool):
         price_block  = (
             f'┌─────────────────────\n'
             f'│ ⭐ *سعر الإحالة الوحدة:* {stars_label}\n'
-            f'│ 💎 *أسعار القناة الإجبارية المضافة:* {cp_ch} نقطة لكل قناة\n'
+            f'│ 💎 *أسعار القناة الإجبارية المضافة:* {jw_text(cp_ch)} لكل قناة\n'
             f'│ 📊 *الحد الأعلى:* {max_qty} حساب{even_note}\n'
             f'└─────────────────────'
         )
@@ -2893,8 +2893,8 @@ async def _forced_ref_go_channels(q_or_msg, context, draft, *, edit: bool):
         max_qty = avail
         price_block = (
             f'┌─────────────────────\n'
-            f'│ 💎 *سعر الإحالة الوحدة:* {bp} نقطة\n'
-            f'│ 💎 *أسعار القناة الإجبارية المضافة:* {cp} نقطة لكل قناة\n'
+            f'│ 💎 *سعر الإحالة الوحدة:* {jw_text(bp)}\n'
+            f'│ 💎 *أسعار القناة الإجبارية المضافة:* {jw_text(cp)} لكل قناة\n'
             f'│ 📊 *الحد الأعلى:* {max_qty} حساب\n'
             f'└─────────────────────'
         )
@@ -2994,15 +2994,15 @@ async def _show_forced_ref_confirmation(update, context, user):
     if pm == 'stars':
         if ch_count > 0:
             cost_line = (f'⭐ التكلفة: *{total_stars:,} نجمة* (للحسابات)\n'
-                         f'💎 نقاط القنوات: *{cost_pts_channels:,} نقطة* تُخصم من رصيدك (رصيدك: {pts:,})')
-            lbl_confirm = f'✅ تأكيد ({total_stars:,}⭐ + {cost_pts_channels:,}💎)'
+                         f'💎 جواهر القنوات: *{jw_text(cost_pts_channels)}* تُخصم من رصيدك (رصيدك: {fmt_jewel_amount(get_user_jewels(user.id))})')
+            lbl_confirm = f'✅ تأكيد ({total_stars:,}⭐ + {fmt_jewel_amount(points_to_service_jewels(cost_pts_channels))}💎)'
         else:
             cost_line = f'⭐ التكلفة الإجمالية: *{total_stars:,} نجمة*'
             lbl_confirm = f'✅ تأكيد ({total_stars:,} نجمة)'
         btn_confirm = InlineKeyboardButton(lbl_confirm, callback_data='confirm_forced_ref:stars')
     else:
-        cost_line = f'💎 التكلفة الإجمالية: *{total_pts:,} نقطة* (رصيدك: {pts:,})'
-        btn_confirm = InlineKeyboardButton(f'✅ تأكيد ({total_pts:,} نقطة)', callback_data='confirm_forced_ref:yes')
+        cost_line = f'💎 التكلفة الإجمالية: *{jw_text(total_pts)}* (رصيدك: {fmt_jewel_amount(get_user_jewels(user.id))})'
+        btn_confirm = InlineKeyboardButton(f'✅ تأكيد ({jw_text(total_pts)})', callback_data='confirm_forced_ref:yes')
     await update.message.reply_text(
         f'📋 *{_title_conf}*\n\n'
         f'📌 `@{_bu_f}` | كود: {_code_f}{ch_line}\n'
@@ -3122,9 +3122,9 @@ async def _handle_confirm_forced_ref(update, context, user, q, is_own, data):
         cost_pts_ch = draft.get('cost_pts_channels', 0)
         if cost_pts_ch > 0:
             cost_pts_ch = service_points_cost(user.id, cost_pts_ch)
-            if not deduct_points(user.id, cost_pts_ch):
+            if not charge_points_as_jewels(user.id, cost_pts_ch, 'forced_order_channels'):
                 await q.edit_message_text(
-                    f'❌ نقاطك غير كافية لتغطية تكلفة القنوات ({cost_pts_ch:,} نقطة).',
+                    f'❌ جواهرك غير كافية لتغطية تكلفة القنوات ({jw_text(cost_pts_ch)}).',
                     reply_markup=main_menu_kb(is_own)
                 )
                 return
@@ -3144,8 +3144,8 @@ async def _handle_confirm_forced_ref(update, context, user, q, is_own, data):
         return
 
     total = service_points_cost(user.id, total)
-    if not deduct_points(user.id, total):
-        await q.edit_message_text('❌ نقاطك غير كافية.', reply_markup=main_menu_kb(is_own))
+    if not charge_points_as_jewels(user.id, total, 'forced_order'):
+        await q.edit_message_text('❌ جواهرك غير كافية.', reply_markup=main_menu_kb(is_own))
         context.user_data['state'] = 'main_menu'
         return
     code = next_order_code(user.id)
@@ -3164,7 +3164,7 @@ async def _handle_confirm_forced_ref(update, context, user, q, is_own, data):
     await q.edit_message_text(
         f'✅ *تم استلام طلبك!*\n\n'
         f'📌 `@{bot_user}` | كود: {_code_fr}{ch_line}\n'
-        f'🔢 {qty} حساب | 💎 {total:,} نقطة\n'
+        f'🔢 {qty} حساب | 💎 {jw_text(total)}\n'
         f'🎫 كود: `{code}`\n\n'
         f'⏳ سيبدأ التنفيذ قريباً وستصلك إشعار عند الانتهاء.',
         parse_mode=ParseMode.MARKDOWN,
@@ -3474,10 +3474,10 @@ async def _run_forced_ref_order(order_id, bot_user, start_p, channels, quantity,
                     (_blocked_status, int(_order_row.get("quantity") or quantity), order_id)
                 )
         if _refund_points > 0:
-            add_points(requester_id, _refund_points)
+            refund_points_as_jewels(requester_id, _refund_points, 'forced_order_refund')
         try:
             _refund_line = (
-                f"\n💰 تم رد <b>{_refund_points:,} نقطة</b>."
+                f"\n💰 تم رد <b>{jw_text(_refund_points)}</b>."
                 if _refund_points > 0 else ""
             )
             await context.bot.send_message(
@@ -3667,12 +3667,12 @@ async def _run_forced_ref_order(order_id, bot_user, start_p, channels, quantity,
         elif _cost_pts_each > 0:
             refunded_pts = unfulfilled * _cost_pts_each
         if refunded_pts > 0:
-            add_points(requester_id, refunded_pts)
+            refund_points_as_jewels(requester_id, refunded_pts, 'forced_order_refund')
 
     reactiv_refunded_pts = 0
     if reactivated > 0 and payment_method == 'stars' and _cost_stars_each > 0:
         reactiv_refunded_pts = star_points(reactivated * _cost_stars_each, _star_rate)
-        add_points(requester_id, reactiv_refunded_pts)
+        refund_points_as_jewels(requester_id, reactiv_refunded_pts, 'forced_order_refund')
 
     _fully_completed = (done + reactivated) >= quantity
     _final_status = "done" if _fully_completed else "failed"
@@ -3681,16 +3681,16 @@ async def _run_forced_ref_order(order_id, bot_user, start_p, channels, quantity,
 
     _refund_parts = []
     if refunded_pts > 0:
-        _refund_parts.append(f'غير مكتمل: {refunded_pts:,} نقطة ({unfulfilled} حساب)')
+        _refund_parts.append(f'غير مكتمل: {jw_text(refunded_pts)} ({unfulfilled} حساب)')
     if reactiv_refunded_pts > 0:
-        _refund_parts.append(f'المكررة: {reactiv_refunded_pts:,} نقطة ({reactivated} حساب)')
+        _refund_parts.append(f'المكررة: {jw_text(reactiv_refunded_pts)} ({reactivated} حساب)')
     _refund_line = '\n💰 <b>التعويض:</b> ' + ' | '.join(_refund_parts) if _refund_parts else ''
 
     _stars_note = ''
     if payment_method == 'stars' and reactivated > 0:
-        _stars_note = '\n✅ <i>لأنك دفعت بالنجوم، تم تعويض المكررة أيضاً (250 نقطة لكل نجمة مدفوعة)</i>'
+        _stars_note = '\n✅ <i>لأنك دفعت بالنجوم، تم تعويض المكررة أيضاً (تُردّ كجواهر)</i>'
     elif payment_method != 'stars' and reactivated > 0:
-        _stars_note = '\n⚠️ <i>الإحالات المكررة لا تُعوَّض عند الدفع بالنقاط</i>'
+        _stars_note = '\n⚠️ <i>الإحالات المكررة لا تُعوَّض عند الدفع بالجواهر</i>'
 
     _replaced_note = f'\n🔁 <i>استُبدل {replaced} حساب فاشل بحسابات أخرى</i>' if replaced > 0 else ''
 
@@ -3734,7 +3734,7 @@ async def _run_forced_ref_order(order_id, bot_user, start_p, channels, quantity,
         f'📊 <b>تقرير إحالة بوت إجباري{_ai_label}</b>\n'
         f'📌 @{bot_user}'
         + (f' | 👤 <code>{requester_id}</code>' if requester_id != OWNER_ID else '')
-        + f'\n💳 {"⭐ نجوم" if payment_method == "stars" else "💎 نقاط"}\n\n'
+        + f'\n💳 {"⭐ نجوم" if payment_method == "stars" else "💎 جواهر"}\n\n'
         f'✅ المنجز: <b>{done}</b>  |  🔄 المكرر: <b>{reactivated}</b>  |  ❌ الفاشل: <b>{failed}</b>'
         + (_replaced_note or '')
         + (_refund_line or '')
@@ -3789,7 +3789,7 @@ async def _run_forced_ref_order(order_id, bot_user, start_p, channels, quantity,
 
     await _maybe_send_to_group(
         context.bot, requester_id,
-        f'🔑 إحالة بوت اجباري اكتملت | 👤 {requester_id} | @{bot_user} | ✅{done} ❌{failed} 🔄{reactivated} | تعويض {refunded_pts + reactiv_refunded_pts:,}نقطة | {payment_method}',
+        f'🔑 إحالة بوت اجباري اكتملت | @{bot_user} | ✅{done} ❌{failed} 🔄{reactivated} | تعويض {jw_text(refunded_pts + reactiv_refunded_pts)} | {payment_method}',
         parse_mode='Markdown'
     )
 

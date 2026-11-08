@@ -759,7 +759,8 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                 await q.edit_message_text("⚠️ هذه الجائزة لم تعد متاحة.", reply_markup=back_kb("exchange_points"))
                 return
             cost = prize["points_cost"]
-            pts = get_user_jewels(user.id)
+            # الجوائز المخصصة تُشترى بجواهر الإحالة فقط
+            pts = get_user_referral_jewels(user.id)
             qty_txt = f" × {prize['quantity']}" if prize["quantity"] and prize["quantity"] > 1 else ""
         
             if not confirmed:
@@ -774,9 +775,10 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                 await q.edit_message_text(
                     f"🎁 *{prize['name']}{qty_txt}*\n\n"
                     f"💎 التكلفة: *{cost:,} جوهرة*\n"
-                    f"💎 رصيدك الحالي: {fmt_jewel_amount(pts)} جوهرة\n\n"
+                    f"💎 رصيد جواهر الإحالة: {fmt_jewel_amount(pts)} جوهرة\n"
+                    "ℹ️ هذه الجائزة تُستبدل بجواهر الإحالة فقط.\n\n"
                     + ("✅ يمكنك الطلب — اضغط تأكيد للمتابعة." if can_afford else
-                       f"❌ تحتاج {fmt_jewel_amount(cost - pts)} جوهرة إضافية."),
+                       f"❌ تحتاج {fmt_jewel_amount(cost - pts)} جوهرة إحالة إضافية."),
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=InlineKeyboardMarkup(confirm_kb)
                 )
@@ -785,8 +787,8 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             if pts < cost:
                 await q.edit_message_text("❌ رصيدك غير كافٍ!", reply_markup=back_kb("exchange_points"))
                 return
-            if deduct_jewels(user.id, cost, reference=f"exchange_custom:{prize_id}") is None:
-                await q.edit_message_text("❌ رصيدك غير كافٍ.", reply_markup=back_kb("exchange_points"))
+            if deduct_referral_jewels(user.id, cost, reference=f"exchange_custom:{prize_id}") is None:
+                await q.edit_message_text("❌ رصيد جواهر الإحالة غير كافٍ.", reply_markup=back_kb("exchange_points"))
                 return
             code = next_order_code(user.id)
             with db_conn() as c:
@@ -2505,7 +2507,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                 await q.answer("⚠️ تم تعويض هذه العملية للتو من مكان آخر. لا داعي للتكرار.", show_alert=True)
                 return
             if pts > 0:
-                refund_exchange_cost(uid, pts, cur, reference=f"owner_refund:{pe_id}")
+                refund_exchange_cost(uid, pts, cur, reference=f"owner_refund:{pe_id}", prize_type=pe["prize_type"])
             try:
                 await context.bot.send_message(
                     uid,
