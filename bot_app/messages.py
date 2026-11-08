@@ -1178,12 +1178,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         amount = parse_jewel_star_topup_amount(text)
         if amount is None:
             await update.message.reply_text(
-                f"⚠️ أرسل عدداً صحيحاً من 1 إلى {JEWEL_STAR_TOPUP_MAX:,} مجوهرة."
+                f"⚠️ أرسل عدداً صحيحاً من النجوم من 1 إلى {JEWEL_STAR_TOPUP_MAX:,}."
             )
             return
-        if jewel_star_cost(amount) > JEWEL_STAR_INVOICE_MAX_STARS:
+        if jewels_for_stars(amount) <= 0:
             await update.message.reply_text(
-                "⚠️ هذه الكمية تتجاوز حد فاتورة النجوم الواحدة. أرسل كمية أقل."
+                "⚠️ هذا العدد لا يعطي أي جواهر بالسعر الحالي. أرسل عدداً أكبر."
             )
             return
         context.user_data["state"] = "main_menu"

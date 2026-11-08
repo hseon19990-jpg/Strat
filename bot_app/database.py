@@ -615,7 +615,7 @@ def init_db():
               id                  BIGSERIAL PRIMARY KEY,
               user_id             BIGINT NOT NULL,
               stars               INTEGER NOT NULL CHECK (stars > 0),
-              jewels_given        INTEGER NOT NULL CHECK (jewels_given > 0),
+              jewels_given        NUMERIC(20,6) NOT NULL CHECK (jewels_given > 0),
               telegram_payment_id TEXT NOT NULL UNIQUE,
               status              TEXT NOT NULL DEFAULT 'completed',
               created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -776,6 +776,7 @@ def init_db():
               "ALTER TABLE users ADD COLUMN IF NOT EXISTS jewels NUMERIC(20,6) NOT NULL DEFAULT 0",
               "ALTER TABLE users ALTER COLUMN jewels TYPE NUMERIC(20,6) USING jewels::NUMERIC(20,6)",
               "ALTER TABLE jewel_transactions ALTER COLUMN amount TYPE NUMERIC(20,6) USING amount::NUMERIC(20,6)",
+              "ALTER TABLE jewel_star_transactions ALTER COLUMN jewels_given TYPE NUMERIC(20,6) USING jewels_given::NUMERIC(20,6)",
               "ALTER TABLE users ADD COLUMN IF NOT EXISTS wheel_spins INTEGER NOT NULL DEFAULT 0",
               "ALTER TABLE prize_exchanges ALTER COLUMN points_cost TYPE NUMERIC USING points_cost::NUMERIC",
               "ALTER TABLE orders ADD COLUMN IF NOT EXISTS refund_jewels NUMERIC(20,6) NOT NULL DEFAULT 0",

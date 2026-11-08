@@ -11,7 +11,7 @@ globals().update({key: value for key, value in vars(_shared).items() if not key.
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 
 JEWEL_STAR_TOPUP_MAX = 10000
-JEWEL_STAR_TOPUP_PRESETS = (3, 10, 50, 100)
+JEWEL_STAR_TOPUP_PRESETS = (1, 10, 30, 50, 80, 100)
 JEWEL_STAR_INVOICE_MAX_STARS = 10000  # حد تيليجرام لفاتورة واحدة
 CURRENCY_EXCHANGE_MAX_INPUT = 1_000_000_000
 CURRENCY_EXCHANGE_MAX_POINTS = 2_147_483_647
@@ -178,8 +178,27 @@ def parse_jewel_star_topup_amount(value):
 
 
 def validate_jewel_star_invoice(payload, user_id, total_amount, currency):
-    """Return the jewel quantity only for a correctly priced XTR invoice."""
+    """Return the jewel quantity only for a correctly priced XTR invoice.
+
+    الصيغة الجديدة: jewel_stars:{micro}:{user}:{stars}:v2 حيث micro = الجواهر × 1,000,000
+    (تدعم الكسور مثل 0.9). الصيغ القديمة (3 أو 4 أجزاء) تبقى صالحة للفواتير المعلّقة.
+    """
     parts = str(payload or "").split(":")
+    if len(parts) == 5 and parts[0] == "jewel_stars" and parts[4] == "v2":
+        if (
+            currency != "XTR"
+            or not all(p.isdigit() for p in parts[1:4])
+        ):
+            return None
+        micro, uid, stars = int(parts[1]), int(parts[2]), int(parts[3])
+        if (
+            micro < 1
+            or not 1 <= stars <= JEWEL_STAR_INVOICE_MAX_STARS
+            or uid != int(user_id)
+            or int(total_amount) != stars
+        ):
+            return None
+        return Decimal(micro) / Decimal(1_000_000)
     if (
         len(parts) not in (3, 4)
         or parts[0] != "jewel_stars"
@@ -199,34 +218,36 @@ def validate_jewel_star_invoice(payload, user_id, total_amount, currency):
         or int(total_amount) != expected_stars
     ):
         return None
-    return amount
+    return Decimal(amount)
 
 
-def jewel_star_cost(amount, jewels_per_star=None) -> int:
-    """نجوم فاتورة شراء عدد من الجواهر.
+def jewels_for_stars(stars, jewels_per_star=None) -> Decimal:
+    """الجواهر التي يحصل عليها العضو مقابل عدد من النجوم = النجوم × (جواهر كل نجمة).
 
-    القيمة المضبوطة = عدد الجواهر لكل نجمة (مثلاً 3 = كل نجمة تعطي 3 جواهر)،
-    فعدد النجوم = الجواهر ÷ القيمة، ويُقرّب لأعلى لأن نجوم تيليجرام أعداد صحيحة.
+    القيمة المضبوطة = عدد الجواهر لكل نجمة (مثلاً 3 = كل نجمة 3 جواهر، 0.3 = كل نجمة 0.3 جوهرة).
+    يُقرَّب لأسفل إلى 6 منازل عشرية، وهي دقة عمود الجواهر في قاعدة البيانات.
     """
     rate = get_jewels_per_star() if jewels_per_star is None else Decimal(str(jewels_per_star))
     if rate <= 0:
         rate = Decimal("1")
-    return max(1, int((Decimal(int(amount)) / rate).to_integral_value(rounding=ROUND_UP)))
+    micro = int((Decimal(int(stars)) * rate * Decimal(1_000_000)).to_integral_value(rounding=ROUND_DOWN))
+    return Decimal(micro) / Decimal(1_000_000)
 
 
-async def send_jewel_star_invoice(context, user, amount):
-    """Create a Telegram Stars invoice at the owner-configured star price per jewel."""
-    amount = parse_jewel_star_topup_amount(amount)
-    if amount is None:
-        raise ValueError("invalid jewel top-up amount")
-    stars = jewel_star_cost(amount)
-    if stars > JEWEL_STAR_INVOICE_MAX_STARS:
-        raise ValueError("jewel top-up exceeds the Telegram Stars invoice limit")
+async def send_jewel_star_invoice(context, user, stars):
+    """فاتورة نجوم: العضو يختار عدد النجوم التي يدفعها، وتُحسب الجواهر من السعر المضبوط."""
+    stars = parse_jewel_star_topup_amount(stars)
+    if stars is None or stars > JEWEL_STAR_INVOICE_MAX_STARS:
+        raise ValueError("invalid jewel top-up stars amount")
+    jewels = jewels_for_stars(stars)
+    micro = int(jewels * 1_000_000)
+    if micro < 1:
+        raise ValueError("jewel top-up would give no jewels")
     await context.bot.send_invoice(
         chat_id=user.id,
         title="شحن مجوهرات",
-        description=f"شراء {amount} مجوهرة مقابل {stars} نجمة",
-        payload=f"jewel_stars:{amount}:{user.id}:{stars}",
+        description=f"شراء {fmt_jewel_amount(jewels)} مجوهرة مقابل {stars} نجمة",
+        payload=f"jewel_stars:{micro}:{user.id}:{stars}:v2",
         provider_token="",
         currency="XTR",
         prices=[LabeledPrice("مجوهرات", stars)],
@@ -274,7 +295,7 @@ async def handle_jewel_topup_callback(update, context, q, data, user, is_owner):
         for start in range(0, len(JEWEL_STAR_TOPUP_PRESETS), 2):
             rows.append([
                 InlineKeyboardButton(
-                    f"{amount} 💎",
+                    f"{amount} ⭐",
                     callback_data=f"jtopup:stars:qty:{amount}",
                 )
                 for amount in JEWEL_STAR_TOPUP_PRESETS[start:start + 2]
@@ -286,7 +307,7 @@ async def handle_jewel_topup_callback(update, context, q, data, user, is_owner):
         await q.edit_message_text(
             "⭐ *الشحن بالنجوم*\n\n"
             f"كل نجمة = *{fmt_decimal(get_jewels_per_star())} مجوهرة*.\n"
-            "اختر كمية جاهزة أو أدخل كمية أخرى؛ ستظهر فاتورة Telegram قبل الدفع.",
+            "اختر عدد النجوم التي تريد دفعها أو أدخل عدداً آخر؛ ستظهر فاتورة Telegram قبل الدفع.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(rows),
         )
@@ -295,7 +316,7 @@ async def handle_jewel_topup_callback(update, context, q, data, user, is_owner):
     if data == "jtopup:stars:custom":
         context.user_data["state"] = "await_jewel_star_amount"
         await q.edit_message_text(
-            f"🔢 أرسل عدد المجوهرات المطلوب شحنها (من 1 إلى {JEWEL_STAR_TOPUP_MAX:,}).",
+            f"🔢 أرسل عدد النجوم التي تريد دفعها (من 1 إلى {JEWEL_STAR_TOPUP_MAX:,}).",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🔙 رجوع", callback_data="jtopup:stars")
             ]]),
@@ -667,7 +688,7 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(
             "✅ تم شحن المجوهرات تلقائياً بنجاح!\n\n"
             f"⭐ المدفوع: {int(payment.total_amount)} نجمة\n"
-            f"💎 المضاف: {amount} مجوهرة\n"
+            f"💎 المضاف: {fmt_jewel_amount(amount)} مجوهرة\n"
             f"💎 رصيدك الحالي: {fmt_jewel_amount(jewels_balance)} مجوهرة",
             reply_markup=main_menu_kb(is_own),
         )
