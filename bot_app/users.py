@@ -1291,6 +1291,157 @@ def _format_top_referrers(rows, title: str) -> str:
     return "\n".join(lines)
 
 # ────────────────────────────────────────────────────────────
+# الأكثر دعوة أسبوعياً: جوائز تلقائية لأول 3 (الأسبوع من الاثنين 00:00 إلى
+# الاثنين التالي بتوقيت +3).
+# ────────────────────────────────────────────────────────────
+WEEKLY_REFERRAL_PRIZES = (30, 10, 5)  # الجواهر («النجوم») للمراكز 1 و2 و3
+_WEEKLY_REFERRAL_TZ = timezone(timedelta(hours=3))
+_weekly_awards_table_ready = False
+
+
+def weekly_referral_week_start(now=None):
+    """بداية الأسبوع الحالي (الاثنين 00:00 بتوقيت +3) كلحظة UTC."""
+    now = now or datetime.now(timezone.utc)
+    local = now.astimezone(_WEEKLY_REFERRAL_TZ)
+    start_local = (local - timedelta(days=local.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    return start_local.astimezone(timezone.utc)
+
+
+def _weekly_awards_ensure_table(c) -> None:
+    global _weekly_awards_table_ready
+    if _weekly_awards_table_ready:
+        return
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS weekly_referral_awards (
+            week_start TIMESTAMPTZ PRIMARY KEY,
+            awarded_at TIMESTAMPTZ DEFAULT NOW(),
+            winners    TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    _weekly_awards_table_ready = True
+
+
+def get_weekly_top_referrers(start_dt, end_dt=None, limit: int = 10):
+    """أكثر الداعين بين لحظتين. يستثني المالك، ومن عوقب بالغش، والمدعوّين المرصودين كغش.
+
+    عند التعادل يتقدّم من بلغ العدد أولاً.
+    """
+    reset_at = _referral_counter_reset_at()
+    if reset_at is not None and reset_at > start_dt:
+        start_dt = reset_at
+    owner_id = int(globals().get("OWNER_ID") or 0)
+    params = [start_dt]
+    end_sql = ""
+    if end_dt is not None:
+        end_sql = "AND u.credited_at < %s "
+        params.append(end_dt)
+    params += [owner_id, limit]
+    with db_conn() as c:
+        rows = c.execute(
+            "SELECT u.invited_by AS invited_by, COUNT(*) AS cnt, MAX(u.credited_at) AS last_at "
+            "FROM users u "
+            "WHERE u.invited_by IS NOT NULL AND u.invited_by != 0 AND u.referral_credited=1 "
+            "AND u.credited_at IS NOT NULL AND u.credited_at >= %s "
+            + end_sql +
+            "AND u.invited_by != %s "
+            "AND u.user_id NOT IN (SELECT invited_id FROM referral_fraud_log) "
+            "AND u.invited_by NOT IN (SELECT inviter_id FROM referral_fraud_log) "
+            "GROUP BY u.invited_by ORDER BY cnt DESC, last_at ASC LIMIT %s",
+            tuple(params),
+        ).fetchall()
+    return rows
+
+
+def format_weekly_top_referrers(rows, start_dt) -> str:
+    """نص ترتيب الأسبوع الحالي مع الجوائز والوقت المتبقي."""
+    end_dt = start_dt + timedelta(days=7)
+    left = end_dt - datetime.now(timezone.utc)
+    days, rem = divmod(max(int(left.total_seconds()), 0), 86400)
+    hours = rem // 3600
+    prizes = " | ".join(
+        f"{m} {n} جوهرة" for m, n in zip(("🥇", "🥈", "🥉"), WEEKLY_REFERRAL_PRIZES)
+    )
+    head = (
+        "🏅 *الأكثر دعوة هذا الأسبوع*\n"
+        f"🎁 الجوائز: {prizes}\n"
+        f"⏳ المتبقي: {days} يوم و{hours} ساعة\n"
+        "(الدعوات المكتملة فقط تُحتسب)\n"
+    )
+    body = _format_top_referrers(rows, "هذا الأسبوع")
+    body = body.split("\n\n", 1)[1] if "\n\n" in body else body
+    return head + "\n" + body
+
+
+async def award_weekly_top_referrers_job(context):
+    """تُشغَّل كل ساعة: تصرف جوائز الأسبوع المنتهي مرة واحدة فقط."""
+    this_start = weekly_referral_week_start()
+    prev_start = this_start - timedelta(days=7)
+    with db_conn() as c:
+        _weekly_awards_ensure_table(c)
+        total = int(
+            (c.execute("SELECT COUNT(*) AS n FROM weekly_referral_awards").fetchone() or {}).get("n", 0)
+            or 0
+        )
+        if total == 0:
+            # أول تشغيل للميزة: لا نصرف جوائز عن أسبوع سبق الميزة.
+            c.execute(
+                "INSERT INTO weekly_referral_awards (week_start, winners) VALUES (%s,'baseline') "
+                "ON CONFLICT DO NOTHING",
+                (prev_start,),
+            )
+            return
+        claimed = c.execute(
+            "INSERT INTO weekly_referral_awards (week_start) VALUES (%s) "
+            "ON CONFLICT DO NOTHING RETURNING week_start",
+            (prev_start,),
+        ).fetchone()
+    if not claimed:
+        return  # صُرفت جوائز هذا الأسبوع مسبقاً
+
+    rows = get_weekly_top_referrers(prev_start, this_start, limit=len(WEEKLY_REFERRAL_PRIZES))
+    owner_id = int(globals().get("OWNER_ID") or 0)
+    summary = []
+    for rank, (row, amount) in enumerate(zip(rows, WEEKLY_REFERRAL_PRIZES), start=1):
+        uid = int(row["invited_by"])
+        try:
+            add_jewels(
+                uid, amount, owner_id or None,
+                f"weekly_top_referrers:{prev_start.date()}:{rank}",
+            )
+        except Exception:
+            logger.exception("فشل صرف جائزة الأكثر دعوة الأسبوعي للمستخدم %s", uid)
+            continue
+        summary.append(f"{rank}. {uid} — {row['cnt']} دعوة — {amount} جوهرة")
+        try:
+            await context.bot.send_message(
+                chat_id=uid,
+                text=(
+                    f"🏆 مبروك! حصلت على المركز {rank} في «الأكثر دعوة هذا الأسبوع» "
+                    f"بـ {row['cnt']} دعوة، وتمت إضافة {amount} جوهرة إلى رصيدك."
+                ),
+            )
+        except Exception as exc:
+            logger.warning("تعذر إشعار فائز أسبوعي %s: %s", uid, exc)
+    with db_conn() as c:
+        c.execute(
+            "UPDATE weekly_referral_awards SET winners=%s WHERE week_start=%s",
+            ("\n".join(summary), prev_start),
+        )
+    if owner_id and summary:
+        try:
+            await context.bot.send_message(
+                chat_id=owner_id,
+                text="🏅 تم صرف جوائز الأكثر دعوة الأسبوعي:\n" + "\n".join(summary),
+            )
+        except Exception:
+            pass
+
+
+# ────────────────────────────────────────────────────────────
 # ────────────────────────────────────────────────────────────
 
 def get_referral_contest() -> dict:

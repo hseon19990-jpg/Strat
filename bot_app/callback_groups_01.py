@@ -1345,6 +1345,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
 
         if data == "referral:top":
             rows = [
+                [InlineKeyboardButton("🏅 الأسبوعي (جوائز 30/10/5)", callback_data="top_ref_pick:wk")],
                 [InlineKeyboardButton("🕐 آخر 24 ساعة", callback_data="top_ref_pick:24h")],
                 [InlineKeyboardButton("📅 اليوم الحالي (منذ 00:00 بالتوقيت العالمي)", callback_data="top_ref_pick:day")],
             ]
@@ -1375,6 +1376,15 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
 
         if data.startswith("top_ref_pick:"):
             period = data.split(":", 1)[1]
+            if period == "wk":
+                _wk_start = weekly_referral_week_start()
+                _wk_rows = get_weekly_top_referrers(_wk_start, None, limit=10)
+                await q.edit_message_text(
+                    format_weekly_top_referrers(_wk_rows, _wk_start),
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="top_ref_today")]])
+                )
+                return
             if period == "week" and not is_own:
                 await q.answer("🔒 هذا الخيار متاح للمالك فقط.", show_alert=True)
                 return

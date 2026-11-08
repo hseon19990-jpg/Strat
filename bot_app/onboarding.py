@@ -204,8 +204,10 @@ async def show_mandatory_gate(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
 
 # ────────────────────────────────────────────────────────────
-# تحقق الإحالات المتتالية: 3 مدعوّين أو أكثر لنفس الداعي خلال دقيقة واحدة
-# يمرّون بتحققين قبل احتساب الإحالة: (1) مسألة جمع، (2) اختيار إيموجي.
+# تحقق المدعوّين: كل عضو جديد دخل عبر رابط دعوة يمرّ بهذا التسلسل بالضبط قبل
+# احتساب الإحالة:
+#   انضمام بالقنوات ← ستارت ← تحقق حسابي ← ستارت ← تحقق إيموجي ← ستارت ← تُحتسب.
+# «ستارت» = زر ▶️ ستارت أو إرسال /start.
 # ────────────────────────────────────────────────────────────
 import secrets as _rc_secrets
 
@@ -323,6 +325,19 @@ def _rc_render(stage: str, prompt: str, options: str, note: str = ""):
     return text, InlineKeyboardMarkup(rows)
 
 
+_RC_GATE_TEXT = {
+    "gate1": "✅ *تم الاشتراك في القنوات*\n\nاضغط ▶️ *ستارت* للانتقال إلى التحقق الحسابي.",
+    "gate2": "✅ *تم حل التحقق الحسابي*\n\nاضغط ▶️ *ستارت* للانتقال إلى تحقق الإيموجي.",
+    "gate3": "✅ *تم حل تحقق الإيموجي*\n\nاضغط ▶️ *ستارت* لإكمال الدخول وتفعيل حسابك.",
+}
+_RC_GATE_STAGES = tuple(_RC_GATE_TEXT)
+
+
+def _rc_gate_render(stage: str):
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ ستارت", callback_data="rc:go")]])
+    return _RC_GATE_TEXT[stage], kb
+
+
 async def _rc_send(update, text, kb=None, edit=False):
     if edit and update.callback_query:
         await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
@@ -336,8 +351,55 @@ _RC_LOCK_TEXT = (
 )
 
 
-async def start_referral_challenge_if_needed(update, context, user, edit=False) -> bool:
-    """يعيد True إذا عُرض تحقق (أو قفل) على المدعو وعلى المتصل التوقف."""
+async def _rc_set_stage(user_id: int, stage: str, new_question: bool = False):
+    """ينقل المدعو لمرحلة جديدة ويعيد (النص، الأزرار) لعرضها."""
+    if stage in _RC_GATE_STAGES:
+        with db_conn() as c:
+            c.execute(
+                "UPDATE referral_challenges SET stage=%s, fails=0 WHERE user_id=%s",
+                (stage, user_id),
+            )
+        return _rc_gate_render(stage)
+    prompt, options, idx = _rc_new_stage(stage)
+    with db_conn() as c:
+        c.execute(
+            "UPDATE referral_challenges SET stage=%s, prompt=%s, options=%s, "
+            "target_idx=%s, fails=0 WHERE user_id=%s",
+            (stage, prompt, options, idx, user_id),
+        )
+    return _rc_render(stage, prompt, options)
+
+
+async def _rc_advance(update, context, user, edit=False) -> bool:
+    """يعالج ضغطة «ستارت». يعيد True إذا عُرضت مرحلة جديدة، و False إذا اكتملت كل المراحل."""
+    with db_conn() as c:
+        _rc_ensure_table(c)
+        row = c.execute(
+            "SELECT * FROM referral_challenges WHERE user_id=%s", (user.id,)
+        ).fetchone()
+    if not row or row["passed"]:
+        return False
+    stage = row["stage"]
+    if stage == "gate1":
+        text, kb = await _rc_set_stage(user.id, "math")
+    elif stage == "gate2":
+        text, kb = await _rc_set_stage(user.id, "emoji")
+    elif stage == "gate3":
+        with db_conn() as c:
+            c.execute("UPDATE referral_challenges SET passed=1 WHERE user_id=%s", (user.id,))
+        return False
+    else:
+        text, kb = _rc_render(stage, row["prompt"], row["options"])
+    await _rc_send(update, text, kb, edit=edit)
+    return True
+
+
+async def start_referral_challenge_if_needed(update, context, user, edit=False, from_start=False) -> bool:
+    """يعيد True إذا عُرضت خطوة تحقق (أو قفل) على المدعو وعلى المتصل التوقف.
+
+    from_start=True تعني أن المدعو أرسل /start، فتُحتسب ضغطة «ستارت» إن كان
+    واقفاً عند إحدى بوابات «ستارت».
+    """
     if user.id == OWNER_ID or not referral_challenge_enabled():
         return False
     db_user = get_user(user.id) or {}
@@ -361,30 +423,56 @@ async def start_referral_challenge_if_needed(update, context, user, edit=False) 
         await _rc_send(update, _RC_LOCK_TEXT, None, edit=edit)
         return True
     if not state:
-        try:
-            if not referral_burst_detected(user.id):
-                return False
-        except Exception:
-            logger.exception("تعذر فحص تتابع الإحالات للمستخدم %s", user.id)
-            return False
-        logger.info("تحقق إحالات متتالية للمستخدم %s", user.id)
-    prompt, options, idx = _rc_new_stage("math")
-    with db_conn() as c:
-        c.execute(
-            "INSERT INTO referral_challenges (user_id,stage,prompt,options,target_idx,fails,passed,locked_until) "
-            "VALUES (%s,'math',%s,%s,%s,0,0,NULL) "
-            "ON CONFLICT (user_id) DO UPDATE SET stage='math', prompt=EXCLUDED.prompt, "
-            "options=EXCLUDED.options, target_idx=EXCLUDED.target_idx, fails=0, passed=0, locked_until=NULL",
-            (user.id, prompt, options, idx),
-        )
-    text, kb = _rc_render("math", prompt, options)
+        # أول مرة بعد الاشتراك في القنوات: بوابة «ستارت» الأولى.
+        with db_conn() as c:
+            c.execute(
+                "INSERT INTO referral_challenges (user_id,stage,prompt,options,target_idx,fails,passed,locked_until) "
+                "VALUES (%s,'gate1','','',0,0,0,NULL) "
+                "ON CONFLICT (user_id) DO UPDATE SET stage='gate1', prompt='', options='', "
+                "target_idx=0, fails=0, passed=0, locked_until=NULL",
+                (user.id,),
+            )
+        text, kb = _rc_gate_render("gate1")
+        await _rc_send(update, text, kb, edit=edit)
+        return True
+    if state["stage"] in _RC_GATE_STAGES:
+        if from_start:
+            return await _rc_advance(update, context, user, edit=edit)
+        text, kb = _rc_gate_render(state["stage"])
+        await _rc_send(update, text, kb, edit=edit)
+        return True
+    # وسط سؤال: نعيد عرض السؤال نفسه.
+    text, kb = _rc_render(state["stage"], state["prompt"], state["options"])
     await _rc_send(update, text, kb, edit=edit)
     return True
 
 
 async def handle_referral_challenge_callback(update, context, q, data, user) -> None:
-    """أزرار التحقق: rc:math:<i> ثم rc:emoji:<i>."""
+    """أزرار التحقق: rc:go (ستارت) ثم rc:math:<i> و rc:emoji:<i>."""
     parts = data.split(":")
+    if len(parts) >= 2 and parts[1] == "go":
+        with db_conn() as c:
+            _rc_ensure_table(c)
+            row = c.execute(
+                "SELECT *, (locked_until IS NOT NULL AND locked_until > NOW()) AS locked "
+                "FROM referral_challenges WHERE user_id=%s",
+                (user.id,),
+            ).fetchone()
+        if not row:
+            await q.answer("انتهت صلاحية التحقق. أرسل /start من جديد.", show_alert=True)
+            return
+        if row["passed"]:
+            await proceed_after_mandatory(update, context, edit=True)
+            return
+        if row["locked"]:
+            await q.edit_message_text(_RC_LOCK_TEXT, parse_mode=ParseMode.MARKDOWN)
+            return
+        if row["stage"] not in _RC_GATE_STAGES:
+            return  # زر ستارت قديم
+        shown = await _rc_advance(update, context, user, edit=True)
+        if not shown:
+            await proceed_after_mandatory(update, context, edit=True)
+        return
     try:
         stage, picked = parts[1], int(parts[2])
     except (IndexError, ValueError):
@@ -406,27 +494,16 @@ async def handle_referral_challenge_callback(update, context, q, data, user) -> 
         return  # زر قديم من مرحلة سابقة
 
     if picked == int(row["target_idx"]):
-        if stage == "math":
-            prompt, options, idx = _rc_new_stage("emoji")
-            with db_conn() as c:
-                c.execute(
-                    "UPDATE referral_challenges SET stage='emoji', prompt=%s, options=%s, target_idx=%s, fails=0 "
-                    "WHERE user_id=%s",
-                    (prompt, options, idx, user.id),
-                )
-            text, kb = _rc_render("emoji", prompt, options)
-            await q.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
-            return
-        with db_conn() as c:
-            c.execute("UPDATE referral_challenges SET passed=1 WHERE user_id=%s", (user.id,))
-        await proceed_after_mandatory(update, context, edit=True)
+        next_gate = "gate2" if stage == "math" else "gate3"
+        text, kb = await _rc_set_stage(user.id, next_gate)
+        await q.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
         return
 
     fails = int(row["fails"]) + 1
     if fails >= REFERRAL_CHALLENGE_MAX_FAILS:
         with db_conn() as c:
             c.execute(
-                "UPDATE referral_challenges SET stage='math', fails=0, "
+                "UPDATE referral_challenges SET stage='gate1', fails=0, "
                 "locked_until=NOW() + (%s * INTERVAL '1 minute') WHERE user_id=%s",
                 (REFERRAL_CHALLENGE_LOCK_MINUTES, user.id),
             )
@@ -442,7 +519,7 @@ async def handle_referral_challenge_callback(update, context, q, data, user) -> 
     await q.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
 
 
-async def proceed_after_mandatory(update: Update, context: ContextTypes.DEFAULT_TYPE, edit=False):
+async def proceed_after_mandatory(update: Update, context: ContextTypes.DEFAULT_TYPE, edit=False, from_start=False):
     """يكمل الدخول ويحتسب الإحالة بعد الاشتراك في كل القنوات الإلزامية."""
     user = update.effective_user
     unjoined = (
@@ -461,7 +538,9 @@ async def proceed_after_mandatory(update: Update, context: ContextTypes.DEFAULT_
         )
         return
 
-    if await start_referral_challenge_if_needed(update, context, user, edit=edit):
+    if await start_referral_challenge_if_needed(
+        update, context, user, edit=edit, from_start=from_start
+    ):
         return
 
     await finalize_verification(update, context, user, edit=edit, skip_referral=False)
@@ -625,7 +704,7 @@ async def finalize_verification(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def start_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """يبدأ تدفّق المستخدم الجديد مع اشتراط القنوات الإلزامية فقط."""
-    await proceed_after_mandatory(update, context, edit=False)
+    await proceed_after_mandatory(update, context, edit=False, from_start=True)
 
 # ────────────────────────────────────────────────────────────
 # ────────────────────────────────────────────────────────────
