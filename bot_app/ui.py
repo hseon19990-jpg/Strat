@@ -984,7 +984,7 @@ OWNER_SETTINGS_GROUPS = [
     ("rewards", "🎁 الإحالات والهدايا", (
         "os:edit_new_users_group", "os:edit_referral", "os:referral_levels", "os:ref_type_toggle", "os:ref_fraud_toggle", "os:ref_l1_jewels",
         "os:ref_level_add", "os:referral_rewards", "os:referral_daily_free",
-        "os:top_referrers", "os:referral_contest", "os:edit_join_reward",
+        "os:top_referrers", "os:weekly_ref", "os:referral_contest", "os:edit_join_reward",
         "os:edit_daily_gift", "os:create_temporary_gift", "os:edit_leave_penalty",
         "os:edit_leave_grace", "os:create_promo", "os:list_promos", "os:search_code",
         "os:manage_prizes",

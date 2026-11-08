@@ -1345,7 +1345,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
 
         if data == "referral:top":
             rows = [
-                [InlineKeyboardButton("🏅 الأسبوعي (جوائز 30/10/5)", callback_data="top_ref_pick:wk")],
+                [InlineKeyboardButton("🏅 الأسبوعي (جوائز)", callback_data="top_ref_pick:wk")],
                 [InlineKeyboardButton("🕐 آخر 24 ساعة", callback_data="top_ref_pick:24h")],
                 [InlineKeyboardButton("📅 اليوم الحالي (منذ 00:00 بالتوقيت العالمي)", callback_data="top_ref_pick:day")],
             ]

@@ -2854,6 +2854,36 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
+    if is_own and state in ("os_await_wk_1", "os_await_wk_2", "os_await_wk_3", "os_await_wk_min"):
+        which = state.rsplit("_", 1)[1]
+        raw = (text or "").strip().replace(",", ".")
+        try:
+            if which == "min":
+                val = int(raw)
+                if val < 1:
+                    raise ValueError
+                set_setting(WEEKLY_REFERRAL_MIN_SETTING, str(val))
+                done = f"✅ الحد الأدنى للفوز = {val} دعوة."
+            else:
+                amount = Decimal(raw)
+                if amount < 0 or amount > 100000:
+                    raise ValueError
+                set_setting(WEEKLY_REFERRAL_PRIZE_SETTINGS[int(which) - 1], format(amount, "f"))
+                done = f"✅ جائزة المركز {which} = {fmt_weekly_amount(amount)} جوهرة."
+        except Exception:
+            await update.message.reply_text(
+                "⚠️ أرسل رقماً صحيحاً أكبر من صفر." if which == "min"
+                else "⚠️ أرسل رقماً (0 أو أكبر)."
+            )
+            return
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(
+            done + "\n\n" + _weekly_ref_text(),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_weekly_ref_kb(),
+        )
+        return
+
     if is_own and state == "os_await_join_reward":
         try:
             val = int(text)

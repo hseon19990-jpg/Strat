@@ -1294,7 +1294,41 @@ def _format_top_referrers(rows, title: str) -> str:
 # الأكثر دعوة أسبوعياً: جوائز تلقائية لأول 3 (الأسبوع من الاثنين 00:00 إلى
 # الاثنين التالي بتوقيت +3).
 # ────────────────────────────────────────────────────────────
-WEEKLY_REFERRAL_PRIZES = (30, 10, 5)  # الجواهر («النجوم») للمراكز 1 و2 و3
+WEEKLY_REFERRAL_PRIZES = (30, 10, 5)  # القيم الافتراضية للمراكز 1 و2 و3 (جواهر)
+WEEKLY_REFERRAL_PRIZE_SETTINGS = (
+    "weekly_ref_prize_1", "weekly_ref_prize_2", "weekly_ref_prize_3",
+)
+WEEKLY_REFERRAL_MIN_SETTING = "weekly_ref_min_invites"
+
+
+def _weekly_amount(raw, default):
+    try:
+        val = Decimal(str(raw).strip())
+    except Exception:
+        return Decimal(str(default))
+    return val if val >= 0 else Decimal(str(default))
+
+
+def get_weekly_referral_prizes():
+    """جوائز المراكز الثلاثة كما ضبطها المالك (Decimal). 0 يعني لا جائزة لذلك المركز."""
+    return tuple(
+        _weekly_amount(get_setting(key), default)
+        for key, default in zip(WEEKLY_REFERRAL_PRIZE_SETTINGS, WEEKLY_REFERRAL_PRIZES)
+    )
+
+
+def get_weekly_referral_min_invites() -> int:
+    """أقل عدد دعوات مكتملة يلزم للفوز بأي جائزة أسبوعية (الافتراضي 1)."""
+    try:
+        return max(1, int(get_setting(WEEKLY_REFERRAL_MIN_SETTING) or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def fmt_weekly_amount(value) -> str:
+    value = Decimal(str(value))
+    text = format(value.normalize(), "f")
+    return text.rstrip("0").rstrip(".") if "." in text else text
 _WEEKLY_REFERRAL_TZ = timezone(timedelta(hours=3))
 _weekly_awards_table_ready = False
 
@@ -1325,7 +1359,7 @@ def _weekly_awards_ensure_table(c) -> None:
     _weekly_awards_table_ready = True
 
 
-def get_weekly_top_referrers(start_dt, end_dt=None, limit: int = 10):
+def get_weekly_top_referrers(start_dt, end_dt=None, limit: int = 10, min_invites: int = 1):
     """أكثر الداعين بين لحظتين. يستثني المالك، ومن عوقب بالغش، والمدعوّين المرصودين كغش.
 
     عند التعادل يتقدّم من بلغ العدد أولاً.
@@ -1339,7 +1373,7 @@ def get_weekly_top_referrers(start_dt, end_dt=None, limit: int = 10):
     if end_dt is not None:
         end_sql = "AND u.credited_at < %s "
         params.append(end_dt)
-    params += [owner_id, limit]
+    params += [owner_id, int(min_invites or 1), limit]
     with db_conn() as c:
         rows = c.execute(
             "SELECT u.invited_by AS invited_by, COUNT(*) AS cnt, MAX(u.credited_at) AS last_at "
@@ -1350,7 +1384,7 @@ def get_weekly_top_referrers(start_dt, end_dt=None, limit: int = 10):
             "AND u.invited_by != %s "
             "AND u.user_id NOT IN (SELECT invited_id FROM referral_fraud_log) "
             "AND u.invited_by NOT IN (SELECT inviter_id FROM referral_fraud_log) "
-            "GROUP BY u.invited_by ORDER BY cnt DESC, last_at ASC LIMIT %s",
+            "GROUP BY u.invited_by HAVING COUNT(*) >= %s ORDER BY cnt DESC, last_at ASC LIMIT %s",
             tuple(params),
         ).fetchall()
     return rows
@@ -1363,11 +1397,14 @@ def format_weekly_top_referrers(rows, start_dt) -> str:
     days, rem = divmod(max(int(left.total_seconds()), 0), 86400)
     hours = rem // 3600
     prizes = " | ".join(
-        f"{m} {n} جوهرة" for m, n in zip(("🥇", "🥈", "🥉"), WEEKLY_REFERRAL_PRIZES)
+        f"{m} {fmt_weekly_amount(n)} جوهرة"
+        for m, n in zip(("🥇", "🥈", "🥉"), get_weekly_referral_prizes())
     )
+    min_inv = get_weekly_referral_min_invites()
     head = (
         "🏅 *الأكثر دعوة هذا الأسبوع*\n"
         f"🎁 الجوائز: {prizes}\n"
+        f"📌 الحد الأدنى للفوز: {min_inv} دعوة\n"
         f"⏳ المتبقي: {days} يوم و{hours} ساعة\n"
         "(الدعوات المكتملة فقط تُحتسب)\n"
     )
@@ -1402,11 +1439,17 @@ async def award_weekly_top_referrers_job(context):
     if not claimed:
         return  # صُرفت جوائز هذا الأسبوع مسبقاً
 
-    rows = get_weekly_top_referrers(prev_start, this_start, limit=len(WEEKLY_REFERRAL_PRIZES))
+    prizes = get_weekly_referral_prizes()
+    rows = get_weekly_top_referrers(
+        prev_start, this_start, limit=len(prizes),
+        min_invites=get_weekly_referral_min_invites(),
+    )
     owner_id = int(globals().get("OWNER_ID") or 0)
     summary = []
-    for rank, (row, amount) in enumerate(zip(rows, WEEKLY_REFERRAL_PRIZES), start=1):
+    for rank, (row, amount) in enumerate(zip(rows, prizes), start=1):
         uid = int(row["invited_by"])
+        if amount <= 0:
+            continue  # المالك عطّل جائزة هذا المركز
         try:
             add_jewels(
                 uid, amount, owner_id or None,
@@ -1415,13 +1458,13 @@ async def award_weekly_top_referrers_job(context):
         except Exception:
             logger.exception("فشل صرف جائزة الأكثر دعوة الأسبوعي للمستخدم %s", uid)
             continue
-        summary.append(f"{rank}. {uid} — {row['cnt']} دعوة — {amount} جوهرة")
+        summary.append(f"{rank}. {uid} — {row['cnt']} دعوة — {fmt_weekly_amount(amount)} جوهرة")
         try:
             await context.bot.send_message(
                 chat_id=uid,
                 text=(
                     f"🏆 مبروك! حصلت على المركز {rank} في «الأكثر دعوة هذا الأسبوع» "
-                    f"بـ {row['cnt']} دعوة، وتمت إضافة {amount} جوهرة إلى رصيدك."
+                    f"بـ {row['cnt']} دعوة، وتمت إضافة {fmt_weekly_amount(amount)} جوهرة إلى رصيدك."
                 ),
             )
         except Exception as exc:

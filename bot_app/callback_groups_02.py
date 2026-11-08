@@ -80,6 +80,31 @@ def _referral_levels_text() -> str:
     return "\n".join(lines)
 
 
+def _weekly_ref_text() -> str:
+    p1, p2, p3 = get_weekly_referral_prizes()
+    return (
+        "🏅 *جوائز الأكثر دعوة الأسبوعي*\n\n"
+        "تُصرف تلقائياً (جواهر) لأكثر ثلاثة أعضاء دعوةً في الأسبوع، "
+        "من الاثنين 00:00 إلى الاثنين التالي بتوقيت +3.\n\n"
+        f"🥇 المركز الأول: {fmt_weekly_amount(p1)} جوهرة\n"
+        f"🥈 المركز الثاني: {fmt_weekly_amount(p2)} جوهرة\n"
+        f"🥉 المركز الثالث: {fmt_weekly_amount(p3)} جوهرة\n"
+        f"📌 الحد الأدنى للفوز: {get_weekly_referral_min_invites()} دعوة مكتملة\n\n"
+        "القيمة 0 تعطّل جائزة ذلك المركز. من لم يبلغ الحد الأدنى لا يفوز "
+        "ولو كان في المراكز الثلاثة."
+    )
+
+
+def _weekly_ref_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✏️ جائزة المركز الأول", callback_data="os:wk_edit:1")],
+        [InlineKeyboardButton("✏️ جائزة المركز الثاني", callback_data="os:wk_edit:2")],
+        [InlineKeyboardButton("✏️ جائزة المركز الثالث", callback_data="os:wk_edit:3")],
+        [InlineKeyboardButton("📌 الحد الأدنى للدعوات", callback_data="os:wk_edit:min")],
+        [InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")],
+    ])
+
+
 def _referral_levels_kb() -> InlineKeyboardMarkup:
     rt = get_referral_reward_type()
     rows = [
@@ -2448,6 +2473,34 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=_referral_levels_kb(),
             )
+            return
+
+        if data == "os:weekly_ref" and is_own:
+            context.user_data["state"] = "main_menu"
+            await q.edit_message_text(
+                _weekly_ref_text(),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=_weekly_ref_kb(),
+            )
+            return
+
+        if data.startswith("os:wk_edit:") and is_own:
+            which = data.split(":", 2)[2]
+            if which not in ("1", "2", "3", "min"):
+                return
+            context.user_data["state"] = f"os_await_wk_{which}"
+            if which == "min":
+                prompt = (
+                    "📌 أرسل أقل عدد دعوات مكتملة يلزم للفوز بأي جائزة أسبوعية "
+                    f"(الحالي: {get_weekly_referral_min_invites()}، أقل قيمة 1)."
+                )
+            else:
+                cur = get_weekly_referral_prizes()[int(which) - 1]
+                prompt = (
+                    f"🏅 أرسل جائزة المركز {which} بالجواهر "
+                    f"(الحالية: {fmt_weekly_amount(cur)}). أرسل 0 لتعطيلها."
+                )
+            await q.edit_message_text(prompt)
             return
 
         if data == "os:ref_fraud_toggle" and is_own:
