@@ -413,6 +413,18 @@ async def _cmd_start_impl(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if referral_link_just_opened:
         await notify_referral_link_opened(context.bot, user, invited_by)
 
+    # عضو جديد لأول مرة: أشعر كروب الأعضاء الجدد (إن كان مضبوطاً) وبيّن إن دعاه أحد.
+    if not previous_user:
+        asyncio.create_task(
+            notify_new_user_group(
+                context.bot,
+                user,
+                db_user.get("invited_by") or 0,
+                db_user.get("bot_user_num"),
+            ),
+            name=f"new-user-group-{user.id}",
+        )
+
     # ─── فحص الحظر في /start ──────────────────────────
     if not is_own and is_user_banned(user.id):
         await update.message.reply_text("🚫 تم حظرك من استخدام هذا البوت.")

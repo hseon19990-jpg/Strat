@@ -202,10 +202,16 @@ def validate_jewel_star_invoice(payload, user_id, total_amount, currency):
     return amount
 
 
-def jewel_star_cost(amount, price=None) -> int:
-    """نجوم فاتورة شراء عدد من الجواهر؛ السعر قد يكون عشرياً ويُقرّب الإجمالي لأعلى."""
-    price = get_jewel_star_price() if price is None else Decimal(str(price))
-    return max(1, int((Decimal(int(amount)) * price).to_integral_value(rounding=ROUND_UP)))
+def jewel_star_cost(amount, jewels_per_star=None) -> int:
+    """نجوم فاتورة شراء عدد من الجواهر.
+
+    القيمة المضبوطة = عدد الجواهر لكل نجمة (مثلاً 3 = كل نجمة تعطي 3 جواهر)،
+    فعدد النجوم = الجواهر ÷ القيمة، ويُقرّب لأعلى لأن نجوم تيليجرام أعداد صحيحة.
+    """
+    rate = get_jewels_per_star() if jewels_per_star is None else Decimal(str(jewels_per_star))
+    if rate <= 0:
+        rate = Decimal("1")
+    return max(1, int((Decimal(int(amount)) / rate).to_integral_value(rounding=ROUND_UP)))
 
 
 async def send_jewel_star_invoice(context, user, amount):
@@ -279,7 +285,7 @@ async def handle_jewel_topup_callback(update, context, q, data, user, is_owner):
         ])
         await q.edit_message_text(
             "⭐ *الشحن بالنجوم*\n\n"
-            f"سعر كل مجوهرة: *{fmt_decimal(get_jewel_star_price())} نجمة*.\n"
+            f"كل نجمة = *{fmt_decimal(get_jewels_per_star())} مجوهرة*.\n"
             "اختر كمية جاهزة أو أدخل كمية أخرى؛ ستظهر فاتورة Telegram قبل الدفع.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(rows),

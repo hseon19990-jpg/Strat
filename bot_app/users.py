@@ -401,6 +401,54 @@ async def notify_referral_link_opened(bot, invited_user, inviter_id: int):
     except Exception as exc:
         logger.warning(f"⚠️ فشل إرسال إشعار فتح رابط الإحالة: {exc}")
 
+NEW_USERS_GROUP_SETTING = "new_users_group"
+
+
+def get_new_users_group_chat():
+    """كروب إشعارات الأعضاء الجدد (رقم -100… أو @username)، أو None إن لم يُضبط."""
+    raw = str(get_setting(NEW_USERS_GROUP_SETTING) or "").strip()
+    if not raw:
+        return None
+    return int(raw) if re.fullmatch(r"-?\d+", raw) else raw
+
+
+async def notify_new_user_group(bot, user, invited_by: int = 0, user_num=None):
+    """يرسل إلى الكروب المضبوط إشعاراً بدخول عضو جديد، ويذكر من دعاه إن وُجد."""
+    try:
+        chat = get_new_users_group_chat()
+        if not bot or chat is None:
+            return
+        name = html.escape(user.full_name or f"ID:{user.id}")
+        username = getattr(user, "username", None)
+        handle = f"@{html.escape(username)}" if username else "بلا يوزر"
+        num_line = f"🔢 رقمه في البوت: <b>{int(user_num):,}</b>\n" if user_num else ""
+        if invited_by and int(invited_by) != int(user.id):
+            inviter = get_user(int(invited_by)) or {}
+            inviter_name = html.escape(inviter.get("full_name") or "")
+            inviter_username = inviter.get("username")
+            inviter_handle = f" (@{html.escape(inviter_username)})" if inviter_username else ""
+            who = f"{inviter_name}{inviter_handle}".strip() or "غير معروف"
+            invite_line = (
+                f"🔗 الدعوة: <b>نعم، دعاه</b> {who}\n"
+                f"🆔 ايدي الداعي: <code>{int(invited_by)}</code>"
+            )
+        else:
+            invite_line = "🔗 الدعوة: <b>لا، لم يدعه أحد</b> (دخل مباشرة)"
+        await bot.send_message(
+            chat_id=chat,
+            text=(
+                "🆕 <b>عضو جديد دخل البوت</b>\n\n"
+                f"👤 الاسم: {name}\n"
+                f"📛 اليوزر: {handle}\n"
+                f"🆔 الايدي: <code>{user.id}</code>\n"
+                f"{num_line}"
+                f"{invite_line}"
+            ),
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception as exc:
+        logger.warning(f"⚠️ فشل إرسال إشعار العضو الجديد إلى الكروب: {exc}")
+
 def set_user_verified(user_id: int):
     with db_conn() as c:
         c.execute("UPDATE users SET verified=1 WHERE user_id=?", (user_id,))
@@ -478,9 +526,9 @@ def get_star_to_points_rate() -> Decimal:
     return get_decimal_setting("star_to_points", "250")
 
 
-def get_jewel_star_price() -> Decimal:
-    """سعر الجوهرة الواحدة بالنجوم عند شحن الجواهر بالنجوم (يقبل الكسور)."""
-    return get_decimal_setting("jewel_star_price", "1")
+def get_jewels_per_star() -> Decimal:
+    """عدد الجواهر التي يحصل عليها العضو مقابل نجمة واحدة عند شحن الجواهر بالنجوم (يقبل الكسور)."""
+    return get_decimal_setting("jewels_per_star", "1")
 
 
 def star_points(stars, rate=None) -> int:

@@ -2768,15 +2768,47 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
+    if is_own and state == "os_await_new_users_group":
+        _raw_group = (text or "").strip()
+        if _raw_group in ("حذف", "delete", "-"):
+            set_setting("new_users_group", "")
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text("✅ أُوقف إشعار الأعضاء الجدد.", reply_markup=owner_settings_kb())
+            return
+        _ref = parse_tgnum_chat_ref(_raw_group)
+        if not _ref:
+            await update.message.reply_text(
+                "⚠️ لم أتعرف على الكروب. أرسل @username أو ايديه (-100…) أو رابطه العام.\n"
+                "الرابط الخاص (t.me/+…) لا يكفي؛ أضف البوت للكروب ثم استخدم ايديه."
+            )
+            return
+        try:
+            _chat = await context.bot.get_chat(int(_ref) if re.fullmatch(r"-?\d+", _ref) else _ref)
+            await context.bot.send_message(
+                _chat.id, "✅ تم ربط هذا الكروب لإشعارات الأعضاء الجدد."
+            )
+        except Exception:
+            await update.message.reply_text(
+                "⚠️ لا يستطيع البوت الإرسال لهذا الكروب. أضفه إليه (ويفضّل مشرفاً) ثم أعد الإرسال."
+            )
+            return
+        set_setting("new_users_group", str(_chat.id))
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(
+            f"✅ تم ضبط كروب الأعضاء الجدد: {_chat.title or _chat.id}",
+            reply_markup=owner_settings_kb(),
+        )
+        return
+
     if is_own and state == "os_await_jewel_star_price":
         val = parse_positive_decimal(text, max_value=Decimal("10000"))
         if val is None:
             await update.message.reply_text("⚠️ أرسل رقماً أكبر من صفر، ويمكن أن يكون عشرياً مثل 0.5.")
             return
-        set_setting("jewel_star_price", format(val.normalize(), "f"))
+        set_setting("jewels_per_star", format(val.normalize(), "f"))
         context.user_data["state"] = "main_menu"
         await update.message.reply_text(
-            f"✅ سعر الجوهرة بالنجوم = {fmt_decimal(val)} نجمة.", reply_markup=owner_settings_kb()
+            f"✅ كل نجمة = {fmt_decimal(val)} جوهرة.", reply_markup=owner_settings_kb()
         )
         return
 

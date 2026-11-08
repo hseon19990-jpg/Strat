@@ -2581,13 +2581,26 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             await q.edit_message_text(f"⭐ سعر النجمة (شحن) الحالي: {cur} نقطة\n\nأرسل القيمة الجديدة (يقبل الأرقام العشرية مثل 0.1 أو 2.5):")
             return
 
+        if data == "os:edit_new_users_group" and is_own:
+            context.user_data["state"] = "os_await_new_users_group"
+            _cur_group = str(get_setting("new_users_group") or "").strip() or "غير مضبوط"
+            await q.edit_message_text(
+                f"👥 كروب إشعارات الأعضاء الجدد الحالي: {_cur_group}\n\n"
+                "أرسل يوزر الكروب (@username) أو ايديه (-100…) أو رابطه العام، "
+                "وسيصل إليه إشعار عند دخول كل عضو جديد مع بيان إن كان أحد دعاه.\n\n"
+                "⚠️ أضف البوت إلى الكروب أولاً (ويفضّل مشرفاً). الرابط الخاص t.me/+… لا يكفي، "
+                "استخدم ايدي الكروب بدلاً منه.\n"
+                "أرسل «حذف» لإيقاف الإشعارات."
+            )
+            return
+
         if data == "os:edit_jewel_star_price" and is_own:
             context.user_data["state"] = "os_await_jewel_star_price"
-            cur = fmt_decimal(get_jewel_star_price())
+            cur = fmt_decimal(get_jewels_per_star())
             await q.edit_message_text(
-                f"💎 سعر الجوهرة الواحدة بالنجوم (عند شحن الجواهر) الحالي: {cur} نجمة\n\n"
-                "أرسل القيمة الجديدة. يقبل الأرقام العشرية مثل 0.5 أو 1.5.\n"
-                "يُقرَّب إجمالي الفاتورة لأعلى لأن نجوم تيليجرام أعداد صحيحة."
+                f"💎 عدد الجواهر لكل نجمة (عند شحن الجواهر بالنجوم) الحالي: {cur}\n\n"
+                "أرسل عدد الجواهر التي تعطيها كل نجمة. مثال: أرسل 3 فتصبح كل نجمة = 3 جواهر.\n"
+                "يقبل الأرقام العشرية مثل 0.5 أو 1.5، ويُقرَّب إجمالي الفاتورة لأعلى لأن نجوم تيليجرام أعداد صحيحة."
             )
             return
 

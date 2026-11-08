@@ -228,6 +228,7 @@ def owner_settings_with_purchase_rate_after_sale(items):
 OWNER_SETTINGS_EXTRA_DEFAULTS = [
     ("🤖 مفتاح OpenAI", "os:openai_api", 1),
     ("📲 إعدادات أرقام تلي", "tgnum:admin", 1),
+    ("👥 كروب إشعار الأعضاء الجدد", "os:edit_new_users_group", 2),
     ("👑 إعدادات الخدمات الأسطورية", "legendary:settings", 1),
     ("💰 بيع حسابات تيليجرام", "os:toggle_buyback_visible", 2),
     ("📋 طلبات البيع", "buyback:owner:list", 2),
@@ -441,7 +442,7 @@ BUILTIN_DEFAULTS = {
         ("⏱ إعادة الضبط اليومية للإحالات", "os:referral_daily_free", 2),
         ("⭐ سعر النجمة شحن", "os:edit_star_rate", 2),
         ("🏆 سعر نجمة الجوائز", "os:edit_exchange_rate", 2),
-        ("💎 سعر الجوهرة بالنجوم", "os:edit_jewel_star_price", 2),
+        ("💎 جواهر كل نجمة", "os:edit_jewel_star_price", 2),
         ("💎 سعر الجوهرة بالنقاط", "os:edit_jewel_to_points_rate", 2),
         ("💰 سعر شراء الجوهرة بالنقاط", "os:edit_points_to_jewel_rate", 2),
         ("📦 باقات الاستبدال بنجوم", "os:manage_star_packages", 1),

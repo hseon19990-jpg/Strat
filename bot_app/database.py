@@ -1094,7 +1094,7 @@ def init_db():
               ('referral_fraud_protection', '0'),
               ('referral_jewels', '0'),
               ('star_to_points', '250'),
-              ('jewel_star_price', '1'),
+              ('jewels_per_star', '1'),
               ('wheel_spin_price_stars', '1'),
               ('wheel_spin_price_jewels', '1'),
               ('wheel_ten_price_stars', '9'),
