@@ -208,7 +208,7 @@ class CommentService(RakshService):
                 reply_markup=InlineKeyboardMarkup([
                     [
                         InlineKeyboardButton(
-                            f"💎 دفع بالجواهر ({raksh_cost_text(points_cost)})"
+                            f"💰 دفع بالنقاط ({raksh_cost_text(points_cost)})"
                             + (
                                 f" — {free_quantity} حساب مجاني"
                                 if free_quantity

@@ -514,7 +514,7 @@ def _cancel_user_raksh_order(user_id: int, order_id: int, no_refund: bool = Fals
             f"✅ المنجز قبل الإلغاء: {success_count}/{quantity}"
         )
         if refund > 0:
-            result_text += f"\n💎 تمت إعادة {raksh_cost_text(refund)}."
+            result_text += f"\n💰 تمت إعادة {raksh_cost_text(refund)}."
         c.execute(
             """
             UPDATE raksh_orders
@@ -614,7 +614,7 @@ def _raksh_order_summary(order, current: bool) -> str:
             "🎁 مجاني بحساباتي فقط"
             if order["payment_method"] == "contributor_free"
             else (
-                f"💎 {raksh_cost_text(order['total_cost'])}"
+                f"💰 {raksh_cost_text(order['total_cost'])}"
                 if order["payment_method"] == "points"
                 else f"💰 {order['total_cost']} {payment_label}"
             )
@@ -1763,7 +1763,7 @@ def raksh_payment_kb(service_type: str, quantity: int, points_cost: int, stars_c
         ],
         [
             InlineKeyboardButton(
-                f"💎 دفع بالجواهر ({raksh_cost_text(points_cost)})",
+                f"💰 دفع بالنقاط ({raksh_cost_text(points_cost)})",
                 callback_data=f"raksh:pay:points:{service_type}:{quantity}"
             )
         ],
@@ -2298,7 +2298,7 @@ async def _handle_raksh_callback_impl(
         context.user_data["raksh_step"] = "payment_method"
         await query.edit_message_text(
             "📨 *تأكيد خدمة إرسال الرسالة*\n\n"
-            f"💎 التكلفة: *{raksh_cost_text(points_cost)}*\n"
+            f"💰 التكلفة: *{raksh_cost_text(points_cost)}*\n"
             f"⭐ التكلفة: *{stars_cost} نجمة*\n\n"
             "اختر طريقة الدفع للمتابعة:",
             parse_mode=ParseMode.MARKDOWN,
@@ -2328,7 +2328,7 @@ async def _handle_raksh_callback_impl(
             return
         message = f"✅ تم إلغاء الطلب #{order_id}."
         if result["refund"] > 0:
-            message += f" تمت إعادة {raksh_cost_text(result['refund']).replace(' جوهرة', '')} جوهرة."
+            message += f" تمت إعادة {raksh_cost_text(result['refund'])}."
         elif result["payment_method"] == "stars":
             message += " أُلغي الجزء المتبقي، والاسترداد التلقائي للنجوم غير متاح."
         for credit in result.get("contributor_credits") or []:
@@ -2767,7 +2767,7 @@ async def _handle_raksh_callback_impl(
             db_user = get_user(user.id)
             points = db_user["points"] if db_user else 0
             await query.edit_message_text(
-                f"💎 *الدفع بالجواهر*\n\n"
+                f"💰 *الدفع بالنقاط*\n\n"
                 f"الخدمة: {svc.config.name}\n"
                 f"العدد: {quantity}\n"
                 + (
@@ -2776,7 +2776,7 @@ async def _handle_raksh_callback_impl(
                     else ""
                 )
                 + f"التكلفة: *{raksh_cost_text(total)}*\n"
-                + f"رصيدك: *{fmt_jewel_amount(get_user_jewels(user.id))} جوهرة*\n\n"
+                + f"رصيدك: *{points:,} نقطة*\n\n"
                 "اضغط تأكيد للمتابعة:",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=raksh_confirm_kb(
@@ -2850,10 +2850,10 @@ async def _handle_raksh_callback_impl(
                 current_user = get_user(user.id)
                 if current_user and current_user.get("referral_points_blocked"):
                     error_text = (
-                        "❌ *جواهرك غير كافية!*"
+                        "❌ *نقاطك غير كافية!*"
                     )
                 else:
-                    error_text = "❌ *جواهرك غير كافية!*"
+                    error_text = "❌ *نقاطك غير كافية!*"
                 await query.edit_message_text(
                     error_text,
                     parse_mode=ParseMode.MARKDOWN,
@@ -3277,7 +3277,7 @@ async def _send_raksh_order_to_group(
             ),
             "💳 طريقة الدفع: "
             + (
-                "جواهر" if payment_method == "points" else "نجوم"
+                "نقاط" if payment_method == "points" else "نجوم"
                 if payment_method == "stars" else "مجاني بحسابات صاحب الطلب فقط"
                 if payment_method == "contributor_free"
                 else payment_method
@@ -4047,7 +4047,7 @@ async def _run_raksh_order(
         f"❌ الفاشل: {max(0, quantity - success_count)}\n"
     )
     if refund > 0:
-        result_text += f"💎 تم إرجاع: {raksh_cost_text(refund)}\n"
+        result_text += f"💰 تم إرجاع: {raksh_cost_text(refund)}\n"
     contributor_credits = []
     with db_conn() as c:
         completed_row = c.execute(
@@ -4228,7 +4228,7 @@ async def _start_raksh_execution(
                 "✅ تم تثبيت الطلب.\n\n"
                 f"🎁 الحسابات المجانية المحجوزة: {referral_free_quantity}\n"
                 f"💳 الحسابات المدفوعة: {max(0, quantity - referral_free_quantity)}\n"
-                f"💎 المخصوم: {raksh_cost_text(total_cost)}",
+                f"💰 المخصوم: {raksh_cost_text(total_cost)}",
                 reply_markup=raksh_menu_kb(user.id == OWNER_ID),
             )
     # يُحفظ صاحب الطلب داخل params حتى تصل كابتشا التحقق اليدوي إلى الطالب

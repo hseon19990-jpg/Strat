@@ -8,6 +8,8 @@ from ..shared import *
 from ..accounts import get_forced_ref_account_count, get_raksh_account_count
 from ..database import db_conn
 from ..security import (
+    add_points as _security_add_points,
+    deduct_points as _security_deduct_points,
     add_jewels,
     deduct_jewels,
     get_user_jewels,
@@ -41,29 +43,23 @@ def raksh_points_to_jewels(points) -> "_Dec":
 
 
 def deduct_points(user_id: int, pts) -> bool:
-    """الرشق لا يُدفع بالنقاط: يُخصم ما يعادل السعر من الجواهر فقط."""
+    """الرشق يُدفع بالنقاط بنفس الأسعار الأصلية (بدون تحويل إلى جواهر)."""
     pts = int(pts or 0)
     if pts <= 0:
         return True
-    amount = raksh_points_to_jewels(pts)
-    if amount <= 0:
-        return True
-    return deduct_jewels(user_id, amount, reference="raksh_payment") is not None
+    return _security_deduct_points(user_id, pts)
 
 
 def add_points(user_id: int, pts) -> None:
-    """استرداد قيمة الرشق جواهر (لا نقاط) بنفس سعر الخصم."""
+    """استرداد قيمة الرشق نقاطاً بنفس المبلغ المخصوم."""
     pts = int(pts or 0)
-    if pts <= 0:
-        return
-    amount = raksh_points_to_jewels(pts)
-    if amount > 0:
-        add_jewels(user_id, amount, reference="raksh_refund")
+    if pts > 0:
+        _security_add_points(user_id, pts)
 
 
 def raksh_cost_text(points) -> str:
-    """نص التكلفة بالجواهر لعرضها للعضو."""
-    return f"{fmt_jewel_amount(raksh_points_to_jewels(points))} جوهرة"
+    """نص التكلفة بالنقاط لعرضها للعضو."""
+    return f"{int(points or 0):,} نقطة"
 from telethon import TelegramClient, functions
 from telethon.sessions import StringSession
 from telethon.tl.functions.channels import JoinChannelRequest, LeaveChannelRequest

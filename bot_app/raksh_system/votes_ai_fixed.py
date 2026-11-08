@@ -178,7 +178,7 @@ class VotesAIService(RakshService):
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton(
-                        f"💎 دفع بالجواهر ({raksh_cost_text(points_cost)})"
+                        f"💰 دفع بالنقاط ({raksh_cost_text(points_cost)})"
                         + (f" — {free_quantity} حساب مجاني" if free_quantity else ""),
                         callback_data=f"raksh_votes_ai:payment:points:{quantity}:{points_cost}",
                     )],
@@ -227,7 +227,7 @@ class VotesAIService(RakshService):
                     len(context.user_data.get("raksh_channels") or []),
                 )
             await query.edit_message_text(
-                f"📋 *تأكيد الطلب*\n\n📢 القنوات الإجبارية: {len(context.user_data.get('raksh_channels', []))} قناة\n🔗 رابط التصويت: `{context.user_data.get('raksh_link', '')}`\n🔢 العدد: {quantity}\n💳 طريقة الدفع: {'💎 جواهر' if payment_method == 'points' else '⭐ نجوم'}\n💰 التكلفة: {raksh_cost_text(total_cost) if payment_method == 'points' else str(total_cost) + ' نجمة'}\n\n*هل تريد تأكيد الطلب؟*",
+                f"📋 *تأكيد الطلب*\n\n📢 القنوات الإجبارية: {len(context.user_data.get('raksh_channels', []))} قناة\n🔗 رابط التصويت: `{context.user_data.get('raksh_link', '')}`\n🔢 العدد: {quantity}\n💳 طريقة الدفع: {'💰 نقاط' if payment_method == 'points' else '⭐ نجوم'}\n💰 التكلفة: {raksh_cost_text(total_cost) if payment_method == 'points' else str(total_cost) + ' نجمة'}\n\n*هل تريد تأكيد الطلب؟*",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("✅ تأكيد الطلب", callback_data=f"raksh_votes_ai:confirm:{payment_method}:{quantity}:{total_cost}")],
@@ -260,10 +260,10 @@ class VotesAIService(RakshService):
 
             if payment_method == "points":
                 if not deduct_points(user.id, total_cost):
-                    await query.edit_message_text("❌ *جواهرك غير كافية!*", parse_mode=ParseMode.MARKDOWN, reply_markup=raksh_menu_kb(is_own))
+                    await query.edit_message_text("❌ *نقاطك غير كافية!*", parse_mode=ParseMode.MARKDOWN, reply_markup=raksh_menu_kb(is_own))
                     return True
                 await query.edit_message_text(
-                    f"✅ *تم تأكيد الطلب وخصم الجواهر!*\n\n📋 تفاصيل الطلب:\n📢 القنوات الإجبارية: {len(context.user_data.get('raksh_channels', []))} قناة\n🔗 الرابط: `{context.user_data.get('raksh_link', '')}`\n🔢 العدد: {quantity}\n💎 تم خصم: {raksh_cost_text(total_cost)}\n\n⏳ جاري الانضمام للقنوات وبدء التصويت مع التحقق...",
+                    f"✅ *تم تأكيد الطلب وخصم النقاط!*\n\n📋 تفاصيل الطلب:\n📢 القنوات الإجبارية: {len(context.user_data.get('raksh_channels', []))} قناة\n🔗 الرابط: `{context.user_data.get('raksh_link', '')}`\n🔢 العدد: {quantity}\n💰 تم خصم: {raksh_cost_text(total_cost)}\n\n⏳ جاري الانضمام للقنوات وبدء التصويت مع التحقق...",
                     parse_mode=ParseMode.MARKDOWN
                 )
                 from .raksh_system import _start_raksh_execution
