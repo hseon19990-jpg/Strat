@@ -1391,28 +1391,23 @@ def points_to_service_jewels(points) -> Decimal:
 
 
 def charge_points_as_jewels(user_id: int, points, reference: str = "service_payment") -> bool:
-    """خدمات الرشق لا تُدفع بالنقاط: يُخصم ما يعادلها من الجواهر. يعيد False عند عدم الكفاية."""
-    if int(points or 0) <= 0:
+    """خدمات الرشق تُدفع بالنقاط بنفس الأسعار الأصلية (الاسم قديم فقط). يعيد False عند عدم الكفاية."""
+    points = int(points or 0)
+    if points <= 0:
         return True
-    amount = points_to_service_jewels(points)
-    if amount <= 0:
-        return True
-    return deduct_jewels(user_id, amount, reference=reference) is not None
+    return deduct_points(user_id, points)
 
 
 def refund_points_as_jewels(user_id: int, points, reference: str = "service_refund") -> None:
-    """يستردّ قيمة الخدمة جواهر (لا نقاطاً)."""
-    if int(points or 0) <= 0:
-        return
-    amount = points_to_service_jewels(points)
-    if amount > 0:
-        add_jewels(user_id, amount, reference=reference)
+    """يستردّ قيمة خدمة الرشق نقاطاً بنفس المبلغ المخصوم (الاسم قديم فقط)."""
+    points = int(points or 0)
+    if points > 0:
+        add_points(user_id, points)
 
 
 def jw_text(points) -> str:
-    """نص السعر بالجواهر لعرضه للعضو."""
-    from .services import fmt_jewel_amount
-    return f"{fmt_jewel_amount(points_to_service_jewels(points))} جوهرة"
+    """نص السعر بالنقاط لعرضه للعضو (الاسم قديم فقط)."""
+    return f"{int(points or 0):,} نقطة"
 
 
 def get_user_referral_jewels(user_id: int) -> Decimal:

@@ -9,7 +9,7 @@ Services included:
 6. Premium Reaction - Special reactions on posts
 
 All services support:
-- Payment by jewels or stars
+- Payment by points or stars
 - Channel join (optional, with skip)
 - Random delay between regular accounts (1-8 min default, owner can customize)
 - No duplicate accounts
@@ -76,12 +76,12 @@ LEGENDARY_SERVICES_MESSAGE = (
     "تحتوي أسماء عربية، بايو، ستوري، وأفتار نشطة.\n"
     "اختر الخدمة المناسبة لك:\n\n"
     "💰 *أسعار الخدمات:*\n"
-    "• 💬 تعليق: 0.03 جوهرة/وحدة + 0.03 قناة | ⭐ 1 نجمة لكل 5\n"
-    "• 📊 استفتاء: 0.03 جوهرة/وحدة + 0.03 قناة | ⭐ 1 نجمة لكل 5\n"
-    "• 👁 ستوري: 0.03 جوهرة/وحدة + 0.03 قناة | ⭐ 1 نجمة لكل 10\n"
-    "• 🗳 أصوات: 0.02 جوهرة/وحدة + 0.025 قناة | ⭐ 1 نجمة لكل 10\n"
-    "• 🤖 تصويت بتحقق: 0.05 جوهرة/وحدة + 0.025 قناة | ⭐ 1 نجمة لكل 4\n"
-    "• ✨ تفاعل مميز: 0.01 جوهرة/وحدة + 0 قناة | ⭐ 1 نجمة لكل 25\n\n"
+    "• 💬 تعليق: 30 نقطة/وحدة + 30 قناة | ⭐ 1 نجمة لكل 5\n"
+    "• 📊 استفتاء: 30 نقطة/وحدة + 30 قناة | ⭐ 1 نجمة لكل 5\n"
+    "• 👁 ستوري: 30 نقطة/وحدة + 30 قناة | ⭐ 1 نجمة لكل 10\n"
+    "• 🗳 أصوات: 20 نقطة/وحدة + 25 قناة | ⭐ 1 نجمة لكل 10\n"
+    "• 🤖 تصويت بتحقق: 50 نقطة/وحدة + 25 قناة | ⭐ 1 نجمة لكل 4\n"
+    "• ✨ تفاعل مميز: 10 نقطة/وحدة + 0 قناة | ⭐ 1 نجمة لكل 25\n\n"
     "اختر الخدمة: 👇"
 )
 
@@ -1610,7 +1610,7 @@ async def legendary_service_start(update, context, q, is_own: bool, service_type
     )
     payment_markup = InlineKeyboardMarkup([
         [InlineKeyboardButton(f"⭐ دفع بالنجوم", callback_data=f"legendary:pay:stars")],
-        [InlineKeyboardButton(f"💎 دفع بالجواهر", callback_data=f"legendary:pay:points")],
+        [InlineKeyboardButton(f"💰 دفع بالنقاط", callback_data=f"legendary:pay:points")],
         *(
             [[
                 InlineKeyboardButton(
@@ -2013,7 +2013,7 @@ async def show_payment_options(
     payment_rows = [
         [InlineKeyboardButton(f"⭐ دفع بالنجوم ({stars_cost} نجمة)", callback_data="legendary:pay:stars")],
         [InlineKeyboardButton(
-            f"💎 دفع بالجواهر ({jw_text(points_cost)})"
+            f"💰 دفع بالنقاط ({jw_text(points_cost)})"
             + (f" — {free_quantity} حساب مجاني" if free_quantity else ""),
             callback_data="legendary:pay:points",
         )],
@@ -2025,7 +2025,7 @@ async def show_payment_options(
     payment_rows.append([InlineKeyboardButton("❌ إلغاء", callback_data="main_menu")])
 
     await update.message.reply_text(
-        f"💎 *اختر طريقة الدفع:*\n\n"
+        f"💰 *اختر طريقة الدفع:*\n\n"
         f"🔢 العدد: {quantity} {unit_label}\n"
         f"📺 القناة: {'مضافة' if has_channel else 'لا'}\n\n"
         + (
@@ -2035,7 +2035,7 @@ async def show_payment_options(
         )
         + "\n"
         + f"⭐ *بالنجوم:* {stars_cost} نجمة (القناة مجانية!)\n"
-        + f"💎 *بالجواهر:* {jw_text(points_cost)}\n\n"
+        + f"💰 *بالنقاط:* {jw_text(points_cost)}\n\n"
         + f"اختر طريقة الدفع:",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=InlineKeyboardMarkup(payment_rows)
@@ -2104,11 +2104,11 @@ async def legendary_payment_callback(update, context, q, is_own: bool, payment_m
 
     if not is_confirmation:
         if payment_method == "points":
-            _jw_bal = get_user_jewels(q.from_user.id)
-            if _jw_bal < points_to_service_jewels(total_cost):
+            _jw_bal = (get_user(q.from_user.id) or {}).get("points", 0)
+            if _jw_bal < int(total_cost or 0):
                 await q.edit_message_text(
-                    f"❌ جواهرك غير كافية. التكلفة: {jw_text(total_cost)}.\n"
-                    f"💎 رصيدك الحالي: {fmt_jewel_amount(_jw_bal)} جوهرة",
+                    f"❌ نقاطك غير كافية. التكلفة: {jw_text(total_cost)}.\n"
+                    f"💰 رصيدك الحالي: {int(_jw_bal):,} نقطة",
                     reply_markup=legendary_services_back_kb()
                 )
                 context.user_data["state"] = "main_menu"
@@ -2120,7 +2120,7 @@ async def legendary_payment_callback(update, context, q, is_own: bool, payment_m
             f"🔹 الخدمة: *{get_service_display_name(service_type)}*\n"
             f"🔢 العدد: *{quantity}*\n"
             f"💳 طريقة الدفع: *{payment_label}*\n\n"
-            f"⚠️ بعد التأكيد سيتم خصم الجواهر أو إرسال فاتورة النجوم وبدء التنفيذ.\n"
+            f"⚠️ بعد التأكيد سيتم خصم النقاط أو إرسال فاتورة النجوم وبدء التنفيذ.\n"
             f"هل تريد المتابعة؟",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([
@@ -2132,11 +2132,11 @@ async def legendary_payment_callback(update, context, q, is_own: bool, payment_m
 
 
     if payment_method == "points":
-        _jw_bal = get_user_jewels(requester_id)
-        if _jw_bal < points_to_service_jewels(total_cost):
+        _jw_bal = (get_user(requester_id) or {}).get("points", 0)
+        if _jw_bal < int(total_cost or 0):
             await q.edit_message_text(
-                f"❌ جواهرك غير كافية. التكلفة: {jw_text(total_cost)}.\n"
-                f"💎 رصيدك الحالي: {fmt_jewel_amount(_jw_bal)} جوهرة",
+                f"❌ نقاطك غير كافية. التكلفة: {jw_text(total_cost)}.\n"
+                f"💰 رصيدك الحالي: {int(_jw_bal):,} نقطة",
                 reply_markup=legendary_services_back_kb()
             )
             context.user_data["state"] = "main_menu"
@@ -2353,7 +2353,7 @@ async def execute_legendary_order(update, context, q, is_own: bool, payment_meth
             success_count,
             failed_count,
             refund_points,
-            "نجوم" if payment_method == "stars" else "جواهر",
+            "نجوم" if payment_method == "stars" else "نقاط",
             service_type
         )
     
@@ -2365,7 +2365,7 @@ async def execute_legendary_order(update, context, q, is_own: bool, payment_meth
         success_count,
         failed_count,
         refund_points,
-        "نجوم" if payment_method == "stars" else "جواهر",
+        "نجوم" if payment_method == "stars" else "نقاط",
         service_type
     )
     
@@ -2373,10 +2373,10 @@ async def execute_legendary_order(update, context, q, is_own: bool, payment_meth
     result += f"📊 المطلوب: {quantity}\n"
     result += f"✅ المنجز: {success_count}\n"
     result += f"❌ الفاشل: {failed_count}\n"
-    result += f"💰 طريقة الدفع: {'نجوم' if payment_method == 'stars' else 'جواهر'}\n"
+    result += f"💰 طريقة الدفع: {'نجوم' if payment_method == 'stars' else 'نقاط'}\n"
     
     if refund_points > 0:
-        result += f"💎 تم تعويضك: {jw_text(refund_points)}\n"
+        result += f"💰 تم تعويضك: {jw_text(refund_points)}\n"
     
     # الأعضاء يرون الأعداد فقط؛ المالك يرى تفاصيل أرقام الحسابات.
     if is_own:
@@ -2427,7 +2427,7 @@ async def _send_completion_message(bot, user_id, quantity, success_count, failed
             f"💰 طريقة الدفع: {payment_method}\n"
         )
         if refund_points > 0:
-            text += f"💎 تم تعويضك: {jw_text(refund_points)}\n"
+            text += f"💰 تم تعويضك: {jw_text(refund_points)}\n"
         await bot.send_message(user_id, text, parse_mode=ParseMode.MARKDOWN)
     except Exception:
         pass
@@ -2450,7 +2450,7 @@ async def _send_group_notification(bot, user_id, quantity, success_count, failed
             f"💰 طريقة الدفع: {payment_method}\n"
         )
         if refund_points > 0:
-            text += f"💎 تم تعويض: {jw_text(refund_points)}\n"
+            text += f"💰 تم تعويض: {jw_text(refund_points)}\n"
         await bot.send_message(ADMIN_GROUP_ID, sanitize_group_text(text), parse_mode=ParseMode.MARKDOWN)
     except Exception:
         pass
