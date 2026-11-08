@@ -203,6 +203,245 @@ async def show_mandatory_gate(update: Update, context: ContextTypes.DEFAULT_TYPE
     else:
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
 
+# ────────────────────────────────────────────────────────────
+# تحقق الإحالات المتتالية: 3 مدعوّين أو أكثر لنفس الداعي خلال دقيقة واحدة
+# يمرّون بتحققين قبل احتساب الإحالة: (1) مسألة جمع، (2) اختيار إيموجي.
+# ────────────────────────────────────────────────────────────
+import secrets as _rc_secrets
+
+REFERRAL_BURST_COUNT = 3          # عدد المدعوّين المشبوه
+REFERRAL_BURST_SECONDS = 60       # خلال هذه المدة
+REFERRAL_CHALLENGE_MAX_FAILS = 3  # أخطاء متتالية قبل القفل المؤقت
+REFERRAL_CHALLENGE_LOCK_MINUTES = 10
+REFERRAL_CHALLENGE_EMOJIS = ("🍎", "🐱", "🚗", "⚽", "🌙", "🔑", "🎈", "🐟", "🍕", "🌵")
+
+
+def referral_burst_hit(timestamps, mine, count=REFERRAL_BURST_COUNT, seconds=REFERRAL_BURST_SECONDS) -> bool:
+    """هل توجد نافذة طولها `seconds` ثانية تضم وقت دخول هذا المدعو وتحوي `count` مدعوّين أو أكثر؟"""
+    times = sorted(float(t) for t in timestamps)
+    mine = float(mine)
+    for start in times:
+        if start <= mine <= start + seconds:
+            inside = sum(1 for t in times if start <= t <= start + seconds)
+            if inside >= count:
+                return True
+    return False
+
+
+def make_math_challenge(rng=None):
+    """يعيد (a, b, الخيارات, فهرس الجواب الصحيح) لمسألة جمع بأربعة خيارات."""
+    rng = rng or _rc_secrets.SystemRandom()
+    a, b = rng.randint(3, 19), rng.randint(3, 19)
+    correct = a + b
+    options = {correct}
+    while len(options) < 4:
+        wrong = correct + rng.choice([-5, -4, -3, -2, -1, 1, 2, 3, 4, 5])
+        if wrong > 0:
+            options.add(wrong)
+    options = list(options)
+    rng.shuffle(options)
+    return a, b, options, options.index(correct)
+
+
+def make_emoji_challenge(rng=None):
+    """يعيد (الإيموجيات الستة، فهرس الإيموجي المطلوب)."""
+    rng = rng or _rc_secrets.SystemRandom()
+    options = rng.sample(list(REFERRAL_CHALLENGE_EMOJIS), 6)
+    return options, rng.randrange(len(options))
+
+
+_rc_table_ready = False
+
+
+def _rc_ensure_table(c) -> None:
+    global _rc_table_ready
+    if _rc_table_ready:
+        return
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS referral_challenges (
+            user_id      BIGINT PRIMARY KEY,
+            stage        TEXT NOT NULL DEFAULT 'math',
+            prompt       TEXT NOT NULL DEFAULT '',
+            options      TEXT NOT NULL DEFAULT '',
+            target_idx   INTEGER NOT NULL DEFAULT 0,
+            fails        INTEGER NOT NULL DEFAULT 0,
+            passed       INTEGER NOT NULL DEFAULT 0,
+            locked_until TIMESTAMPTZ,
+            created_at   TIMESTAMPTZ DEFAULT NOW()
+        )
+        """
+    )
+    _rc_table_ready = True
+
+
+def referral_challenge_enabled() -> bool:
+    return (get_setting("referral_challenge_enabled") or "1").strip() != "0"
+
+
+def referral_burst_detected(user_id: int) -> bool:
+    """يفحص هل دخل هذا المدعو ضمن 3+ مدعوّين لنفس الداعي خلال دقيقة."""
+    with db_conn() as c:
+        row = c.execute("SELECT invited_by FROM users WHERE user_id=%s", (user_id,)).fetchone()
+        inviter = int((row or {}).get("invited_by") or 0)
+        if not inviter or inviter == user_id or inviter == OWNER_ID:
+            return False
+        me = c.execute("SELECT first_seen_at FROM first_seen WHERE user_id=%s", (user_id,)).fetchone()
+        if not me:
+            return False
+        rows = c.execute(
+            "SELECT f.first_seen_at AS t FROM users u "
+            "JOIN first_seen f ON f.user_id=u.user_id "
+            "WHERE u.invited_by=%s "
+            "AND f.first_seen_at BETWEEN %s - (%s * INTERVAL '1 second') "
+            "AND %s + (%s * INTERVAL '1 second')",
+            (inviter, me["first_seen_at"], REFERRAL_BURST_SECONDS,
+             me["first_seen_at"], REFERRAL_BURST_SECONDS),
+        ).fetchall()
+    stamps = [r["t"].timestamp() for r in rows]
+    return referral_burst_hit(stamps, me["first_seen_at"].timestamp())
+
+
+def _rc_new_stage(stage: str):
+    """يولّد سؤال المرحلة ويعيد (نص السؤال، الخيارات كسلسلة، فهرس الصحيح)."""
+    if stage == "math":
+        a, b, options, idx = make_math_challenge()
+        return f"{a} + {b}", ",".join(str(o) for o in options), idx
+    options, idx = make_emoji_challenge()
+    return options[idx], ",".join(options), idx
+
+
+def _rc_render(stage: str, prompt: str, options: str, note: str = ""):
+    opts = options.split(",")
+    if stage == "math":
+        text = f"🔐 *تحقق أمني (1/2)*\n\n{note}ما ناتج: *{prompt}* ؟"
+        rows = [[InlineKeyboardButton(o, callback_data=f"rc:math:{i}") for i, o in enumerate(opts)]]
+    else:
+        text = f"🔐 *تحقق أمني (2/2)*\n\n{note}اضغط على هذا الإيموجي: {prompt}"
+        buttons = [InlineKeyboardButton(o, callback_data=f"rc:emoji:{i}") for i, o in enumerate(opts)]
+        rows = [buttons[:3], buttons[3:]]
+    return text, InlineKeyboardMarkup(rows)
+
+
+async def _rc_send(update, text, kb=None, edit=False):
+    if edit and update.callback_query:
+        await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+    else:
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+
+_RC_LOCK_TEXT = (
+    f"⛔ *تعذّر التحقق*\n\nأخطأت عدة مرات. حاول مجدداً بعد "
+    f"{REFERRAL_CHALLENGE_LOCK_MINUTES} دقائق بإرسال /start."
+)
+
+
+async def start_referral_challenge_if_needed(update, context, user, edit=False) -> bool:
+    """يعيد True إذا عُرض تحقق (أو قفل) على المدعو وعلى المتصل التوقف."""
+    if user.id == OWNER_ID or not referral_challenge_enabled():
+        return False
+    db_user = get_user(user.id) or {}
+    if (
+        not db_user
+        or db_user.get("verified", 0)
+        or not (db_user.get("invited_by") or 0)
+        or db_user.get("referral_credited")
+    ):
+        return False
+    with db_conn() as c:
+        _rc_ensure_table(c)
+        state = c.execute(
+            "SELECT *, (locked_until IS NOT NULL AND locked_until > NOW()) AS locked "
+            "FROM referral_challenges WHERE user_id=%s",
+            (user.id,),
+        ).fetchone()
+    if state and state["passed"]:
+        return False
+    if state and state["locked"]:
+        await _rc_send(update, _RC_LOCK_TEXT, None, edit=edit)
+        return True
+    if not state:
+        try:
+            if not referral_burst_detected(user.id):
+                return False
+        except Exception:
+            logger.exception("تعذر فحص تتابع الإحالات للمستخدم %s", user.id)
+            return False
+        logger.info("تحقق إحالات متتالية للمستخدم %s", user.id)
+    prompt, options, idx = _rc_new_stage("math")
+    with db_conn() as c:
+        c.execute(
+            "INSERT INTO referral_challenges (user_id,stage,prompt,options,target_idx,fails,passed,locked_until) "
+            "VALUES (%s,'math',%s,%s,%s,0,0,NULL) "
+            "ON CONFLICT (user_id) DO UPDATE SET stage='math', prompt=EXCLUDED.prompt, "
+            "options=EXCLUDED.options, target_idx=EXCLUDED.target_idx, fails=0, passed=0, locked_until=NULL",
+            (user.id, prompt, options, idx),
+        )
+    text, kb = _rc_render("math", prompt, options)
+    await _rc_send(update, text, kb, edit=edit)
+    return True
+
+
+async def handle_referral_challenge_callback(update, context, q, data, user) -> None:
+    """أزرار التحقق: rc:math:<i> ثم rc:emoji:<i>."""
+    parts = data.split(":")
+    try:
+        stage, picked = parts[1], int(parts[2])
+    except (IndexError, ValueError):
+        return
+    with db_conn() as c:
+        _rc_ensure_table(c)
+        row = c.execute(
+            "SELECT *, (locked_until IS NOT NULL AND locked_until > NOW()) AS locked "
+            "FROM referral_challenges WHERE user_id=%s",
+            (user.id,),
+        ).fetchone()
+    if not row or row["passed"]:
+        await q.answer("انتهت صلاحية التحقق. أرسل /start من جديد.", show_alert=True)
+        return
+    if row["locked"]:
+        await q.edit_message_text(_RC_LOCK_TEXT, parse_mode=ParseMode.MARKDOWN)
+        return
+    if stage != row["stage"]:
+        return  # زر قديم من مرحلة سابقة
+
+    if picked == int(row["target_idx"]):
+        if stage == "math":
+            prompt, options, idx = _rc_new_stage("emoji")
+            with db_conn() as c:
+                c.execute(
+                    "UPDATE referral_challenges SET stage='emoji', prompt=%s, options=%s, target_idx=%s, fails=0 "
+                    "WHERE user_id=%s",
+                    (prompt, options, idx, user.id),
+                )
+            text, kb = _rc_render("emoji", prompt, options)
+            await q.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+            return
+        with db_conn() as c:
+            c.execute("UPDATE referral_challenges SET passed=1 WHERE user_id=%s", (user.id,))
+        await proceed_after_mandatory(update, context, edit=True)
+        return
+
+    fails = int(row["fails"]) + 1
+    if fails >= REFERRAL_CHALLENGE_MAX_FAILS:
+        with db_conn() as c:
+            c.execute(
+                "UPDATE referral_challenges SET stage='math', fails=0, "
+                "locked_until=NOW() + (%s * INTERVAL '1 minute') WHERE user_id=%s",
+                (REFERRAL_CHALLENGE_LOCK_MINUTES, user.id),
+            )
+        await q.edit_message_text(_RC_LOCK_TEXT, parse_mode=ParseMode.MARKDOWN)
+        return
+    prompt, options, idx = _rc_new_stage(stage)
+    with db_conn() as c:
+        c.execute(
+            "UPDATE referral_challenges SET prompt=%s, options=%s, target_idx=%s, fails=%s WHERE user_id=%s",
+            (prompt, options, idx, fails, user.id),
+        )
+    text, kb = _rc_render(stage, prompt, options, note="❌ إجابة خاطئة، حاول مرة أخرى.\n\n")
+    await q.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+
 async def proceed_after_mandatory(update: Update, context: ContextTypes.DEFAULT_TYPE, edit=False):
     """يكمل الدخول ويحتسب الإحالة بعد الاشتراك في كل القنوات الإلزامية."""
     user = update.effective_user
@@ -220,6 +459,9 @@ async def proceed_after_mandatory(update: Update, context: ContextTypes.DEFAULT_
             edit=edit,
             is_owner=user.id == OWNER_ID,
         )
+        return
+
+    if await start_referral_challenge_if_needed(update, context, user, edit=edit):
         return
 
     await finalize_verification(update, context, user, edit=edit, skip_referral=False)

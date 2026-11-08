@@ -14,6 +14,10 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
         if data.startswith("wheel:") and await handle_wheel_callback(update, context, q, data, user, is_own):
             return
 
+        if data.startswith("rc:"):
+            await handle_referral_challenge_callback(update, context, q, data, user)
+            return
+
         # ────────────────────────────────────────────────────────────────
         # ═══ معالج الخدمات الأسطورية ═══
         # ────────────────────────────────────────────────────────────────
