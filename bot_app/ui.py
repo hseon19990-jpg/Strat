@@ -223,6 +223,41 @@ def _place_currency_exchange_button(rows):
     return rows
 
 
+def _place_prize_exchange_button(rows):
+    """يضع زر «استبدل جواهرك بهدايا» في صف مستقل بمنتصف القائمة الرئيسية.
+
+    لا يدخل ضمن أي مجموعة. يحافظ على اسمه كما ضبطه المالك، وإن أخفاه المالك
+    من إدارة الأزرار فلا نعيده.
+    """
+    action = "exchange_points"
+    button = None
+    for row in rows:
+        for btn in row:
+            if getattr(btn, "callback_data", None) == action:
+                button = btn
+                break
+        if button is not None:
+            break
+    if button is None:
+        try:
+            known = {
+                item["action_value"]
+                for item in get_menu_items("main", only_enabled=False)
+            }
+        except Exception:
+            known = set()
+        if action in known:
+            return rows  # مخفي من المالك عمداً
+        button = InlineKeyboardButton(
+            "🎁 استبدل جواهرك بهدايا فاخرة 💍", callback_data=action
+        )
+    else:
+        rows[:] = [[b for b in row if b is not button] for row in rows]
+        rows[:] = [row for row in rows if row]
+    rows.insert(len(rows) // 2, [button])
+    return rows
+
+
 # ───────────── تجميع أزرار القائمة الرئيسية في أزرار رئيسية ─────────────
 # لتصغير الواجهة: الأزرار المذكورة هنا تختفي من الشاشة الأولى وتظهر داخل
 # زر مجمّع واحد. يمكنك تغيير المحتوى بتعديل القوائم التالية فقط.
@@ -232,7 +267,7 @@ MAIN_MENU_GROUPS = {
         "label": "🎁 الهدايا والمكافآت",
         "title": "🎁 *الهدايا والمكافآت*\n\nاختر من القائمة:",
         "actions": (
-            "daily_gift", "temporary_gift", "use_promo", "exchange_points",
+            "daily_gift", "temporary_gift", "use_promo",
             "top_ref_today", "referral_contest_view", "gmail_points",
             "forced_ref", "thank_owner",
         ),
@@ -327,6 +362,7 @@ def main_menu_kb(
                 break
         rows.insert(insert_at, group_row)
     # زر تحويل النقاط ↔ الجواهر: صف مستقل في منتصف القائمة الرئيسية.
+    _place_prize_exchange_button(rows)
     _place_currency_exchange_button(rows)
     if is_owner or is_tgnum_visible():
         _ensure_tgnum_button(rows, "main", "tgnum:start", "📲 أرقام تلي كل دول العالم")
