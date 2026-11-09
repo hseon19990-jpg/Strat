@@ -1,4 +1,5 @@
 from .common import *
+from telethon import errors
 
 class CommentService(RakshService):
     """خدمة رشق تعليق - تدفق مخصص حسب الطلب"""
@@ -285,42 +286,23 @@ class CommentService(RakshService):
             if not comment_text:
                 return False, "نص التعليق فارغ"
 
-            # محاولة إرسال التعليق إلى مجموعة النقاش (إذا وجدت) أو إلى الكيان الأصلي
             try:
+                # يجب أن يكون الحساب عضواً في مجموعة النقاش
                 if discussion_group:
-                    # الانضمام إلى مجموعة النقاش (إن لم يكن عضوًا)
                     try:
                         await client(JoinChannelRequest(discussion_group))
-                    except Exception:
-                        pass
-                    # إرسال الرسالة مع reply_to إلى msg_id الأصلي
-                    await client.send_message(discussion_group, comment_text, reply_to=msg_id)
-                    return True, f"✅ تم التعليق من {session['phone_number']}"
-                else:
-                    # لا توجد مجموعة نقاش، نحاول الإرسال مباشرة (قد تفشل للقنوات)
-                    await client.send_message(entity, comment_text, reply_to=msg_id)
-                    return True, f"✅ تم التعليق من {session['phone_number']}"
+                    except Exception as e:
+                        logger.warning(f"تعذر الانضمام لمجموعة النقاش: {e}")
+                
+                # استخدام comment_to بدلاً من reply_to لحل مشكلة الـ ID
+                await client.send_message(entity, comment_text, comment_to=msg_id)
+                return True, f"✅ تم التعليق من {session['phone_number']}"
+                
+            except errors.MsgIdInvalidError:
+                # في حال كانت التعليقات مغلقة أو لا توجد مجموعة نقاش
+                return False, "❌ المنشور لا يدعم التعليقات"
             except Exception as e:
-                # إذا فشل بسبب الصلاحيات، نحاول الانضمام للقناة ثم إعادة المحاولة
-                if "admin privileges" in str(e).lower() or "can't write in this chat" in str(e).lower():
-                    try:
-                        # الانضمام إلى القناة
-                        if channel_ref.startswith("invite:"):
-                            invite_hash = channel_ref[7:]
-                            await client(ImportChatInviteRequest(invite_hash))
-                        else:
-                            await client(JoinChannelRequest(entity))
-                        await asyncio.sleep(1.0)
-                        # إعادة المحاولة
-                        if discussion_group:
-                            await client.send_message(discussion_group, comment_text, reply_to=msg_id)
-                        else:
-                            await client.send_message(entity, comment_text, reply_to=msg_id)
-                        return True, f"✅ تم التعليق بعد الانضمام من {session['phone_number']}"
-                    except Exception as e2:
-                        return False, f"❌ فشل التعليق: {str(e2)}"
-                else:
-                    return False, f"❌ فشل التعليق: {str(e)}"
+                return False, f"❌ فشل التعليق: {str(e)}"
 
         except Exception as e:
             return False, f"❌ فشل التعليق: {str(e)}"
