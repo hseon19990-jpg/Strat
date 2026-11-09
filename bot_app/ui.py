@@ -963,7 +963,7 @@ async def show_orders_section(update: Update, context: ContextTypes.DEFAULT_TYPE
 OWNER_SETTINGS_GROUPS = [
     ("services", "🛍 الخدمات والطلبات", (
         "os:add_service", "os:list_services", "os:view_services", "os:inspect_services",
-        "os:orders_section", "os:share_description", "os:cancel_order", "os:complete_order",
+        "os:orders_section", "os:oi:ask", "os:share_description", "os:cancel_order", "os:complete_order",
         "os:failed_deliveries", "os:new_services", "import_services", "os:site_balance",
         "os:edit_internal_cost", "os:edit_internal_min",
     ), ()),

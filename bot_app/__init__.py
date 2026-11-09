@@ -29,6 +29,7 @@ _SECTION_NAMES = (
     "callback_groups_02",
     "callback_groups_03",
     "callback_groups_04",
+    "order_inspect",
     "callbacks",
     "smm_payments",
     "payments",

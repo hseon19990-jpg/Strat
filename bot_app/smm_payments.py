@@ -350,7 +350,7 @@ async def execute_smm_payment_intent(
     )
 
     with db_conn() as c:
-        c.execute(
+        inserted_order = c.execute(
             """
             INSERT INTO orders
                 (user_id,service_id,link,quantity,cost_points,cost_stars,
@@ -358,6 +358,7 @@ async def execute_smm_payment_intent(
                  telegram_payment_id,api_order_id,order_code,
                  provider_rate_usd,provider_cost_usd)
             VALUES (%s,%s,%s,%s,0,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            RETURNING id
             """,
             (
                 user_id,
@@ -374,7 +375,7 @@ async def execute_smm_payment_intent(
                 provider_rate,
                 provider_cost_usd,
             ),
-        )
+        ).fetchone()
         c.execute(
             """
             UPDATE smm_payment_intents
@@ -383,6 +384,14 @@ async def execute_smm_payment_intent(
             """,
             (order_code, int(intent["id"])),
         )
+
+    # لقطة «فحص الطلب» للمالك: لا يجوز أن يؤثر فشلها على تسليم الطلب.
+    try:
+        _new_order_id = int((inserted_order or {}).get("id") or 0)
+        if _new_order_id:
+            await asyncio.to_thread(oi_capture_order_safely, _new_order_id, order_code)
+    except Exception:
+        logger.exception("تعذر حفظ لقطة فحص الطلب %s", order_code)
 
     try:
         await context.bot.send_message(

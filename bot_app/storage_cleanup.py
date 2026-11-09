@@ -210,6 +210,11 @@ async def cleanup_transient_storage_job(context=None) -> None:
     try:
         await asyncio.to_thread(log_storage_size_snapshot, "before cleanup")
         deleted = await asyncio.to_thread(cleanup_transient_storage_data)
+        # لقطات «فحص الطلب» تُمسح بعد أسبوع حتى لا تمتلئ قاعدة البيانات.
+        from .order_inspect import purge_expired_order_inspections
+        inspect_deleted = await asyncio.to_thread(purge_expired_order_inspections)
+        if inspect_deleted:
+            deleted = {**deleted, "order_inspect_snapshots": inspect_deleted}
         await asyncio.to_thread(log_storage_size_snapshot, "after cleanup")
         total = sum(deleted.values())
         if total:
