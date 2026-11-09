@@ -239,19 +239,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-    if is_own and state == ORDER_INSPECT_STATE:
-        try:
-            if await handle_order_inspect_text(update, context, text):
-                return
-        except Exception as exc:
-            logger.exception("فشل فحص الطلب: %s", exc)
-            context.user_data["state"] = "main_menu"
-            await update.message.reply_text(
-                "⚠️ حدث خطأ أثناء فحص الطلب. حاول مجدداً.",
-                reply_markup=owner_settings_kb(),
-            )
-            return
-
     if state.startswith("tgnum_") or state.startswith("os_tgnum_"):
         try:
             if await handle_tgnum_text(update, context, text):
@@ -3742,6 +3729,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع للمبيوعات", callback_data="os:sold_accounts")]])
         )
         context.user_data["state"] = "main_menu"
+        return
+
+    # ─── بحث المالك: يوزر / ID / اسم حساب / رقم ───
+    if is_own and state == "os_await_owner_search":
+        from .number_owner_search import handle_owner_search_query
+        await handle_owner_search_query(update, context, text)
         return
 
     # ─── بحث شامل برقم هاتف (مباع أو غير مباع) ───

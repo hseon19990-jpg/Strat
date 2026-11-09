@@ -3307,6 +3307,60 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
             )
             return
 
+        if data == "os:owner_search" and is_own:
+            context.user_data["state"] = "os_await_owner_search"
+            await q.edit_message_text(
+                "🕵️ *بحث المالك عن الحسابات*\n\n"
+                "أرسل أحد التالي وسأعرض لك كل معلومات الحساب:\n"
+                "• يوزر الحساب (`@username`)\n"
+                "• ID الحساب\n"
+                "• اسم الحساب\n"
+                "• أو رقم الهاتف\n\n"
+                "يظهر لك: الاسم، الحالة (مباع / مؤجّر / مطرود ...)، التواريخ، 2FA، الأجهزة،\n"
+                "مع أزرار جلب آخر كود وطرد الأجهزة.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:manage_numbers")]]),
+            )
+            return
+
+        if data == "os:owner_search_deep" and is_own:
+            from .number_owner_search import handle_owner_search_query
+            _last_query = context.user_data.get("owner_search_last")
+            if not _last_query:
+                await q.answer("أرسل كلمة البحث أولاً.", show_alert=True)
+                return
+            await q.answer("⏳ جارٍ فحص كل الجلسات...")
+            await handle_owner_search_query(
+                update, context, _last_query, deep=True, message=q.message
+            )
+            return
+
+        if data.startswith("os:osv:") and is_own:
+            from .number_owner_search import get_stock_row, render_card
+            try:
+                _osv_id = int(data.split(":")[-1])
+            except ValueError:
+                await q.answer("معرّف غير صالح.", show_alert=True)
+                return
+            _osv_row = get_stock_row(_osv_id)
+            if not _osv_row:
+                await q.answer("لم يُعثر على الحساب.", show_alert=True)
+                return
+            await q.answer()
+            try:
+                await q.edit_message_text("⏳ أجلب أحدث المعلومات من تيليجرام...")
+            except Exception:
+                pass
+            _osv_text, _osv_kb = await render_card(_osv_row)
+            try:
+                await q.edit_message_text(_osv_text, parse_mode=ParseMode.MARKDOWN, reply_markup=_osv_kb)
+            except Exception as _osv_err:
+                # رسالة غير متغيّرة أو خطأ تنسيق: أعد الإرسال كنص عادي
+                logger.warning(f"تعذّر تعديل بطاقة بحث المالك: {_osv_err}")
+                if "not modified" not in str(_osv_err).lower():
+                    await q.message.reply_text(_osv_text, reply_markup=_osv_kb)
+            return
+
         if data == "os:phone_search" and is_own:
             context.user_data["state"] = "os_await_phone_search"
             await q.edit_message_text(

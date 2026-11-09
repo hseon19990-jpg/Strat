@@ -2953,6 +2953,7 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                     [InlineKeyboardButton("🔓 إزالة التحقق (2FA) من ملفات جلسة", callback_data="os:remove_2fa_mode")],
                     [InlineKeyboardButton("🔁 تدوير الجلسات (تجديد كل السيشن)", callback_data="os:rotate_sessions")],
                     [InlineKeyboardButton("🤝 مهام الإحالة التلقائية", callback_data="os:ref_tasks")],
+                    [InlineKeyboardButton("🕵️ بحث المالك (يوزر / ID / اسم)", callback_data="os:owner_search")],
                     [InlineKeyboardButton("🔎 بحث برقم هاتف", callback_data="os:phone_search")],
                     [InlineKeyboardButton("📊 حالة الأرقام: مباع / مؤجّر", callback_data="os:owner_number_status")],
                     [InlineKeyboardButton("⚠️ تعويض المظلومين / العمليات الفاشلة", callback_data="os:failed_deliveries")],

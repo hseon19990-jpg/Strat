@@ -231,24 +231,6 @@ def init_db():
               created_at          TIMESTAMPTZ DEFAULT NOW(),
               updated_at          TIMESTAMPTZ DEFAULT NOW()
           )""")
-          # لقطات «فحص الطلب» للمالك؛ تُمسح تلقائياً بعد أسبوع (order_inspect.py).
-          c.execute("""
-          CREATE TABLE IF NOT EXISTS order_inspect_snapshots (
-              order_id        BIGINT PRIMARY KEY,
-              order_code      TEXT NOT NULL,
-              order_code_norm TEXT NOT NULL,
-              user_id         BIGINT NOT NULL,
-              data            TEXT NOT NULL,
-              created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-          )""")
-          c.execute(
-              "CREATE INDEX IF NOT EXISTS order_inspect_snapshots_code_idx "
-              "ON order_inspect_snapshots (order_code_norm)"
-          )
-          c.execute(
-              "CREATE INDEX IF NOT EXISTS order_inspect_snapshots_created_idx "
-              "ON order_inspect_snapshots (created_at)"
-          )
           c.execute("""
           CREATE TABLE IF NOT EXISTS jewel_transactions (
               id          BIGSERIAL PRIMARY KEY,
@@ -851,6 +833,11 @@ def init_db():
               "ALTER TABLE channel_join_rewards ADD COLUMN IF NOT EXISTS joined_at TIMESTAMPTZ DEFAULT NOW()",
               "ALTER TABLE mandatory_sub_orders ADD COLUMN IF NOT EXISTS reactivated_count INTEGER DEFAULT 0",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS referral_only BOOLEAN DEFAULT FALSE",
+              # كاش هوية حساب تيليجرام لبحث المالك (يوزر / ID / اسم).
+              "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS tg_user_id BIGINT",
+              "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS tg_username TEXT",
+              "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS tg_name TEXT",
+              "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS tg_info_at TIMESTAMPTZ",
               "ALTER TABLE forced_ref_orders ADD COLUMN IF NOT EXISTS reactivated_count INTEGER DEFAULT 0",
               "ALTER TABLE forced_ref_orders ADD COLUMN IF NOT EXISTS payment_method TEXT DEFAULT 'points'",
               "ALTER TABLE forced_ref_orders ADD COLUMN IF NOT EXISTS cost_stars INTEGER DEFAULT 0",
