@@ -47,7 +47,9 @@ def supervisor_panel_kb():
 _OWNER_MAIN_MENU_LAYOUT = [
     [("👑 خدماتنا الملكية 👠", "legendary_services"), ("🐸 عروض حصرية وموثوقة 👑", "services_menu")],
     [("🏰 تحويل قناتك بدقة", "fund_channel")],
-    [("🎁 استبدل نقاطك بهدايا فاخرة 💍", "exchange_points")],
+    [("🎁 استبدل جواهرك بهدايا فاخرة 💍", "exchange_points")],
+    [("🎁 هدية يومية", "daily_gift")],
+    [("🎁 هدية مؤقتة", "temporary_gift")],
     [("🧸 شارك الفرحة مع رابط دعوة 🦋", "referral"), ("💳 شحن نقاط", "charge_points")],
     [("👑 تعبئة نقاط سرية وآمنة", "collect_points"), ("🎼 تحويل نقاط سلس ومريح", "transfer_points")],
     [("⭐ ادخل كود المميز واحصل على المزيد", "use_promo"), ("🐱 بياناتي الشخصية الآمنة", "my_info")],
@@ -151,15 +153,148 @@ async def handle_owner_webapp_data(update, context):
     )
     await handle_callback(synthetic_update, context)
 
-def main_menu_kb(is_owner=False, is_supervisor_user=False):
-    # المالك والأعضاء يستخدمون قائمة main نفسها وبنفس الأسماء والترتيب.
-    menu_items = get_menu_items("main")
-    # تغيير نص زر خدمات الرشق فقط، دون تغيير محتوى قسم الخدمات.
-    for index, item in enumerate(menu_items):
-        if item["action_value"] == "services_menu":
-            normalized = dict(item)
-            normalized["label"] = "خدمات"
-            menu_items[index] = normalized
+def _ensure_tgnum_button(rows, menu, action_value, label, top=False):
+    """يضمن ظهور زر أرقام تلي، وعند top=True يضعه في أول القائمة.
+
+    قائمة إعدادات المالك طويلة جداً، فالأزرار الجديدة تُضاف في آخرها بقاعدة
+    البيانات ولا يراها المالك دون تمرير طويل؛ لذلك نرفع هذا الزر للأعلى.
+    إن أخفاه المالك من إدارة الأزرار فلا نعيده.
+    """
+    present = any(btn.callback_data == action_value for row in rows for btn in row)
+    if present:
+        if not top:
+            return rows
+        rows[:] = [
+            [btn for btn in row if btn.callback_data != action_value] for row in rows
+        ]
+        rows[:] = [row for row in rows if row]
+        rows.insert(0, [InlineKeyboardButton(label, callback_data=action_value)])
+        return rows
+    try:
+        known = {item["action_value"] for item in get_menu_items(menu, only_enabled=False)}
+    except Exception:
+        known = set()
+    if action_value not in known:
+        new_row = [InlineKeyboardButton(label, callback_data=action_value)]
+        if top:
+            rows.insert(0, new_row)
+        else:
+            rows.append(new_row)
+    return rows
+
+
+CURRENCY_EXCHANGE_ACTION = "currency_exchange"
+CURRENCY_EXCHANGE_LABEL = "↔️ تحويل بين النقاط والمجوهرات"
+
+
+def _place_currency_exchange_button(rows):
+    """يضع زر تحويل النقاط/الجواهر في صف مستقل بمنتصف القائمة الرئيسية.
+
+    يحافظ على اسم الزر كما ضبطه المالك، وإن أخفاه المالك من إدارة الأزرار
+    فلا نعيده. إن لم يكن الزر مسجلاً أصلاً في قاعدة البيانات نضيفه.
+    """
+    button = None
+    for row in rows:
+        for btn in row:
+            if getattr(btn, "callback_data", None) == CURRENCY_EXCHANGE_ACTION:
+                button = btn
+                break
+        if button is not None:
+            break
+    if button is None:
+        try:
+            known = {
+                item["action_value"]
+                for item in get_menu_items("main", only_enabled=False)
+            }
+        except Exception:
+            known = set()
+        if CURRENCY_EXCHANGE_ACTION in known:
+            return rows  # مخفي من المالك عمداً
+        button = InlineKeyboardButton(
+            CURRENCY_EXCHANGE_LABEL, callback_data=CURRENCY_EXCHANGE_ACTION
+        )
+    else:
+        rows[:] = [
+            [b for b in row if b is not button] for row in rows
+        ]
+        rows[:] = [row for row in rows if row]
+    rows.insert(len(rows) // 2, [button])
+    return rows
+
+
+def _place_prize_exchange_button(rows):
+    """يضع زر «استبدل جواهرك بهدايا» في صف مستقل بمنتصف القائمة الرئيسية.
+
+    لا يدخل ضمن أي مجموعة. يحافظ على اسمه كما ضبطه المالك، وإن أخفاه المالك
+    من إدارة الأزرار فلا نعيده.
+    """
+    action = "exchange_points"
+    button = None
+    for row in rows:
+        for btn in row:
+            if getattr(btn, "callback_data", None) == action:
+                button = btn
+                break
+        if button is not None:
+            break
+    if button is None:
+        try:
+            known = {
+                item["action_value"]
+                for item in get_menu_items("main", only_enabled=False)
+            }
+        except Exception:
+            known = set()
+        if action in known:
+            return rows  # مخفي من المالك عمداً
+        button = InlineKeyboardButton(
+            "🎁 استبدل جواهرك بهدايا فاخرة 💍", callback_data=action
+        )
+    else:
+        rows[:] = [[b for b in row if b is not button] for row in rows]
+        rows[:] = [row for row in rows if row]
+    rows.insert(len(rows) // 2, [button])
+    return rows
+
+
+# ───────────── تجميع أزرار القائمة الرئيسية في أزرار رئيسية ─────────────
+# لتصغير الواجهة: الأزرار المذكورة هنا تختفي من الشاشة الأولى وتظهر داخل
+# زر مجمّع واحد. يمكنك تغيير المحتوى بتعديل القوائم التالية فقط.
+# الأزرار تبقى مأخوذة من إعدادات المالك (الأسماء/الإخفاء/الترتيب) كما هي.
+MAIN_MENU_GROUPS = {
+    "gifts": {
+        "label": "🎁 الهدايا والمكافآت",
+        "title": "🎁 *الهدايا والمكافآت*\n\nاختر من القائمة:",
+        "actions": (
+            "temporary_gift", "use_promo",
+            "top_ref_today", "referral_contest_view", "gmail_points",
+            "forced_ref", "thank_owner",
+        ),
+    },
+    "wallet": {
+        "label": "💼 حسابي ومحفظتي",
+        "title": "💼 *حسابي ومحفظتي*\n\nاختر من القائمة:",
+        "actions": (
+            "my_info", "my_numbers",
+            "transfer_points", "share_account:menu",
+        ),
+    },
+}
+
+
+# أزرار انتقلت من الشاشة الأولى إلى داخل زر «⭐ تجميع نقاط» (قائمة collect_points).
+COLLECT_POINTS_MAIN_ACTIONS = (
+    "referral", "buyback:start", "contributor_accounts", "daily_gift",
+)
+
+
+def _filtered_main_menu_items(is_owner=False):
+    menu_items = visible_main_menu_items(get_menu_items("main"), is_owner)
+    menu_items = [
+        item for item in menu_items
+        if item["action_value"] not in COLLECT_POINTS_MAIN_ACTIONS
+    ]
     if not is_legendary_services_visible():
         menu_items = [
             item for item in menu_items
@@ -170,12 +305,85 @@ def main_menu_kb(is_owner=False, is_supervisor_user=False):
             item for item in menu_items
             if item["action_value"] != "buyback:start"
         ]
-    rows = build_kb_rows(menu_items)
-    if is_owner:
-        rows.append([InlineKeyboardButton("🧩 تعديل أزرار الواجهة", callback_data="mb_menu:main")])
-        rows.append([InlineKeyboardButton("⚙️ إعدادات المالك", callback_data="owner_settings")])
+    if not is_owner and not is_tgnum_visible():
+        menu_items = [
+            item for item in menu_items
+            if item["action_value"] != "tgnum:start"
+        ]
+    return menu_items
+
+
+def _group_of_action(action_value):
+    for key, group in MAIN_MENU_GROUPS.items():
+        if action_value in group["actions"]:
+            return key
+    return None
+
+
+def main_menu_group_kb(group_key, is_owner=False):
+    """أزرار شاشة داخل زر مجمّع، أو None إن كان المفتاح غير معروف."""
+    if group_key not in MAIN_MENU_GROUPS:
+        return None
+    items = [
+        item for item in _filtered_main_menu_items(is_owner)
+        if _group_of_action(item["action_value"]) == group_key
+    ]
+    rows = build_kb_rows(items)
+    rows.append([InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")])
+    return InlineKeyboardMarkup(rows)
+
+
+def main_menu_kb(
+    is_owner=False,
+    is_supervisor_user=False,
+    is_number_admin_user=False,
+):
+    # المالك والأعضاء يستخدمون قائمة main نفسها وبنفس الأسماء والترتيب.
+    menu_items = _filtered_main_menu_items(is_owner)
+
+    # الأزرار المجمّعة تُخفى من الشاشة الأولى ويظهر بدلها زر واحد لكل مجموعة.
+    top_items = []
+    present_groups = []
+    for item in menu_items:
+        group_key = _group_of_action(item["action_value"])
+        if group_key is None:
+            top_items.append(item)
+        elif group_key not in present_groups:
+            present_groups.append(group_key)
+
+    rows = build_kb_rows(top_items)
+    # أزرار المجموعات قبل أزرار الدعم والإحالة: نضعها في صف واحد جنباً إلى جنب.
+    if present_groups:
+        group_row = [
+            InlineKeyboardButton(
+                MAIN_MENU_GROUPS[key]["label"], callback_data=f"mmg:{key}"
+            )
+            for key in present_groups
+        ]
+        # نضعها قبل آخر صف إن وُجد زر الدعم، وإلا في النهاية.
+        insert_at = len(rows)
+        for index, row in enumerate(rows):
+            if any(
+                getattr(btn, "callback_data", None) == "contact_support"
+                for btn in row
+            ):
+                insert_at = index
+                break
+        rows.insert(insert_at, group_row)
+    # زر تحويل النقاط ↔ الجواهر: صف مستقل في منتصف القائمة الرئيسية.
+    _place_prize_exchange_button(rows)
+    _place_currency_exchange_button(rows)
+    if is_owner or is_tgnum_visible():
+        _ensure_tgnum_button(rows, "main", "tgnum:start", "📲 أرقام تلي كل دول العالم")
     if is_supervisor_user:
         rows.append([InlineKeyboardButton("🛡 لوحة المشرف", callback_data="sv:panel")])
+    if is_number_admin_user:
+        rows.append([
+            InlineKeyboardButton(
+                "📱 لوحة أدمن الأرقام",
+                callback_data="na:panel",
+            )
+        ])
     return InlineKeyboardMarkup(rows)
 
 def _render_service_list():
@@ -515,15 +723,30 @@ def _render_order_block(o) -> str:
     full_name = o.get("u_full_name") or "—"
     service_name = o.get("s_name_ar") or f"خدمة #{o['service_id']}"
     category = CATEGORY_MAP.get(o.get("s_category"), o.get("s_category") or "—")
-    status_map = {"pending": "⏳ قيد التنفيذ", "completed": "✅ مكتمل", "cancelled": "❌ ملغي"}
+    status_map = {
+        "pending": "⏳ قيد التنفيذ",
+        "completed": "✅ مكتمل",
+        "cancelled": "❌ ملغي",
+        "refund_processing": "🔄 استرداد قيد المعالجة",
+        "refund_required": "⚠️ الاسترداد يحتاج مراجعة",
+    }
     status = status_map.get(o["status"], o["status"])
+    payment_method = o.get("payment_method") or "points"
+    if payment_method == "stars":
+        payment_text = f"{int(o.get('cost_stars') or 0):,} نجمة"
+    elif payment_method == "jewels":
+        payment_text = f"{int(o.get('cost_jewels') or 0):,} مجوهرة"
+    elif payment_method == "free":
+        payment_text = "مجاناً"
+    else:
+        payment_text = f"{int(o.get('cost_points') or 0):,} نقطة"
     return (
         f"🧾 *كود الطلب:* {o['order_code']}\n"
         f"👤 *صاحب الطلب:* {full_name} ({uname}) — ID: `{o['user_id']}`\n"
         f"📦 *نوع الطلب:* {service_name} ({category})\n"
         f"🔗 *الرابط:* {o['link'] or '—'}\n"
         f"🔢 *الكمية:* {o['quantity']}\n"
-        f"💰 *التكلفة:* {o['cost_points']} نقطة" + (f" + {o['cost_stars']} نجمة" if o.get("cost_stars") else "") + "\n"
+        f"💳 *التكلفة:* {payment_text}\n"
         f"📶 *الحالة:* {status}\n"
         f"🆔 *رقم API:* {o['api_order_id'] or '—'}\n"
         f"🕒 *الوقت:* {o['created_at']}\n"
@@ -652,6 +875,8 @@ def _render_member_order_details(
         "partial": "⚠️ مكتمل جزئياً",
         "cancelled": "❌ ملغي",
         "canceled": "❌ ملغي",
+        "refund_processing": "🔄 استرداد قيد المعالجة",
+        "refund_required": "⚠️ الاسترداد يحتاج مراجعة",
         "failed": "❌ فشل",
         "error": "❌ خطأ",
     }.get(status_key, status_key or "غير معروف")
@@ -681,12 +906,22 @@ def _render_member_order_details(
     except (TypeError, ValueError):
         pass
 
+    payment_method = order.get("payment_method") or "points"
+    if payment_method == "stars":
+        payment_text = f"{int(order.get('cost_stars') or 0):,} نجمة"
+    elif payment_method == "jewels":
+        payment_text = f"{int(order.get('cost_jewels') or 0):,} مجوهرة"
+    elif payment_method == "free":
+        payment_text = "مجاناً"
+    else:
+        payment_text = f"{int(order.get('cost_points') or 0):,} نقطة"
+
     return (
         f"📦 *تفاصيل الطلب رقم {order_number}*\n\n"
         f"🧾 كود الطلب: `{md_escape(order.get('order_code') or '—')}`\n"
         f"🔹 الخدمة: {md_escape(order.get('s_name_ar') or '—')}\n"
         f"🔗 الرابط: {md_escape(order.get('link') or '—')}\n"
-        f"💰 السعر: *{int(order.get('cost_points') or 0):,} نقطة*"
+        f"💳 السعر: *{payment_text}*"
         f"{provider_cost_text}\n"
         f"🔢 الكمية المطلوبة: {quantity:,}\n"
         f"✅ تم تنفيذ: {executed_text}\n"
@@ -731,8 +966,96 @@ async def show_orders_section(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN,
                                          reply_markup=InlineKeyboardMarkup(kb_rows))
 
+# ───────── تقسيم إعدادات المالك إلى أقسام (≤ 9 أقسام + زر الرجوع) ─────────
+# كل قسم يضم الأزرار القديمة نفسها (بنفس الدوال والأوامر)، فقط تغيّر مكان عرضها.
+# أي زر جديد أو مخصص لا يطابق قسماً يظهر في القسم الأخير «عام وإدارة».
+OWNER_SETTINGS_GROUPS = [
+    ("services", "🛍 الخدمات والطلبات", (
+        "os:add_service", "os:list_services", "os:view_services", "os:inspect_services",
+        "os:orders_section", "os:oi:ask", "os:share_description", "os:cancel_order", "os:complete_order",
+        "os:failed_deliveries", "os:new_services", "import_services", "os:site_balance",
+        "os:edit_internal_cost", "os:edit_internal_min",
+    ), ()),
+    ("legendary", "👑 الأسطورية والرشق", (
+        "os:toggle_legendary_services", "legendary:price_settings", "legendary:settings",
+        "os:raksh_accounts", "os:raksh_admins", "os:edit_raksh_label",
+    ), ()),
+    ("numbers", "📱 أرقام تيليجرام", (
+        "os:manage_numbers", "os:manage_num_codes", "os:edit_number_cost",
+        "os:edit_number_stars", "os:toggle_number_exchange", "os:edit_exchange_msg",
+        "os:bot_ref_numbers", "tgnum:admin",
+    ), ()),
+    ("prices", "💰 الأسعار والعملات", (
+        "os:edit_star_rate", "os:edit_exchange_rate", "os:edit_jewel_star_price", "os:edit_jewel_to_points_rate",
+        "os:edit_points_to_jewel_rate", "os:manage_star_packages", "os:edit_asiacell",
+        "os:edit_jewels_asiacell", "os:edit_jewels_ewallet", "os:manage_points",
+    ), ()),
+    ("rewards", "🎁 الإحالات والهدايا", (
+        "os:edit_new_users_group", "os:edit_referral", "os:referral_levels", "os:ref_type_toggle", "os:ref_fraud_toggle", "os:ref_l1_jewels",
+        "os:ref_level_add", "os:referral_rewards", "os:referral_daily_free",
+        "os:top_referrers", "os:weekly_ref", "os:referral_contest", "os:edit_join_reward",
+        "os:edit_daily_gift", "os:create_temporary_gift", "os:edit_leave_penalty",
+        "os:edit_leave_grace", "os:create_promo", "os:list_promos", "os:search_code",
+        "os:manage_prizes",
+    ), ("os:ref_level_del:",)),
+    ("channels", "📡 الاشتراك الإجباري", (
+        "os:manage_channels", "os:edit_mstars_min", "os:edit_mstars_t1max",
+        "os:edit_mstars_t1p", "os:edit_mstars_t2p", "os:edit_mpoints_price",
+        "os:edit_mpoints_min", "os:join_prices",
+    ), ()),
+    ("gmail", "📧 جيميل", (
+        "os:list_gmail", "os:verified_gmail", "os:all_gmail_history",
+    ), ("os:edit_gmail", "os:edit_reject")),
+    ("accounts", "🛡 الحسابات والمشرفون", (
+        "os:toggle_buyback_visible", "buyback:owner:list", "os:edit_buyback_price",
+        "os:edit_buyback_restricted_price", "os:add_supervisor", "os:list_supervisors",
+        "os:sv_accounts", "os:account_info",
+    ), ()),
+    ("general", "⚙️ عام وإدارة", (
+        "os:member_tracking", "os:ban_menu", "os:restricted_members", "os:edit_welcome",
+        "os:edit_contact", "os:edit_contact_label", "os:thank_owner_settings",
+        "os:edit_support_label", "os:broadcast", "os:stats", "os:toggle_maintenance",
+        "os:manage_buttons", "mb_menu:owner_settings", "os:openai_api",
+    ), ()),
+]
+OWNER_SETTINGS_GROUP_TITLES = {key: title for key, title, _v, _p in OWNER_SETTINGS_GROUPS}
+_OWNER_SETTINGS_DEFAULT_GROUP = "general"
+
+
+def owner_settings_group_of(action_value) -> str:
+    value = str(action_value or "")
+    for key, _title, values, prefixes in OWNER_SETTINGS_GROUPS:
+        if value in values or any(value.startswith(prefix) for prefix in prefixes):
+            return key
+    return _OWNER_SETTINGS_DEFAULT_GROUP
+
+
 def owner_settings_kb():
-    rows = build_kb_rows(get_menu_items("owner_settings"))
+    """لوحة إعدادات المالك: أقسام قليلة، وكل قسم يفتح أزراره القديمة."""
+    return _build_owner_settings_kb(None)
+
+
+def owner_settings_group_kb(group_key):
+    return _build_owner_settings_kb(group_key)
+
+
+def _build_owner_settings_kb(group_key=None):
+    disabled_verification_items = {
+        "os:toggle_phone_verification",
+        "os:toggle_captcha",
+    }
+    rows = [
+        [
+            btn
+            for btn in row
+            if btn.callback_data not in disabled_verification_items
+        ]
+        for row in build_kb_rows(_owner_settings_items_for_group(group_key))
+    ]
+    rows = [row for row in rows if row]
+    if group_key is None:
+        return _owner_settings_groups_markup()
+    _currency_rates = get_currency_exchange_rates()
     _maint_on = is_maintenance_on()
     _maint_suffix = " (مفعل ✅)" if _maint_on else " (مغلق ❌)"
     _numex_on = is_number_exchange_on()
@@ -741,12 +1064,13 @@ def owner_settings_kb():
     _legendary_suffix = " (ظاهر للأعضاء ✅)" if _legendary_on else " (مخفي عن الأعضاء ❌)"
     _mandatory_active = count_active_mandatory_channels()
     _verify_suffix = f" ({_mandatory_active} قناة ✅)" if _mandatory_active > 0 else " (مغلق ❌)"
-    _phone_verify_on = int(get_setting("phone_verification_enabled") or "1")
-    _captcha_on = int(get_setting("captcha_enabled") or "0")
-    rows.append([InlineKeyboardButton(
-        f"📱 التحقق برقم الهاتف ({'مفعّل ✅' if _phone_verify_on else 'معطّل ❌'})",
-        callback_data="os:toggle_phone_verification"
-    )])
+    _openai_db_key, _openai_env_key = get_openai_api_key_details()
+    if _openai_db_key:
+        _openai_suffix = "محفوظ ✅"
+    elif _openai_env_key:
+        _openai_suffix = "من متغير البيئة ✅"
+    else:
+        _openai_suffix = "غير مضبوط ❌"
     for row in rows:
         for i, btn in enumerate(row):
             if btn.callback_data == "os:toggle_maintenance":
@@ -764,51 +1088,91 @@ def owner_settings_kb():
                     base_label + _legendary_suffix,
                     callback_data="os:toggle_legendary_services",
                 )
-            elif btn.callback_data == "os:toggle_captcha":
+            elif btn.callback_data == "os:edit_jewel_to_points_rate":
                 row[i] = InlineKeyboardButton(
-                    f"🔐 التحقق ({'مفعّل ✅' if _captcha_on else 'معطّل ❌'})",
-                    callback_data="os:toggle_captcha",
+                    f"{btn.text} — 1 💎 = {_currency_rates['jewels_to_points']:,} نقطة",
+                    callback_data=btn.callback_data,
                 )
-    # Add legendary settings button
-    rows.append([InlineKeyboardButton("👑 إعدادات الخدمات الأسطورية", callback_data="legendary:settings")])
+            elif btn.callback_data == "os:edit_points_to_jewel_rate":
+                row[i] = InlineKeyboardButton(
+                    f"{btn.text} — 1 💎 مقابل {_currency_rates['points_to_jewels']:,} نقطة",
+                    callback_data=btn.callback_data,
+                )
     _buyback_on = is_buyback_visible()
-    rows.append([
-        InlineKeyboardButton(
-            f"💰 بيع حسابات تيليجرام ({'ظاهر للأعضاء ✅' if _buyback_on else 'مخفي عن الأعضاء ❌'})",
-            callback_data="os:toggle_buyback_visible",
-        ),
-        InlineKeyboardButton("📋 طلبات البيع", callback_data="buyback:owner:list"),
-    ])
-    rows.append([
-        InlineKeyboardButton(
-            f"💵 سعر الحساب السليم: {format_buyback_price(_buyback_price())}",
-            callback_data="os:edit_buyback_price",
-        ),
-    ])
-    rows.append([
-        InlineKeyboardButton(
-            f"💵 سعر الحساب المقيّد: {format_buyback_price(_buyback_price(restricted=True))}",
-            callback_data="os:edit_buyback_restricted_price",
-        ),
-    ])
-    rows.append([InlineKeyboardButton("🛡 إضافة مشرف", callback_data="os:add_supervisor"),
-                  InlineKeyboardButton("📋 إدارة المشرفين", callback_data="os:list_supervisors")])
-    rows.append([InlineKeyboardButton("👁 حسابات المشرفين", callback_data="os:sv_accounts")])
-    rows.append([InlineKeyboardButton("👤 معلومات الحسابات", callback_data="os:account_info")])
-    rows.append([
-        InlineKeyboardButton(
-            f"🔥 {get_raksh_accounts_label()}",
-            callback_data="os:raksh_accounts",
-        )
-    ])
-    rows.append([
-        InlineKeyboardButton(
-            "✏️ تغيير اسم خدمات تلي مميزة",
-            callback_data="os:edit_raksh_label",
-        )
-    ])
-    rows.append([InlineKeyboardButton("📦 الخدمات الجديدة", callback_data="os:new_services")])
-    rows.append([InlineKeyboardButton("🧩 إضافة/إزالة خيار", callback_data="mb_menu:owner_settings")])
+    _buyback_suffix = f" (ظاهر للأعضاء {'✅' if _buyback_on else '❌'})"
+    _buyback_price_label = format_buyback_price(_buyback_price())
+    _buyback_restricted_price_label = format_buyback_price(_buyback_price(restricted=True))
+    for row in rows:
+        for i, btn in enumerate(row):
+            if btn.callback_data == "os:openai_api":
+                base_label = btn.text.split(" (")[0]
+                row[i] = InlineKeyboardButton(
+                    base_label + f" ({_openai_suffix})",
+                    callback_data=btn.callback_data,
+                )
+            elif btn.callback_data == "os:toggle_buyback_visible":
+                base_label = btn.text.split(" (")[0]
+                row[i] = InlineKeyboardButton(
+                    base_label + _buyback_suffix,
+                    callback_data=btn.callback_data,
+                )
+            elif btn.callback_data == "os:edit_buyback_price":
+                row[i] = InlineKeyboardButton(
+                    f"{btn.text}: {_buyback_price_label}",
+                    callback_data=btn.callback_data,
+                )
+            elif btn.callback_data == "os:edit_buyback_restricted_price":
+                row[i] = InlineKeyboardButton(
+                    f"{btn.text}: {_buyback_restricted_price_label}",
+                    callback_data=btn.callback_data,
+                )
+    rows.append([InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _owner_settings_visible_items():
+    """عناصر قائمة المالك المفعّلة، مع إضافة زر أرقام تلي إن لم يوجد في القاعدة."""
+    hidden = {"os:toggle_phone_verification", "os:toggle_captcha"}
+    items = [
+        dict(item) for item in get_menu_items("owner_settings")
+        if item["action_value"] not in hidden
+    ]
+    try:
+        known = {item["action_value"] for item in get_menu_items("owner_settings", only_enabled=False)}
+    except Exception:
+        known = set()
+    if "tgnum:admin" not in known:
+        items.append({
+            "id": -1, "menu": "owner_settings", "label": "📲 إعدادات أرقام تلي",
+            "action_type": "builtin", "action_value": "tgnum:admin",
+            "width": 1, "enabled": 1,
+        })
+    return items
+
+
+def _owner_settings_items_for_group(group_key):
+    if group_key is None:
+        return []
+    return [
+        item for item in _owner_settings_visible_items()
+        if item["action_value"] != "main_menu"
+        and owner_settings_group_of(item["action_value"]) == group_key
+    ]
+
+
+def _owner_settings_groups_markup():
+    counts = {}
+    for item in _owner_settings_visible_items():
+        if item["action_value"] == "main_menu":
+            continue
+        key = owner_settings_group_of(item["action_value"])
+        counts[key] = counts.get(key, 0) + 1
+    buttons = [
+        InlineKeyboardButton(title, callback_data=f"osg:{key}")
+        for key, title, _values, _prefixes in OWNER_SETTINGS_GROUPS
+        if counts.get(key)
+    ]
+    rows = [buttons[index:index + 2] for index in range(0, len(buttons), 2)]
     rows.append([InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")])
     return InlineKeyboardMarkup(rows)
 
@@ -2208,7 +2572,7 @@ def charge_points_kb():
     ])
 
 def charge_stars_kb():
-    rate = int(get_setting("star_to_points") or "250")
+    rate = fmt_decimal(get_star_to_points_rate())
     quick_amounts = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000]
     quick_rows = []
     for i in range(0, len(quick_amounts), 5):
@@ -2229,7 +2593,8 @@ def exchange_kb():
             "SELECT id, name, quantity, points_cost FROM custom_prizes WHERE active=1 ORDER BY id"
         ).fetchall()
     rows = [
-        [InlineKeyboardButton("⭐ استبدال نقاط بنجوم", callback_data="exchange:stars")],
+        [InlineKeyboardButton("↔️ تحويل بين النقاط والمجوهرات", callback_data="currency_exchange")],
+        [InlineKeyboardButton("⭐ استبدال جواهر الإحالة بنجوم", callback_data="exchange:stars")],
         [InlineKeyboardButton("📱 شراء رقم تيلغرام",  callback_data="exchange:number")],
         [InlineKeyboardButton("📱 شراء رقم بالنجوم", callback_data="exchange:number_stars")],
         [InlineKeyboardButton("🎟 شراء عبر كود",       callback_data="exchange:num_code")],
@@ -2269,7 +2634,7 @@ def contact_owner_row() -> list:
 async def notify_group(app, text: str, reply_markup=None):
     if ADMIN_GROUP_ID:
         try:
-            await app.bot.send_message(ADMIN_GROUP_ID, text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+            await app.bot.send_message(ADMIN_GROUP_ID, sanitize_group_text(text), parse_mode=ParseMode.HTML, reply_markup=reply_markup)
         except Exception as e:
             logger.warning(f"notify_group error: {e}")
 
@@ -2279,6 +2644,7 @@ def format_service_order_group_message(
     cost: int,
     code: str,
     order_time=None,
+    currency_label: str = "نقطة",
 ) -> str:
     """يبني رسالة موحّدة لطلبات الخدمات في كروب الطلبات."""
     if order_time is None:
@@ -2287,11 +2653,12 @@ def format_service_order_group_message(
         order_time = order_time.replace(tzinfo=timezone.utc)
     iraq_time = order_time.astimezone(timezone(timedelta(hours=3)))
     time_text = iraq_time.strftime("%Y-%m-%d %H:%M")
+    price_text = "مجاناً" if currency_label == "مجاناً" else f"{cost} {currency_label}"
 
     return (
         "🆕 <b>طلب جديد</b>\n"
         f"📱 التطبيق: {html.escape(str(service_name or 'الخدمة'), quote=False)}\n"
-        f"💰 السعر: {cost} نقطة\n"
+        f"💰 السعر: {price_text}\n"
         f"🔢 العدد: {quantity}\n"
         f"🕒 الوقت: {time_text} (توقيت العراق)\n"
         f"📌 الكود: {html.escape(str(code), quote=False)}"
@@ -2308,7 +2675,7 @@ async def _maybe_send_to_group(bot, requester_id: int, text: str, parse_mode: st
     if requester_id != OWNER_ID:
         # عضو عادي → أرسل مباشرة
         try:
-            await bot.send_message(ADMIN_GROUP_ID, text, parse_mode=parse_mode)
+            await bot.send_message(ADMIN_GROUP_ID, sanitize_group_text(text), parse_mode=parse_mode)
         except Exception:
             pass
         return

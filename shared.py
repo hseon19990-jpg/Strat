@@ -1,0 +1,551 @@
+"""
+بوت تيلغرام متكامل مع منصة SMMMAIN.COM وموقع JustAnotherPanel
+المتغيرات المطلوبة في Railway:
+  BOT_TOKEN                  - توكن البوت
+  OWNER_ID                   - ايدي المالك
+  API_KEY                    - مفتاح API لموقع SMMMAIN.COM (الموقع 1)
+  JUSTANOTHERPANEL_API_KEY   - مفتاح API لموقع JustAnotherPanel.com (الموقع 2)
+  ADMIN_GROUP_ID             - ايدي الكروب الذي تصله الطلبات
+"""
+
+import os
+import re
+import asyncio
+import time
+import random
+import math
+import html
+import json
+import mimetypes
+import requests
+import logging
+import subprocess
+import traceback
+from datetime import date, datetime, timedelta, timezone
+from telegram import (
+    Update, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo,
+    LabeledPrice, BotCommand, BotCommandScopeChat,
+    KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
+)
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, MessageHandler,
+    CallbackQueryHandler, PreCheckoutQueryHandler,
+    ChatMemberHandler, ChatJoinRequestHandler, ContextTypes, filters
+)
+from telegram.constants import ParseMode
+from telegram.error import NetworkError, TimedOut, RetryAfter, Conflict
+
+
+# ────────────────────────────────────────────────────────────
+# ألوان أزرار تيليجرام — تعمل مع Bot API / PTB 22.7 وما بعده.
+# نستخدم نفس InlineKeyboardButton في كل الوحدات حتى تتوحّد الألوان.
+# ────────────────────────────────────────────────────────────
+_RAW_INLINE_KEYBOARD_BUTTON = InlineKeyboardButton
+BUTTON_CUSTOM_EMOJI_IDS = {}
+BUTTON_CUSTOM_EMOJI_SETTING_KEY = "button_custom_emoji_ids"
+
+
+def load_button_custom_emoji_ids(raw: str = "") -> None:
+    """تحميل خريطة أيقونات الأزرار من إعدادات قاعدة البيانات."""
+    global BUTTON_CUSTOM_EMOJI_IDS
+    try:
+        data = json.loads(raw or "{}")
+        BUTTON_CUSTOM_EMOJI_IDS = {
+            str(key).strip(): str(value).strip()
+            for key, value in data.items()
+            if str(key).strip() and str(value).strip().isdigit()
+        }
+    except (TypeError, ValueError, AttributeError):
+        BUTTON_CUSTOM_EMOJI_IDS = {}
+
+
+def set_button_custom_emoji(action_value: str, custom_emoji_id: str) -> None:
+    """تحديث أيقونة زر في الذاكرة فقط."""
+    key = str(action_value or "").strip()
+    value = str(custom_emoji_id or "").strip()
+    if key and value.isdigit():
+        BUTTON_CUSTOM_EMOJI_IDS[key] = value
+
+
+def save_button_custom_emoji(action_value: str, custom_emoji_id: str = "") -> None:
+    """تحديث أيقونة الزر وحفظها في settings حتى تبقى بعد إعادة التشغيل."""
+    key = str(action_value or "").strip()
+    value = str(custom_emoji_id or "").strip()
+    if not key or (value and not value.isdigit()):
+        return
+    if value:
+        set_button_custom_emoji(key, value)
+    else:
+        BUTTON_CUSTOM_EMOJI_IDS.pop(key, None)
+    try:
+        from .users import get_setting, set_setting
+        raw = get_setting(BUTTON_CUSTOM_EMOJI_SETTING_KEY) or "{}"
+        mapping = json.loads(raw)
+        if not isinstance(mapping, dict):
+            mapping = {}
+        if value:
+            mapping[key] = value
+        else:
+            mapping.pop(key, None)
+        set_setting(BUTTON_CUSTOM_EMOJI_SETTING_KEY, json.dumps(mapping, ensure_ascii=False))
+    except Exception as exc:
+        logger.warning(f"⚠️ تعذّر حفظ أيقونة الزر {key}: {exc}")
+
+
+def extract_custom_emoji_ids(message) -> list[str]:
+    """استخراج IDs من Premium Custom Emoji المرسل مع الرسالة."""
+    entities = getattr(message, "entities", None) or []
+    return [
+        str(getattr(entity, "custom_emoji_id", ""))
+        for entity in entities
+        if getattr(entity, "type", "") == "custom_emoji"
+        and str(getattr(entity, "custom_emoji_id", "")).isdigit()
+    ]
+
+
+def strip_custom_emoji_entities(text: str, message) -> str:
+    """إزالة Custom Emoji من الاسم مع إبقاء النص الذي كتبه المالك."""
+    entities = getattr(message, "entities", None) or []
+    spans = [
+        (int(getattr(entity, "offset", 0)), int(getattr(entity, "length", 0)))
+        for entity in entities
+        if getattr(entity, "type", "") == "custom_emoji"
+    ]
+    if not spans:
+        return text.strip()
+    raw = text.encode("utf-16-le")
+    for offset, length in sorted(spans, reverse=True):
+        raw = raw[:offset * 2] + raw[(offset + length) * 2:]
+    return raw.decode("utf-16-le", errors="ignore").strip()
+
+
+def _button_custom_emoji_id(callback_data: str = "", url: str = "") -> str | None:
+    value = str(callback_data or url or "")
+    for action_value, custom_emoji_id in sorted(
+        BUTTON_CUSTOM_EMOJI_IDS.items(), key=lambda item: len(item[0]), reverse=True
+    ):
+        if value == action_value or value.startswith(f"{action_value}:"):
+            return custom_emoji_id
+    return None
+
+
+def _button_style(text: str = "", callback_data: str = "") -> str:
+    """يعيد لون الزر حسب وظيفته مع إبقاء منطق callback كما هو."""
+    value = f"{text} {callback_data}".lower()
+    danger_words = (
+        "حذف", "إلغاء", "الغاء", "خروج", "مسح", "رفض", "تعطيل",
+        "delete", "cancel", "logout", "remove", "disable", "danger",
+    )
+    success_words = (
+        "تأكيد", "نعم", "تفعيل", "حفظ", "إرسال", "شراء", "شحن",
+        "تجميع", "استبدال", "تطبيق", "موافقة", "success", "confirm",
+        "enable", "save", "submit", "buy", "collect", "activate",
+    )
+    if any(word in value for word in danger_words):
+        return "danger"
+    if any(word in value for word in success_words):
+        return "success"
+    return "primary"
+
+
+def InlineKeyboardButton(*args, **kwargs):
+    """منشئ مركزي يضيف اللون وأيقونة Premium عند إعدادها."""
+    text = kwargs.get("text", args[0] if args else "")
+    callback_data = kwargs.get("callback_data", "")
+    if kwargs.get("style") is None:
+        kwargs["style"] = _button_style(str(text), str(callback_data))
+    if kwargs.get("icon_custom_emoji_id") is None:
+        custom_emoji_id = _button_custom_emoji_id(
+            str(callback_data), str(kwargs.get("url", ""))
+        )
+        if custom_emoji_id:
+            kwargs["icon_custom_emoji_id"] = custom_emoji_id
+    return _RAW_INLINE_KEYBOARD_BUTTON(*args, **kwargs)
+
+
+
+from telethon import TelegramClient, events, functions
+from telethon.sessions import StringSession
+from telethon.tl.types import (
+    DocumentAttributeVideo,
+    InputMediaUploadedDocument,
+    InputMediaUploadedPhoto,
+    InputPrivacyValueAllowAll,
+)
+import struct, base64, socket as _socket
+
+# ────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────
+_TG_DC = {
+    1: ("149.154.175.53",  443),
+    2: ("149.154.167.51",  443),
+    3: ("149.154.175.100", 443),
+    4: ("149.154.167.91",  443),
+    5: ("91.108.56.130",   443),
+}
+
+def pyrogram_json_to_telethon(data: dict) -> str | None:
+    """
+    يحوّل صيغة Pyrogram JSON إلى Telethon StringSession.
+    يتوقع dict يحتوي على:
+      - dc_id   : رقم مركز البيانات (1-5)
+      - auth_key: مفتاح المصادقة بصيغة hex (512 رمز = 256 بايت)
+    يُرجع StringSession string جاهز للاستخدام، أو None عند الفشل.
+
+    صيغة Telethon StringSession الصحيحة:
+      '1' + base64url( struct.pack('>B4sH256s', dc_id, ip_bytes, port, auth_key) )
+    """
+    try:
+        dc_id    = int(data.get("dc_id") or 0)
+        auth_hex = (data.get("auth_key") or "").strip()
+        if not dc_id or not auth_hex:
+            return None
+        auth_key = bytes.fromhex(auth_hex)
+        if len(auth_key) != 256:
+            return None
+        ip, port = _TG_DC.get(dc_id, ("149.154.167.51", 443))
+        packed = struct.pack(
+            ">B4sH256s",
+            dc_id,                      # dc_id  (1 byte)
+            _socket.inet_aton(ip),      # IP     (4 bytes)
+            port,                       # port   (2 bytes)
+            auth_key,                   # key    (256 bytes)
+        )
+        return "1" + base64.urlsafe_b64encode(packed).decode("ascii")
+    except Exception:
+        return None
+
+def _maybe_convert_session(raw: str) -> str:
+    """
+    إذا كانت raw عبارة عن JSON يحتوي dc_id + auth_key (صيغة Pyrogram)
+    يحوّلها إلى Telethon StringSession ويُعيدها، وإلا يُعيد raw كما هي.
+    """
+    s = raw.strip()
+    if s.startswith("{"):
+        import json as _j
+        try:
+            d = _j.loads(s)
+            converted = pyrogram_json_to_telethon(d)
+            if converted:
+                return converted
+        except Exception:
+            pass
+    return s
+
+def _parse_hex_session_text(raw_text: str) -> tuple[list[str], list[str], bool]:
+    """يقرأ نص auth_key_hex:dc_id دون إعادة النص الحساس في رسائل الخطأ."""
+    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    if not lines:
+        return [], [], False
+
+    candidate_lines = []
+    for line in lines:
+        if ":" not in line:
+            return [], [], False
+        hex_part, dc_part = line.rsplit(":", 1)
+        compact_hex = "".join(hex_part.split())
+        if dc_part.strip() not in {"1", "2", "3", "4", "5"}:
+            return [], [], False
+        if not re.fullmatch(r"[0-9a-fA-F]{512}", compact_hex):
+            return [], [], False
+        candidate_lines.append((compact_hex, int(dc_part.strip())))
+
+    sessions = []
+    bad_lines = []
+    for index, (hex_part, dc_id) in enumerate(candidate_lines, start=1):
+        converted = pyrogram_json_to_telethon({"dc_id": dc_id, "auth_key": hex_part})
+        if converted:
+            sessions.append(converted)
+        else:
+            bad_lines.append(f"السطر {index}: auth_key غير صالح")
+    return sessions, bad_lines, True
+
+from telethon.errors import (
+    SessionPasswordNeededError, PhoneCodeInvalidError, PhoneCodeExpiredError,
+    PhoneNumberInvalidError, FloodWaitError, PasswordHashInvalidError,
+    PeerFloodError, UserBannedInChannelError, ChatWriteForbiddenError,
+    UserPrivacyRestrictedError,
+)
+from telethon.tl.functions.auth import ResetAuthorizationsRequest, CheckPasswordRequest, AcceptLoginTokenRequest, ExportLoginTokenRequest
+from telethon.password import compute_check
+from telethon.tl.functions.account import (
+    GetAuthorizationsRequest, ResetAuthorizationRequest,
+    GetPasswordRequest, ResetPasswordRequest,
+)
+from telethon.tl.types import (
+    account as tl_account,
+)
+from telethon.tl.functions.messages import StartBotRequest
+from telethon.tl.functions.contacts import ResolveUsernameRequest
+from telethon.tl.functions.photos import UploadProfilePhotoRequest
+import pyotp
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+OPENAI_API_KEY_SETTING = "openai_api_key"
+
+
+def get_openai_api_key_details() -> tuple[str, str]:
+    """Return (database_key, environment_key) without exposing either value."""
+    stored_key = ""
+    try:
+        from .users import get_setting
+        stored_key = (get_setting(OPENAI_API_KEY_SETTING) or "").strip()
+    except Exception as exc:
+        logger.warning("⚠️ تعذّر قراءة مفتاح OpenAI المحفوظ: %s", exc)
+    return stored_key, os.environ.get("OPENAI_API_KEY", "").strip()
+
+
+def get_openai_api_key() -> str:
+    """Prefer the owner-managed key, then fall back to the deployment secret."""
+    stored_key, environment_key = get_openai_api_key_details()
+    return stored_key or environment_key
+
+
+def mask_api_key(value: str) -> str:
+    """Show only a safe fingerprint of an API key in owner-facing messages."""
+    value = str(value or "").strip()
+    if not value:
+        return "غير مضبوط"
+    if len(value) <= 8:
+        return "مخفي"
+    return f"{value[:4]}…{value[-4:]}"
+
+# ────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────
+import threading
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        # Railway uses this endpoint as a liveness probe. Keep it independent
+        # from Telegram so a temporary Telegram outage does not make Railway
+        # terminate an otherwise healthy process.
+        route = self.path.split("?", 1)[0]
+        if route == "/owner-app":
+            webapp_path = os.path.join(
+                os.path.dirname(__file__), "assets", "owner_webapp.html"
+            )
+            try:
+                with open(webapp_path, "rb") as webapp_file:
+                    body = webapp_file.read()
+            except OSError:
+                self.send_response(404)
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if route == "/partner/ref-status":
+            self._partner_ref_status()
+            return
+        if route not in {"/", "/health", "/healthz"}:
+            self.send_response(404)
+            self.end_headers()
+            return
+        body = b"OK - Bot process is alive\n"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _partner_ref_status(self):
+        """GET /partner/ref-status?uid=<id> مع ترويسة X-Partner-Key.
+
+        يستخدمه بوت الإيميلات للتحقق أن المستخدم فتح هذا البوت وكان جديداً. يتطلب متغير البيئة PARTNER_API_KEY، وبدونه تُرفض كل الطلبات.
+        """
+        import hmac as _hmac
+        import json as _json
+        from urllib.parse import urlsplit, parse_qs
+
+        def reply(code, payload):
+            body = _json.dumps(payload).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
+        expected = os.getenv("PARTNER_API_KEY", "").strip()
+        provided = (self.headers.get("X-Partner-Key") or "").strip()
+        if not expected or not _hmac.compare_digest(expected, provided):
+            reply(403, {"error": "forbidden"})
+            return
+        query = parse_qs(urlsplit(self.path).query)
+        try:
+            uid = int((query.get("uid") or [""])[0])
+        except ValueError:
+            reply(400, {"error": "bad_uid"})
+            return
+        try:
+            reply(200, partner_ref_status(uid))
+        except Exception:
+            logger.exception("❌ فشل partner_ref_status")
+            reply(500, {"error": "server_error"})
+
+    def do_HEAD(self):
+        route = self.path.split("?", 1)[0]
+        if route not in {"/", "/health", "/healthz"}:
+            self.send_response(404)
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", "0")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
+    def log_message(self, format, *args):
+        pass
+
+def run_health_server(server):
+    server.serve_forever()
+
+_health_server_started = False
+def start_health_server():
+    global _health_server_started
+    if _health_server_started:
+        return  # لا تُشغّل مرتين عند إعادة التشغيل الداخلية
+    import socket as _hsock
+    port = int(os.getenv("PORT", "8080"))
+    # Bind before starting the thread. If PORT is invalid or already occupied,
+    # fail startup so the outer supervisor can restart the service instead of
+    # leaving a running bot with no reachable health endpoint.
+    server = ThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
+    server.socket.setsockopt(_hsock.SOL_SOCKET, _hsock.SO_REUSEADDR, 1)
+    server.daemon_threads = True
+    _health_server_started = True
+    t = threading.Thread(target=run_health_server, args=(server,), daemon=True)
+    t.start()
+    logger.info(f"✅ Health server started on port {port}")
+
+# ────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────
+def _safe_int_env(name: str, default: int = 0) -> int:
+    """يقرأ متغير بيئة كرقم صحيح، ويرجع القيمة الافتراضية إذا كانت القيمة غير موجودة أو غير صالحة."""
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning(f"⚠️ المتغير البيئي {name} له قيمة غير صالحة كرقم ({raw!r})، سيتم استخدام {default}.")
+        return default
+
+BOT_TOKEN      = os.getenv("BOT_TOKEN", "")
+OWNER_ID       = _safe_int_env("OWNER_ID", 0)
+API_KEY        = os.getenv("API_KEY", "")
+ADMIN_GROUP_ID   = _safe_int_env("ADMIN_GROUP_ID", 0)
+NUMBERS_GROUP_ID = _safe_int_env("NUMBERS_GROUP_ID", 0)  # كروب إشعارات الأرقام (منفصل عن كروب الطلبات)
+
+
+_GROUP_MEMBER_LINE_RE = re.compile(
+    r"^[^\n]*(?:tg://user\?id=|🆔|المستخدم\s*:|طلب المستخدم|👤\s*(?:<code>|`)?-?\d{5,}|👤\s*<a\s)[^\n]*\n?",
+    re.MULTILINE,
+)
+_GROUP_INLINE_MEMBER_RE = re.compile(r"\s*\|\s*👤\s*(?:<code>|`)?-?\d{5,}(?:</code>|`)?")
+
+
+def sanitize_group_text(text):
+    """يحذف أي آيدي أو يوزر أو رابط منشن خاص بالعضو من رسائل كروب الطلبات."""
+    if not isinstance(text, str):
+        return text
+    text = _GROUP_INLINE_MEMBER_RE.sub("", text)
+    text = _GROUP_MEMBER_LINE_RE.sub("", text)
+    return text.strip("\n")
+API_URL        = "https://smmmain.com/api/v2"
+
+JUSTANOTHERPANEL_API_KEY = os.getenv("JUSTANOTHERPANEL_API_KEY", "")
+SMMFOLLOWS_API_KEY       = os.getenv("SMMFOLLOWS_API_KEY", "")
+TELEGRAM_API_ID   = os.getenv("TELEGRAM_API_ID", "")
+TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "")
+
+_pending_number_logins = {}
+_pending_supervisor_logins = {}   # supervisor_user_id -> {client, phone, phone_code_hash}
+_pending_independent_session_logins = {}  # owner_id -> independent session login state
+_buyer_received_codes = {}  # buyer_user_id -> {"code": str, "time": float} آخر كود وصل بعد البيع
+_demo_purchases = {}        # buyer_user_id -> {"phone": str, "session_str": str, "twofa": str, "purchase_time": datetime} — شراء بكود تجريبي (لا يُسجَّل في prize_exchanges)
+_pending_bulk_import  = set()  # user_ids ينتظرون إرسال JSON للاستيراد الجماعي
+# stock_id -> {"phone", "session", "stock_id", "retries"} — حسابات تحتاج إصلاح تلقائي (طرد + 2FA)
+_accounts_needing_fixup: dict = {}
+_pending_group_msgs   = {}  # key -> {"text": str, "parse_mode": str} رسائل كروب معلّقة تنتظر موافقة المالك
+_expected_2fa_change = {}
+_referral_rate_tracker = {}  # inviter_id -> list[float] لكشف رشق الإحالات (5 في 5 ثوانٍ)
+_avatar_upload_locks = {}  # owner_id -> asyncio.Lock لمنع معالجة صور الألبوم بالتوازي
+_avatar_album_buffers = {}  # (owner_id, media_group_id) -> {"file_ids": [], "chat_id": int}
+_avatar_album_tasks = {}  # (owner_id, media_group_id) -> debounce task
+_story_upload_locks = {}  # owner_id -> asyncio.Lock لمنع معالجة صور الستوري بالتوازي
+_story_album_buffers = {}  # (owner_id, media_group_id) -> {"file_ids": [], "chat_id": int}
+_story_album_tasks = {}  # (owner_id, media_group_id) -> debounce task
+_EXPECTED_2FA_WINDOW_SEC = 180
+_allow_5min_phones = {}  # phone_number -> {"until": float, "used": bool}
+_permanently_allowed_phones = set()  # أرقام فيها جلسة خارجية مسموح لها بالبقاء للأبد
+_OWN_BOT_USERNAME: str = ""          # يُضبط عند الإقلاع — يُستخدم لتخطي الإحالة الذاتية
+JUSTANOTHERPANEL_API_URL = "https://justanotherpanel.com/api/v2"
+SMMFOLLOWS_API_URL       = "https://smmfollows.com/api/v2"
+
+# حالات الإدخال الخاصة بلوحة المالك يجب ألا تتشارك بياناتها. بدون هذا
+# التنظيف، يمكن أن تبقى قيمة مثل edit_svc_id أو حالة سعر قديمة عندما يبدأ
+# المالك عملية نقاط/أكواد جديدة من رسالة أو زر آخر.
+_OWNER_FLOW_PREFIXES = (
+    "new_svc_",
+    "ns_",
+    "edit_svc_",
+    "points_",
+    "jewels_",
+    "raksh_jewel_",
+    "new_promo_",
+    "new_num_code",
+)
+
+def reset_owner_flow(context, state: str = "main_menu") -> None:
+    """يمسح بيانات الإدخال المؤقتة للمالك ويبدأ حالة محايدة."""
+    user_data = getattr(context, "user_data", None)
+    if not isinstance(user_data, dict):
+        return
+    for key in list(user_data):
+        if key == "owner_flow" or key.startswith(_OWNER_FLOW_PREFIXES):
+            user_data.pop(key, None)
+    user_data["state"] = state
+
+def begin_owner_flow(context, flow: str, state: str, **values) -> None:
+    """يبدأ عملية مالك معزولة عن أي عملية سابقة."""
+    reset_owner_flow(context, state=state)
+    context.user_data["owner_flow"] = flow
+    context.user_data.update(values)
+
+# ────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────
+PANEL_MAP = {
+    1: {"name": "SMMMAIN",         "key": API_KEY,                  "url": API_URL},
+    2: {"name": "JustAnotherPanel", "key": JUSTANOTHERPANEL_API_KEY, "url": JUSTANOTHERPANEL_API_URL},
+    3: {"name": "SmmFollows",       "key": SMMFOLLOWS_API_KEY,       "url": SMMFOLLOWS_API_URL},
+}
+
+# ────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────
+import psycopg2
+import psycopg2.extras
+import psycopg2.pool
+
+DATABASE_URL = (
+    os.environ.get("DATABASE_URL") or
+    os.environ.get("DB_FILE") or
+    os.environ.get("POSTGRES_URL") or
+    os.environ.get("POSTGRESQL_URL") or
+    ""
+)
+
+_pool = None
+_pool_lock = threading.Lock()

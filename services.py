@@ -1,0 +1,993 @@
+"""Part of the SMMMAIN Telegram bot.
+
+This section is loaded with the shared compatibility namespace so existing
+handlers can continue to call each other while the code stays separated by
+domain.
+"""
+
+from . import shared as _shared
+globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
+
+from decimal import Decimal, InvalidOperation, ROUND_CEILING
+
+def fmt_price(n) -> str:
+    """يعرض السعر بدون فاصلة عشرية إن كان رقماً صحيحاً (100.0 → 100)، وإلا يُبقيه كما هو."""
+    try:
+        f = float(n)
+    except (TypeError, ValueError):
+        return str(n)
+    return str(int(f)) if f == int(f) else str(f)
+
+SMM_POINTS_PER_STAR = 1000
+SMM_POINTS_PER_JEWEL = 1000
+
+def fmt_jewel_amount(amount) -> str:
+    """يعرض رصيد المجوهرات مع الكسور عند وجودها، ويفصل الآلاف."""
+    try:
+        value = Decimal(str(amount or 0))
+        if not value.is_finite():
+            return "0"
+        value = value.normalize()
+    except (InvalidOperation, TypeError, ValueError):
+        return "0"
+    whole, dot, fraction = format(value, "f").partition(".")
+    whole_text = f"{int(whole):,}"
+    return f"{whole_text}.{fraction}" if dot else whole_text
+
+def smm_service_cost_points(quantity: int, price_per_thousand) -> int:
+    """يحتفظ بقيمة الخدمة الدقيقة حتى تحويلها لاحقاً إلى نجوم/مجوهرات صحيحة."""
+    try:
+        quantity_value = Decimal(str(quantity or 0))
+        rate = Decimal(str(price_per_thousand or 0))
+        if quantity_value <= 0 or rate <= 0:
+            return 0
+        points = quantity_value * rate / Decimal(1000)
+        return int(points.to_integral_value(rounding=ROUND_CEILING))
+    except (InvalidOperation, TypeError, ValueError, ZeroDivisionError):
+        return 0
+
+def smm_stars_cost(points) -> int:
+    """تحويل سعر خدمة مواقع الرشق إلى نجوم مع التقريب للأعلى."""
+    try:
+        value = max(Decimal(0), Decimal(str(points or 0)))
+        return int((value / SMM_POINTS_PER_STAR).to_integral_value(rounding=ROUND_CEILING))
+    except (InvalidOperation, TypeError, ValueError):
+        return 0
+
+def smm_jewels_cost(points) -> int:
+    """يحوّل السعر إلى مجوهرات؛ كل 1000 نقطة (سنت) تساوي مجوهرة واحدة."""
+    try:
+        value = max(Decimal(0), Decimal(str(points or 0)))
+        return int((value / SMM_POINTS_PER_JEWEL).to_integral_value(rounding=ROUND_CEILING))
+    except (InvalidOperation, TypeError, ValueError):
+        return 0
+
+def smm_price_rates(price_per_thousand: float) -> tuple[int, int]:
+    """يعرض أسعار النجوم والمجوهرات لخدمة مقدارها 1000 وحدة."""
+    points = smm_service_cost_points(1000, price_per_thousand)
+    return smm_stars_cost(points), smm_jewels_cost(points)
+
+CATEGORY_MAP = {
+    "followers":    "رشق متابعين",
+    "views":        "رشق مشاهدات",
+    "interactions": "رشق تفاعلات",
+    "story_views":  "رشق مشاهدات ستوري",
+    "start_bot":    "رشق بدء (ستارت) بوت",
+    "boost":        "تعزيز قناة أو كروب",
+    "post_stars":   "نجوم على بوست قناة",
+    "other":        "خدمات أخرى",
+}
+
+RAKSH_ACCOUNTS_LABEL_SETTING = "raksh_accounts_label"
+DEFAULT_RAKSH_ACCOUNTS_LABEL = "خدمات تيليجرام أسطورية"
+ALL_POSTS_REACTIONS_MENU_MIGRATION_SETTING = (
+    "raksh_all_posts_reactions_menu_exposed"
+)
+POINTS_TO_JEWELS_RATE_BUTTON_MIGRATION_SETTING = (
+    "owner_points_to_jewels_rate_button_exposed_v1"
+)
+
+def get_raksh_accounts_label() -> str:
+    """يعيد الاسم المخصص لقسم حسابات الرشق مع قيمة افتراضية آمنة."""
+    configured = (get_setting(RAKSH_ACCOUNTS_LABEL_SETTING) or "").strip()
+    
+    # إذا كان الاسم المخصص فارغاً أو يساوي الاسم القديم، نعيد الاسم الجديد دائماً
+    if not configured or configured in {
+        "حسابات خدمات الرشق",
+        "خدمات الرشق",
+        "خدمات المرتقى",
+        "خدمات تلي مميزة",
+    }:
+        return "خدمات تيليجرام أسطورية"
+    
+    # وإلا نعيد الاسم المخصص الذي اختاره المالك
+    return " ".join(configured.split())[:64]
+
+SERVICE_PLATFORMS = [
+    ("📱 تيلجرام", "services_menu_tg"),
+    ("📸 انستغرام", "services_menu_ig"),
+    ("🎵 تيك توك", "services_menu_tt"),
+    ("💬 واتساب", "services_menu_wa"),
+    ("📘 فيس بوك", "services_menu_fb"),
+    ("▶️ يوتيوب", "services_menu_yt"),
+    ("👻 سناب شات", "services_menu_sc"),
+    ("🐦 تويتر", "services_menu_tw"),
+]
+SERVICE_PLATFORM_MENUS = {v for _, v in SERVICE_PLATFORMS}
+
+PLATFORM_MENU_MAP = {
+    "services_menu_tg": "tg",
+    "services_menu_ig": "ig",
+    "services_menu_tt": "tt",
+    "services_menu_wa": "wa",
+    "services_menu_fb": "fb",
+    "services_menu_yt": "yt",
+    "services_menu_sc": "sc",
+    "services_menu_tw": "tw",
+}
+PLATFORM_LABEL_MAP = {
+    "tg": "📱 تيلجرام",
+    "ig": "📸 انستغرام",
+    "tt": "🎵 تيك توك",
+    "wa": "💬 واتساب",
+    "fb": "📘 فيس بوك",
+    "yt": "▶️ يوتيوب",
+    "sc": "👻 سناب شات",
+    "tw": "🐦 تويتر",
+}
+
+MENU_LABELS = {
+    "main": "القائمة الرئيسية",
+    "owner_settings": "قائمة إعدادات المالك",
+    "collect_points": "تجميع نقاط",
+    "contact_support": "تواصل مع الدعم",
+    "services_menu": "قائمة الخدمات",
+    "currency_exchange": "تحويل النقاط والمجوهرات",
+}
+MENU_LABELS.update({v: f"خدمات: {lbl.split(' ', 1)[1]}" for lbl, v in SERVICE_PLATFORMS})
+MENU_LABELS.update({f"cat:{k}": f"قائمة فئة: {v}" for k, v in CATEGORY_MAP.items()})
+MENU_LABELS["legendary_services"] = "الخدمات الأسطورية"
+MENU_LABELS["raksh_menu"] = "قائمة خدمات الرشق"
+
+SERVICES_MENU_CATEGORIES = [
+    "followers",
+    "views",
+    "interactions",
+    "story_views",
+    "start_bot",
+    "boost",
+    "post_stars",
+    "other",
+]
+
+MANAGEABLE_MENUS = [
+    "main",
+    "collect_points",
+    "currency_exchange",
+    "owner_settings",
+    "services_menu",
+    "legendary_services",
+    "raksh_menu",
+] + [v for _, v in SERVICE_PLATFORMS] + [f"cat:{k}" for k in CATEGORY_MAP]
+
+OWNER_ONLY_MAIN_ACTIONS = {"mb_menu:main", "owner_settings"}
+MENU_ACTIONS_CANNOT_HIDE = {
+    "mb_menu:main",
+    "mb_menu:owner_settings",
+    "main_menu",
+    "owner_settings",
+}
+
+
+def visible_main_menu_items(items, is_owner: bool):
+    """Keep owner controls out of member menus while sharing the stored layout."""
+    if is_owner:
+        return items
+    return [
+        item for item in items
+        if item["action_value"] not in OWNER_ONLY_MAIN_ACTIONS
+    ]
+
+
+def menu_action_cannot_hide(action_value: str) -> bool:
+    """Protect the owner controls and navigation needed to reopen their menus."""
+    return action_value in MENU_ACTIONS_CANNOT_HIDE
+
+
+def owner_settings_with_purchase_rate_after_sale(items):
+    """Keep the two jewel exchange rates together in the owner settings menu."""
+    ordered = list(items)
+    purchase_index = next(
+        (
+            i for i, item in enumerate(ordered)
+            if item["action_value"] == "os:edit_points_to_jewel_rate"
+        ),
+        -1,
+    )
+    sale_index = next(
+        (
+            i for i, item in enumerate(ordered)
+            if item["action_value"] == "os:edit_jewel_to_points_rate"
+        ),
+        -1,
+    )
+    if purchase_index < 0 or sale_index < 0:
+        return ordered
+
+    purchase_item = ordered.pop(purchase_index)
+    sale_index = next(
+        i for i, item in enumerate(ordered)
+        if item["action_value"] == "os:edit_jewel_to_points_rate"
+    )
+    ordered.insert(sale_index + 1, purchase_item)
+    return ordered
+
+
+# These controls are rendered in owner_settings_kb with dynamic status text,
+# but they are still ordinary owner buttons. Keeping their definitions in the
+# same menu_items store makes them visible to the button manager as well.
+OWNER_SETTINGS_EXTRA_DEFAULTS = [
+    ("🤖 مفتاح OpenAI", "os:openai_api", 1),
+    ("📲 إعدادات أرقام تلي", "tgnum:admin", 1),
+    ("👥 كروب إشعار الأعضاء الجدد", "os:edit_new_users_group", 2),
+    ("🏅 جوائز الأكثر دعوة الأسبوعي", "os:weekly_ref", 1),
+    ("👑 إعدادات الخدمات الأسطورية", "legendary:settings", 1),
+    ("💰 بيع حسابات تيليجرام", "os:toggle_buyback_visible", 2),
+    ("📋 طلبات البيع", "buyback:owner:list", 2),
+    ("💵 سعر الحساب السليم", "os:edit_buyback_price", 1),
+    ("💵 سعر الحساب المقيّد", "os:edit_buyback_restricted_price", 1),
+    ("🛡 إضافة مشرف", "os:add_supervisor", 2),
+    ("📋 إدارة المشرفين", "os:list_supervisors", 2),
+    ("👁 حسابات المشرفين", "os:sv_accounts", 1),
+    ("👤 معلومات الحسابات", "os:account_info", 1),
+    ("🔥 خدمات الرشق", "os:raksh_accounts", 1),
+    ("ادمنية الرشق", "os:raksh_admins", 1),
+    ("✏️ تغيير اسم خدمات تلي مميزة", "os:edit_raksh_label", 1),
+    ("📦 الخدمات الجديدة", "os:new_services", 1),
+    ("💎 أسعار الانضمام للقنوات", "os:join_prices", 1),
+]
+
+LEGENDARY_SERVICES_MESSAGE = (
+    "👑 *الخدمات الأسطورية*\n\n"
+    "جميع الحسابات حقيقية ولديها ستوري وبايو وصورة وافتار\n\n"
+    "💰 *أسعار الخدمات (نقاط + نجوم):*\n"
+    "• 💬 تعليق: 30 نقطة/وحدة + 30 قناة | ⭐ 1 نجمة لكل 5\n"
+    "• 📊 استفتاء: 30 نقطة/وحدة + 30 قناة | ⭐ 1 نجمة لكل 5\n"
+    "• 👁 ستوري: 30 نقطة/وحدة + 30 قناة | ⭐ 1 نجمة لكل 10\n"
+    "• 🗳 أصوات: 20 نقطة/وحدة + 25 قناة | ⭐ 1 نجمة لكل 10\n"
+    "• 🤖 تصويت بتحقق: 50 نقطة/وحدة + 25 قناة | ⭐ 1 نجمة لكل 4\n"
+    "• ✨ تفاعل مميز: 10 نقاط/وحدة + 0 قناة | ⭐ 1 نجمة لكل 25\n"
+    "• 🤖 إحالة بوت إجباري تحتوي تحقق: 300 نقطة/وحدة + 25 قناة | ⭐ 1.5 نجمة/حساب (أعداد زوجية فقط) ⚠️\n\n"
+    "⏱️ الفاصل بين الحسابات: 1-8 دقائق (تلقائي)\n"
+    "🔹 المالك يمكنه تحديد فاصل زمني مخصص\n\n"
+    "اختر الخدمة:"
+)
+
+LEGENDARY_SERVICE_OPTIONS = [
+    ("💬 رشق تعليق", "legendary:start:comment", 1),
+    ("📊 رشق استفتاء", "legendary:start:poll", 1),
+    ("👁 رشق مشاهدة وتفاعل ستوري", "legendary:start:story", 1),
+    ("🗳 رشق أصوات", "legendary:start:votes", 1),
+    ("🤖 رشق تصويت بتحقق", "legendary:start:votes_ai", 1),
+    ("✨ رشق تفاعل مميز", "legendary:start:premium_reaction", 1),
+    ("🤖 إحالة بوت إجباري تحتوي تحقق", "legendary:start:forced_ref_ai", 1),
+]
+
+_LEGENDARY_SERVICE_TYPES = {
+    action.rsplit(":", 1)[-1]
+    for _, action, _ in LEGENDARY_SERVICE_OPTIONS
+}
+
+def resolve_legendary_service_type(action_value: str) -> str | None:
+    """Resolve current and legacy callback values to a service type."""
+    if not action_value:
+        return None
+
+    parts = action_value.split(":")
+    candidates = []
+    if len(parts) == 3 and parts[:2] == ["legendary", "start"]:
+        candidates.append(parts[2])
+    elif len(parts) == 2 and parts[0] in {"legendary", "legendary_service"}:
+        candidates.append(parts[1])
+    elif len(parts) == 2 and parts[0] == "legendary_start":
+        candidates.append(parts[1])
+
+    for candidate in candidates:
+        if candidate in _LEGENDARY_SERVICE_TYPES:
+            return candidate
+    return None
+
+def normalize_legendary_menu_item(item):
+    """Return a menu item with the callback format understood by the router."""
+    action_value = item["action_value"]
+    service_type = resolve_legendary_service_type(action_value)
+
+    if not service_type:
+        label = item["label"]
+        service_type = next(
+            (
+                action.rsplit(":", 1)[-1]
+                for default_label, action, _ in LEGENDARY_SERVICE_OPTIONS
+                if label == default_label
+            ),
+            None,
+        )
+
+    if not service_type:
+        return item
+
+    normalized = dict(item)
+    normalized["action_type"] = "builtin"
+    normalized["action_value"] = f"legendary:start:{service_type}"
+    return normalized
+
+RAKSH_MENU_DEFAULTS = [
+    ("✉️ إرسال رسالة", "raksh:send_message", 1),
+    ("📋 طلباتي", "raksh:my_orders", 1),
+    ("📱 مشاهدة ستوري وتفاعل", "raksh:start:story", 1),
+    ("🔑 إحالة بوت إجباري", "raksh:start:forced_ref", 1),
+    ("🤖 إحالة بوت إجباري مع تحقق", "raksh:start:forced_ref_ai", 1),
+    ("💬 رشق تعليق", "raksh:start:comment", 1),
+    ("📊 رشق استفتاء", "raksh:start:poll", 1),
+    ("🗳 رشق أصوات", "raksh:start:votes", 1),
+    ("🛡 رشق تصويت مع تحقق", "raksh:start:votes_ai", 1),
+    ("✨ رشق تفاعل مميز", "raksh:start:premium_reaction", 1),
+    ("💬👁 رشق تفاعلات ومشاهدات لكل البوستات", "raksh:start:all_posts_reactions", 1),
+    ("🔥 إدارة خدمات الرشق", "os:raksh_accounts", 1),
+    ("⚙️ إدارة الأسعار", "raksh:settings", 1),
+]
+
+BUILTIN_DEFAULTS = {
+"main": [
+        ("🐺 خدمات", "services_menu", 2),
+         ("🛍 خدمات الرشق", "raksh_menu", 2),
+         ("📱 تأجير أرقامي", "contributor_accounts", 2),
+         ("📤 مشاركة حساب", "share_account:menu", 2),
+        ("💰 بيع حساب تيليجرام", "buyback:start", 2),
+        ("📲 أرقام تلي كل دول العالم", "tgnum:start", 1),
+        ("👑 خدمات تيليجرام أسطورية", "legendary_services", 1),
+        ("🦇 تمويل قناتك حقيقي", "fund_channel", 1),
+        ("👻 رابط دعوة", "referral", 1),
+        ("👍 شحن نقاط", "charge_points", 2),
+        ("💎 شحن مجوهرات", "jewels_topup", 2),
+        ("⭐ تجميع نقاط", "collect_points", 2),
+        ("🎁 هدية يومية", "daily_gift", 2),
+        ("🎁 هدية مؤقتة", "temporary_gift", 2),
+        ("🎁 استبدال جواهر بجوائز", "exchange_points", 2),
+        ("🎡 دورة وهداية كبيرة", "wheel:menu", 1),
+        ("↔️ تحويل بين النقاط والمجوهرات", "currency_exchange", 2),
+        ("🎙 تحويل النقاط", "transfer_points", 2),
+        ("🎟 استخدام كود", "use_promo", 2),
+        ("⭐ معلوماتي", "my_info", 2),
+        ("📱 ارقامي", "my_numbers", 1),
+        ("🎁 الأكثر دعوةً اليوم", "top_ref_today", 2),
+        ("✅ تواصل مع الدعم", "contact_support", 2),
+        ("💌 شكر المالك", "thank_owner", 2),
+        ("🏆 مسابقة الدعوة", "referral_contest_view", 2),
+        ("📧 احصل على نقاط مقابل إيميل جيميل", "gmail_points", 1),
+        ("💎 الحصول على 25 جوهرة", "get_25_jewels", 1),
+        ("🔑 إحالة بوت اجباري", "forced_ref", 2),
+        ("🧩 تعديل أزرار الواجهة", "mb_menu:main", 1),
+        ("⚙️ إعدادات المالك", "owner_settings", 1),
+    ],
+    "collect_points": [
+        ("👻 رابط دعوة", "referral", 1),
+        ("💰 بيع حساب", "buyback:start", 1),
+        ("📱 استئجار حساب", "contributor_accounts", 1),
+        ("📡 الانضمام للقنوات", "join_channels", 2),
+        ("🎁 الهدية اليومية", "daily_gift", 2),
+        ("📧 احصل على نقاط مقابل إيميل جيميل", "gmail_points", 1),
+        ("🔐 التحقق", "totp_generator", 2),
+        ("📋 الإيميلات المقبولة والمرفوضة", "my_gmail_history", 2),
+    ],
+    "currency_exchange": [
+        ("💎 تحويل مجوهرات إلى نقاط", "cx:start:jewels_to_points", 1),
+        ("💰 تحويل نقاط إلى مجوهرات", "cx:start:points_to_jewels", 1),
+        ("🔙 رجوع", "main_menu", 1),
+    ],
+    "services_menu": [(label, value, 2) for label, value in SERVICE_PLATFORMS],
+    "legendary_services": LEGENDARY_SERVICE_OPTIONS,
+    "raksh_menu": RAKSH_MENU_DEFAULTS,
+    "services_menu_tg": [
+        ("👥 رشق متابعين", "cat:followers", 2),
+        ("👁 رشق مشاهدات", "cat:views", 2),
+        ("💬 رشق تفاعلات", "cat:interactions", 2),
+        ("📖 رشق مشاهدات ستوري", "cat:story_views", 2),
+        ("🤖 رشق بدء (ستارت) بوت", "cat:start_bot", 2),
+        ("📣 تعزيز قناة أو كروب", "cat:boost", 2),
+        ("⭐ نجوم على بوست قناة", "cat:post_stars", 1),
+        ("🔧 خدمات أخرى", "cat:other", 1),
+    ],
+    "services_menu_ig": [
+        ("👥 متابعين", "cat:followers", 2),
+        ("👁 مشاهدات", "cat:views", 2),
+        ("💬 تفاعلات", "cat:interactions", 2),
+        ("📖 مشاهدات ستوري", "cat:story_views", 2),
+        ("🔧 خدمات أخرى", "cat:other", 1),
+    ],
+    "services_menu_tt": [
+        ("👥 متابعين", "cat:followers", 2),
+        ("👁 مشاهدات", "cat:views", 2),
+        ("💬 تفاعلات", "cat:interactions", 2),
+        ("🔧 خدمات أخرى", "cat:other", 1),
+    ],
+    "services_menu_wa": [
+        ("👥 أعضاء", "cat:followers", 2),
+        ("👁 مشاهدات", "cat:views", 2),
+        ("🔧 خدمات أخرى", "cat:other", 1),
+    ],
+    "services_menu_fb": [
+        ("👥 متابعين", "cat:followers", 2),
+        ("👁 مشاهدات", "cat:views", 2),
+        ("💬 تفاعلات", "cat:interactions", 2),
+        ("🔧 خدمات أخرى", "cat:other", 1),
+    ],
+    "services_menu_yt": [
+        ("👥 مشتركين", "cat:followers", 2),
+        ("👁 مشاهدات", "cat:views", 2),
+        ("💬 تفاعلات", "cat:interactions", 2),
+        ("🔧 خدمات أخرى", "cat:other", 1),
+    ],
+    "services_menu_sc": [
+        ("👥 متابعين", "cat:followers", 2),
+        ("👁 مشاهدات", "cat:views", 2),
+        ("📖 مشاهدات ستوري", "cat:story_views", 2),
+        ("🔧 خدمات أخرى", "cat:other", 1),
+    ],
+    "services_menu_tw": [
+        ("👥 متابعين", "cat:followers", 2),
+        ("👁 مشاهدات", "cat:views", 2),
+        ("💬 تفاعلات", "cat:interactions", 2),
+        ("🔧 خدمات أخرى", "cat:other", 1),
+    ],
+    "owner_settings": [
+        ("➕ إضافة خدمة", "os:add_service", 2),
+        ("📋 قائمة الخدمات", "os:list_services", 2),
+        ("🗂 عرض الخدمات", "os:view_services", 2),
+        ("🔍 الفحص", "os:inspect_services", 2),
+        ("📦 قسم الطلبات", "os:orders_section", 2),
+        ("🔎 فحص الطلب", "os:oi:ask", 2),
+         ("👤 تتبع عضو", "os:member_tracking", 2),
+        ("📝 تعديل وصف عدة خدمات", "os:share_description", 2),
+        ("🎀 جوائز مخصصة", "os:manage_prizes", 2),
+        ("🔗 تعديل نقاط الدعوة الأساسية", "os:edit_referral", 2),
+        ("🪜 مستويات الدعوة (نقاط/جواهر)", "os:referral_levels", 2),
+        ("🎁 تغيير مكافأة الإحالة عند بلوغ عدد", "os:referral_rewards", 2),
+        ("⏱ إعادة الضبط اليومية للإحالات", "os:referral_daily_free", 2),
+        ("⭐ سعر النجمة شحن", "os:edit_star_rate", 2),
+        ("🏆 سعر نجمة الجوائز", "os:edit_exchange_rate", 2),
+        ("💎 جواهر كل نجمة", "os:edit_jewel_star_price", 2),
+        ("💎 سعر الجوهرة بالنقاط", "os:edit_jewel_to_points_rate", 2),
+        ("💰 سعر شراء الجوهرة بالنقاط", "os:edit_points_to_jewel_rate", 2),
+        ("📦 باقات الاستبدال بنجوم", "os:manage_star_packages", 1),
+        ("📱 سعر رقم تيلغرام", "os:edit_number_cost", 2),
+        ("⭐ سعر رقم بالنجوم", "os:edit_number_stars", 2),
+        ("💌 رسالة الترحيب", "os:edit_welcome", 2),
+        ("📥 مخزون أرقام تيلغرام", "os:manage_numbers", 2),
+        ("🎟 أكواد شراء رقم", "os:manage_num_codes", 2),
+        ("🔄 سعر تمويل داخلي", "os:edit_internal_cost", 2),
+        ("🎁 نقاط الانضمام للقنوات", "os:edit_join_reward", 1),
+        ("🎁 كمية الهدية اليومية", "os:edit_daily_gift", 1),
+        ("🎁 إنشاء هدية مؤقتة", "os:create_temporary_gift", 1),
+        ("❌ خصم مغادرة القناة", "os:edit_leave_penalty", 1),
+        ("⏱ مهلة المغادرة الآمنة (ساعة)", "os:edit_leave_grace", 1),
+        ("⭐ إجباري: حد أدنى (نجوم)", "os:edit_mstars_min", 2),
+        ("⭐ إجباري: حد الشريحة 1", "os:edit_mstars_t1max", 2),
+        ("⭐ إجباري: سعر ش1 (×100)", "os:edit_mstars_t1p", 2),
+        ("⭐ إجباري: سعر ش2 (×100)", "os:edit_mstars_t2p", 2),
+        ("📧 إيميلات جيميل", "os:list_gmail", 2),
+        ("🔐 حسابات التحقق", "os:verified_gmail", 2),
+        ("📋 سجل كل الإيميلات", "os:all_gmail_history", 2),
+        ("⚙️ نقاط طلب جيميل", "os:edit_gmail_reward", 2),
+        ("✏️ نص رسالة الجيميل", "os:edit_gmail_msg", 2),
+        ("🏷 اسم زر الإيميل", "os:edit_gmail_btn_label", 2),
+         ("🔗 رابط البوت الآخر للإيميل", "os:edit_gmail_redirect_url", 2),
+        ("📨 رسالة طلب الإيميل", "os:edit_gmail_email_prompt", 2),
+        ("🔑 رسالة طلب الباسورد", "os:edit_gmail_pass_prompt", 2),
+        ("💬 نص طلب ملاحظة التحقق", "os:edit_gmail_verification_note_prompt", 2),
+        ("🔒 تعليمات تسجيل الخروج", "os:edit_gmail_logout_instructions", 2),
+        ("📹 فيديو رفض: باسورد خطأ", "os:edit_reject_pass_video", 2),
+        ("✏️ نص رفض: باسورد خطأ", "os:edit_reject_pass_caption", 2),
+        ("📹 فيديو رفض: يحتاج تحقق", "os:edit_reject_verify_video", 2),
+        ("✏️ نص رفض: يحتاج تحقق", "os:edit_reject_verify_caption", 2),
+        ("✏️ رسالة رفض: إيميل خطأ", "os:edit_reject_email_msg", 1),
+        ("💰 إجباري-نقاط: سعر/عضو", "os:edit_mpoints_price", 2),
+        ("💰 إجباري-نقاط: حد أدنى", "os:edit_mpoints_min", 2),
+        ("📡 إدارة قنوات الاشتراك", "os:manage_channels", 2),
+        ("👥 حد أدنى تمويل داخلي", "os:edit_internal_min", 2),
+        ("❌ إلغاء صفقة", "os:cancel_order", 2),
+        ("✅ إكمال طلب", "os:complete_order", 2),
+        ("🎟 إنشاء كود ترويجي", "os:create_promo", 2),
+        ("📋 أكواد ترويجية", "os:list_promos", 2),
+        ("🚫 إدارة الحظر", "os:ban_menu", 2),
+        ("🔍 من استخدم الكود", "os:search_code", 2),
+        ("💰 منح/خصم نقاط", "os:manage_points", 2),
+        ("💬 رابط تواصل المالك", "os:edit_contact", 2),
+        ("✏️ نص زر التواصل", "os:edit_contact_label", 2),
+        ("💌 إعدادات شكر المالك", "os:thank_owner_settings", 1),
+        ("📲 تعديل نص اسيا سيل", "os:edit_asiacell", 2),
+        ("💎 تعليمات شحن المجوهرات — آسيا سيل", "os:edit_jewels_asiacell", 2),
+        ("💎 تعليمات شحن المجوهرات — العملات الإلكترونية", "os:edit_jewels_ewallet", 2),
+        ("✏️ نص زر الدعم بالقائمة", "os:edit_support_label", 2),
+        ("📢 رسالة جماعية", "os:broadcast", 2),
+        ("📊 إحصائيات", "os:stats", 2),
+        ("🛠 وضع الصيانة", "os:toggle_maintenance", 2),
+        ("📱 استبدال الأرقام", "os:toggle_number_exchange", 2),
+        ("🏆 الأكثر إرسالاً لرابط الدعوة", "os:top_referrers", 2),
+        ("🎯 مسابقة رابط الدعوة", "os:referral_contest", 1),
+        ("👑 خدمات أسطورية للأعضاء", "os:toggle_legendary_services", 1),
+        ("💵 رصيد موقع الرشق", "os:site_balance", 1),
+        ("🧩 إدارة الأزرار", "os:manage_buttons", 1),
+        ("✏️ رسالة عند الاستبدال", "os:edit_exchange_msg", 1),
+        ("⚠️ تعويض المظلومين", "os:failed_deliveries", 1),
+        ("📱 أرقام إحالة بوت إجباري", "os:bot_ref_numbers", 1),
+        ("👥 الأعضاء المقيدين", "os:restricted_members", 1),
+        ("💰 تعديل أسعار الخدمات الأسطورية", "legendary:price_settings", 1),
+        ("🌐 استيراد الخدمات من المواقع", "import_services", 1),
+        ("🧩 إضافة/إزالة خيار", "mb_menu:owner_settings", 1),
+        ("🔙 القائمة الرئيسية", "main_menu", 2),
+    ],
+}
+
+GOTO_TARGETS = [
+    ("🏠 القائمة الرئيسية", "main_menu"),
+    ("🛍 خدمات", "services_menu"),
+    ("🔗 رابط دعوة", "referral"),
+    ("💰 تجميع نقاط", "collect_points"),
+    ("💎 شحن نقاط", "charge_points"),
+    ("🏆 استبدال جواهر بجوائز", "exchange_points"),
+    ("↔️ تحويل النقاط", "transfer_points"),
+    ("🎟 استخدام كود", "use_promo"),
+    ("ℹ️ معلوماتي", "my_info"),
+    ("📱 ارقامي", "my_numbers"),
+    ("📱 تأجير أرقامي", "contributor_accounts"),
+    ("📤 مشاركة حساب", "share_account:menu"),
+    ("📺 تمويل قناتك حقيقي", "fund_channel"),
+] + SERVICE_PLATFORMS + [(v, f"cat:{k}") for k, v in CATEGORY_MAP.items()]
+
+def seed_menu_items(menu: str):
+    with db_conn() as c:
+        c.execute(
+            "DELETE FROM menu_items WHERE menu='main' AND action_value IN "
+            "('join_channels','totp_generator')"
+        )
+    if menu == "main":
+        with db_conn() as c:
+            old_cats = tuple(f"cat:{k}" for k in SERVICES_MENU_CATEGORIES)
+            c.execute(
+                f"DELETE FROM menu_items WHERE menu='main' AND action_type='builtin' AND action_value IN "
+                f"({','.join('?' for _ in old_cats)})",
+                old_cats
+            )
+            # إعادة تسمية الزر الافتراضي القديم فقط؛ لا نلمس الاسم الذي
+            # عدّله المالك يدوياً إلى اسم مخصص.
+            c.execute(
+                """
+                UPDATE menu_items
+                SET label=?
+                WHERE menu='main'
+                  AND action_type='builtin'
+                  AND action_value='contributor_accounts'
+                  AND label IN (?, ?, ?)
+                """,
+                (
+                    "📱 تأجير أرقامي",
+                    "📱 حساباتي للرشق",
+                    "📱 أرقامي للرشق",
+                    "📱 ارقامي للرشق",
+                ),
+            )
+            c.execute(
+                """
+                UPDATE menu_items
+                SET action_value='share_account:menu',
+                    label=CASE WHEN label IN ('📤 مشاركة حساب', '📱 مشاركة رقم')
+                               THEN '📤 مشاركة حساب' ELSE label END
+                WHERE menu='main'
+                  AND action_type='builtin'
+                  AND action_value IN ('share_account:menu', 'share_number:menu')
+                """
+            )
+        # لا نعيد تسمية بقية أزرار القائمة الرئيسية تلقائياً هنا؛
+        # الاسم والإيموجي المدفوع اللذان يحددهما المالك يجب أن يبقيا محفوظين.
+    if menu == "services_menu":
+        with db_conn() as c:
+            old_cats = tuple(f"cat:{k}" for k in SERVICES_MENU_CATEGORIES)
+            c.execute(
+                f"DELETE FROM menu_items WHERE menu='services_menu' AND action_type='builtin' AND action_value IN "
+                f"({','.join('?' for _ in old_cats)})",
+                old_cats
+            )
+    if menu == "owner_settings":
+        with db_conn() as c:
+            c.execute(
+                """
+                UPDATE menu_items
+                SET label=?
+                WHERE menu='owner_settings'
+                  AND action_type='builtin'
+                  AND action_value='os:edit_points_to_jewel_rate'
+                  AND label IN (
+                    '💰 تكلفة الجوهرة بالنقاط',
+                    '💰 سعر تحويل النقاط إلى جواهر'
+                  )
+                """,
+                ("💰 سعر شراء الجوهرة بالنقاط",),
+            )
+    if menu == "legendary_services":
+        with db_conn() as c:
+            existing_rows = c.execute(
+                "SELECT id, label, action_value FROM menu_items "
+                "WHERE menu='legendary_services'"
+            ).fetchall()
+            for row in existing_rows:
+                normalized = normalize_legendary_menu_item(row)
+                if normalized["action_value"] != row["action_value"]:
+                    c.execute(
+                        "UPDATE menu_items SET action_type='builtin', action_value=? "
+                        "WHERE id=?",
+                        (normalized["action_value"], row["id"]),
+                    )
+    with db_conn() as c:
+        if menu in SERVICE_PLATFORM_MENUS:
+            existing = c.execute(
+                "SELECT action_value FROM menu_items WHERE menu=?", (menu,)
+            ).fetchall()
+        else:
+            existing = c.execute(
+                "SELECT action_value FROM menu_items WHERE menu=? AND action_type='builtin'", (menu,)
+            ).fetchall()
+        existing_values = {r["action_value"] for r in existing}
+        defaults = list(BUILTIN_DEFAULTS.get(menu, []))
+        if menu == "owner_settings":
+            defaults.extend(OWNER_SETTINGS_EXTRA_DEFAULTS)
+        if not existing:
+            for i, (label, value, width) in enumerate(defaults):
+                c.execute(
+                    "INSERT INTO menu_items (menu,label,action_type,action_value,width,sort_order,enabled) VALUES (?,?,?,?,?,?,1)",
+                    (menu, label, "builtin", value, width, i)
+                )
+        else:
+            row = c.execute("SELECT MAX(sort_order) AS m FROM menu_items WHERE menu=?", (menu,)).fetchone()
+            next_order = (row["m"] or 0) + 1
+            for label, value, width in defaults:
+                if value not in existing_values:
+                    c.execute(
+                        "INSERT INTO menu_items (menu,label,action_type,action_value,width,sort_order,enabled) VALUES (?,?,?,?,?,?,1)",
+                        (menu, label, "builtin", value, width, next_order)
+                    )
+                    next_order += 1
+
+    if menu == "main" and get_setting(COLLECT_POINTS_MAIN_MIGRATION_SETTING) != "1":
+        # زر «تجميع نقاط» صار على الشاشة الأولى؛ نُظهره مرة واحدة فقط للقواعد
+        # القديمة (كان مجمّعاً داخل «حسابي ومحفظتي»)، وبعدها يبقى الإخفاء بيد المالك.
+        with db_conn() as c:
+            c.execute(
+                "UPDATE menu_items SET enabled=1 WHERE menu='main' "
+                "AND action_type='builtin' AND action_value='collect_points'"
+            )
+        set_setting(COLLECT_POINTS_MAIN_MIGRATION_SETTING, "1")
+
+    if (
+        menu == "owner_settings"
+        and get_setting(POINTS_TO_JEWELS_RATE_BUTTON_MIGRATION_SETTING) != "1"
+    ):
+        # The setting was added after many existing owner menus were created.
+        # Expose it beside the sell-rate control once, without overriding later
+        # visibility or ordering choices made by the owner.
+        with db_conn() as c:
+            c.execute(
+                "UPDATE menu_items SET enabled=1 "
+                "WHERE menu=? AND action_type='builtin' AND action_value=?",
+                ("owner_settings", "os:edit_points_to_jewel_rate"),
+            )
+            rows = c.execute(
+                "SELECT id, action_value FROM menu_items "
+                "WHERE menu='owner_settings' ORDER BY sort_order, id"
+            ).fetchall()
+            ordered = owner_settings_with_purchase_rate_after_sale(rows)
+            for sort_order, item in enumerate(ordered):
+                c.execute(
+                    "UPDATE menu_items SET sort_order=? WHERE id=?",
+                    (sort_order, item["id"]),
+                )
+        set_setting(POINTS_TO_JEWELS_RATE_BUTTON_MIGRATION_SETTING, "1")
+
+    if (
+        menu == "raksh_menu"
+        and get_setting(ALL_POSTS_REACTIONS_MENU_MIGRATION_SETTING) != "1"
+    ):
+        # The option already exists in the defaults, but older databases may
+        # have it disabled. Expose it once so the owner can use the feature;
+        # subsequent manual hide/show changes remain untouched.
+        with db_conn() as c:
+            c.execute(
+                "UPDATE menu_items SET enabled=1 "
+                "WHERE menu=? AND action_value=?",
+                (menu, "raksh:start:all_posts_reactions"),
+            )
+        set_setting(ALL_POSTS_REACTIONS_MENU_MIGRATION_SETTING, "1")
+
+    if menu == "raksh_menu":
+        with db_conn() as c:
+            rows = c.execute(
+                "SELECT id, action_value FROM menu_items WHERE menu=? ORDER BY sort_order, id",
+                (menu,),
+            ).fetchall()
+            ordered = _raksh_menu_order_with_message_before_orders(rows)
+            if [row["id"] for row in ordered] != [row["id"] for row in rows]:
+                for sort_order, row in enumerate(ordered):
+                    c.execute(
+                        "UPDATE menu_items SET sort_order=? WHERE id=? AND menu=?",
+                        (sort_order, row["id"], menu),
+                    )
+
+    if menu == "main":
+        _place_get_25_jewels_in_middle()
+
+    if menu == "main":
+        # Keep the two main service entry points together in the first row,
+        # including existing databases whose old rows were full-width.
+        with db_conn() as c:
+            rows = c.execute(
+                "SELECT id, action_value, sort_order FROM menu_items "
+                "WHERE menu='main' AND action_value IN ('services_menu', 'raksh_menu') "
+                "ORDER BY id"
+            ).fetchall()
+            by_value = {}
+            for row in rows:
+                by_value.setdefault(row["action_value"], row)
+            if "services_menu" in by_value and "raksh_menu" in by_value:
+                first_order = min(
+                    by_value["services_menu"]["sort_order"],
+                    by_value["raksh_menu"]["sort_order"],
+                ) - 2
+                c.execute(
+                    "UPDATE menu_items SET width=2, sort_order=? "
+                    "WHERE id=? AND menu='main'",
+                    (first_order, by_value["services_menu"]["id"]),
+                )
+                c.execute(
+                    "UPDATE menu_items SET width=2, sort_order=? "
+                    "WHERE id=? AND menu='main'",
+                    (first_order + 1, by_value["raksh_menu"]["id"]),
+                )
+
+GET_25_JEWELS_ACTION = "get_25_jewels"
+GET_25_JEWELS_POSITION_SETTING = "get_25_jewels_middle_position_v1"
+COLLECT_POINTS_MAIN_MIGRATION_SETTING = "collect_points_main_visible_v1"
+
+
+def _place_get_25_jewels_in_middle():
+    """يضع زر «الحصول على 25 جوهرة» مرة واحدة في منتصف أزرار القائمة الرئيسية.
+
+    يُحتسب المنتصف من الأزرار الظاهرة في الشاشة الأولى (غير المجمّعة)، وبعدها
+    يبقى ترتيب الزر بيد المالك من إدارة الأزرار دون أن نعيده.
+    """
+    if get_setting(GET_25_JEWELS_POSITION_SETTING) == "1":
+        return
+    from .ui import MAIN_MENU_GROUPS  # استيراد متأخر لتفادي الدوران
+
+    grouped = {a for g in MAIN_MENU_GROUPS.values() for a in g["actions"]}
+    with db_conn() as c:
+        rows = c.execute(
+            "SELECT id, action_value FROM menu_items WHERE menu='main' "
+            "ORDER BY sort_order, id"
+        ).fetchall()
+        target = next(
+            (r for r in rows if r["action_value"] == GET_25_JEWELS_ACTION), None
+        )
+        if not target:
+            return
+        others = [r for r in rows if r["id"] != target["id"]]
+        top = [r for r in others if r["action_value"] not in grouped]
+        anchor = top[len(top) // 2 - 1] if len(top) >= 2 else None
+        ordered = []
+        placed = False
+        for r in others:
+            ordered.append(r)
+            if anchor is not None and r["id"] == anchor["id"]:
+                ordered.append(target)
+                placed = True
+        if not placed:
+            ordered.append(target)
+        for order, r in enumerate(ordered):
+            c.execute(
+                "UPDATE menu_items SET sort_order=? WHERE id=? AND menu='main'",
+                (order, r["id"]),
+            )
+    set_setting(GET_25_JEWELS_POSITION_SETTING, "1")
+
+
+def _raksh_menu_order_with_message_before_orders(items):
+    """Keep the message action immediately above My Orders in every database."""
+    ordered = list(items)
+    message_index = next(
+        (i for i, item in enumerate(ordered) if item["action_value"] == "raksh:send_message"),
+        -1,
+    )
+    orders_index = next(
+        (i for i, item in enumerate(ordered) if item["action_value"] == "raksh:my_orders"),
+        -1,
+    )
+    if message_index < 0 or orders_index < 0 or message_index == orders_index - 1:
+        return ordered
+
+    message_item = ordered.pop(message_index)
+    orders_index = next(
+        i for i, item in enumerate(ordered) if item["action_value"] == "raksh:my_orders"
+    )
+    ordered.insert(orders_index, message_item)
+    return ordered
+
+
+def get_menu_items(menu: str, only_enabled: bool = True):
+    seed_menu_items(menu)
+    with db_conn() as c:
+        q = "SELECT * FROM menu_items WHERE menu=?"
+        if only_enabled:
+            q += " AND enabled=1"
+        q += " ORDER BY sort_order, id"
+        return c.execute(q, (menu,)).fetchall()
+
+def _main_menu_group_tags():
+    """action_value -> اسم الزر المجمّع الذي يحتويه في القائمة الرئيسية."""
+    try:
+        from .ui import MAIN_MENU_GROUPS
+    except Exception:
+        return {}
+    tags = {
+        action: group["label"]
+        for group in MAIN_MENU_GROUPS.values()
+        for action in group["actions"]
+    }
+    try:
+        from .ui import COLLECT_POINTS_MAIN_ACTIONS
+        tags.update({a: "⭐ تجميع النقاط" for a in COLLECT_POINTS_MAIN_ACTIONS})
+    except Exception:
+        pass
+    return tags
+
+
+def render_mb_menu_screen(menu: str):
+    items = get_menu_items(menu, only_enabled=False)
+    group_tags = _main_menu_group_tags() if menu == "main" else {}
+    rows = []
+    for it in items:
+        state_icon = "✅" if it["enabled"] else "🚫"
+        width_icon = "▬ عريض" if it["width"] == 1 else "🔲 نصف"
+        group_label = group_tags.get(it["action_value"])
+        suffix = f"  ⟵ داخل {group_label}" if group_label else ""
+        rows.append([InlineKeyboardButton(
+            f"{state_icon} {_menu_item_display_label(it)}{suffix}",
+            callback_data="noop",
+        )])
+        toggle_button = (
+            InlineKeyboardButton("🔒 أساسي", callback_data="noop")
+            if menu_action_cannot_hide(it["action_value"])
+            else InlineKeyboardButton(
+                "🗑" if it["enabled"] else "♻️",
+                callback_data=f"mb_toggle:{menu}:{it['id']}",
+            )
+        )
+        rows.append([
+            InlineKeyboardButton("⬆️", callback_data=f"mb_up:{menu}:{it['id']}"),
+            InlineKeyboardButton("⬇️", callback_data=f"mb_down:{menu}:{it['id']}"),
+            InlineKeyboardButton(width_icon, callback_data=f"mb_width:{menu}:{it['id']}"),
+            InlineKeyboardButton("✏️ الاسم", callback_data=f"mb_rename:{menu}:{it['id']}"),
+            toggle_button,
+        ])
+    rows.append([InlineKeyboardButton("➕ إضافة زر جديد", callback_data=f"mb_add:{menu}")])
+    rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="os:manage_buttons")])
+    text = (f"🧩 *أزرار: {MENU_LABELS.get(menu, menu)}*\n\n"
+            f"✅ ظاهر | 🚫 مخفي | 🔒 أساسي لا يمكن إخفاؤه — اضغط 🗑 للإخفاء و♻️ للإظهار مجدداً.")
+    if group_tags:
+        text += ("\n\n📂 الأزرار المكتوب أمامها «داخل …» تظهر للعضو داخل الزر المجمّع "
+                 "في القائمة الرئيسية، وبقية الأزرار تظهر في الشاشة الأولى.")
+    return text, InlineKeyboardMarkup(rows)
+
+def _menu_item_display_label(item):
+    """Return the label users actually see for a persisted menu item."""
+    label = item["label"]
+    if item["action_value"] == "thank_owner":
+        label = get_setting("thank_owner_button_label") or label
+    if item["action_value"] == "gmail_points" and item.get("menu") == "collect_points":
+        label = get_setting("gmail_button_label") or label
+    return label
+
+def build_kb_rows(items):
+    rows = []
+    pending = None
+    for it in items:
+        label = _menu_item_display_label(it)
+        if it["action_type"] == "url":
+            btn = InlineKeyboardButton(label, url=it["action_value"])
+        elif it["action_type"] == "text":
+            btn = InlineKeyboardButton(label, callback_data=f"mi_text:{it['id']}")
+        else:
+            btn = InlineKeyboardButton(label, callback_data=it["action_value"])
+        if it["width"] == 1:
+            if pending:
+                rows.append([pending])
+                pending = None
+            rows.append([btn])
+        else:
+            if pending:
+                rows.append([pending, btn])
+                pending = None
+            else:
+                pending = btn
+    if pending:
+        rows.append([pending])
+    return rows
+
+def md_escape(text: str) -> str:
+    if not text:
+        return text
+    # Telegram Markdown (legacy) treats these characters as formatting
+    # delimiters. Service names/descriptions come from panel APIs and may
+    # contain them, so an unescaped value can make the whole reply fail with
+    # BadRequest: Can't parse entities.
+    text = str(text).replace("\\", "\\\\")
+    for ch in ("_", "*", "`", "["):
+        text = text.replace(ch, f"\\{ch}")
+    return text
+
+async def notify_gmail_verification_owner(
+    context: ContextTypes.DEFAULT_TYPE,
+    sub_id: int,
+    user_id: int,
+    note: str = "",
+) -> str:
+    note = (note or "").strip()[:2000]
+    if not note:
+        return "note_required"
+    if not OWNER_ID:
+        return "owner_missing"
+
+    with db_conn() as c:
+        lock = c.execute(
+            "SELECT pg_try_advisory_xact_lock(%s) AS acquired",
+            (sub_id,),
+        ).fetchone()
+        if not lock or not lock["acquired"]:
+            return "busy"
+
+        sub = c.execute(
+            "SELECT id, user_id, gmail_email, status, rejection_reason, "
+            "verification_notified FROM gmail_submissions WHERE id=%s",
+            (sub_id,),
+        ).fetchone()
+        if not sub or sub["user_id"] != user_id:
+            return "invalid"
+        if (
+            sub["status"] != "rejected"
+            or sub["rejection_reason"] not in ("need_verify", "")
+        ):
+            return "unavailable"
+        if sub["verification_notified"]:
+            return "already"
+
+        note_html = html.escape(note)
+        await context.bot.send_message(
+            OWNER_ID,
+            f"🔔 <b>العضو أتمّ التحقق من حساب الجيميل</b>\n\n"
+            f"🆔 العضو: <code>{sub['user_id']}</code>\n"
+            f"📬 الإيميل: <code>{html.escape(sub['gmail_email'] or '')}</code>\n"
+            f"📌 الطلب: <code>#{sub_id}</code>\n"
+            f"💬 <b>رسالة العضو:</b>\n<code>{note_html}</code>\n\n"
+            "يمكنك مراجعة الطلب واتخاذ القرار من الزر أدناه.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "📋 عرض التفاصيل",
+                    callback_data=f"gmail_detail:{sub_id}",
+                )
+            ]]),
+        )
+        c.execute(
+            "UPDATE gmail_submissions SET verification_completed=TRUE, "
+            "verification_notified=TRUE, verification_note=%s WHERE id=%s",
+            (note, sub_id),
+        )
+    return "sent"

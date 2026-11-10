@@ -8,6 +8,36 @@ domain.
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
+def record_first_seen(user_id: int) -> None:
+    """يسجّل وقت أول /start للمستخدم (UTC) مرة واحدة فقط.
+
+    يستخدمه بوت الإيميلات للتأكد أن المستخدم كان جديداً في هذا البوت وقت
+    دخوله عبر الرابط: يقارن هذا الوقت بوقت دخوله البوت الآخر.
+    """
+    with db_conn() as c:
+        c.execute(
+            "INSERT INTO first_seen (user_id) VALUES (?) "
+            "ON CONFLICT (user_id) DO NOTHING",
+            (int(user_id),),
+        )
+
+
+def partner_ref_status(user_id: int) -> dict:
+    """started: هل المستخدم موجود هنا؟ first_seen: وقت أول /start بـ UTC (أو None
+    للمستخدمين القدامى الذين سبقوا هذه الميزة، فيُعدّون غير جدد)."""
+    with db_conn() as c:
+        row = c.execute(
+            "SELECT first_seen_at FROM first_seen WHERE user_id=?", (int(user_id),)
+        ).fetchone()
+        if row:
+            return {"started": True,
+                    "first_seen": row["first_seen_at"].strftime("%Y-%m-%dT%H:%M:%S+00:00")}
+        old = c.execute(
+            "SELECT 1 AS x FROM users WHERE user_id=?", (int(user_id),)
+        ).fetchone()
+    return {"started": bool(old), "first_seen": None}
+
+
 def get_pool():
     global _pool
     if _pool is None:
@@ -145,11 +175,17 @@ def init_db():
               username     TEXT,
               full_name    TEXT,
               points       INTEGER DEFAULT 0,
+              jewels       NUMERIC(20,6) NOT NULL DEFAULT 0,
               invited_by   BIGINT DEFAULT 0,
               total_orders INTEGER DEFAULT 0,
               joined_at    TEXT DEFAULT CURRENT_DATE,
               bot_user_num INTEGER,
               verified     INTEGER DEFAULT 0
+          )""")
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS first_seen (
+              user_id       BIGINT PRIMARY KEY,
+              first_seen_at TIMESTAMP NOT NULL DEFAULT (NOW() AT TIME ZONE 'UTC')
           )""")
           c.execute("""
           CREATE TABLE IF NOT EXISTS orders (
@@ -160,6 +196,10 @@ def init_db():
               quantity     INTEGER,
               cost_points  INTEGER DEFAULT 0,
               cost_stars   INTEGER DEFAULT 0,
+              cost_jewels  BIGINT NOT NULL DEFAULT 0,
+              payment_method TEXT NOT NULL DEFAULT 'points',
+              service_value_points INTEGER NOT NULL DEFAULT 0,
+              telegram_payment_id TEXT,
               api_order_id TEXT DEFAULT '',
               status       TEXT DEFAULT 'pending',
                order_code   TEXT,
@@ -167,7 +207,39 @@ def init_db():
                provider_rate_usd REAL DEFAULT 0,
                provider_cost_usd REAL DEFAULT 0,
                partial_refund_pts INTEGER DEFAULT 0,
-               refund_points INTEGER DEFAULT 0
+               refund_points INTEGER DEFAULT 0,
+               refund_jewels NUMERIC(20,6) NOT NULL DEFAULT 0
+          )""")
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS smm_payment_intents (
+              id                  BIGSERIAL PRIMARY KEY,
+              user_id             BIGINT NOT NULL,
+              service_id          INTEGER NOT NULL,
+              service_name        TEXT NOT NULL,
+              api_service_id      INTEGER NOT NULL,
+              panel               INTEGER NOT NULL DEFAULT 1,
+              link                TEXT NOT NULL,
+              quantity            INTEGER NOT NULL,
+              service_value_points INTEGER NOT NULL DEFAULT 0,
+              cost_stars          INTEGER NOT NULL DEFAULT 0,
+              cost_jewels         BIGINT NOT NULL DEFAULT 0,
+              payment_method      TEXT,
+              status              TEXT NOT NULL DEFAULT 'pending',
+              telegram_payment_id TEXT UNIQUE,
+              order_code          TEXT,
+              last_error          TEXT,
+              created_at          TIMESTAMPTZ DEFAULT NOW(),
+              updated_at          TIMESTAMPTZ DEFAULT NOW()
+          )""")
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS jewel_transactions (
+              id          BIGSERIAL PRIMARY KEY,
+              user_id     BIGINT NOT NULL,
+              amount      NUMERIC(20,6) NOT NULL,
+              transaction_type TEXT NOT NULL,
+              admin_id    BIGINT,
+              reference   TEXT,
+              created_at  TIMESTAMPTZ DEFAULT NOW()
           )""")
           c.execute("""
           CREATE TABLE IF NOT EXISTS services (
@@ -194,6 +266,114 @@ def init_db():
           c.execute("""
           CREATE INDEX IF NOT EXISTS raksh_execution_usage_user_time_idx
           ON raksh_execution_usage (user_id, executed_at)
+          """)
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS raksh_free_access (
+              user_id      BIGINT NOT NULL,
+              service_type TEXT NOT NULL,
+              enabled      INTEGER NOT NULL DEFAULT 1,
+              updated_at   TIMESTAMPTZ DEFAULT NOW(),
+              PRIMARY KEY (user_id, service_type)
+          )""")
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS referral_reward_tiers (
+              id                  SERIAL PRIMARY KEY,
+              referral_count      INTEGER NOT NULL UNIQUE,
+              points_per_referral INTEGER NOT NULL DEFAULT 30,
+              free_minutes        INTEGER NOT NULL DEFAULT 0,
+              active              INTEGER NOT NULL DEFAULT 1,
+              created_at          TIMESTAMPTZ DEFAULT NOW()
+          )""")
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS referral_level_rewards (
+              level       INTEGER PRIMARY KEY CHECK (level >= 2),
+              points      INTEGER NOT NULL DEFAULT 0,
+              jewels      NUMERIC(20,6) NOT NULL DEFAULT 0,
+              created_at  TIMESTAMPTZ DEFAULT NOW()
+          )""")
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS mandatory_join_events (
+              id               BIGSERIAL PRIMARY KEY,
+              user_id          BIGINT NOT NULL,
+              channel_username TEXT NOT NULL,
+              joined_second    BIGINT NOT NULL,
+              created_at       TIMESTAMPTZ DEFAULT NOW(),
+              UNIQUE (user_id, channel_username, joined_second)
+          )""")
+          c.execute("""
+          CREATE INDEX IF NOT EXISTS mandatory_join_events_user_idx
+          ON mandatory_join_events (user_id, joined_second)
+          """)
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS referral_fraud_log (
+              id            BIGSERIAL PRIMARY KEY,
+              inviter_id    BIGINT NOT NULL,
+              invited_id    BIGINT NOT NULL,
+              joined_count  INTEGER NOT NULL DEFAULT 0,
+              total_channels INTEGER NOT NULL DEFAULT 0,
+              created_at    TIMESTAMPTZ DEFAULT NOW()
+          )""")
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS referral_reward_claims (
+              user_id     BIGINT NOT NULL,
+              tier_id     INTEGER NOT NULL REFERENCES referral_reward_tiers(id) ON DELETE CASCADE,
+              granted_at  TIMESTAMPTZ DEFAULT NOW(),
+              PRIMARY KEY (user_id, tier_id)
+          )""")
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS referral_daily_free_tiers (
+              id                  SERIAL PRIMARY KEY,
+              referral_count      INTEGER NOT NULL UNIQUE,
+              free_minutes        INTEGER NOT NULL DEFAULT 0,
+              active              INTEGER NOT NULL DEFAULT 1,
+              created_at          TIMESTAMPTZ DEFAULT NOW()
+          )""")
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS referral_daily_free_claims (
+              user_id      BIGINT NOT NULL,
+              tier_id      INTEGER NOT NULL REFERENCES referral_daily_free_tiers(id) ON DELETE CASCADE,
+              claim_date   DATE NOT NULL DEFAULT CURRENT_DATE,
+              granted_at   TIMESTAMPTZ DEFAULT NOW(),
+              PRIMARY KEY (user_id, tier_id, claim_date)
+          )""")
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS referral_free_access (
+              user_id     BIGINT PRIMARY KEY,
+              free_until  TIMESTAMPTZ NOT NULL,
+              free_pass_id BIGINT NOT NULL DEFAULT 0,
+              updated_at  TIMESTAMPTZ DEFAULT NOW()
+          )""")
+          c.execute(
+              "ALTER TABLE referral_free_access "
+              "ADD COLUMN IF NOT EXISTS free_pass_id BIGINT NOT NULL DEFAULT 0"
+          )
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS referral_free_raksh_reservations (
+              id                  BIGSERIAL PRIMARY KEY,
+              user_id             BIGINT NOT NULL,
+              pass_id             BIGINT NOT NULL,
+              source_type         TEXT NOT NULL,
+              source_id           TEXT NOT NULL,
+              service_type        TEXT NOT NULL,
+              reserved_quantity   INTEGER NOT NULL DEFAULT 0,
+              used_quantity       INTEGER NOT NULL DEFAULT 0,
+              settled_at          TIMESTAMPTZ,
+              created_at          TIMESTAMPTZ DEFAULT NOW(),
+              UNIQUE (user_id, pass_id, source_type, source_id)
+          )""")
+          c.execute("""
+          CREATE INDEX IF NOT EXISTS referral_free_raksh_reservations_pass_idx
+          ON referral_free_raksh_reservations (user_id, pass_id, settled_at)
+          """)
+          # The first version stored temporary free access beside the points
+          # tier. Preserve that data while moving the two settings into
+          # independent sections and tables.
+          c.execute("""
+          INSERT INTO referral_daily_free_tiers (referral_count, free_minutes, active)
+          SELECT referral_count, free_minutes, active
+          FROM referral_reward_tiers
+          WHERE free_minutes > 0
+          ON CONFLICT (referral_count) DO NOTHING
           """)
           c.execute("""
           CREATE TABLE IF NOT EXISTS mandatory_sub_orders (
@@ -256,6 +436,7 @@ def init_db():
                position      INTEGER NOT NULL,
                stock_id      BIGINT,
                phone_number  TEXT NOT NULL,
+               is_referral_free BOOLEAN NOT NULL DEFAULT FALSE,
                status        TEXT NOT NULL DEFAULT 'pending',
                attempts      INTEGER NOT NULL DEFAULT 0,
                result_message TEXT,
@@ -263,6 +444,10 @@ def init_db():
                updated_at    TIMESTAMPTZ DEFAULT NOW(),
                UNIQUE(order_id, phone_number)
            )""")
+          c.execute(
+              "ALTER TABLE raksh_order_items "
+              "ADD COLUMN IF NOT EXISTS is_referral_free BOOLEAN NOT NULL DEFAULT FALSE"
+          )
           c.execute("""
            CREATE TABLE IF NOT EXISTS raksh_contributor_earnings (
                id               BIGSERIAL PRIMARY KEY,
@@ -353,6 +538,36 @@ def init_db():
               value TEXT
           )""")
           c.execute("""
+          CREATE TABLE IF NOT EXISTS daily_gift_claims (
+              user_id    BIGINT NOT NULL,
+              claim_date DATE NOT NULL,
+              amount     INTEGER NOT NULL,
+              claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              PRIMARY KEY (user_id, claim_date)
+          )""")
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS temporary_gifts (
+              id          SERIAL PRIMARY KEY,
+              points      INTEGER NOT NULL CHECK (points > 0),
+              starts_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              ends_at     TIMESTAMPTZ NOT NULL,
+              active      INTEGER NOT NULL DEFAULT 1,
+              created_by  BIGINT NOT NULL,
+              created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )""")
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS temporary_gift_claims (
+              gift_id    INTEGER NOT NULL REFERENCES temporary_gifts(id) ON DELETE CASCADE,
+              user_id    BIGINT NOT NULL,
+              amount     INTEGER NOT NULL,
+              claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              PRIMARY KEY (gift_id, user_id)
+          )""")
+          c.execute("""
+          CREATE INDEX IF NOT EXISTS temporary_gifts_active_window_idx
+          ON temporary_gifts (active, starts_at, ends_at)
+          """)
+          c.execute("""
           CREATE TABLE IF NOT EXISTS account_media_assignments (
               id           SERIAL PRIMARY KEY,
               kind         TEXT NOT NULL CHECK (kind IN ('stories', 'avatar')),
@@ -396,6 +611,30 @@ def init_db():
               created_at          TEXT DEFAULT CURRENT_TIMESTAMP
           )""")
           c.execute("""
+          CREATE TABLE IF NOT EXISTS jewel_star_transactions (
+              id                  BIGSERIAL PRIMARY KEY,
+              user_id             BIGINT NOT NULL,
+              stars               INTEGER NOT NULL CHECK (stars > 0),
+              jewels_given        NUMERIC(20,6) NOT NULL CHECK (jewels_given > 0),
+              telegram_payment_id TEXT NOT NULL UNIQUE,
+              status              TEXT NOT NULL DEFAULT 'completed',
+              created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )""")
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS currency_exchange_transactions (
+              id            BIGSERIAL PRIMARY KEY,
+              request_id    TEXT NOT NULL UNIQUE,
+              user_id       BIGINT NOT NULL,
+              direction     TEXT NOT NULL CHECK (
+                  direction IN ('jewels_to_points', 'points_to_jewels')
+              ),
+              jewels_amount NUMERIC(20,6) NOT NULL CHECK (jewels_amount > 0),
+              points_amount BIGINT NOT NULL CHECK (points_amount > 0),
+              rate          BIGINT NOT NULL CHECK (rate > 0),
+              status        TEXT NOT NULL DEFAULT 'pending',
+              created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )""")
+          c.execute("""
           CREATE TABLE IF NOT EXISTS number_star_purchases (
               telegram_payment_id TEXT PRIMARY KEY,
               user_id             BIGINT NOT NULL,
@@ -432,6 +671,7 @@ def init_db():
               added_at      TIMESTAMPTZ DEFAULT NOW(),
               contributed_by BIGINT,
               contributor_share_percent INTEGER DEFAULT 50,
+               contributor_method TEXT NOT NULL DEFAULT 'number',
               sale_excluded BOOLEAN DEFAULT FALSE
           )""")
           # الحسابات المسندة إلى أدمن أرقام تُستخدم لفتح الحساب وجلب كوده،
@@ -531,7 +771,24 @@ def init_db():
               funding_type     TEXT DEFAULT 'mandatory',
               active           INTEGER DEFAULT 1
           )""")
+          init_wheel_tables(c)
           for _alt in [
+              "ALTER TABLE users ADD COLUMN IF NOT EXISTS jewels NUMERIC(20,6) NOT NULL DEFAULT 0",
+              "ALTER TABLE users ALTER COLUMN jewels TYPE NUMERIC(20,6) USING jewels::NUMERIC(20,6)",
+              "ALTER TABLE jewel_transactions ALTER COLUMN amount TYPE NUMERIC(20,6) USING amount::NUMERIC(20,6)",
+              "ALTER TABLE jewel_star_transactions ALTER COLUMN jewels_given TYPE NUMERIC(20,6) USING jewels_given::NUMERIC(20,6)",
+              "ALTER TABLE users ADD COLUMN IF NOT EXISTS wheel_spins INTEGER NOT NULL DEFAULT 0",
+              "ALTER TABLE prize_exchanges ALTER COLUMN points_cost TYPE NUMERIC USING points_cost::NUMERIC",
+              "ALTER TABLE orders ADD COLUMN IF NOT EXISTS refund_jewels NUMERIC(20,6) NOT NULL DEFAULT 0",
+              "ALTER TABLE orders ADD COLUMN IF NOT EXISTS cost_stars INTEGER NOT NULL DEFAULT 0",
+              "ALTER TABLE orders ADD COLUMN IF NOT EXISTS cost_jewels BIGINT NOT NULL DEFAULT 0",
+              "ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_method TEXT NOT NULL DEFAULT 'points'",
+              "ALTER TABLE orders ADD COLUMN IF NOT EXISTS service_value_points INTEGER NOT NULL DEFAULT 0",
+              "ALTER TABLE orders ADD COLUMN IF NOT EXISTS telegram_payment_id TEXT",
+              "CREATE UNIQUE INDEX IF NOT EXISTS orders_telegram_payment_id_unique "
+              "ON orders (telegram_payment_id) WHERE telegram_payment_id IS NOT NULL AND telegram_payment_id <> ''",
+              "CREATE INDEX IF NOT EXISTS smm_payment_intents_user_status_idx "
+              "ON smm_payment_intents (user_id, status, created_at DESC)",
               "ALTER TABLE channel_funding ADD COLUMN IF NOT EXISTS target_members INTEGER DEFAULT 0",
               "ALTER TABLE channel_funding ADD COLUMN IF NOT EXISTS current_members INTEGER DEFAULT 0",
               "ALTER TABLE channel_funding ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active'",
@@ -540,7 +797,9 @@ def init_db():
               "ALTER TABLE prize_exchanges ADD COLUMN IF NOT EXISTS owner_seen BOOLEAN DEFAULT FALSE",
               "ALTER TABLE prize_exchanges ADD COLUMN IF NOT EXISTS compensated_at TIMESTAMPTZ",
               "ALTER TABLE prize_exchanges ADD COLUMN IF NOT EXISTS compensated_pts INTEGER DEFAULT 0",
+              "ALTER TABLE prize_exchanges ALTER COLUMN compensated_pts TYPE NUMERIC USING compensated_pts::NUMERIC",
               "ALTER TABLE prize_exchanges ADD COLUMN IF NOT EXISTS compensated_reason TEXT",
+              "ALTER TABLE prize_exchanges ADD COLUMN IF NOT EXISTS cost_currency TEXT DEFAULT 'points'",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS ever_sold BOOLEAN DEFAULT FALSE",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS session_string TEXT",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS sessions_reset BOOLEAN DEFAULT FALSE",
@@ -564,6 +823,7 @@ def init_db():
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS forced_ref_excluded BOOLEAN DEFAULT FALSE",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS contributed_by BIGINT",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS contributor_share_percent INTEGER DEFAULT 50",
+               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS contributor_method TEXT NOT NULL DEFAULT 'number'",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS sale_excluded BOOLEAN DEFAULT FALSE",
               "ALTER TABLE services ADD COLUMN IF NOT EXISTS platform TEXT DEFAULT 'tg'",
               "ALTER TABLE services ADD COLUMN IF NOT EXISTS source_name TEXT",
@@ -571,8 +831,18 @@ def init_db():
               "ALTER TABLE users ADD COLUMN IF NOT EXISTS banned_at TIMESTAMPTZ",
               "ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT",
               "ALTER TABLE channel_join_rewards ADD COLUMN IF NOT EXISTS joined_at TIMESTAMPTZ DEFAULT NOW()",
+              "ALTER TABLE channel_join_rewards ADD COLUMN IF NOT EXISTS reward_jewels NUMERIC(20,6) DEFAULT 0",
+              "ALTER TABLE mandatory_channels ADD COLUMN IF NOT EXISTS join_request INTEGER DEFAULT 0",
+              "CREATE TABLE IF NOT EXISTS channel_join_requests ("
+              "user_id BIGINT NOT NULL, channel_username TEXT NOT NULL, "
+              "requested_at TIMESTAMPTZ DEFAULT NOW(), PRIMARY KEY (user_id, channel_username))",
               "ALTER TABLE mandatory_sub_orders ADD COLUMN IF NOT EXISTS reactivated_count INTEGER DEFAULT 0",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS referral_only BOOLEAN DEFAULT FALSE",
+              # كاش هوية حساب تيليجرام لبحث المالك (يوزر / ID / اسم).
+              "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS tg_user_id BIGINT",
+              "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS tg_username TEXT",
+              "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS tg_name TEXT",
+              "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS tg_info_at TIMESTAMPTZ",
               "ALTER TABLE forced_ref_orders ADD COLUMN IF NOT EXISTS reactivated_count INTEGER DEFAULT 0",
               "ALTER TABLE forced_ref_orders ADD COLUMN IF NOT EXISTS payment_method TEXT DEFAULT 'points'",
               "ALTER TABLE forced_ref_orders ADD COLUMN IF NOT EXISTS cost_stars INTEGER DEFAULT 0",
@@ -598,6 +868,46 @@ def init_db():
           ]:
               try: c.execute(_alt)
               except Exception: pass
+          # ── مصدر الجواهر: الجواهر المحصّلة عبر الإحالة وحدها تصلح لاستبدال الجوائز المخصصة ──
+          try:
+              c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_jewels NUMERIC(20,6) NOT NULL DEFAULT 0")
+              c.execute(
+                  """
+                  CREATE OR REPLACE FUNCTION clamp_referral_jewels() RETURNS trigger AS $$
+                  BEGIN
+                      IF NEW.referral_jewels > COALESCE(NEW.jewels, 0) THEN
+                          NEW.referral_jewels := GREATEST(COALESCE(NEW.jewels, 0), 0);
+                      END IF;
+                      RETURN NEW;
+                  END;
+                  $$ LANGUAGE plpgsql
+                  """
+              )
+              c.execute("DROP TRIGGER IF EXISTS users_clamp_referral_jewels ON users")
+              c.execute(
+                  "CREATE TRIGGER users_clamp_referral_jewels BEFORE UPDATE ON users "
+                  "FOR EACH ROW EXECUTE FUNCTION clamp_referral_jewels()"
+              )
+              _done = c.execute(
+                  "SELECT value FROM settings WHERE key='referral_jewels_backfilled'"
+              ).fetchone()
+              if not _done:
+                  c.execute(
+                      """
+                      UPDATE users u SET referral_jewels = LEAST(
+                          COALESCE(u.jewels, 0),
+                          COALESCE((SELECT SUM(t.amount) FROM jewel_transactions t
+                                    WHERE t.user_id = u.user_id
+                                      AND t.transaction_type = 'referral'), 0)
+                      )
+                      """
+                  )
+                  c.execute(
+                      "INSERT INTO settings (key, value) VALUES ('referral_jewels_backfilled','1') "
+                      "ON CONFLICT (key) DO NOTHING"
+                  )
+          except Exception as _rj_err:
+              logger.warning(f"referral_jewels migration: {_rj_err}")
           # السجلات القديمة لا تملك مصدر استيراد محفوظاً. نضع لها تصنيفاً
           # آمناً قابلاً للتعديل: الرقم بلا جلسة = يدوي، والجلسة القديمة = ملف.
           try:
@@ -673,6 +983,11 @@ def init_db():
               stars  INTEGER NOT NULL,
               active INTEGER DEFAULT 1
           )""")
+          try:
+              # سعر الباقة بالجواهر يحدده المالك لكل باقة (NULL = باقة قديمة تُسعَّر بالمعدل).
+              c.execute("ALTER TABLE exchange_star_packages ADD COLUMN IF NOT EXISTS jewels NUMERIC(18,6)")
+          except Exception:
+              pass
           c.execute("""
           CREATE TABLE IF NOT EXISTS channel_join_rewards (
               user_id    BIGINT,
@@ -768,6 +1083,37 @@ def init_db():
           ON account_buyback_offers (status, next_check_at)
           """)
           c.execute("""
+          CREATE TABLE IF NOT EXISTS tg_number_orders (
+              id                  SERIAL PRIMARY KEY,
+              order_code          TEXT,
+              user_id             BIGINT NOT NULL,
+              user_name           TEXT DEFAULT '',
+              user_username       TEXT DEFAULT '',
+              country_code        TEXT NOT NULL,
+              country_name        TEXT DEFAULT '',
+              base_price_cents    INTEGER NOT NULL DEFAULT 0,
+              price_cents         INTEGER NOT NULL DEFAULT 0,
+              payment_method      TEXT NOT NULL,
+              amount              BIGINT NOT NULL DEFAULT 0,
+              status              TEXT NOT NULL DEFAULT 'awaiting_payment',
+              telegram_payment_id TEXT,
+              notified_at         TIMESTAMPTZ,
+              paid_at             TIMESTAMPTZ,
+              completed_at        TIMESTAMPTZ,
+              completed_by        BIGINT,
+              created_at          TIMESTAMPTZ DEFAULT NOW(),
+              updated_at          TIMESTAMPTZ DEFAULT NOW()
+          )""")
+          c.execute("""
+          CREATE UNIQUE INDEX IF NOT EXISTS tg_number_orders_charge_idx
+          ON tg_number_orders (telegram_payment_id)
+          WHERE telegram_payment_id IS NOT NULL
+          """)
+          c.execute("""
+          CREATE INDEX IF NOT EXISTS tg_number_orders_status_idx
+          ON tg_number_orders (status, id)
+          """)
+          c.execute("""
           CREATE TABLE IF NOT EXISTS menu_items (
               id           SERIAL PRIMARY KEY,
               menu         TEXT,
@@ -798,8 +1144,20 @@ def init_db():
           
           default_settings = [
               ('join_channel_reward', '45'),
+              ('daily_gift_points', '100'),
               ('referral_points', '30'),
+              ('referral_reward_type', 'points'),
+              ('referral_fraud_protection', '0'),
+              ('referral_jewels', '0'),
               ('star_to_points', '250'),
+              ('jewels_per_star', '1'),
+              ('wheel_spin_price_stars', '1'),
+              ('wheel_spin_price_jewels', '1'),
+              ('wheel_ten_price_stars', '9'),
+              ('wheel_ten_price_jewels', '9'),
+              ('raksh_points_per_jewel', '1000'),
+              ('jewels_to_points_rate', '5000'),
+              ('points_to_jewels_rate', '7000'),
               ('exchange_star_rate', '2000'),
               ('telegram_number_cost', '5000'),
               ('telegram_number_stars', '18'),
@@ -811,6 +1169,8 @@ def init_db():
               ('total_bot_orders', '0'),
               ('total_bot_users', '0'),
               ('asiacell_text', '⚠️ الشحن التلقائي عبر اسيا سيل غير متاح حالياً.\nيرجى التواصل مع المالك.'),
+              ('jewels_asiacell_text', '💎 لشحن المجوهرات عبر آسيا سيل، اتبع تعليمات التحويل ثم اضغط «التواصل مع المالك» لإرسال طلبك.'),
+              ('jewels_ewallet_text', '💎 لشحن المجوهرات عبر العملات الإلكترونية، اتبع تعليمات التحويل ثم اضغط «التواصل مع المالك» لإرسال طلبك.'),
               ('captcha_enabled', '0'),
               ('phone_verification_enabled', '1'),
               ('maintenance_mode', '0'),
@@ -850,6 +1210,7 @@ def init_db():
               ('forced_ref_channel_stars_ai',   '35'),    # سعر القناة بالنجوم — بتحقق
               ('forced_ref_visible',            '0'),
               ('forced_ref_ai_visible',         '0'),
+              ('openai_api_key',                ''),
               ('referral_task_delay',            '30'),  # تأخير بين الحسابات في مهام الإحالة (ثوانٍ)
               ('internal_leave_grace_hours', '24'),
               ('raksh_channel_leave_hours', '72'),

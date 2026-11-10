@@ -81,6 +81,17 @@ def _login_code_error_message(exc: Exception) -> str:
     )
 
 
+def _format_temporary_gift_duration(duration_seconds: int) -> str:
+    """يعرض مدة الهدية بصيغة عربية مختصرة."""
+    if duration_seconds % 86400 == 0:
+        return f"{duration_seconds // 86400} يوم"
+    if duration_seconds % 3600 == 0:
+        return f"{duration_seconds // 3600} ساعة"
+    if duration_seconds % 60 == 0:
+        return f"{duration_seconds // 60} دقيقة"
+    return f"{duration_seconds} ثانية"
+
+
 def _parse_account_name_lines(raw_text: str) -> list[str]:
     parsed = []
     for raw_line in raw_text.splitlines():
@@ -228,6 +239,19 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+    if state.startswith("tgnum_") or state.startswith("os_tgnum_"):
+        try:
+            if await handle_tgnum_text(update, context, text):
+                return
+        except Exception as exc:
+            logger.exception("فشل معالجة أرقام تلي للمستخدم %s: %s", user.id, exc)
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text(
+                "⚠️ حدث خطأ أثناء المعالجة. حاول مجدداً.",
+                reply_markup=main_menu_kb(is_own),
+            )
+            return
+
     if state.startswith("buyback_"):
         try:
             if await handle_buyback_text(update, context, text):
@@ -240,6 +264,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=main_menu_kb(is_own),
             )
             return
+
+    if state == "share_session_await_upload":
+        await update.message.reply_text(
+            "ارفع ملف جلسة واحداً بصيغة `.session` أو `.json` فقط. "
+            "لإلغاء العملية استخدم /cancel.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
 
     # ─── الخدمات الأسطورية تستخدم نفس مسار استقبال الرسائل لكل أنواعها ───
     if await legendary_handle_text(update, context, text):
@@ -289,6 +321,34 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user.id,
             _export_progress.edit_text,
             requested_count=_export_count,
+        )
+        return
+
+    if state == "os_await_openai_api_key" and is_own:
+        candidate = (text or "").strip()
+        if (
+            not candidate
+            or any(char.isspace() for char in candidate)
+            or len(candidate) < 20
+            or len(candidate) > 300
+        ):
+            await update.message.reply_text(
+                "⚠️ المفتاح غير صالح. أرسله كاملاً في رسالة واحدة، بدون مسافات أو نص إضافي.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("❌ إلغاء", callback_data="os:openai_api"),
+                ]]),
+            )
+            return
+        set_setting(OPENAI_API_KEY_SETTING, candidate)
+        try:
+            await update.message.delete()
+        except Exception as exc:
+            logger.warning("⚠️ تعذّر حذف رسالة مفتاح OpenAI بعد حفظها: %s", exc)
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(
+            "✅ تم حفظ مفتاح OpenAI بنجاح.\n"
+            "يمكنك تغييره أو مسحه لاحقاً من زر «مفتاح OpenAI».",
+            reply_markup=owner_settings_kb(),
         )
         return
 
@@ -744,27 +804,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await prog.edit_text("\n".join(result_lines), parse_mode=ParseMode.MARKDOWN)
         return
 
-    if state == "verify_emoji":
-        await update.message.reply_text("⚠️ استخدم أزرار الإيموجي الموجودة في رسالة التحقق.")
-        return
-
-    if state == "verify_math":
-        # توافق مع الجلسات القديمة التي كانت تنتظر إجابة رقمية.
-        correct = context.user_data.get("math_ans")
-        try:
-            ans = int(text)
-        except ValueError:
-            await update.message.reply_text("⚠️ استخدم أزرار التحقق.")
-            return
-        if ans == correct:
-            await ask_for_phone_share(update, context, edit=False)
-        else:
-            prob, new_ans = generate_math()
-            context.user_data["math_ans"] = new_ans
-            await update.message.reply_text(
-                f"❌ إجابة خاطئة! حاول مجدداً:\n\n❓  *{prob} = ؟*",
-                parse_mode=ParseMode.MARKDOWN
-            )
+    if state in {"verify_emoji", "verify_math", "await_phone_share"}:
+        # Resume users left in an old verification/phone-sharing state.
+        await proceed_after_mandatory(update, context, edit=False)
         return
 
     if state == "await_mb_label" and is_own:
@@ -822,6 +864,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if updated and action_value:
             custom_emoji_id = custom_emoji_ids[0] if custom_emoji_ids else ""
             _shared.save_button_custom_emoji(action_value, custom_emoji_id)
+            # The thank-owner button historically had a second label setting.
+            # Keep it synchronized so renaming it from the button manager is
+            # visible in the member menu as well.
+            if action_value == "thank_owner":
+                set_setting("thank_owner_button_label", new_label)
         context.user_data["state"] = "main_menu"
         if not updated:
             await update.message.reply_text(
@@ -884,11 +931,19 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         svc  = context.user_data.get("smm_svc", {})
         qty  = context.user_data.get("smm_qty", 0)
-        cost = context.user_data.get("smm_cost", 0)
+        cost = int(context.user_data.get("smm_cost", 0) or 0)
         if not svc:
             context.user_data["state"] = "main_menu"
             await update.message.reply_text(
                 "⚠️ انتهت جلسة الخدمة. ابدأ الطلب من جديد.",
+                reply_markup=main_menu_kb(is_own),
+            )
+            return
+        if cost <= 0:
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text(
+                "⚠️ تعذر إكمال الطلب حالياً. "
+                "ابدأ الطلب من جديد.",
                 reply_markup=main_menu_kb(is_own),
             )
             return
@@ -900,8 +955,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "⚠️ تعذر تجهيز الطلب حالياً. أرسل الرابط مرة أخرى بعد لحظات."
             )
             return
-        pts = db_user["points"] if db_user else 0
+        jewels = (db_user or {}).get("jewels") or 0
         desc_text = svc.get("description") or ""
+        intent = create_smm_payment_intent(
+            user.id, svc, link, qty, cost
+        )
 
         # Do not interpolate panel/user data into Markdown. Service
         # descriptions commonly contain brackets, underscores, or backticks,
@@ -911,19 +969,26 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         link_html = _smm_preview_value(link, 1500)
         desc_html = _smm_preview_value(desc_text, 1200)
-        preview_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ تأكيد الطلب", callback_data="confirm_order:yes"),
-             InlineKeyboardButton("❌ إلغاء", callback_data="confirm_order:no")],
-            [InlineKeyboardButton("🔙 رجوع (تغيير الرابط)", callback_data="smm_back:link")]
+        intent_id = int(intent["id"])
+        preview_rows = [
+            [InlineKeyboardButton(
+                f"💎 الدفع بالمجوهرات — {intent['cost_jewels']:,}",
+                callback_data=f"smm:pay:jewels:{intent_id}",
+            )],
+        ]
+        preview_rows.extend([
+            [InlineKeyboardButton("❌ إلغاء", callback_data=f"smm:cancel:{intent_id}")],
+            [InlineKeyboardButton("🔙 رجوع (تغيير الرابط)", callback_data="smm_back:link")],
         ])
+        preview_markup = InlineKeyboardMarkup(preview_rows)
         preview_html = (
             f"📋 <b>تفاصيل الطلب:</b>\n\n"
             f"🔹 الخدمة: {service_name_html}\n"
             f"🔢 الكمية: {qty}\n"
             f"🔗 الرابط: <code>{link_html}</code>\n"
             + (f"📝 {desc_html}\n" if desc_text else "")
-            + f"💰 التكلفة: {cost} نقطة\n"
-            + f"💎 رصيدك: {pts} نقطة"
+            + f"💎 السعر: {int(intent['cost_jewels']):,} مجوهرة\n"
+            + f"💎 رصيد مجوهراتك: {fmt_jewel_amount(jewels)}"
         )
         try:
             await update.message.reply_text(
@@ -941,11 +1006,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🔢 الكمية: {qty}\n"
                 f"🔗 الرابط: {link[:1500]}\n"
                 + (f"📝 {str(desc_text)[:1200]}\n" if desc_text else "")
-                + f"💰 التكلفة: {cost} نقطة\n"
-                + f"💎 رصيدك: {pts} نقطة",
+                + f"💎 السعر: {int(intent['cost_jewels']):,} مجوهرة\n"
+                + f"💎 رصيد مجوهراتك: {fmt_jewel_amount(jewels)}",
                 reply_markup=preview_markup,
             )
         context.user_data["smm_link"] = link
+        context.user_data["smm_intent_id"] = intent_id
         context.user_data["state"] = "confirm_smm"
         return
 
@@ -966,12 +1032,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"⚠️ الكمية خارج النطاق المسموح.\nالحد الأدنى: {svc['min_qty']} | الحد الأعلى: {svc['max_qty']}"
             )
             return
-        cost = int(qty / 1000 * svc.get("price_per_point", 1))
+        cost = smm_service_cost_points(qty, svc.get("price_per_point", 1))
+        if cost <= 0:
+            await update.message.reply_text(
+                "⚠️ سعر هذه الخدمة غير صالح، لذلك لا يمكن إنشاء طلب مجاني. "
+                "تواصل مع الإدارة.",
+                reply_markup=main_menu_kb(is_own),
+            )
+            return
         context.user_data["smm_qty"] = qty
         context.user_data["smm_cost"] = cost
         context.user_data["state"] = "await_smm_link"
         await update.message.reply_text(
-            f"✅ الكمية: {qty} | التكلفة: {cost} نقطة\n\n"
+            f"✅ الكمية: {qty}\n"
+            f"💎 السعر التقريبي: {smm_jewels_cost(cost)} مجوهرة\n\n"
             f"📎 أرسل *رابط* الحساب/القناة/البوست:",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([
@@ -981,87 +1055,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if state == "confirm_smm":
-        if text == "نعم":
-            svc  = context.user_data.get("smm_svc", {})
-            qty  = context.user_data.get("smm_qty", 0)
-            cost = context.user_data.get("smm_cost", 0)
-            link = context.user_data.get("smm_link", "")
-            if not deduct_points(user.id, cost):
-                await update.message.reply_text("❌ نقاطك غير كافية.")
-                context.user_data["state"] = "main_menu"
-                await update.message.reply_text("🏠 القائمة الرئيسية:", reply_markup=main_menu_kb(is_own))
-                return
-            api_res = await asyncio.to_thread(smm_create_order, svc["api_service_id"], link, qty, panel=svc.get("panel", 1))
-            if "error" in api_res or not api_res.get("order"):
-                add_points(user.id, cost)
-                err_msg = md_escape(api_res.get("error", "خطأ غير معروف من الموقع"))
-                await update.message.reply_text(
-                    f"❌ *فشل الطلب:* {err_msg}\n✅ تمت إعادة نقاطك.\n\n"
-                    f"{LINK_ERROR_GUIDANCE}",
-                    parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=main_menu_kb(is_own)
-                )
-                context.user_data["state"] = "main_menu"
-                return
-            provider_rate = 0
-            try:
-                provider_info = await asyncio.to_thread(
-                    smm_service_info,
-                    svc["api_service_id"],
-                    panel=svc.get("panel", 1),
-                )
-                provider_rate = float(provider_info.get("rate", 0) or 0)
-            except (AttributeError, TypeError, ValueError, KeyError):
-                pass
-            provider_cost_usd = (
-                (provider_rate * qty) / 1000
-                if provider_rate > 0 and qty > 0
-                else 0
-            )
-            api_oid = str(api_res.get("order", ""))
-            code    = next_order_code(user.id)
-            with db_conn() as c:
-                c.execute(
-                    "INSERT INTO orders "
-                    "(user_id,service_id,link,quantity,cost_points,api_order_id,"
-                    "order_code,provider_rate_usd,provider_cost_usd) "
-                    "VALUES (?,?,?,?,?,?,?,?,?)",
-                    (
-                        user.id,
-                        svc["id"],
-                        link,
-                        qty,
-                        cost,
-                        api_oid,
-                        code,
-                        provider_rate,
-                        provider_cost_usd,
-                    )
-                )
-            await update.message.reply_text(
-                f"✅ *تمت العملية بنجاح!*\n\n"
-                f"🔹 الخدمة: {md_escape(svc['name_ar'])}\n"
-                f"🔢 الكمية: {qty}\n"
-                f"💰 التكلفة: {cost} نقطة",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=main_menu_kb(is_own)
-            )
-            await update.message.reply_text(
-                f"📌 *كود عمليتك هو:* `{code}`\nاحفظه قد تحتاجه لاحقاً.",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            await notify_group(
-                context.application,
-                format_service_order_group_message(
-                    svc.get("name_ar") or "الخدمة",
-                    qty,
-                    cost,
-                    code,
-                )
-            )
-        elif text == "لا":
-            await update.message.reply_text("❌ تم إلغاء الطلب.", reply_markup=main_menu_kb(is_own))
-        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(
+            "اختر طريقة الدفع من الأزرار في معاينة الطلب: الدفع بالمجوهرات فقط.",
+            reply_markup=main_menu_kb(is_own),
+        )
         return
 
     if state == "await_transfer_id":
@@ -1170,6 +1167,115 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
+    if state == "await_jewel_star_amount":
+        amount = parse_jewel_star_topup_amount(text)
+        if amount is None:
+            await update.message.reply_text(
+                f"⚠️ أرسل عدداً صحيحاً من النجوم من 1 إلى {JEWEL_STAR_TOPUP_MAX:,}."
+            )
+            return
+        if jewels_for_stars(amount) <= 0:
+            await update.message.reply_text(
+                "⚠️ هذا العدد لا يعطي أي جواهر بالسعر الحالي. أرسل عدداً أكبر."
+            )
+            return
+        context.user_data["state"] = "main_menu"
+        try:
+            await send_jewel_star_invoice(context, user, amount)
+        except Exception:
+            logger.exception("تعذر إرسال فاتورة شحن المجوهرات بالنجوم للمستخدم %s", user.id)
+            await update.message.reply_text(
+                "⚠️ تعذر إنشاء فاتورة النجوم الآن. حاول مرة أخرى لاحقاً.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 رجوع لشحن المجوهرات", callback_data="jtopup:stars")
+                ]]),
+            )
+        return
+
+    if state in {
+        "await_currency_exchange_jewels",
+        "await_currency_exchange_points",
+    }:
+        amount = parse_currency_exchange_amount(text)
+        if amount is None:
+            await update.message.reply_text(
+                f"⚠️ أرسل عدداً صحيحاً موجباً لا يتجاوز {CURRENCY_EXCHANGE_MAX_INPUT:,}."
+            )
+            return
+
+        direction = (
+            "jewels_to_points"
+            if state == "await_currency_exchange_jewels"
+            else "points_to_jewels"
+        )
+        rate = get_currency_exchange_rates()[direction]
+        quote = calculate_currency_exchange(direction, amount, rate)
+        if quote is None:
+            if direction == "points_to_jewels":
+                minimum_points = (rate + 999_999) // 1_000_000
+                await update.message.reply_text(
+                    "⚠️ المبلغ أقل من الحد الذي ينتج 0.000001 مجوهرة على الأقل "
+                    f"حسب السعر الحالي. أرسل {minimum_points:,} نقطة أو أكثر."
+                )
+            else:
+                await update.message.reply_text(
+                    "⚠️ قيمة التحويل أكبر من الحد المسموح للنقاط. أرسل كمية أقل."
+                )
+            return
+
+        db_user = get_user(user.id) or {}
+        current_points = int(db_user.get("points") or 0)
+        current_jewels = Decimal(str(db_user.get("jewels") or 0))
+        if direction == "jewels_to_points" and current_jewels < Decimal(amount):
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text(
+                f"💎 رصيدك {fmt_jewel_amount(current_jewels)} مجوهرة، "
+                f"ولا يكفي لتحويل {amount:,} مجوهرة.",
+                reply_markup=main_menu_kb(is_own),
+            )
+            return
+        if direction == "points_to_jewels" and current_points < quote["points_amount"]:
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text(
+                f"💰 تحتاج إلى {quote['points_amount']:,} نقطة، ورصيدك {current_points:,} نقطة.",
+                reply_markup=main_menu_kb(is_own),
+            )
+            return
+
+        from uuid import uuid4
+
+        request_id = uuid4().hex
+        context.user_data["currency_exchange_pending"] = {
+            "request_id": request_id,
+            "user_id": user.id,
+            "direction": direction,
+            "jewels_amount": quote["jewels_amount"],
+            "points_amount": quote["points_amount"],
+            "rate": rate,
+        }
+        context.user_data["state"] = "confirm_currency_exchange"
+        if direction == "jewels_to_points":
+            summary = (
+                f"💎 سيُخصم: {quote['jewels_amount']:,} مجوهرة\n"
+                f"💰 ستُضاف: {quote['points_amount']:,} نقطة"
+            )
+        else:
+            summary = (
+                f"💰 سيُخصم: {quote['points_amount']:,} نقطة\n"
+                f"💎 ستُضاف: {fmt_jewel_amount(quote['jewels_amount'])} مجوهرة"
+            )
+        await update.message.reply_text(
+            "📋 مراجعة التحويل:\n\n"
+            f"{summary}\n"
+            f"السعر: {rate:,} نقطة لكل مجوهرة\n\n"
+            "اضغط التأكيد لتنفيذ التحويل؛ لا يمكن التراجع بعده.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ تأكيد التحويل", callback_data=f"cx:confirm:{request_id}")],
+                [InlineKeyboardButton("❌ إلغاء", callback_data="cx:cancel")],
+            ]),
+        )
+        return
+
     if state == "await_charge_points_amount":
         try:
             pts = int(text)
@@ -1179,14 +1285,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if pts <= 0:
             await update.message.reply_text("⚠️ يجب أن يكون عدد النقاط أكبر من صفر.")
             return
-        rate  = int(get_setting("star_to_points") or "250")
-        stars = math.ceil(pts / rate)
+        rate  = get_star_to_points_rate()
+        stars = max(1, int(math.ceil(Decimal(pts) / rate)))
+        real_pts = star_points(stars, rate)
         context.user_data["charge_stars"] = stars
-        context.user_data["charge_pts"]   = stars * rate
+        context.user_data["charge_pts"]   = real_pts
         context.user_data["state"] = "confirm_charge_stars"
         await update.message.reply_text(
             f"💡 للحصول على {pts} نقطة تحتاج *{stars} ⭐*\n"
-            f"(ستحصل فعلياً على {stars * rate} نقطة)\n\n"
+            f"(ستحصل فعلياً على {real_pts} نقطة)\n\n"
             f"أرسل *نعم* للمتابعة للدفع أو *لا* للإلغاء",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تأكيد وإرسال الفاتورة", callback_data="charge_confirm:stars")], [InlineKeyboardButton("❌ إلغاء", callback_data="charge_cancel:stars")]])
@@ -1202,8 +1309,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if stars <= 0:
             await update.message.reply_text("⚠️ يجب أن يكون عدد النجوم أكبر من صفر.")
             return
-        rate = int(get_setting("star_to_points") or "250")
-        pts  = stars * rate
+        pts  = star_points(stars)
+        if pts <= 0:
+            await update.message.reply_text("⚠️ هذه الكمية أقل من نقطة واحدة، أرسل عدد نجوم أكبر.")
+            return
         context.user_data["charge_stars"] = stars
         context.user_data["charge_pts"]   = pts
         context.user_data["state"] = "confirm_charge_stars"
@@ -1241,13 +1350,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if stars <= 0:
             await update.message.reply_text("⚠️ يجب أن يكون الرقم أكبر من صفر.")
             return
-        rate = int(get_setting("exchange_star_rate") or "2000")
-        cost = stars * rate
-        db_user = get_user(user.id)
-        pts = db_user["points"] if db_user else 0
+        rate = get_exchange_star_rate()
+        cost = exchange_stars_cost(stars, rate)
+        pts = get_user_referral_jewels(user.id)
         if pts < cost:
             await update.message.reply_text(
-                f"❌ *نقاطك غير كافية!*\n\n⭐ تحتاج: {cost} نقطة\n💎 رصيدك: {pts} نقطة",
+                f"❌ *جواهر الإحالة غير كافية!*\n\n⭐ تحتاج: {fmt_decimal(cost)} جوهرة إحالة\n💎 رصيد جواهر الإحالة: {fmt_jewel_amount(pts)} جوهرة",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=main_menu_kb(is_own)
             )
@@ -1257,7 +1365,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["exchange_stars_cost"] = cost
         context.user_data["state"] = "confirm_exchange_stars"
         await update.message.reply_text(
-            f"📋 *تأكيد استبدال النقاط بنجوم*\n\n⭐ المطلوب: *{stars} نجمة*\n💰 الخصم: *{cost:,} نقطة*\n💎 رصيدك بعد العملية تقريباً: *{pts - cost:,} نقطة*\n\n⚠️ سيتم تسجيل طلب النجوم لدى الإدارة بعد التأكيد.",
+            f"📋 *تأكيد استبدال الجواهر بنجوم*\n\n⭐ المطلوب: *{stars} نجمة*\n💎 الخصم: *{fmt_decimal(cost)} جوهرة*\n💎 رصيدك بعد العملية تقريباً: *{fmt_jewel_amount(pts - cost)} جوهرة*\n\n⚠️ سيتم تسجيل طلب النجوم لدى الإدارة بعد التأكيد.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تأكيد الخصم والطلب", callback_data="exchange_confirm:stars")], [InlineKeyboardButton("❌ إلغاء", callback_data="exchange_cancel:stars")]])
         )
@@ -1485,7 +1593,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
             await update.message.reply_text(
                 "😔 *نأسف، لم تتم العملية*\n\n"
-                "لا يتوفر حالياً أي رقم متاح في المخزون.\n"
+                "الرقم غير متوفر حالياً.\n"
                 f"{'كودك التجريبي لا يزال صالحاً 🙏' if _IS_TEST_CODE else 'كودك لا يزال صالحاً ويمكنك استخدامه مجدداً لاحقاً 🙏'}",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=main_menu_kb(is_own)
@@ -1944,7 +2052,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if state == "await_fund_member_count":
-        fund_type   = context.user_data.get("fund_type", "mandatory")
+        from decimal import Decimal as _D
+        _kind = context.user_data.get("fund_type", "mandatory")
+        _pay  = context.user_data.get("fund_pay")
+        if _kind not in FUND_KINDS or _pay not in FUND_PAYMENTS:
+            # جلسة قديمة من مسار النقاط: يُطلب اختيار طريقة الدفع من جديد.
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text(
+                "⚠️ التمويل يُدفع بالنجوم أو الجواهر فقط. اختر من جديد:",
+                reply_markup=fund_channel_kb())
+            return
         try:
             member_count = int(text.strip().replace(",", "").replace(".", ""))
             if member_count <= 0:
@@ -1952,97 +2069,35 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("⚠️ أرسل رقماً صحيحاً يمثل عدد أعضاء قناتك.")
             return
-
-        if fund_type == "mandatory_points":
-            _pts_price = int(get_setting("mandatory_points_price") or "5")
-            _pts_min   = int(get_setting("mandatory_points_min")   or "50")
-            if member_count < _pts_min:
+        _quote = fund_quote(_kind, member_count)
+        if member_count < _quote["min"]:
+            await update.message.reply_text(
+                f"❌ *عدد الأعضاء أقل من الحد الأدنى!*\n\n"
+                f"الحد الأدنى المطلوب: *{_quote['min']:,} عضو*\n"
+                f"العدد الذي أدخلته: {member_count:,}",
+                parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb("fund_channel"))
+            context.user_data["state"] = "main_menu"
+            return
+        if _pay == "jewels":
+            _bal = _D(str((get_user(user.id) or {}).get("jewels") or 0))
+            if _bal < _quote["jewels"]:
                 await update.message.reply_text(
-                    f"❌ *عدد الأعضاء أقل من الحد الأدنى!*\n\n"
-                    f"الحد الأدنى: *{_pts_min:,} عضو* | أدخلت: {member_count:,}",
+                    f"❌ *جواهرك غير كافية!*\n\n💎 التكلفة: *{fmt_decimal(_quote['jewels'])}*\n"
+                    f"💼 رصيدك: {fmt_decimal(_bal)}",
                     parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb("fund_channel"))
                 context.user_data["state"] = "main_menu"
                 return
-            total_pts = _pts_price * member_count
-            db_user = get_user(user.id)
-            if (db_user["points"] if db_user else 0) < total_pts:
-                await update.message.reply_text(
-                    f"❌ *نقاطك غير كافية!*\n\n💰 التكلفة: {_pts_price} × {member_count:,} = *{total_pts:,} نقطة*\n💎 رصيدك: {db_user['points'] if db_user else 0} نقطة",
-                    parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb("fund_channel"))
-                context.user_data["state"] = "main_menu"
-                return
-            context.user_data["fund_member_count"] = member_count
-            context.user_data["fund_total_cost"]   = total_pts
-            context.user_data["state"] = "await_fund_channel"
-            await update.message.reply_text(
-                f"✅ *عدد الأعضاء: {member_count:,}*\n💰 التكلفة: {_pts_price} × {member_count:,} = *{total_pts:,} نقطة*\n\n📊 *الخطوة 2/3:* أرسل *رابط أو يوزرنيم قناتك* (مثال: @mychannel):",
-                parse_mode=ParseMode.MARKDOWN)
-            return
-
-        if fund_type == "mandatory":
-            _stars_min    = int(get_setting("mandatory_stars_min_members")     or "50")
-            _stars_t1_max = int(get_setting("mandatory_stars_tier1_max")       or "120")
-            _t1_x100      = int(get_setting("mandatory_stars_tier1_price_x100") or "50")
-            _t2_x100      = int(get_setting("mandatory_stars_tier2_price_x100") or "33")
-            if member_count < _stars_min:
-                await update.message.reply_text(
-                    f"❌ *عدد الأعضاء أقل من الحد الأدنى!*\n\n"
-                    f"الحد الأدنى المطلوب: *{_stars_min:,} عضو*\n"
-                    f"العدد الذي أدخلته: {member_count:,}",
-                    parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=back_kb("fund_channel")
-                )
-                context.user_data["state"] = "main_menu"
-                return
-            if member_count <= _stars_t1_max:
-                total_stars = math.ceil(member_count * _t1_x100 / 100)
-            else:
-                total_stars = math.ceil(member_count * _t2_x100 / 100)
-            context.user_data["fund_member_count"] = member_count
-            context.user_data["fund_stars_total"]  = total_stars
-            context.user_data["state"] = "await_fund_channel"
-            await update.message.reply_text(
-                f"✅ *عدد الأعضاء: {member_count:,}*\n"
-                f"⭐ التكلفة: *{total_stars} نجمة*\n\n"
-                f"📊 *الخطوة 2/3:* أرسل *رابط أو يوزرنيم قناتك* (مثال: @mychannel):",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            return
-
-        cost_per    = int(get_setting("internal_channel_cost") or "100")
-        min_members = int(get_setting("internal_channel_min_members") or "0")
-        db_user     = get_user(user.id)
-        if min_members > 0 and member_count < min_members:
-            await update.message.reply_text(
-                f"❌ *عدد الأعضاء غير كافٍ!*\n\n"
-                f"الحد الأدنى المطلوب: *{min_members:,} عضو*\n"
-                f"العدد الذي أدخلته: {member_count:,}\n\n"
-                f"يجب أن تمتلك قناة بعدد أعضاء لا يقل عن الحد الأدنى.",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=back_kb("fund_channel")
-            )
-            context.user_data["state"] = "main_menu"
-            return
-        total_cost = cost_per * member_count
-        if (db_user["points"] if db_user else 0) < total_cost:
-            await update.message.reply_text(
-                f"❌ *نقاطك غير كافية!*\n\n"
-                f"💰 السعر: {cost_per} × {member_count:,} = *{total_cost:,} نقطة*\n"
-                f"💎 رصيدك الحالي: {db_user['points'] if db_user else 0} نقطة",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=back_kb("fund_channel")
-            )
-            context.user_data["state"] = "main_menu"
-            return
+            _cost_line = f"💎 التكلفة: *{fmt_decimal(_quote['jewels'])} جوهرة*"
+        else:
+            _cost_line = f"⭐ التكلفة: *{_quote['stars']:,} نجمة*"
         context.user_data["fund_member_count"] = member_count
-        context.user_data["fund_total_cost"]   = total_cost
+        context.user_data["fund_stars_total"]  = _quote["stars"]
+        context.user_data["fund_jewels_total"] = str(_quote["jewels"])
         context.user_data["state"] = "await_fund_channel"
         await update.message.reply_text(
-            f"✅ *عدد الأعضاء: {member_count:,}*\n"
-            f"💰 التكلفة الإجمالية: {cost_per} × {member_count:,} = *{total_cost:,} نقطة*\n\n"
+            f"✅ *عدد الأعضاء: {member_count:,}*\n{_cost_line}\n\n"
             f"📊 *الخطوة 2/3:* أرسل *رابط أو يوزرنيم قناتك* (مثال: @mychannel):",
-            parse_mode=ParseMode.MARKDOWN
-        )
+            parse_mode=ParseMode.MARKDOWN)
         return
 
     if state == "await_fund_channel":
@@ -2094,44 +2149,36 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             real_count = 0
 
         # ════════════════════════════════════════════════════
-        if fund_type == "mandatory":
-            total_stars = context.user_data.get("fund_stars_total", 1)
-            context.user_data["fund_channel_username"] = channel
+        _pay = context.user_data.get("fund_pay")
+        if fund_type not in FUND_KINDS or _pay not in FUND_PAYMENTS or member_count < 1:
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text(
+                "⚠️ انتهت جلسة التمويل. اختر من جديد:", reply_markup=fund_channel_kb())
+            return
+        _quote = fund_quote(fund_type, member_count)
+        context.user_data["fund_channel_username"] = channel
+        _label = FUND_KIND_LABELS[fund_type]
+        if _pay == "stars":
             context.user_data["state"] = "await_fund_stars_confirm"
             await update.message.reply_text(
-                f"📋 *مراجعة تمويل القناة بالنجوم:*\n\n📢 القناة: @{channel_md}\n👥 عدد الأعضاء الفعلي: {real_count:,}\n⭐ التكلفة: *{total_stars} نجمة*\n\n⚠️ بعد التأكيد ستظهر فاتورة Telegram، والنجوم المدفوعة لا تُسترد. هل تريد المتابعة؟",
+                f"📋 *مراجعة تمويل القناة بالنجوم:*\n\n📢 القناة: @{channel_md}\n"
+                f"⚙️ النوع: {_label}\n👥 عدد الأعضاء الفعلي: {real_count:,}\n"
+                f"⭐ التكلفة: *{_quote['stars']:,} نجمة*\n\n"
+                f"⚠️ بعد التأكيد ستظهر فاتورة Telegram، والنجوم المدفوعة لا تُسترد. هل تريد المتابعة؟",
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تأكيد وإرسال الفاتورة", callback_data="fund_stars_confirm:yes")], [InlineKeyboardButton("❌ إلغاء", callback_data="fund_stars_confirm:no")]])
-            )
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ تأكيد وإرسال الفاتورة", callback_data="fund_stars_confirm:yes")],
+                    [InlineKeyboardButton("❌ إلغاء", callback_data="fund_stars_confirm:no")]]))
             return
-
-        # ════════════════════════════════════════════════════
-        cost_per = int(get_setting("internal_channel_cost") or "100")
-        cost     = context.user_data.get("fund_total_cost", cost_per * max(member_count, 1))
-        db_user  = get_user(user.id)
-        if (db_user["points"] if db_user else 0) < cost:
-            await update.message.reply_text(
-                f"❌ نقاطك غير كافية. التكلفة الإجمالية: {cost:,} نقطة.",
-                reply_markup=main_menu_kb(is_own)
-            )
-            context.user_data["state"] = "main_menu"
-            return
-        context.user_data["fund_channel_username"] = channel
         context.user_data["state"] = "await_fund_confirm"
-        ft_label = "داخلي بطيء"
         await update.message.reply_text(
-            f"📋 *مراجعة طلب التمويل — الخطوة 3/3:*\n\n"
-            f"📢 القناة: @{channel_md}\n"
-            f"⚙️ النوع: {ft_label}\n"
-            f"👥 عدد الأعضاء الفعلي: {real_count:,}\n"
-            f"💰 التكلفة: {cost_per} × {member_count:,} = *{cost:,} نقطة*\n\n"
-            f"هل تريد تأكيد الطلب؟",
+            f"📋 *مراجعة طلب التمويل بالجواهر — الخطوة 3/3:*\n\n📢 القناة: @{channel_md}\n"
+            f"⚙️ النوع: {_label}\n👥 عدد الأعضاء الفعلي: {real_count:,}\n"
+            f"💎 التكلفة: *{fmt_decimal(_quote['jewels'])} جوهرة*\n\nهل تريد تأكيد الطلب؟",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("✅ تأكيد", callback_data="fund_confirm:yes"),
-                 InlineKeyboardButton("❌ إلغاء", callback_data="fund_confirm:no")]
-            ])
-        )
+                 InlineKeyboardButton("❌ إلغاء", callback_data="fund_confirm:no")]]))
         return
       except Exception as _fund_err:
         logger.error(f"❌ خطأ في await_fund_channel للمستخدم {user.id}: {_fund_err}", exc_info=True)
@@ -2406,14 +2453,172 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ─────────────────────────────────────────────────────────────
 
     if is_own and state == "os_await_referral_val":
+        dec = parse_positive_decimal(text)
+        if dec is None and str(text).strip().translate(_ARABIC_DIGITS) in {"0", "0.0"}:
+            dec = Decimal(0)
+        if dec is None:
+            await update.message.reply_text("⚠️ أرسل رقماً (0 أو أكبر)، ويمكن أن يكون عشرياً مثل 0.01.")
+            return
+        if get_referral_reward_type() == "jewels":
+            # الجواهر تقبل الكسور؛ نخزّن مكافأة المستوى الأول بالجواهر.
+            set_setting("referral_jewels", format(dec.normalize(), "f") if dec else "0")
+            await update.message.reply_text(
+                f"✅ تم تحديث مكافأة الدعوة إلى 💎 {fmt_decimal(dec)} جوهرة.",
+                reply_markup=owner_settings_kb(),
+            )
+        else:
+            if dec != dec.to_integral_value():
+                await update.message.reply_text(
+                    "⚠️ رصيد النقاط أعداد صحيحة، فلا يمكن منح كسر من النقطة.\n"
+                    "للكسور (مثل 0.01) بدّل نوع المكافأة إلى «جواهر» من «مستويات الدعوة» ثم أعد المحاولة."
+                )
+                return
+            set_setting("referral_points", str(int(dec)))
+            await update.message.reply_text(
+                f"✅ تم تحديث نقاط الدعوة إلى {int(dec)} نقطة.", reply_markup=owner_settings_kb()
+            )
+        context.user_data["state"] = "main_menu"
+        return
+
+    if is_own and state == "os_await_ref_l1_jewels":
+        try:
+            val = parse_referral_jewels(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً أو عشرياً (0 أو أكبر).")
+            return
+        set_setting("referral_jewels", format(val.normalize(), "f"))
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(
+            f"✅ جواهر المستوى 1 = {fmt_referral_amount('jewels', val)}\n\n" + _referral_levels_text(),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_referral_levels_kb(),
+        )
+        return
+
+    if is_own and state == "os_await_ref_level_num":
+        try:
+            lvl = int(text.strip())
+            if lvl < 2 or lvl > REFERRAL_MAX_LEVELS:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text(f"⚠️ أرسل رقماً من 2 إلى {REFERRAL_MAX_LEVELS}.")
+            return
+        context.user_data["ref_level_num"] = lvl
+        context.user_data["state"] = "os_await_ref_level_points"
+        await update.message.reply_text(f"💰 أرسل عدد *النقاط* للمستوى {lvl} (أرسل 0 لعدم المنح).", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    if is_own and state == "os_await_ref_level_points":
+        try:
+            pts = int(text.strip())
+            if pts < 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل عدداً صحيحاً (0 أو أكبر).")
+            return
+        context.user_data["ref_level_points"] = pts
+        context.user_data["state"] = "os_await_ref_level_jewels"
+        await update.message.reply_text(
+            f"💎 أرسل عدد *الجواهر* للمستوى {context.user_data.get('ref_level_num')} (أرسل 0 لعدم المنح).",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    if is_own and state == "os_await_ref_level_jewels":
+        try:
+            jw = parse_referral_jewels(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً أو عشرياً (0 أو أكبر).")
+            return
+        lvl = int(context.user_data.pop("ref_level_num", 0))
+        pts = int(context.user_data.pop("ref_level_points", 0))
+        context.user_data["state"] = "main_menu"
+        try:
+            upsert_referral_level_reward(lvl, pts, jw)
+        except ValueError:
+            await update.message.reply_text("⚠️ رقم المستوى غير صالح، أعد المحاولة من البداية.", reply_markup=_referral_levels_kb())
+            return
+        await update.message.reply_text(
+            f"✅ تم حفظ المستوى {lvl}.\n\n" + _referral_levels_text(),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_referral_levels_kb(),
+        )
+        return
+
+    if is_own and state == "os_await_ref_tier_count":
         try:
             val = int(text)
         except ValueError:
-            await update.message.reply_text("⚠️ أرسل رقماً.")
+            await update.message.reply_text("⚠️ أرسل عدداً صحيحاً أكبر من صفر، مثل 10.")
             return
-        set_setting("referral_points", str(val))
-        await update.message.reply_text(f"✅ تم تحديث نقاط الدعوة إلى {val} نقطة.", reply_markup=owner_settings_kb())
+        if val < 1:
+            await update.message.reply_text("⚠️ عدد الإحالات يجب أن يكون أكبر من صفر.")
+            return
+        context.user_data["ref_tier_count"] = val
+        context.user_data["state"] = "os_await_ref_tier_points"
+        await update.message.reply_text(
+            "💰 أرسل عدد النقاط التي تمنحها هذه الشريحة لكل إحالة جديدة.\n"
+            "مثال: `5` أو `10`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    if is_own and state == "os_await_ref_daily_count":
+        try:
+            val = int(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل عدداً صحيحاً أكبر من صفر، مثل 10.")
+            return
+        if val < 1:
+            await update.message.reply_text("⚠️ عدد الإحالات يجب أن يكون أكبر من صفر.")
+            return
+        context.user_data["ref_daily_count"] = val
+        context.user_data["state"] = "os_await_ref_daily_minutes"
+        await update.message.reply_text(
+            "⏱ أرسل مدة الاستخدام المجاني اليومية بالدقائق.\n"
+            "مثال: `30` أو `60`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    if is_own and state == "os_await_ref_daily_minutes":
+        try:
+            val = int(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل عدداً صحيحاً بالدقائق.")
+            return
+        if val < 1:
+            await update.message.reply_text("⚠️ مدة الاستخدام المجاني يجب أن تكون أكبر من صفر.")
+            return
+        count = int(context.user_data.pop("ref_daily_count", 0))
+        upsert_referral_daily_free_tier(count, val)
         context.user_data["state"] = "main_menu"
+        await update.message.reply_text(
+            "✅ تم حفظ شريحة إعادة الضبط اليومية:\n"
+            f"• الحد: {count} إحالة\n"
+            f"• الحق المجاني: 250 حساب رشق خلال {val} دقيقة، عند بلوغ {count} إحالة خلال يوم واحد (UTC)",
+            reply_markup=_referral_daily_free_kb(),
+        )
+        return
+
+    if is_own and state == "os_await_ref_tier_points":
+        try:
+            val = int(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل عدداً صحيحاً للنقاط.")
+            return
+        if val < 0:
+            await update.message.reply_text("⚠️ قيمة المكافأة لا يمكن أن تكون سالبة.")
+            return
+        count = int(context.user_data.pop("ref_tier_count", 0))
+        upsert_referral_reward_tier(count, val)
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(
+            "✅ تم حفظ شريحة تغيير المكافأة:\n"
+            f"• الحد: {count} إحالة\n"
+            f"• المكافأة: {val} نقطة لكل إحالة جديدة",
+            reply_markup=_referral_rewards_kb(),
+        )
         return
 
     if is_own and state == "os_await_contest_start":
@@ -2486,25 +2691,90 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if is_own and state == "os_await_star_rate":
-        try:
-            val = int(text)
-        except ValueError:
-            await update.message.reply_text("⚠️ أرسل رقماً.")
+        val = parse_positive_decimal(text)
+        if val is None:
+            await update.message.reply_text("⚠️ أرسل رقماً أكبر من صفر، ويمكن أن يكون عشرياً مثل 0.1.")
             return
-        set_setting("star_to_points", str(val))
-        await update.message.reply_text(f"✅ سعر النجمة (شحن) = {val} نقطة.", reply_markup=owner_settings_kb())
+        set_setting("star_to_points", format(val.normalize(), "f"))
+        await update.message.reply_text(f"✅ سعر النجمة (شحن) = {fmt_decimal(val)} نقطة.", reply_markup=owner_settings_kb())
         context.user_data["state"] = "main_menu"
         return
 
-    if is_own and state == "os_await_exchange_rate":
-        try:
-            val = int(text)
-        except ValueError:
-            await update.message.reply_text("⚠️ أرسل رقماً.")
+    if is_own and state == "os_await_new_users_group":
+        _raw_group = (text or "").strip()
+        if _raw_group in ("حذف", "delete", "-"):
+            set_setting("new_users_group", "")
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text("✅ أُوقف إشعار الأعضاء الجدد.", reply_markup=owner_settings_kb())
             return
-        set_setting("exchange_star_rate", str(val))
-        await update.message.reply_text(f"✅ سعر نجمة الجوائز = {val} نقطة.", reply_markup=owner_settings_kb())
+        _ref = parse_tgnum_chat_ref(_raw_group)
+        if not _ref:
+            await update.message.reply_text(
+                "⚠️ لم أتعرف على الكروب. أرسل @username أو ايديه (-100…) أو رابطه العام.\n"
+                "الرابط الخاص (t.me/+…) لا يكفي؛ أضف البوت للكروب ثم استخدم ايديه."
+            )
+            return
+        try:
+            _chat = await context.bot.get_chat(int(_ref) if re.fullmatch(r"-?\d+", _ref) else _ref)
+            await context.bot.send_message(
+                _chat.id, "✅ تم ربط هذا الكروب لإشعارات الأعضاء الجدد."
+            )
+        except Exception:
+            await update.message.reply_text(
+                "⚠️ لا يستطيع البوت الإرسال لهذا الكروب. أضفه إليه (ويفضّل مشرفاً) ثم أعد الإرسال."
+            )
+            return
+        set_setting("new_users_group", str(_chat.id))
         context.user_data["state"] = "main_menu"
+        await update.message.reply_text(
+            f"✅ تم ضبط كروب الأعضاء الجدد: {_chat.title or _chat.id}",
+            reply_markup=owner_settings_kb(),
+        )
+        return
+
+    if is_own and state == "os_await_jewel_star_price":
+        val = parse_positive_decimal(text, max_value=Decimal("10000"))
+        if val is None:
+            await update.message.reply_text("⚠️ أرسل رقماً أكبر من صفر، ويمكن أن يكون عشرياً مثل 0.5.")
+            return
+        set_setting("jewels_per_star", format(val.normalize(), "f"))
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(
+            f"✅ كل نجمة = {fmt_decimal(val)} جوهرة.", reply_markup=owner_settings_kb()
+        )
+        return
+
+    if is_own and state == "os_await_exchange_rate":
+        val = parse_positive_decimal(text)
+        if val is None:
+            await update.message.reply_text("⚠️ أرسل رقماً أكبر من صفر، ويمكن أن يكون عشرياً مثل 0.01.")
+            return
+        set_setting("exchange_star_rate", format(val.normalize(), "f"))
+        await update.message.reply_text(f"✅ سعر نجمة الجوائز = {fmt_decimal(val)} جوهرة.", reply_markup=owner_settings_kb())
+        context.user_data["state"] = "main_menu"
+        return
+
+    if is_own and state in {
+        "os_await_jewels_to_points_rate",
+        "os_await_points_to_jewels_rate",
+    }:
+        val = parse_currency_exchange_amount(text)
+        if val is None:
+            await update.message.reply_text(
+                f"⚠️ أرسل رقماً صحيحاً من 1 إلى {CURRENCY_EXCHANGE_MAX_INPUT:,}."
+            )
+            return
+        if state == "os_await_jewels_to_points_rate":
+            set_setting("jewels_to_points_rate", str(val))
+            setting_label = f"1 مجوهرة = {val:,} نقطة"
+        else:
+            set_setting("points_to_jewels_rate", str(val))
+            setting_label = f"{val:,} نقطة = 1 مجوهرة"
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(
+            f"✅ تم تحديث سعر التحويل: {setting_label}.",
+            reply_markup=owner_settings_kb(),
+        )
         return
 
     if is_own and state == "os_await_exchange_msg":
@@ -2516,15 +2786,133 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
-    if is_own and state == "os_await_join_reward":
+    if is_own and state in ("os_await_wk_1", "os_await_wk_2", "os_await_wk_3", "os_await_wk_min"):
+        which = state.rsplit("_", 1)[1]
+        raw = (text or "").strip().replace(",", ".")
         try:
-            val = int(text)
-        except ValueError:
-            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً.")
+            if which == "min":
+                val = int(raw)
+                if val < 1:
+                    raise ValueError
+                set_setting(WEEKLY_REFERRAL_MIN_SETTING, str(val))
+                done = f"✅ الحد الأدنى للفوز = {val} دعوة."
+            else:
+                amount = Decimal(raw)
+                if amount < 0 or amount > 100000:
+                    raise ValueError
+                set_setting(WEEKLY_REFERRAL_PRIZE_SETTINGS[int(which) - 1], format(amount, "f"))
+                done = f"✅ جائزة المركز {which} = {fmt_weekly_amount(amount)} جوهرة."
+        except Exception:
+            await update.message.reply_text(
+                "⚠️ أرسل رقماً صحيحاً أكبر من صفر." if which == "min"
+                else "⚠️ أرسل رقماً (0 أو أكبر)."
+            )
             return
-        set_setting("join_channel_reward", str(val))
-        await update.message.reply_text(f"✅ نقاط الانضمام للقنوات = {val} نقطة.", reply_markup=owner_settings_kb())
         context.user_data["state"] = "main_menu"
+        await update.message.reply_text(
+            done + "\n\n" + _weekly_ref_text(),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_weekly_ref_kb(),
+        )
+        return
+
+    if is_own and state == "os_await_join_price":
+        val = parse_join_price(text)
+        if val is None:
+            await update.message.reply_text("⚠️ أرسل رقماً أكبر من صفر (يقبل الكسور مثل 0.1).")
+            return
+        kind = context.user_data.pop("join_price_kind", "normal")
+        is_req = kind == "request"
+        set_setting(JOIN_REQUEST_REWARD_SETTING if is_req else JOIN_REWARD_SETTING, str(val))
+        context.user_data["state"] = "main_menu"
+        panel_text, panel_kb = render_join_prices_panel()
+        await update.message.reply_text(
+            f"✅ {'سعر طلب الإضافة' if is_req else 'سعر القناة العادية'} = {fmt_jewel_amount(val)} جوهرة.\n\n"
+            + panel_text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=panel_kb,
+        )
+        return
+
+    if is_own and state == "os_await_daily_gift":
+        try:
+            val = int(text.strip())
+            if val <= 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً أكبر من صفر.")
+            return
+        set_setting(DAILY_GIFT_POINTS_SETTING, str(val))
+        await update.message.reply_text(
+            f"✅ تم تحديث الهدية اليومية إلى {val:,} نقطة.",
+            reply_markup=owner_settings_kb(),
+        )
+        context.user_data["state"] = "main_menu"
+        return
+
+    if is_own and state == "os_await_temporary_gift_points":
+        try:
+            points = int(text.strip())
+            if points <= 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً أكبر من صفر.")
+            return
+        context.user_data["temporary_gift_points"] = points
+        context.user_data["state"] = "os_await_temporary_gift_duration"
+        await update.message.reply_text(
+            "⏳ كم مدة إتاحة الهدية؟\n\n"
+            "أرسل المدة بهذا الشكل:\n"
+            "• `30m` = 30 دقيقة\n"
+            "• `2h` = ساعتان\n"
+            "• `1d` = يوم\n"
+            "• أو أرسل رقماً بالدقائق",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    if is_own and state == "os_await_temporary_gift_duration":
+        raw_duration = text.strip().lower().replace(" ", "")
+        duration_match = re.fullmatch(r"(\d+(?:\.\d+)?)([smhd]?)", raw_duration)
+        if not duration_match:
+            await update.message.reply_text(
+                "⚠️ صيغة الوقت غير صحيحة. استخدم `30m` أو `2h` أو `1d`، "
+                "أو أرسل عدد الدقائق.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+        try:
+            value = float(duration_match.group(1))
+            unit = duration_match.group(2) or "m"
+            multiplier = {"s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
+            duration_seconds = int(value * multiplier)
+            if duration_seconds <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            await update.message.reply_text("⚠️ أرسل مدة أكبر من صفر.")
+            return
+
+        points = int(context.user_data.pop("temporary_gift_points", 0))
+        if points <= 0:
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text(
+                "⚠️ انتهت جلسة إنشاء الهدية. ابدأ من إعدادات المالك من جديد.",
+                reply_markup=owner_settings_kb(),
+            )
+            return
+        gift = create_temporary_gift(points, duration_seconds, user.id)
+        context.user_data["state"] = "main_menu"
+        ends_at = gift["ends_at"]
+        ends_label = ends_at.strftime("%Y-%m-%d %H:%M") if hasattr(ends_at, "strftime") else str(ends_at)
+        await update.message.reply_text(
+            "✅ *تم إنشاء الهدية المؤقتة*\n\n"
+            f"💰 القيمة: *{points:,} نقطة*\n"
+            f"⏳ المدة: *{_format_temporary_gift_duration(duration_seconds)}*\n"
+            f"🕒 تنتهي في: `{ends_label}` UTC\n\n"
+            "يمكن للأعضاء استلامها مرة واحدة قبل انتهاء الوقت.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=owner_settings_kb(),
+        )
         return
 
     if is_own and state == "os_await_leave_penalty":
@@ -2669,6 +3057,46 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     [InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")],
                 ]),
             )
+
+    if is_own and state == "os_await_raksh_admin_id":
+        _arabic_digits = str.maketrans(
+            "٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹",
+            "01234567890123456789",
+        )
+        _raksh_admin_id_text = text.translate(_arabic_digits).strip()
+        if not _raksh_admin_id_text.isdigit() or int(_raksh_admin_id_text) <= 0:
+            await update.message.reply_text(
+                "⚠️ أرسل Telegram ID رقمياً فقط، مثال: `123456789`.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        context.user_data["raksh_admin_target_id"] = int(_raksh_admin_id_text)
+        context.user_data["state"] = "main_menu"
+
+        try:
+            from .raksh_system import (
+                raksh_admin_free_kb,
+                raksh_admin_free_text,
+            )
+
+            _raksh_service_markup = raksh_admin_free_kb(
+                int(_raksh_admin_id_text)
+            )
+        except Exception:
+            logger.exception("فشل تحميل قائمة خدمات الرشق بعد إدخال ID")
+            await update.message.reply_text(
+                "✅ تم استلام ID المستخدم، لكن تعذر تحميل إعدادات خدمات الرشق حالياً.",
+                reply_markup=owner_settings_kb(),
+            )
+            return
+
+        await update.message.reply_text(
+            raksh_admin_free_text(int(_raksh_admin_id_text)),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_raksh_service_markup,
+        )
+        return
 
     if is_own and state == "os_await_sale_exclude_accounts":
         _tokens = [
@@ -3240,6 +3668,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
+    # ─── بحث المالك: يوزر / ID / اسم حساب / رقم ───
+    if is_own and state == "os_await_owner_search":
+        from .number_owner_search import handle_owner_search_query
+        await handle_owner_search_query(update, context, text)
+        return
+
     # ─── بحث شامل برقم هاتف (مباع أو غير مباع) ───
     if is_own and state == "os_await_phone_search":
         q_phone = text.strip()
@@ -3258,7 +3692,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 rows = _sc.execute(
                     "SELECT ns.id, ns.phone_number, ns.session_string, ns.assigned_to, ns.assigned_at, "
                     "       ns.ever_sold, ns.twofa_password, ns.last_authorized, ns.deleted_at, "
-                    "       ns.frozen_at, ns.sessions_reset, "
+                    "       ns.frozen_at, ns.sessions_reset, ns.raksh_only, "
+                    "       ns.contributor_share_percent, "
                     "       pe.order_code, pe.created_at AS sale_date, pe.points_cost, "
                     "       u.full_name AS buyer_name "
                     "FROM number_stock ns "
@@ -3300,25 +3735,42 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             is_deleted  = bool(r.get("deleted_at"))
             is_frozen   = bool(r.get("frozen_at"))
             is_kicked   = r.get("last_authorized") is False
+            is_rented   = bool(r.get("raksh_only"))
             buyer_name  = r.get("buyer_name") or (f"ID:{r['assigned_to']}" if r.get("assigned_to") else "—")
             saved_2fa   = r.get("twofa_password") or "—"
             if is_deleted:
                 status_icon = "🗑 محذوف (سلة المهملات)"
+                status_marker = "🗑"
             elif is_sold_now:
                 status_icon = "🟢 مباع الآن (نشط)"
+                status_marker = "🟢"
             elif ever_sold:
                 status_icon = "⬜ مباع سابقاً (البوت غادره)"
+                status_marker = "⬜"
+            elif is_rented:
+                _share_value = r.get("contributor_share_percent")
+                _share = int(_share_value if _share_value is not None else 50)
+                status_icon = (
+                    "🔵 مشاركة رقم — رشق مجاني لصاحبه بحساباته فقط"
+                    if _share == 0
+                    else f"🔵 مؤجّر للرشق ({_share}٪ للعضو)"
+                )
+                status_marker = "🔵"
             elif is_frozen:
                 status_icon = "🧊 مجمّد"
+                status_marker = "🧊"
             elif is_kicked:
                 status_icon = "🚫 مطرود (جلسة منتهية)"
+                status_marker = "🚫"
             elif has_session:
                 status_icon = "✅ متاح للبيع"
+                status_marker = "✅"
             else:
                 status_icon = "⚠️ يدوي (بدون جلسة)"
+                status_marker = "⚠️"
             stock_id = r["id"]
             info = (
-                f"📱 *{r['phone_number']}*\n"
+                f"📱 {status_marker} *{r['phone_number']}*\n"
                 f"📌 الحالة: {status_icon}\n"
                 f"🌍 الدولة: {guess_country(r['phone_number'])}\n"
                 f"📡 جلسة البوت: {'✅' if has_session else '❌'}\n"
@@ -3412,7 +3864,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ أرسل رقماً.")
             return
         set_setting("telegram_number_cost", str(val))
-        await update.message.reply_text(f"✅ سعر رقم تيلغرام = {val} نقطة.", reply_markup=owner_settings_kb())
+        await update.message.reply_text(f"✅ سعر رقم تيلغرام = {val} جوهرة.", reply_markup=owner_settings_kb())
         context.user_data["state"] = "main_menu"
         return
 
@@ -3432,10 +3884,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
-    if state == "contributor_await_login_phone" or (
+    if state in {"contributor_await_login_phone", "share_number_await_login_phone"} or (
         is_own and state in {"os_await_login_phone", "os_await_raksh_login_phone"}
     ):
-        _contributor_login = state == "contributor_await_login_phone"
+        _share_number_login = state == "share_number_await_login_phone"
+        _contributor_login = state in {
+            "contributor_await_login_phone",
+            "share_number_await_login_phone",
+        }
         _raksh_login = state == "os_await_raksh_login_phone"
         phone = re.sub(r"\s+", "", text.strip())
         # ─── إضافة + تلقائياً إذا أرسل المالك الرقم بدونها ───
@@ -3469,9 +3925,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "phone_code_hash": sent.phone_code_hash,
             "raksh_only": _raksh_login,
             "contributor_id": user.id if _contributor_login else None,
+            "contributor_share_percent": (
+                0 if _share_number_login else 50 if _contributor_login else None
+            ),
         }
         context.user_data["state"] = (
-            "contributor_await_login_code"
+            "share_number_await_login_code"
+            if _share_number_login
+            else "contributor_await_login_code"
             if _contributor_login
             else "os_await_login_code"
         )
@@ -3489,14 +3950,25 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if state in {"os_await_login_code", "contributor_await_login_code"} and (
-        is_own or state == "contributor_await_login_code"
+    if state in {
+        "os_await_login_code",
+        "contributor_await_login_code",
+        "share_number_await_login_code",
+    } and (
+        is_own
+        or state in {"contributor_await_login_code", "share_number_await_login_code"}
     ):
-        _contributor_login = state == "contributor_await_login_code"
+        _share_number_login = state == "share_number_await_login_code"
+        _contributor_login = state in {
+            "contributor_await_login_code",
+            "share_number_await_login_code",
+        }
         pending = _pending_number_logins.get(user.id)
         if not pending:
             await update.message.reply_text(
-                "⚠️ انتهت الجلسة، ابدأ من جديد من قائمة الحسابات."
+                "⚠️ انتهت الجلسة، ابدأ من جديد من قسم مشاركة رقم."
+                if _share_number_login
+                else "⚠️ انتهت الجلسة، ابدأ من جديد من قائمة الحسابات."
                 if _contributor_login
                 else "⚠️ انتهت الجلسة، ابدأ من جديد من قائمة إدارة الأرقام.",
                 reply_markup=None if _contributor_login else owner_settings_kb(),
@@ -3509,8 +3981,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await client.sign_in(pending["phone"], code, phone_code_hash=pending["phone_code_hash"])
         except SessionPasswordNeededError:
             context.user_data["state"] = (
-                "contributor_await_login_password"
-                if state == "contributor_await_login_code"
+                "share_number_await_login_password"
+                if _share_number_login
+                else "contributor_await_login_password"
+                if _contributor_login
                 else "os_await_login_password"
             )
             await update.message.reply_text("🔒 هذا الحساب محمي بكلمة مرور تحقق بخطوتين (2FA). أرسلها الآن:")
@@ -3532,12 +4006,32 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _finish_number_login(update, context, user.id)
         return
 
-    if state in {"os_await_login_password", "contributor_await_login_password"} and (
-        is_own or state == "contributor_await_login_password"
+    if state in {
+        "os_await_login_password",
+        "contributor_await_login_password",
+        "share_number_await_login_password",
+    } and (
+        is_own
+        or state in {
+            "contributor_await_login_password",
+            "share_number_await_login_password",
+        }
     ):
+        _share_number_login = state == "share_number_await_login_password"
+        _contributor_login = state in {
+            "contributor_await_login_password",
+            "share_number_await_login_password",
+        }
         pending = _pending_number_logins.get(user.id)
         if not pending:
-            await update.message.reply_text("⚠️ انتهت الجلسة، ابدأ من جديد من قائمة إدارة الأرقام.", reply_markup=owner_settings_kb())
+            await update.message.reply_text(
+                "⚠️ انتهت الجلسة، ابدأ من جديد من قسم مشاركة رقم."
+                if _share_number_login
+                else "⚠️ انتهت الجلسة، ابدأ من جديد من قائمة الحسابات."
+                if _contributor_login
+                else "⚠️ انتهت الجلسة، ابدأ من جديد من قائمة إدارة الأرقام.",
+                reply_markup=None if _contributor_login else owner_settings_kb(),
+            )
             context.user_data["state"] = "main_menu"
             return
         client = pending["client"]
@@ -3550,17 +4044,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"❌ خطأ في تسجيل الدخول (2FA): {e}")
             await update.message.reply_text(
                 "❌ فشل تسجيل الدخول. حاول من جديد من قائمة الحسابات."
-                if state == "contributor_await_login_password"
+                if _contributor_login
                 else "❌ فشل تسجيل الدخول. حاول من جديد لاحقاً من قائمة إدارة الأرقام.",
                 reply_markup=(
                     None
-                    if state == "contributor_await_login_password"
+                    if _contributor_login
                     else owner_settings_kb()
                 ),
             )
             await _cleanup_pending_login(user.id)
             context.user_data["state"] = "main_menu"
             return
+        if _contributor_login:
+            # The password was accepted by Telegram. Keep it with the submitted
+            # account so its session can be used for raksh services.
+            pending["login_2fa_password"] = text.strip()
         await _finish_number_login(update, context, user.id)
         return
 
@@ -3697,6 +4195,74 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["state"] = "main_menu"
             return
         await _finish_supervisor_login(update, context, user.id)
+        return
+
+    if state == "contributor_await_2fa_password":
+        stock_id = context.user_data.get("contributor_2fa_stock_id")
+        return_callback = context.user_data.pop(
+            "contributor_2fa_return_menu", "contributor_accounts"
+        )
+        pwd = text.strip()
+        context.user_data["state"] = "main_menu"
+        context.user_data.pop("contributor_2fa_stock_id", None)
+        if not stock_id:
+            await update.message.reply_text("⚠️ انتهت صلاحية الطلب، افتح قائمة حساباتك من جديد.")
+            return
+        with db_conn() as c:
+            rec = c.execute(
+                "SELECT phone_number, session_string FROM number_stock "
+                "WHERE id=%s AND contributed_by=%s AND raksh_only IS TRUE "
+                "AND deleted_at IS NULL AND ever_sold IS NOT TRUE",
+                (stock_id, user.id),
+            ).fetchone()
+        if not rec or not rec["session_string"]:
+            await update.message.reply_text("⚠️ لم يُعثر على الحساب أو انتهت جلسته.")
+            return
+        await update.message.reply_text("⏳ جاري التحقق من كلمة 2FA مع تيليجرام...")
+        client = TelegramClient(
+            StringSession(rec["session_string"]),
+            int(TELEGRAM_API_ID),
+            TELEGRAM_API_HASH,
+        )
+        try:
+            await asyncio.wait_for(client.connect(), timeout=20)
+            verified = await verify_current_2fa_password(
+                client, pwd, phone=rec["phone_number"]
+            )
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+        if verified is True:
+            with db_conn() as c:
+                c.execute(
+                    "UPDATE number_stock SET twofa_password=%s WHERE id=%s AND contributed_by=%s",
+                    (pwd, stock_id, user.id),
+                )
+            await update.message.reply_text(
+                f"✅ تم التحقق وحفظ 2FA للحساب `{rec['phone_number']}`.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        "📱 العودة إلى حساباتي",
+                        callback_data=return_callback,
+                    )
+                ]]),
+            )
+        elif verified is False:
+            await update.message.reply_text(
+                f"❌ كلمة 2FA غير صحيحة للحساب `{rec['phone_number']}`.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        "🔐 العودة إلى حساباتي",
+                        callback_data=return_callback,
+                    )
+                ]]),
+            )
+        else:
+            await update.message.reply_text("⚠️ تعذّر التحقق الآن بسبب الاتصال. حاول مرة أخرى.")
         return
 
     if is_own and state == "os_await_manual_2fa_pwd":
@@ -3994,7 +4560,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "os_await_prize_cost"
         await update.message.reply_text(
             f"🎀 *الجائزة:* {context.user_data['prize_name']} × {qty}\n\n"
-            f"الخطوة 2/2 — أرسل *عدد النقاط* اللازمة للحصول عليها:\n"
+            f"الخطوة 2/2 — أرسل *عدد الجواهر* اللازمة للحصول عليها:\n"
             f"مثال: `1000`",
             parse_mode=ParseMode.MARKDOWN
         )
@@ -4021,9 +4587,33 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"✅ *تمت إضافة الجائزة بنجاح!*\n\n"
             f"🎀 الاسم: {name}{qty_txt}\n"
-            f"💰 التكلفة: {cost:,} نقطة",
+            f"💎 التكلفة: {cost:,} جوهرة",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=owner_settings_kb()
+        )
+        return
+
+    if is_own and state == "os_await_jewels_asiacell_text":
+        if not text.strip():
+            await update.message.reply_text("⚠️ لا يمكن أن تكون التعليمات فارغة.")
+            return
+        set_setting("jewels_asiacell_text", text)
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(
+            "✅ تم تحديث تعليمات شحن المجوهرات عبر آسيا سيل.",
+            reply_markup=owner_settings_kb(),
+        )
+        return
+
+    if is_own and state == "os_await_jewels_ewallet_text":
+        if not text.strip():
+            await update.message.reply_text("⚠️ لا يمكن أن تكون التعليمات فارغة.")
+            return
+        set_setting("jewels_ewallet_text", text)
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(
+            "✅ تم تحديث تعليمات شحن المجوهرات عبر العملات الإلكترونية.",
+            reply_markup=owner_settings_kb(),
         )
         return
 
@@ -4139,13 +4729,23 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ كود الطلب غير موجود.")
             context.user_data["state"] = "main_menu"
             return
+        payment_method = order.get("payment_method") or "points"
+        if payment_method == "stars":
+            star_amount = int(order.get("cost_stars") or 0)
+            cancel_cost = f"{star_amount:,} نجمة (سيُعاد {star_amount:,} جواهر)"
+        elif payment_method == "jewels":
+            cancel_cost = f"{int(order.get('cost_jewels') or 0):,} مجوهرة"
+        elif payment_method == "free":
+            cancel_cost = "مجاناً"
+        else:
+            cancel_cost = f"{int(order.get('cost_points') or 0):,} نقطة"
         context.user_data["cancel_order"] = dict(order)
         context.user_data["state"] = "confirm_cancel_order"
         await update.message.reply_text(
             f"⚠️ *تأكيد إلغاء الطلب:*\n\n"
             f"📌 الكود: {code}\n"
             f"👤 المستخدم ID: {order['user_id']}\n"
-            f"💰 التكلفة: {order['cost_points']} نقطة\n\n"
+            f"💳 طريقة الدفع والمبلغ: {cancel_cost}\n\n"
             f"أرسل *نعم* للإلغاء وإعادة الرصيد أو *لا* للتراجع",
             parse_mode=ParseMode.MARKDOWN
         )
@@ -4157,23 +4757,60 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             uid    = order.get("user_id")
             pts    = order.get("cost_points", 0)
             o_code = order.get("order_code")
-            with db_conn() as c:
-                c.execute("UPDATE orders SET status='cancelled' WHERE order_code=?", (o_code,))
-            if pts:
-                add_points(uid, pts)
-            await update.message.reply_text(
-                f"✅ تم إلغاء الطلب {o_code} وإعادة {pts} نقطة للمستخدم.",
-                reply_markup=owner_settings_kb()
-            )
+            payment_method = order.get("payment_method") or "points"
             try:
-                await context.bot.send_message(
-                    uid,
-                    f"🔴 تم إلغاء طلبك بكود {o_code} وإعادة *{pts}* نقطة لرصيدك.\n\n"
-                    f"{LINK_ERROR_GUIDANCE}",
-                    parse_mode=ParseMode.MARKDOWN
+                if payment_method in {"stars", "jewels"}:
+                    refund_amount = int(
+                        order.get("cost_stars" if payment_method == "stars" else "cost_jewels")
+                        or 0
+                    )
+                    if not _settle_smm_order(
+                        int(order["id"]),
+                        int(uid),
+                        0,
+                        "cancelled",
+                        refund_jewels=refund_amount,
+                        allow_completed=True,
+                    ):
+                        raise ValueError("الطلب ملغى مسبقاً أو سبق تعويضه.")
+                    refund_text = f"{fmt_jewel_amount(refund_amount)} مجوهرة"
+
+                else:
+                    with db_conn() as c:
+                        changed = c.execute(
+                            """
+                            UPDATE orders SET status='cancelled'
+                            WHERE order_code=%s AND status<>'cancelled'
+                            RETURNING id
+                            """,
+                            (o_code,),
+                        ).fetchone()
+                    if not changed:
+                        raise ValueError("الطلب ملغى مسبقاً.")
+                    if pts:
+                        add_points(uid, pts)
+                    refund_text = f"{int(pts or 0):,} نقطة"
+
+                await update.message.reply_text(
+                    f"✅ تم إلغاء الطلب {o_code} وإعادة {refund_text} للمستخدم.",
+                    reply_markup=owner_settings_kb(),
                 )
-            except Exception:
-                pass
+                try:
+                    await context.bot.send_message(
+                        uid,
+                        f"🔴 تم إلغاء طلبك بكود {o_code} وإعادة *{refund_text}* إلى رصيدك.\n\n"
+                        f"{LINK_ERROR_GUIDANCE}",
+                        parse_mode=ParseMode.MARKDOWN,
+                    )
+                except Exception:
+                    pass
+            except Exception as refund_error:
+                logger.exception("تعذر إلغاء/استرداد الطلب %s", o_code)
+                await update.message.reply_text(
+                    f"⚠️ لم يتم إكمال الإلغاء أو الاسترداد: {md_escape(str(refund_error))}",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=owner_settings_kb(),
+                )
         else:
             await update.message.reply_text("❌ تم التراجع.", reply_markup=owner_settings_kb())
         context.user_data["state"] = "main_menu"
@@ -4317,25 +4954,27 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         if target["user_id"] == OWNER_ID:
             await update.message.reply_text("⚠️ لا يمكن حظر المالك.", reply_markup=owner_settings_kb())
-            context.user_data["state"] = "main_menu"
+            reset_owner_flow(context)
+            context.user_data.pop("ban_target_id", None)
             return
         if target.get("banned"):
-            uname = f"@{target['username']}" if target.get("username") else f"ID: {target['user_id']}"
+            uname = f"@{md_escape(target['username'])}" if target.get("username") else f"ID: {target['user_id']}"
             await update.message.reply_text(
-                f"ℹ️ *{target.get('full_name', '')}* ({uname}) محظور مسبقاً.",
+                f"ℹ️ *{md_escape(target.get('full_name') or '')}* ({uname}) محظور مسبقاً.",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔓 رفع الحظر عنه", callback_data=f"os:unban_confirm:{target['user_id']}")],
                     [InlineKeyboardButton("🔙 رجوع", callback_data="os:ban_menu")],
                 ]),
             )
-            context.user_data["state"] = "main_menu"
+            reset_owner_flow(context)
+            context.user_data.pop("ban_target_id", None)
             return
         context.user_data["ban_target_id"] = target["user_id"]
         context.user_data["state"] = "os_await_ban_reason"
-        uname = f"@{target['username']}" if target.get("username") else f"ID: {target['user_id']}"
+        uname = f"@{md_escape(target['username'])}" if target.get("username") else f"ID: {target['user_id']}"
         await update.message.reply_text(
-            f"🚫 *حظر:* {target.get('full_name', '')} ({uname})\n\n"
+            f"🚫 *حظر:* {md_escape(target.get('full_name') or '')} ({uname})\n\n"
             "أرسل سبب الحظر (أو أرسل - لتخطي السبب):",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:ban_menu")]]),
@@ -4346,19 +4985,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target_id = context.user_data.get("ban_target_id")
         reason = text.strip() if text.strip() != "-" else ""
         if not target_id:
-            context.user_data["state"] = "main_menu"
+            reset_owner_flow(context)
+            context.user_data.pop("ban_target_id", None)
             await update.message.reply_text("⚠️ انتهت الجلسة.", reply_markup=owner_settings_kb())
             return
         found = ban_user_db(target_id, reason)
         target = get_user(target_id)
-        uname = f"@{target['username']}" if target and target.get("username") else f"ID: {target_id}"
-        name  = (target.get("full_name") or "") if target else ""
-        context.user_data["state"] = "main_menu"
+        uname = f"@{md_escape(target['username'])}" if target and target.get("username") else f"ID: {target_id}"
+        name = md_escape((target.get("full_name") or "") if target else "")
+        context.user_data.pop("ban_target_id", None)
+        reset_owner_flow(context)
         if found:
             await update.message.reply_text(
                 f"✅ *تم حظر العضو بنجاح*\n\n"
                 f"👤 {name} ({uname})\n"
-                f"📝 السبب: {reason or '—'}",
+                f"📝 السبب: {md_escape(reason or '—')}",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔓 رفع الحظر", callback_data=f"os:unban_confirm:{target_id}")],
@@ -4379,16 +5020,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         if not target.get("banned"):
-            uname = f"@{target['username']}" if target.get("username") else f"ID: {target['user_id']}"
+            uname = f"@{md_escape(target['username'])}" if target.get("username") else f"ID: {target['user_id']}"
             await update.message.reply_text(
-                f"ℹ️ {target.get('full_name', '')} ({uname}) غير محظور.",
+                f"ℹ️ {md_escape(target.get('full_name') or '')} ({uname}) غير محظور.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:ban_menu")]]),
             )
             return
         unban_user_db(target["user_id"])
-        uname = f"@{target['username']}" if target.get("username") else f"ID: {target['user_id']}"
+        uname = f"@{md_escape(target['username'])}" if target.get("username") else f"ID: {target['user_id']}"
         await update.message.reply_text(
-            f"✅ *تم رفع الحظر عن:* {target.get('full_name', '')} ({uname})",
+            f"✅ *تم رفع الحظر عن:* {md_escape(target.get('full_name') or '')} ({uname})",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:ban_menu")]]),
         )
@@ -4537,6 +5178,149 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if (
         is_own
+        and state == "os_await_raksh_jewel_rate"
+        and context.user_data.get("owner_flow") == "raksh_jewel_rate"
+    ):
+        reset_owner_flow(context, state="main_menu")
+        await update.message.reply_text(
+            "ℹ️ معدل مجوهرات خدمات الرشق ثابت: مجوهرة واحدة لكل سنت. "
+            "تُقرّب الأسعار للأعلى عند الطلب، ويبقى الاسترداد الجزئي عشرياً.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 إدارة المجوهرات", callback_data="os:manage_points")
+            ]]),
+        )
+        return
+
+    if (
+        is_own
+        and state == "os_await_jewels_target"
+        and context.user_data.get("owner_flow") == "jewels"
+    ):
+        try:
+            target = lookup_user_by_id_or_username(text)
+        except Exception:
+            logger.exception("فشل البحث عن مستلم المجوهرات")
+            await update.message.reply_text(
+                "❌ تعذر البحث عن المستخدم حالياً. حاول مرة أخرى بعد قليل.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 إلغاء", callback_data="os:manage_points")
+                ]]),
+            )
+            return
+        if not target:
+            await update.message.reply_text(
+                "⚠️ لم يتم إيجاد المستخدم. أرسل ID رقمي أو @يوزرنيم:",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 إلغاء", callback_data="os:manage_points")
+                ]]),
+            )
+            return
+        context.user_data["jewels_target_id"] = int(target["user_id"])
+        context.user_data["state"] = "os_await_jewels_amount"
+        jewels_mode = context.user_data.get("jewels_mode", "give")
+        action = "خصم" if jewels_mode == "deduct" else "منح"
+        username = (
+            f"@{target['username']}"
+            if target.get("username")
+            else f"ID: {target['user_id']}"
+        )
+        await update.message.reply_text(
+            f"💎 *{action} مجوهرات {'من' if jewels_mode == 'deduct' else 'إلى'}:* "
+            f"{md_escape(target.get('full_name') or '')} "
+            f"({md_escape(username)})\n"
+            f"الرصيد الحالي: *{fmt_jewel_amount(target.get('jewels') or 0)}* مجوهرة\n\n"
+            f"أرسل كمية المجوهرات المراد {action} (مثال: 0.5، حتى 6 منازل عشرية):",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 إلغاء", callback_data="os:manage_points")
+            ]]),
+        )
+        return
+
+    if (
+        is_own
+        and state == "os_await_jewels_amount"
+        and context.user_data.get("owner_flow") == "jewels"
+    ):
+        try:
+            amount = _parse_jewel_amount(text.strip())
+        except ValueError:
+            await update.message.reply_text(
+                "⚠️ أرسل كمية موجبة أكبر من صفر، مثل 0.5، وبحد أقصى 6 منازل عشرية."
+            )
+            return
+        target_id = context.user_data.get("jewels_target_id")
+        if not target_id:
+            reset_owner_flow(context)
+            await update.message.reply_text(
+                "⚠️ انتهت جلسة منح المجوهرات.",
+                reply_markup=owner_settings_kb(),
+            )
+            return
+        target = get_user(target_id)
+        if not target:
+            reset_owner_flow(context)
+            await update.message.reply_text(
+                "⚠️ لم يعد حساب المستخدم موجوداً.",
+                reply_markup=owner_settings_kb(),
+            )
+            return
+        jewels_mode = context.user_data.get("jewels_mode", "give")
+        if jewels_mode == "deduct":
+            new_balance = deduct_jewels(
+                target_id,
+                amount,
+                reference="owner_deduct",
+                admin_id=user.id,
+            )
+            if new_balance is None:
+                current_target = get_user(target_id) or target
+                await update.message.reply_text(
+                    f"⚠️ لا يمكن خصم {fmt_jewel_amount(amount)} مجوهرة؛ رصيد العضو الحالي "
+                    f"{fmt_jewel_amount(current_target.get('jewels') or 0)} مجوهرة. "
+                    "أرسل كمية أقل أو ألغِ العملية."
+                )
+                return
+        else:
+            new_balance = add_jewels(
+                target_id,
+                amount,
+                admin_id=user.id,
+                reference="owner_gift",
+            )
+        username = (
+            f"@{target['username']}"
+            if target.get("username")
+            else f"ID: {target_id}"
+        )
+        reset_owner_flow(context)
+        action = "خصم" if jewels_mode == "deduct" else "منح"
+        await update.message.reply_text(
+            f"✅ تم {action} {fmt_jewel_amount(amount)} مجوهرة "
+            f"{'من' if jewels_mode == 'deduct' else 'إلى'} {md_escape(target.get('full_name') or '')} "
+            f"({md_escape(username)}).\n"
+            f"💎 الرصيد الجديد: {fmt_jewel_amount(new_balance)} مجوهرة",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 إدارة المجوهرات", callback_data="os:manage_points")
+            ]]),
+        )
+        try:
+            await context.bot.send_message(
+                target_id,
+                (
+                    f"⚠️ خصم المالك {amount:,} مجوهرة من رصيدك.\n"
+                    if jewels_mode == "deduct"
+                    else f"🎁 أهدى لك المالك {amount:,} مجوهرة.\n"
+                )
+                + f"💎 رصيدك الآن: {fmt_jewel_amount(new_balance)} مجوهرة",
+            )
+        except Exception:
+            logger.info("تعذر إرسال إشعار تعديل رصيد المجوهرات إلى المستخدم %s", target_id)
+        return
+
+    if (
+        is_own
         and state == "os_await_points_target"
         and context.user_data.get("owner_flow") == "points"
     ):
@@ -4637,11 +5421,40 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ يجب أن يكون أكبر من صفر.")
             return
         with db_conn() as c:
-            c.execute("INSERT INTO exchange_star_packages (stars) VALUES (?)", (stars,))
-        rate = int(get_setting("exchange_star_rate") or "2000")
-        cost = stars * rate
+            exists = c.execute(
+                "SELECT 1 FROM exchange_star_packages WHERE stars=%s", (stars,)
+            ).fetchone()
+        if exists:
+            await update.message.reply_text(
+                "⚠️ توجد باقة بهذا العدد من النجوم مسبقاً. احذفها أو أرسل عدداً آخر."
+            )
+            return
+        context.user_data["new_pkg_stars"] = stars
+        context.user_data["state"] = "os_await_pkg_jewels"
         await update.message.reply_text(
-            f"✅ *تمت إضافة الباقة بنجاح!*\n\n⭐ {stars} نجمة = {cost} نقطة",
+            f"⭐ عدد النجوم: *{stars}*\n\n💎 الآن أرسل *عدد الجواهر* التي يدفعها العضو مقابلها (يقبل الكسور مثل 2.5):",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    if is_own and state == "os_await_pkg_jewels":
+        stars = int(context.user_data.get("new_pkg_stars") or 0)
+        if stars <= 0:
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text("⚠️ انتهت الجلسة. ابدأ إضافة الباقة من جديد.", reply_markup=owner_settings_kb())
+            return
+        jewels = parse_positive_decimal(text)
+        if jewels is None:
+            await update.message.reply_text("⚠️ أرسل رقماً أكبر من صفر، ويمكن أن يكون عشرياً مثل 2.5.")
+            return
+        with db_conn() as c:
+            c.execute(
+                "INSERT INTO exchange_star_packages (stars, jewels) VALUES (%s, %s)",
+                (stars, format(jewels.normalize(), "f")),
+            )
+        context.user_data.pop("new_pkg_stars", None)
+        await update.message.reply_text(
+            f"✅ *تمت إضافة الباقة بنجاح!*\n\n⭐ {stars} نجمة = {fmt_decimal(jewels)} جوهرة",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=owner_settings_kb()
         )
@@ -4901,8 +5714,169 @@ async def handle_hex_text_file(update: Update, context: ContextTypes.DEFAULT_TYP
     await progress.edit_text("\n".join(result_lines), parse_mode=ParseMode.MARKDOWN)
 
 
+SHARE_SESSION_MAX_BYTES = 5 * 1024 * 1024
+
+
+async def handle_share_session_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Validate and save one member-owned session as a free-raksh contributor account."""
+    user = update.effective_user
+    message = update.effective_message
+    document = getattr(message, "document", None) if message else None
+    if (
+        not user
+        or not document
+        or context.user_data.get("state") != "share_session_await_upload"
+    ):
+        return
+    if is_user_banned(user.id):
+        await message.reply_text("🚫 لا يمكنك استخدام هذه الميزة.")
+        context.user_data["state"] = "main_menu"
+        return
+    if not TELEGRAM_API_ID or not TELEGRAM_API_HASH:
+        context.user_data["state"] = "share_session_menu"
+        await message.reply_text("❌ إعدادات Telegram API غير مكتملة حالياً.")
+        return
+
+    filename = str(
+        getattr(document, "file_name", "")
+        or (
+            "upload.zip"
+            if "zip" in str(getattr(document, "mime_type", "") or "").lower()
+            else "upload.json"
+            if "json" in str(getattr(document, "mime_type", "") or "").lower()
+            else ""
+        )
+    )
+    if not filename.lower().endswith((".session", ".json", ".zip")):
+        await message.reply_text("⚠️ ارفع ملفاً بصيغة `.session` أو `.json` أو `.zip`.")
+        return
+    file_size = getattr(document, "file_size", None)
+    if file_size is not None and int(file_size) > SHARE_SESSION_MAX_BYTES:
+        await message.reply_text("⚠️ حجم الملف أكبر من الحد المسموح (5 ميغابايت).")
+        return
+
+    progress = await message.reply_text("⏳ جارٍ قراءة ملفات الجلسة والتحقق منها...")
+    try:
+        telegram_file = await context.bot.get_file(document.file_id)
+        raw_bytes = bytes(await telegram_file.download_as_bytearray())
+        if len(raw_bytes) > SHARE_SESSION_MAX_BYTES:
+            await progress.edit_text("⚠️ حجم الملف أكبر من الحد المسموح (5 ميغابايت).")
+            return
+
+        # Reuse only the safe parsers. Never use the owner's ZIP importer here:
+        # that path can rotate sessions and sign out other devices.
+        from .buyback import (
+            _extract_buyback_session_uploads,
+            _parse_buyback_session_upload,
+        )
+
+        uploads = _extract_buyback_session_uploads(raw_bytes, filename)
+        if not uploads:
+            await progress.edit_text(
+                "❌ لم أجد ملفات جلسات صالحة. ZIP يجب أن يحتوي ملفات "
+                "`.session` أو `.json`، بحد أقصى 50 ملفاً صالحاً."
+            )
+            return
+        successful_phones = []
+        failures = []
+        for index, (entry_name, entry_bytes) in enumerate(uploads, start=1):
+            client = None
+            short_name = str(entry_name or "session").replace("\n", " ")[:80]
+            try:
+                session_string = _parse_buyback_session_upload(entry_bytes, entry_name)
+                if not session_string:
+                    failures.append(f"{short_name}: تعذرت قراءة الجلسة.")
+                    continue
+                client = TelegramClient(
+                    StringSession(session_string),
+                    int(TELEGRAM_API_ID),
+                    TELEGRAM_API_HASH,
+                )
+                await asyncio.wait_for(client.connect(), timeout=20)
+                if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+                    failures.append(f"{short_name}: الجلسة منتهية أو غير صالحة.")
+                    continue
+                me = await asyncio.wait_for(client.get_me(), timeout=15)
+                phone = str(getattr(me, "phone", "") or "").strip()
+                if phone and not phone.startswith("+"):
+                    phone = f"+{phone}"
+                if not phone or not phone[1:].isdigit():
+                    failures.append(f"{short_name}: تعذر تحديد رقم الهاتف.")
+                    continue
+
+                added, reason = add_contributor_account(
+                    int(user.id),
+                    phone,
+                    client.session.save(),
+                    share_percent=0,
+                    contributor_method="session",
+                )
+                if added:
+                    successful_phones.append(phone)
+                else:
+                    failures.append(f"{short_name}: {reason}")
+            except asyncio.TimeoutError:
+                failures.append(f"{short_name}: انتهت مهلة الاتصال.")
+            except Exception as exc:
+                logger.warning(
+                    "تعذر التحقق من جلسة مشاركة العضو %s: %s",
+                    user.id,
+                    type(exc).__name__,
+                )
+                failures.append(f"{short_name}: تعذر التحقق من الجلسة.")
+            finally:
+                if client is not None:
+                    try:
+                        await client.disconnect()
+                    except Exception:
+                        pass
+            if index % 5 == 0 and index < len(uploads):
+                try:
+                    await progress.edit_text(
+                        f"⏳ تم فحص {index} من {len(uploads)} جلسة..."
+                    )
+                except Exception:
+                    pass
+
+        context.user_data["state"] = "share_session_await_upload"
+        summary = [
+            f"📦 انتهت معالجة الملف: تمت إضافة {len(successful_phones)} من أصل {len(uploads)} جلسة."
+        ]
+        if successful_phones:
+            summary.append("✅ الحسابات المضافة: " + "، ".join(successful_phones[:20]))
+            if len(successful_phones) > 20:
+                summary.append(f"و{len(successful_phones) - 20} حساباً إضافياً.")
+        if failures:
+            summary.append(f"⚠️ تعذر إضافة {len(failures)} جلسة:")
+            summary.extend(f"• {failure}" for failure in failures[:15])
+            if len(failures) > 15:
+                summary.append(f"و{len(failures) - 15} ملفات أخرى.")
+            summary.append("لم تُغيّر إعدادات الحسابات التي تعذرت إضافتها.")
+        summary.append(
+            "ارفع ملفاً آخر أو استخدم /cancel للانتهاء. "
+            "يمكنك الرشق مجاناً بحساباتك المشاركة فقط."
+        )
+        result_text = "\n".join(summary)
+        if len(result_text) > 3900:
+            result_text = result_text[:3850] + "\n…"
+        await progress.edit_text(result_text)
+    except Exception as exc:
+        logger.warning(
+            "تعذر التحقق من جلسة مشاركة العضو %s: %s",
+            user.id,
+            type(exc).__name__,
+        )
+        await progress.edit_text(
+            "❌ تعذر إكمال معالجة الملف. قد تكون بعض الجلسات أُضيفت بالفعل؛ "
+            "راجع قسم مشاركة الجلسة قبل إعادة الرفع لتجنب التكرار."
+        )
+
+
 async def handle_json_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """يستقبل ملف JSON من المالك ويستورد الجلسات المحتواة فيه مباشرة."""
+    if context.user_data.get("state") == "share_session_await_upload":
+        await handle_share_session_document(update, context)
+        return
     user = update.effective_user
     if user.id != OWNER_ID:
         return
@@ -5141,6 +6115,9 @@ async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE
     Telethon  → جدول sessions: dc_id, server_address, port, auth_key (blob)
     Pyrogram  → جدول sessions: dc_id, auth_key (blob)
     """
+    if context.user_data.get("state") == "share_session_await_upload":
+        await handle_share_session_document(update, context)
+        return
     user = update.effective_user
     if user.id != OWNER_ID:
         return
@@ -5427,9 +6404,9 @@ async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     with db_conn() as _rc:
         _stock_row = _rc.execute(
-            "SELECT id FROM number_stock WHERE phone_number=%s", (phone,)
+            "SELECT id, raksh_only FROM number_stock WHERE phone_number=%s", (phone,)
         ).fetchone()
-    if _stock_row:
+    if _stock_row and not _stock_row["raksh_only"]:
         try:
             _2fa_cl = TelegramClient(StringSession(session_string), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
             await _2fa_cl.connect()
@@ -5889,11 +6866,18 @@ async def _account_fixup_job(context=None):
             # ─── فحص حالة الحساب من DB ───
             with db_conn() as _db:
                 _row = _db.execute(
-                    "SELECT session_string, is_solo, twofa_password, auto_2fa_enabled, deleted_at "
+                    "SELECT session_string, is_solo, twofa_password, auto_2fa_enabled, "
+                    "deleted_at, raksh_only "
                     "FROM number_stock WHERE id=%s", (sid,)
                 ).fetchone()
             if not _row or _row["deleted_at"]:
                 to_remove.append(sid)
+                continue
+            # حسابات التأجير للرشق فقط: لا طرد للجلسات ولا تغيير لـ 2FA.
+            # أزلها من قائمة الإصلاح إن دخلت إليها من مسار قديم أو متزامن.
+            if _row["raksh_only"]:
+                to_remove.append(sid)
+                logger.info(f"🛡️ fixup_job: تجاوز حساب الرشق فقط {phone} دون تغيير")
                 continue
 
             # تحديث الجلسة الحالية (قد تكون تغيّرت)
