@@ -8,6 +8,7 @@
     ليتواصل مع الفائز.
   * لا تُعرض النسب للأعضاء إطلاقاً، لكن يرى العضو الجوائز الممكنة في كل قسم.
   * دورة مجانية لكل إحالة صالحة، أو شراء دورة بنجمة/جوهرة، أو 10 دورات بـ 9.
+  * مميز 3 شهر ومطورة: 0.001% لكل منهما، في قسمي الجواهر والنجوم فقط.
   * الجوهرة والنجمة: 5% لكل منهما بحد أقصى 3 فائزين يومياً (لكل قسم مدفوع).
   * التعزيز اليومي: فوز واحد عشوائي من كل 100 دورة جواهر / 50 دورة نجوم،
     بحد أقصى فائزين يومياً لكل قسم، وما زاد عن الحد لا يُعوَّض.
@@ -26,7 +27,7 @@ from decimal import Decimal
 
 WHEEL_TEN_SPINS = 10
 WHEEL_DAY_OFFSET_SECONDS = 3 * 3600   # اليوم بتوقيت بغداد (UTC+3)
-WHEEL_ROLL_SCALE = 10_000             # دقة 0.01%
+WHEEL_ROLL_SCALE = 100_000            # دقة 0.001%
 
 # (المفتاح، الاسم الظاهر، نوع التسليم، القيمة)
 #   kind: "jewels" و"points" تلقائي، "owner" يدوي عبر المالك.
@@ -41,6 +42,7 @@ WHEEL_PRIZES = {
     "bear":          ("🧸 دب", "owner", 0),
     "rose":          ("🌹 وردة", "owner", 0),
     "ring":          ("💍 خاتم", "owner", 0),
+    "developer":     ("🛠 مطورة", "owner", 0),
     "jewel":         ("💎 جوهرة", "jewels", 1),
     "jewels10":      ("💎 10 جواهر", "jewels", 10),
     "points1000":    ("🪙 1000 نقطة", "points", 1000),
@@ -51,26 +53,30 @@ WHEEL_PRIZES = {
     "points50":      ("🪙 50 نقطة", "points", 50),
 }
 
-# ترتيب عرض الجوائز الممكنة للأعضاء. المميز والتعزيز الأسبوعي غير موجودين لأنهما
-# لا يُربحان في أي قسم.
+# ترتيب عرض الجوائز الممكنة للأعضاء. مميز 6/12 شهر والتعزيز الأسبوعي غير موجودين
+# لأنها لا تُربح في أي قسم. مميز 3 شهر والمطورة في قسمي الجواهر والنجوم فقط.
 WHEEL_DISPLAY_ORDER = (
+    "premium3", "developer",
     "boost_daily", "boost_monthly", "bear", "rose", "ring",
     "star1", "jewel", "jewels10",
     "points1000", "points500", "points250", "points200", "points100", "points50",
 )
 
-# أوزان الدورات المدفوعة من 10000 (1 = 0.01%). الباقي كله «الجائزة المتبقية».
+# أوزان الدورات المدفوعة من 100000 (1 = 0.001%). الباقي كله «الجائزة المتبقية».
 _WHEEL_PAID_WEIGHTS = (
-    ("ring", 1),            # 0.01%
-    ("rose", 5),            # 0.05%
-    ("bear", 100),          # 1%
-    ("boost_monthly", 50),  # 0.5%
-    ("jewels10", 10),       # 0.1%
-    ("star1", 500),         # 5%
-    ("jewel", 500),         # 5%
-    ("points1000", 100),    # 1%
-    ("points500", 100),     # 1%
+    ("premium3", 1),         # 0.001% (مدفوع فقط)
+    ("developer", 1),        # 0.001% (مدفوع فقط)
+    ("ring", 10),            # 0.01%
+    ("rose", 50),            # 0.05%
+    ("bear", 1000),          # 1%
+    ("boost_monthly", 500),  # 0.5%
+    ("jewels10", 100),       # 0.1%
+    ("star1", 5000),         # 5%
+    ("jewel", 5000),         # 5%
+    ("points1000", 1000),    # 1%
+    ("points500", 1000),     # 1%
 )
+WHEEL_FREE_POINTS1000_DAILY_CAP = 5   # أقصى فائزين بـ1000 نقطة يومياً في القسم المجاني
 _WHEEL_PAID_DAILY_CAPS = {
     "jewel": 3,        # حد أقصى 3 فائزين يومياً
     "star1": 3,        # حد أقصى 3 فائزين يومياً
@@ -97,12 +103,13 @@ WHEEL_SECTIONS = {
     },
     "free": {
         "weights": (
-            ("points1000", 500),   # 5%
-            ("points50", 2500),    # 25%
+            ("points1000", 5000),   # 5%
+            ("points50", 25000),    # 25%
         ),
         "remainder": "points100",  # 70%
+        # سقف يومي لـ1000 نقطة في الدورات المجانية حتى لا تصبح الإحالات المزيفة مربحة
         "boost_block": 0,
-        "daily_caps": {},
+        "daily_caps": {"points1000": WHEEL_FREE_POINTS1000_DAILY_CAP},
     },
 }
 
@@ -440,19 +447,23 @@ async def _wheel_notify_owner(context, user, result: dict) -> None:
 
 
 async def wheel_run_spins(context, user, count: int, source: str, message=None) -> list:
-    """يدور `count` دورات من رصيد العضو (يُفترض أنه اكتسبها/دفعها) ويعيد النتائج."""
+    """يدور `count` دورات من رصيد العضو (يُفترض أنه اكتسبها/دفعها) ويعيد النتائج.
+
+    إن فشلت كل الدورات تُرمى الاستثناء دون أي تعويض هنا، والمستدعي وحده يعوّض
+    (يعيد الدورات المجانية أو الجواهر أو الدورات المدفوعة بالنجوم) فلا يحدث تعويض مزدوج.
+    أما إن فشلت بعض الدورات بعد نجاح غيرها فنحوّل المتبقي إلى رصيد دورات العضو.
+    """
     results = []
     try:
         for _ in range(count):
             results.append(wheel_spin_once(user.id, source))
     except Exception:
-        # لو تعثرت الدورات نعيد ما لم يُدَر إلى رصيد العضو بدل ضياعه.
-        remaining = count - len(results)
-        if remaining > 0:
-            grant_wheel_spins(user.id, remaining)
         logger.exception("تعثرت دورة العجلة للمستخدم %s", user.id)
         if not results:
             raise
+        remaining = count - len(results)
+        if remaining > 0:
+            grant_wheel_spins(user.id, remaining)
     for result in results:
         if result["kind"] == "owner":
             await _wheel_notify_owner(context, user, result)
@@ -526,9 +537,17 @@ async def handle_wheel_callback(update, context, q, data, user, is_own) -> bool:
             await q.answer("⚠️ ليس لديك دورات مجانية كافية.", show_alert=True)
             return True
         await q.answer()
-        if count == 1:
-            await _wheel_animate(q.message)
-        results = await wheel_run_spins(context, user, count, "free")
+        try:
+            if count == 1:
+                await _wheel_animate(q.message)
+            results = await wheel_run_spins(context, user, count, "free")
+        except Exception:
+            grant_wheel_spins(user.id, count)   # تعويض واحد فقط لما خُصم
+            await q.edit_message_text(
+                "⚠️ تعذر تشغيل العجلة، أُعيدت دوراتك المجانية إلى رصيدك.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="wheel:menu")]]),
+            )
+            return True
         await _wheel_show_results(context, q, user, results, is_own)
         return True
 
