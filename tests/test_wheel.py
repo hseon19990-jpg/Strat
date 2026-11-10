@@ -13,14 +13,15 @@ USERS = ROOT / "bot_app" / "users.py"
 def _load():
     """يحمّل المنطق الصرف للعجلة دون أي استيراد من البوت أو قاعدة البيانات."""
     tree = ast.parse(SRC.read_text(encoding="utf-8"))
-    wanted_funcs = {"wheel_pick_prize", "validate_wheel_invoice", "_wheel_public_name"}
+    wanted_funcs = {
+        "wheel_pick_prize", "wheel_section_prize_keys",
+        "validate_wheel_invoice", "_wheel_public_name",
+    }
     wanted_classes = {"WheelEngine"}
     wanted_vars = {
-        "WHEEL_BLOCK_SIZE", "WHEEL_BOOST_INTERVAL_SECONDS", "WHEEL_TEN_SPINS",
-        "WHEEL_ROLL_SCALE", "WHEEL_PRIZES", "WHEEL_DISPLAY_ORDER",
-        "WHEEL_RANDOM_WEIGHTS", "WHEEL_REMAINDER_PRIZE", "_WHEEL_NAME_STRIP_RE",
-        "WHEEL_FREE_PRIZE_KEYS", "WHEEL_FREE_POINTS1000_WEIGHT",
-        "WHEEL_BEAR_DAILY_MAX", "WHEEL_DAY_OFFSET_SECONDS",
+        "WHEEL_TEN_SPINS", "WHEEL_ROLL_SCALE", "WHEEL_PRIZES", "WHEEL_DISPLAY_ORDER",
+        "WHEEL_DAY_OFFSET_SECONDS", "WHEEL_SECTIONS", "WHEEL_SECTION_TITLES",
+        "_WHEEL_PAID_WEIGHTS", "_WHEEL_PAID_DAILY_CAPS", "_WHEEL_NAME_STRIP_RE",
     }
     nodes = []
     for node in tree.body:
@@ -54,93 +55,100 @@ def _load_decimal_helpers():
     return ns
 
 
+DAY0 = 86_400 * 20_000 - 3 * 3600  # بداية يوم بتوقيت بغداد
+
+
 class WheelRulesTests(unittest.TestCase):
     def setUp(self):
         self.w = _load()
 
-    def test_premium_and_weekly_boost_never_win(self):
-        w = self.w
-        engine = w["WheelEngine"](rng=random.Random(1))
-        seen = Counter(engine.next_prize(i * 3600.0) for i in range(200_000))
-        for key in ("premium3", "premium6", "premium12", "boost_weekly"):
-            self.assertEqual(seen[key], 0)
+    def engine(self, section, seed=1, **kw):
+        return self.w["WheelEngine"](section=section, rng=random.Random(seed), **kw)
 
-    def test_at_least_one_jewel_guaranteed_per_100_paid_spins(self):
+    def test_section_weights_match_owner_spec(self):
         w = self.w
-        engine = w["WheelEngine"](rng=random.Random(7))
-        prizes = [engine.next_prize(0.0) for _ in range(10_000)]
-        for start in range(0, 10_000, 100):
-            self.assertGreaterEqual(prizes[start:start + 100].count("jewel"), 1, start)
+        scale = w["WHEEL_ROLL_SCALE"]
+        for section, remainder in (("jewels", "points200"), ("stars", "points250")):
+            counts = Counter(w["wheel_pick_prize"](r, section) for r in range(scale))
+            self.assertEqual(counts["points1000"], 100)   # 1%
+            self.assertEqual(counts["points500"], 100)    # 1%
+            self.assertEqual(counts["jewel"], 500)        # 5%
+            self.assertEqual(counts["star1"], 500)        # 5%
+            self.assertEqual(counts[remainder], scale - 1366)
+            for never in ("premium3", "premium6", "premium12", "boost_weekly", "boost_daily"):
+                self.assertEqual(counts[never], 0)
+        free = Counter(w["wheel_pick_prize"](r, "free") for r in range(scale))
+        self.assertEqual(dict(free), {"points100": 7000, "points50": 2500, "points1000": 500})
 
-    def test_jewel_and_star_are_about_six_percent(self):
+    def test_jewels_remainder_is_200_and_stars_remainder_is_250(self):
         w = self.w
-        engine = w["WheelEngine"](rng=random.Random(3))
-        n = 200_000
-        counts = Counter(engine.next_prize(0.0) for _ in range(n))
-        self.assertAlmostEqual(counts["jewel"] / n, 0.06, delta=0.004)
-        self.assertAlmostEqual(counts["star1"] / n, 0.06, delta=0.004)
+        self.assertEqual(w["WHEEL_SECTIONS"]["jewels"]["remainder"], "points200")
+        self.assertEqual(w["WHEEL_SECTIONS"]["stars"]["remainder"], "points250")
+        self.assertEqual(w["WHEEL_PRIZES"]["points200"][1:], ("points", 200))
+        self.assertEqual(w["WHEEL_PRIZES"]["points250"][1:], ("points", 250))
 
-    def test_bear_never_more_than_two_per_day_and_resets_next_day(self):
-        w = self.w
-        engine = w["WheelEngine"](rng=random.Random(4))
-        start = 86_400 * 20_000 - w["WHEEL_DAY_OFFSET_SECONDS"]  # بداية يوم بتوقيت بغداد
-        today = [engine.next_prize(start + 100 + i) for i in range(60_000)]
-        self.assertEqual(today.count("bear"), w["WHEEL_BEAR_DAILY_MAX"])
-        tomorrow = [engine.next_prize(start + 86_400 + 100 + i) for i in range(60_000)]
-        self.assertEqual(tomorrow.count("bear"), 2)
+    def test_free_section_only_50_100_1000(self):
+        e = self.engine("free", seed=11)
+        prizes = [e.next_prize(DAY0) for _ in range(20_000)]
+        self.assertEqual(set(prizes), {"points50", "points100", "points1000"})
+        n = len(prizes)
+        self.assertAlmostEqual(prizes.count("points100") / n, 0.70, delta=0.02)
+        self.assertAlmostEqual(prizes.count("points50") / n, 0.25, delta=0.02)
+        self.assertAlmostEqual(prizes.count("points1000") / n, 0.05, delta=0.01)
 
-    def test_free_spins_win_only_500_or_1000_points_and_skip_counters(self):
-        w = self.w
-        engine = w["WheelEngine"](rng=random.Random(11))
-        prizes = [engine.next_prize(0.0, paid=False) for _ in range(5000)]
-        self.assertEqual(set(prizes), {"points1000", "points500"})
-        self.assertEqual(engine.total, 0)
-        self.assertEqual(set(w["WHEEL_FREE_PRIZE_KEYS"]), {"points1000", "points500"})
-        share = prizes.count("points1000") / len(prizes)
-        self.assertAlmostEqual(share, 0.70, delta=0.03)
+    def test_jewel_and_star_capped_at_three_winners_per_day(self):
+        for section in ("jewels", "stars"):
+            e = self.engine(section, seed=3)
+            day1 = [e.next_prize(DAY0 + 100 + i) for i in range(5_000)]
+            self.assertEqual(day1.count("jewel"), 3, section)
+            self.assertEqual(day1.count("star1"), 3, section)
+            day2 = [e.next_prize(DAY0 + 86_400 + 100 + i) for i in range(5_000)]
+            self.assertEqual(day2.count("jewel"), 3, section)
+            self.assertEqual(day2.count("star1"), 3, section)
 
-    def test_paid_spins_can_win_every_listed_prize(self):
-        w = self.w
-        pick = w["wheel_pick_prize"]
-        seen = {pick(r) for r in range(w["WHEEL_ROLL_SCALE"])}
-        for key in ("ring", "rose", "bear", "boost_monthly", "jewels10", "star1", "jewel", "points1000", "points500"):
-            self.assertIn(key, seen)
+    def test_bear_two_per_day_across_both_paid_sections(self):
+        total = 0
+        for section in ("jewels", "stars"):
+            e = self.engine(section, seed=4)
+            total += [e.next_prize(DAY0 + 100 + i) for i in range(60_000)].count("bear")
+        self.assertEqual(total, 2)
 
-    def test_daily_boost_only_once_per_six_hours(self):
-        w = self.w
-        gap = w["WHEEL_BOOST_INTERVAL_SECONDS"]
-        self.assertEqual(gap, 6 * 3600)
-        engine = w["WheelEngine"](rng=random.Random(5))
-        t0 = 1_800_000_000.0
-        wins = []
-        # دورة كل دقيقة لمدة 24 ساعة.
-        for minute in range(24 * 60):
-            now = t0 + minute * 60
-            if engine.next_prize(now) == "boost_daily":
-                wins.append(now)
-        self.assertEqual(len(wins), 4)
-        for earlier, later in zip(wins, wins[1:]):
-            self.assertGreaterEqual(later - earlier, gap)
+    def test_daily_boost_one_per_100_jewel_spins_max_two_per_day(self):
+        e = self.engine("jewels", seed=7)
+        prizes = [e.next_prize(DAY0 + 100) for _ in range(200)]
+        self.assertEqual(prizes.count("boost_daily"), 2)           # كتلتان = فوزان
+        more = [e.next_prize(DAY0 + 100) for _ in range(100_000)]
+        self.assertEqual(more.count("boost_daily"), 0)             # الحد اليومي مكتمل
+        tomorrow = [e.next_prize(DAY0 + 86_400 + 100) for _ in range(300)]
+        self.assertEqual(tomorrow.count("boost_daily"), 2)         # يوم جديد
 
-    def test_daily_boost_closed_inside_six_hours(self):
-        w = self.w
-        engine = w["WheelEngine"](rng=random.Random(9))
-        t0 = 1_800_000_000.0
-        first = [engine.next_prize(t0 + i) for i in range(50)]
-        self.assertEqual(first.count("boost_daily"), 1)
-        later = [engine.next_prize(t0 + 3 * 3600 + i) for i in range(50)]
-        self.assertEqual(later.count("boost_daily"), 0)
-        reopened = [engine.next_prize(t0 + 6 * 3600 + i) for i in range(50)]
-        self.assertEqual(reopened.count("boost_daily"), 1)
+    def test_daily_boost_one_per_50_star_spins_max_two_per_day(self):
+        e = self.engine("stars", seed=8)
+        prizes = [e.next_prize(DAY0 + 100) for _ in range(100)]
+        self.assertEqual(prizes.count("boost_daily"), 2)
+        for block in range(0, 100, 50):
+            self.assertEqual(prizes[block:block + 50].count("boost_daily"), 1)
+        self.assertEqual([e.next_prize(DAY0 + 100) for _ in range(50_000)].count("boost_daily"), 0)
 
-    def test_daily_boost_not_stolen_by_guaranteed_jewel(self):
+    def test_free_never_wins_boost_or_paid_prizes(self):
+        e = self.engine("free", seed=2)
+        seen = {e.next_prize(DAY0) for _ in range(30_000)}
+        self.assertFalse(seen & {"boost_daily", "jewel", "star1", "bear", "ring", "rose"})
+
+    def test_members_see_possible_prizes_per_section(self):
         w = self.w
-        # الدورة الأولى هي موضع الجوهرة المضمونة: يبقى التعزيز اليومي مفتوحاً للدورة التالية.
-        engine = w["WheelEngine"](slot_block=0, slot=0, rng=random.Random(2))
-        t0 = 1_800_000_000.0
-        prizes = [engine.next_prize(t0) for _ in range(30)]
-        self.assertEqual(prizes[0], "jewel")
-        self.assertEqual(prizes.count("boost_daily"), 1)
+        keys = w["wheel_section_prize_keys"]
+        self.assertEqual(set(keys("free")), {"points50", "points100", "points1000"})
+        self.assertEqual(
+            set(keys("jewels")),
+            {"boost_daily", "boost_monthly", "bear", "rose", "ring", "star1", "jewel",
+             "jewels10", "points1000", "points500", "points200"},
+        )
+        self.assertIn("points250", keys("stars"))
+        self.assertNotIn("points200", keys("stars"))
+        for section in ("free", "jewels", "stars"):
+            for never in ("premium3", "premium6", "premium12", "boost_weekly"):
+                self.assertNotIn(never, keys(section))
 
     def test_group_name_has_no_id_username_or_link(self):
         name = self.w["_wheel_public_name"]
@@ -160,36 +168,23 @@ class WheelRulesTests(unittest.TestCase):
 
         self.assertEqual(name(Empty()), "عضو")
 
-    def test_probabilities_match_owner_spec(self):
-        w = self.w
-        pick = w["wheel_pick_prize"]
-        scale = w["WHEEL_ROLL_SCALE"]
-        counts = Counter(pick(roll) for roll in range(scale))
-        self.assertEqual(counts["ring"], 1)            # 0.01%
-        self.assertEqual(counts["rose"], 5)            # 0.05%
-        self.assertEqual(counts["bear"], 100)          # 1%
-        self.assertEqual(counts["boost_monthly"], 50)  # 0.5%
-        self.assertEqual(counts["jewels10"], 10)       # 0.1%
-        self.assertEqual(counts["star1"], 600)         # 6%
-        self.assertEqual(counts["jewel"], 505)         # 5.05% + 1% مضمونة
-        self.assertEqual(counts["points1000"], 7000)   # 70%
-        self.assertEqual(counts["points500"], scale - 8271)
-        for never in ("premium3", "premium6", "premium12", "boost_weekly", "boost_daily"):
-            self.assertEqual(counts[never], 0)
-
     def test_only_jewels_and_points_are_auto_delivered(self):
         prizes = self.w["WHEEL_PRIZES"]
         auto = {k for k, (_l, kind, _v) in prizes.items() if kind != "owner"}
-        self.assertEqual(auto, {"jewel", "jewels10", "points1000", "points500"})
+        self.assertEqual(
+            auto,
+            {"jewel", "jewels10", "points1000", "points500", "points250",
+             "points200", "points100", "points50"},
+        )
         self.assertEqual(prizes["jewel"][1:], ("jewels", 1))
         self.assertEqual(prizes["jewels10"][1:], ("jewels", 10))
-        self.assertEqual(prizes["points1000"][1:], ("points", 1000))
-        self.assertEqual(prizes["points500"][1:], ("points", 500))
 
-    def test_every_listed_prize_exists(self):
+    def test_every_section_prize_exists(self):
         w = self.w
-        self.assertEqual(set(w["WHEEL_DISPLAY_ORDER"]), set(w["WHEEL_PRIZES"]))
-        self.assertEqual(len(w["WHEEL_DISPLAY_ORDER"]), 14)
+        for section in w["WHEEL_SECTIONS"]:
+            for key in w["wheel_section_prize_keys"](section):
+                self.assertIn(key, w["WHEEL_PRIZES"])
+        self.assertTrue(set(w["WHEEL_DISPLAY_ORDER"]) <= set(w["WHEEL_PRIZES"]))
 
     def test_wheel_invoice_validation(self):
         v = self.w["validate_wheel_invoice"]
