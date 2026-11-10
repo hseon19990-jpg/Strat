@@ -7,6 +7,7 @@ domain.
 from .referrals import run_referral_tasks_job
 from .users import award_weekly_top_referrers_job
 from .reaction_operations import run_reaction_ops_job
+from .funding_boost import run_funding_boost_job
 from .raksh_system.common import cleanup_expired_raksh_channel_memberships
 from .storage_cleanup import cleanup_transient_storage_job
 from types import SimpleNamespace
@@ -554,6 +555,8 @@ def main():
         app.job_queue.run_repeating(award_weekly_top_referrers_job, interval=3600, first=180)
         logger.info("🏅 تم تفعيل صرف جوائز الأكثر دعوة الأسبوعي")
         app.job_queue.run_repeating(run_reaction_ops_job, interval=30, first=45)
+        # دعم القنوات الممولة: حساب واحد ينضم لكل قناة كل 15 ثانية، وكل 10 يتفاعلون.
+        app.job_queue.run_repeating(run_funding_boost_job, interval=15, first=30)
         logger.info("⚡ تم تفعيل تنفيذ حملات تفاعلات Telegram كل 30 ثانية")
         # طلبات التفاعل المستمر تحتاج استئنافاً دورياً بعد إعادة نشر Railway.
         # قد يتزامن الإقلاع مع تأخر قاعدة البيانات أو Telegram؛ المحاولة

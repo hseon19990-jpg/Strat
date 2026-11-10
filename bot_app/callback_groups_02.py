@@ -525,89 +525,37 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                                        reply_markup=fund_channel_kb())
             return
 
-        if data == "fund:mandatory":
-            _stars_min    = int(get_setting("mandatory_stars_min_members")    or "50")
-            _stars_t1_max = int(get_setting("mandatory_stars_tier1_max")      or "120")
-            _t1_x100      = int(get_setting("mandatory_stars_tier1_price_x100") or "50")
-            _t2_x100      = int(get_setting("mandatory_stars_tier2_price_x100") or "33")
-            _pts_price    = int(get_setting("mandatory_points_price") or "5")
-            _pts_min      = int(get_setting("mandatory_points_min")   or "50")
+        if data in ("fund:mandatory", "fund:internal", "fund:mandatory:points"):
+            # التمويل يُدفع بالنجوم أو الجواهر فقط (لا نقاط).
+            _kind = "internal" if data == "fund:internal" else "mandatory"
             await q.edit_message_text(
-                f"📢 *تمويل قناة إجباري*\n\n"
-                f"اختر طريقة الدفع:\n\n"
-                f"⭐ *بالنجوم:* {_stars_min:,}–{_stars_t1_max:,} عضو → كل عضوان بـ 1⭐ | {_stars_t1_max+1:,}+ → كل 3 بـ 1⭐\n"
-                f"💰 *بالنقاط:* {_pts_price} نقطة/عضو | حد أدنى {_pts_min:,} عضو",
+                f"📢 *تمويل قناة {FUND_KIND_LABELS[_kind]}*\n\n"
+                f"الدفع متاح *بالنجوم ⭐ أو الجواهر 💎 فقط*\n\n"
+                f"📊 *الأسعار:*\n{fund_price_lines(_kind)}"
+                f"💎 بالجواهر: نفس الرقم مضروباً بمعدل الجواهر "
+                f"(1 ⭐ = {fmt_decimal(get_jewels_per_star())} 💎).\n\n"
+                f"اختر طريقة الدفع:",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("⭐ الدفع بالنجوم", callback_data="fund:mandatory:stars")],
-                    [InlineKeyboardButton("💰 الدفع بالنقاط", callback_data="fund:mandatory:points")],
+                    [InlineKeyboardButton("⭐ الدفع بالنجوم", callback_data=f"fund:{_kind}:stars")],
+                    [InlineKeyboardButton("💎 الدفع بالجواهر", callback_data=f"fund:{_kind}:jewels")],
                     [InlineKeyboardButton("🔙 رجوع", callback_data="fund_channel")],
                 ])
             )
             return
 
-        if data == "fund:mandatory:stars":
-            _stars_min    = int(get_setting("mandatory_stars_min_members")    or "50")
-            _stars_t1_max = int(get_setting("mandatory_stars_tier1_max")      or "120")
-            _t1_x100      = int(get_setting("mandatory_stars_tier1_price_x100") or "50")
-            _t2_x100      = int(get_setting("mandatory_stars_tier2_price_x100") or "33")
-            context.user_data["fund_type"] = "mandatory"
+        if data in ("fund:mandatory:stars", "fund:mandatory:jewels",
+                    "fund:internal:stars", "fund:internal:jewels"):
+            _, _kind, _pay = data.split(":")
+            _min = fund_min_members(_kind)
+            context.user_data["fund_type"] = _kind
+            context.user_data["fund_pay"]  = _pay
             context.user_data["state"]     = "await_fund_member_count"
+            _pay_txt = "النجوم ⭐" if _pay == "stars" else "الجواهر 💎"
+            _min_txt = f"  • الحد الأدنى: *{_min:,} عضو*\n" if _min > 0 else ""
             await q.edit_message_text(
-                f"📢 *تمويل إجباري — الدفع بالنجوم ⭐*\n\n"
-                f"📊 *جدول الأسعار:*\n"
-                f"  • {_stars_min:,} – {_stars_t1_max:,} عضو: كل *عضوان* بـ *1 ⭐*\n"
-                f"  • {_stars_t1_max+1:,} وأكثر: كل *3 أعضاء* بـ *1 ⭐*\n"
-                f"  • الحد الأدنى: *{_stars_min:,} عضو*\n\n"
-                f"📊 *الخطوة 1/3:* أرسل *عدد أعضاء قناتك* الحالي:",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            return
-
-        if data == "fund:mandatory:points":
-            _pts_price = int(get_setting("mandatory_points_price") or "5")
-            _pts_min   = int(get_setting("mandatory_points_min")   or "50")
-            context.user_data["fund_type"] = "mandatory_points"
-            context.user_data["state"]     = "await_fund_member_count"
-            await q.edit_message_text(
-                f"📢 *تمويل إجباري — الدفع بالنقاط 💰*\n\n"
-                f"💰 السعر: *{_pts_price} نقطة لكل عضو*\n"
-                f"👥 الحد الأدنى: *{_pts_min:,} عضو*\n\n"
-                f"📊 *الخطوة 1/3:* أرسل *عدد أعضاء قناتك* الحالي:",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            return
-            # ─── تمويل إجباري بالنجوم (Stars) ───
-            _stars_min    = int(get_setting("mandatory_stars_min_members")    or "50")
-            _stars_t1_max = int(get_setting("mandatory_stars_tier1_max")      or "120")
-            _t1_x100      = int(get_setting("mandatory_stars_tier1_price_x100") or "50")
-            _t2_x100      = int(get_setting("mandatory_stars_tier2_price_x100") or "33")
-            context.user_data["fund_type"] = "mandatory"
-            context.user_data["state"]     = "await_fund_member_count"
-            await q.edit_message_text(
-                f"📢 *تمويل قناة إجباري — الدفع بالنجوم ⭐*\n\n"
-                f"✅ ستُضاف قناتك كقناة اشتراك إجباري في البوت\n\n"
-                f"📊 *جدول الأسعار:*\n"
-                f"  • {_stars_min:,} – {_stars_t1_max:,} عضو: كل *عضوان* بـ *1 ⭐*\n"
-                f"  • {_stars_t1_max+1:,} وأكثر: كل *3 أعضاء* بـ *1 ⭐*\n"
-                f"  • الحد الأدنى: *{_stars_min:,} عضو*\n\n"
-                f"📊 *الخطوة 1/3:* أرسل *عدد أعضاء قناتك* الحالي:",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            return
-
-        if data == "fund:internal":
-            cost_per = get_setting("internal_channel_cost") or "100"
-            min_members = get_setting("internal_channel_min_members") or "0"
-            context.user_data["fund_type"] = "internal"
-            context.user_data["state"]     = "await_fund_member_count"
-            min_txt = f"👥 الحد الأدنى للأعضاء: *{int(min_members):,}*\n" if int(min_members) > 0 else ""
-            await q.edit_message_text(
-                f"🔄 *تمويل قناة داخلي بطيء*\n\n"
-                f"✅ ستُضاف قناتك في قسم انضم بقنوات\n"
-                f"👥 الأعضاء يجمعون نقاط وينضمون لقناتك\n"
-                f"💰 السعر: *{cost_per} نقطة لكل عضو*\n"
-                f"{min_txt}\n"
+                f"📢 *تمويل قناة {FUND_KIND_LABELS[_kind]} — الدفع بـ{_pay_txt}*\n\n"
+                f"📊 *الأسعار:*\n{fund_price_lines(_kind)}{_min_txt}\n"
                 f"📊 *الخطوة 1/3:* أرسل *عدد أعضاء قناتك* الحالي:",
                 parse_mode=ParseMode.MARKDOWN
             )
@@ -621,107 +569,82 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                 context.user_data["state"] = "main_menu"
                 await q.edit_message_text("❌ تم إلغاء تمويل القناة.", reply_markup=main_menu_kb(is_own))
                 return
+            _kind = context.user_data.get("fund_type", "mandatory")
             channel = context.user_data.get("fund_channel_username", "")
             member_count = int(context.user_data.get("fund_member_count", 0))
             total_stars = int(context.user_data.get("fund_stars_total", 0))
-            if not channel or member_count < 1 or total_stars < 1:
+            if _kind not in FUND_KINDS or not channel or member_count < 1 or total_stars < 1:
                 context.user_data["state"] = "main_menu"
                 await q.edit_message_text("⚠️ بيانات التمويل غير مكتملة. ابدأ من جديد.", reply_markup=main_menu_kb(is_own))
                 return
             context.user_data["state"] = "main_menu"
-            await q.answer("✅ تم التأكيد، ستظهر الفاتورة الآن.")
             await q.edit_message_text("⏳ جارٍ تحضير فاتورة النجوم...")
             await context.bot.send_invoice(
                 chat_id=user.id,
-                title=f"اشتراك إجباري — @{channel}",
-                description=f"تمويل {member_count:,} عضو كاشتراك إجباري في قناة @{channel}",
-                payload=f"fund_mandatory:{user.id}:{member_count}:{channel}:{total_stars}",
+                title=f"تمويل {FUND_KIND_LABELS[_kind]} — @{channel}",
+                description=f"تمويل {member_count:,} عضو لقناة @{channel} ({FUND_KIND_LABELS[_kind]})",
+                payload=f"fund_{_kind}:{user.id}:{member_count}:{channel}:{total_stars}",
                 provider_token="", currency="XTR",
-                prices=[LabeledPrice(f"تمويل إجباري @{channel}", total_stars)],
+                prices=[LabeledPrice(f"تمويل @{channel}", total_stars)],
             )
             return
+
         if data == "fund_confirm:yes":
-            fund_type    = context.user_data.get("fund_type", "mandatory")
+            # دفع التمويل بالجواهر. تُصفَّر الحالة فوراً قبل أي await حتى لا تُخصم الجواهر مرتين.
+            if context.user_data.get("state") != "await_fund_confirm" or context.user_data.get("fund_pay") != "jewels":
+                await q.answer("⚠️ انتهت صلاحية طلب التمويل.", show_alert=True)
+                return
+            _kind        = context.user_data.get("fund_type", "mandatory")
             channel      = context.user_data.get("fund_channel_username", "")
-            member_count = context.user_data.get("fund_member_count", 1)
-            cost_key     = "mandatory_channel_cost" if fund_type in ("mandatory", "mandatory_points") else "internal_channel_cost"
-            cost_per     = int(get_setting(cost_key) or "200")
-            cost         = context.user_data.get("fund_total_cost", cost_per * member_count)
-            ft_label     = "إجباري سريع" if fund_type in ("mandatory", "mandatory_points") else "داخلي بطيء"
-            channel_md   = md_escape(channel)
-            if not channel:
-                await q.edit_message_text("⚠️ انتهت الجلسة، ابدأ من جديد.", reply_markup=main_menu_kb(is_own))
-                context.user_data["state"] = "main_menu"
-                return
-            if not deduct_points(user.id, cost):
-                await q.edit_message_text(f"❌ نقاطك غير كافية. التكلفة الإجمالية: {cost:,} نقطة.", reply_markup=main_menu_kb(is_own))
-                context.user_data["state"] = "main_menu"
-                return
-            code = next_order_code(user.id)
-        
-            is_queued = False
-            if fund_type in ("mandatory", "mandatory_points") and count_active_mandatory_channels() >= MANDATORY_MAX_ACTIVE:
-                is_queued = True
-        
-            with db_conn() as c:
-                c.execute(
-                    "INSERT INTO channel_funding (user_id,channel_username,funding_type,cost_points,target_members,current_members,status) "
-                    "VALUES (%s,%s,%s,%s,%s,0,'active')",
-                    (user.id, channel, fund_type, cost, member_count)
-                )
-                mc_fund_type = "mandatory" if fund_type in ("mandatory", "mandatory_points") else fund_type
-                c.execute(
-                    "INSERT INTO mandatory_channels (channel_username,owner_user_id,funding_type,active,queued) "
-                    "VALUES (%s,%s,%s,%s,%s) "
-                    "ON CONFLICT (channel_username) DO UPDATE SET funding_type=EXCLUDED.funding_type, owner_user_id=EXCLUDED.owner_user_id, "
-                    "active=EXCLUDED.active, queued=EXCLUDED.queued",
-                    (channel, user.id, mc_fund_type, 0 if is_queued else 1, 1 if is_queued else 0)
-                )
+            member_count = int(context.user_data.get("fund_member_count", 0) or 0)
             context.user_data["state"] = "main_menu"
-            context.user_data.pop("fund_channel_username", None)
-            context.user_data.pop("fund_member_count", None)
-            context.user_data.pop("fund_total_cost", None)
-        
+            for _k in ("fund_channel_username", "fund_member_count", "fund_stars_total", "fund_jewels_total", "fund_pay"):
+                context.user_data.pop(_k, None)
+            if _kind not in FUND_KINDS or not channel or member_count < 1:
+                await q.edit_message_text("⚠️ انتهت الجلسة، ابدأ من جديد.", reply_markup=main_menu_kb(is_own))
+                return
+            _quote  = fund_quote(_kind, member_count)
+            jewels  = _quote["jewels"]
+            if member_count < _quote["min"]:
+                await q.edit_message_text("⚠️ عدد الأعضاء أقل من الحد الأدنى.", reply_markup=main_menu_kb(is_own))
+                return
+            if deduct_jewels(user.id, jewels, reference=f"fund_{_kind}:{channel}") is None:
+                await q.edit_message_text(
+                    f"❌ جواهرك غير كافية. التكلفة: {fmt_decimal(jewels)} 💎.",
+                    reply_markup=main_menu_kb(is_own))
+                return
+            try:
+                is_queued, code = activate_channel_funding(user.id, _kind, channel, member_count)
+            except Exception:
+                logger.exception("فشل تفعيل تمويل القناة بعد خصم الجواهر؛ تُعاد الجواهر")
+                add_jewels(user.id, jewels, reference=f"fund_refund:{channel}")
+                await q.edit_message_text("⚠️ تعذر تفعيل التمويل وأُعيدت جواهرك. حاول مجدداً.", reply_markup=main_menu_kb(is_own))
+                return
+            ft_label   = FUND_KIND_LABELS[_kind]
+            channel_md = md_escape(channel)
+            cost_txt   = f"{fmt_decimal(jewels)} 💎"
             if is_queued:
                 await q.edit_message_text(
-                    f"⏳ *تم استلام تمويل قناتك وسُحبت النقاط بنجاح، لكنها في قائمة الانتظار حالياً.*\n\n"
-                    f"📢 القناة: @{channel_md}\n"
-                    f"👥 عدد الأعضاء: {member_count:,}\n"
-                    f"💰 التكلفة: {cost_per} × {member_count:,} = *{cost:,} نقطة*\n\n"
-                    f"⚠️ عدد القنوات الإجبارية النشطة حالياً بلغ الحد الأقصى ({MANDATORY_MAX_ACTIVE} قنوات).\n"
-                    f"✅ ستُفعَّل قناتك تلقائياً وتظهر لجميع المستخدمين فور تحرّر أحد الأماكن (عند اكتمال إحدى القنوات العشرة).",
-                    parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=main_menu_kb(is_own)
-                )
+                    f"⏳ *تم استلام تمويل قناتك وخُصمت الجواهر، لكنها في قائمة الانتظار حالياً.*\n\n"
+                    f"📢 القناة: @{channel_md}\n👥 عدد الأعضاء: {member_count:,}\n💎 التكلفة: *{cost_txt}*\n\n"
+                    f"⚠️ عدد القنوات الإجبارية النشطة بلغ الحد الأقصى ({MANDATORY_MAX_ACTIVE} قنوات).\n"
+                    f"✅ ستُفعَّل قناتك تلقائياً فور تحرّر مكان.",
+                    parse_mode=ParseMode.MARKDOWN, reply_markup=main_menu_kb(is_own))
             else:
                 await q.edit_message_text(
-                    f"✅ *تم تفعيل تمويل قناتك بنجاح!*\n\n"
-                    f"📢 القناة: @{channel_md}\n"
-                    f"⚙️ النوع: {ft_label}\n"
-                    f"👥 عدد الأعضاء: {member_count:,}\n"
-                    f"💰 التكلفة: {cost_per} × {member_count:,} = *{cost:,} نقطة*",
-                    parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=main_menu_kb(is_own)
-                )
+                    f"✅ *تم تفعيل تمويل قناتك بنجاح!*\n\n📢 القناة: @{channel_md}\n"
+                    f"⚙️ النوع: {ft_label}\n👥 عدد الأعضاء: {member_count:,}\n💎 التكلفة: *{cost_txt}*",
+                    parse_mode=ParseMode.MARKDOWN, reply_markup=main_menu_kb(is_own))
             await context.bot.send_message(
-                user.id,
-                f"📌 *كود عمليتك:* `{code}`\nاحفظه قد تحتاجه لاحقاً.",
-                parse_mode=ParseMode.MARKDOWN
-            )
-        
-            _queue_note = "\n⏳ <b>ملاحظة:</b> دخلت قائمة الانتظار (الحد الأقصى ممتلئ) وستُفعَّل تلقائياً عند توفر مكان." if is_queued else ""
-            _terms = mandatory_terms_text_html() if fund_type in ("mandatory", "mandatory_points") else ""
+                user.id, f"📌 *كود عمليتك:* `{code}`\nاحفظه قد تحتاجه لاحقاً.",
+                parse_mode=ParseMode.MARKDOWN)
+            _queue_note = "\n⏳ <b>ملاحظة:</b> دخلت قائمة الانتظار وستُفعَّل عند توفر مكان." if is_queued else ""
+            _terms = mandatory_terms_text_html() if _kind == "mandatory" else ""
             await notify_group(
                 context.application,
-                f"📢 <b>تمويل قناة {ft_label}</b>\n"
-                f"📡 القناة: @{channel}\n"
-                f"👥 {member_count:,} عضو\n"
-                f"💰 {cost:,} نقطة ({cost_per} × {member_count:,})\n"
-                f"📌 {code}"
-                f"{_queue_note}\n"
-                f"{_terms}",
-                parse_mode="HTML"
-            )
+                f"📢 <b>تمويل قناة {ft_label} — جواهر</b>\n📡 القناة: @{channel}\n"
+                f"👥 {member_count:,} عضو\n💎 {cost_txt}\n📌 {code}{_queue_note}\n{_terms}",
+                parse_mode="HTML")
             return
 
         if data == "fund_confirm:no":
@@ -3117,7 +3040,7 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
 
         if data.startswith("os:account_info:") and is_own:
             _phone_info = data[len("os:account_info:"):]
-            await q.answer()
+            pass  # تم الرد مسبقاً في handle_callback
             try:
                 with db_conn() as _ci:
                     _row_info = _ci.execute(

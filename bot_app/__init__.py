@@ -34,6 +34,8 @@ _SECTION_NAMES = (
     "smm_payments",
     "payments",
     "reaction_operations",
+    "funding",
+    "funding_boost",
     "application",
 )
 

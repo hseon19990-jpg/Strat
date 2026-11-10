@@ -2052,7 +2052,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if state == "await_fund_member_count":
-        fund_type   = context.user_data.get("fund_type", "mandatory")
+        from decimal import Decimal as _D
+        _kind = context.user_data.get("fund_type", "mandatory")
+        _pay  = context.user_data.get("fund_pay")
+        if _kind not in FUND_KINDS or _pay not in FUND_PAYMENTS:
+            # جلسة قديمة من مسار النقاط: يُطلب اختيار طريقة الدفع من جديد.
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text(
+                "⚠️ التمويل يُدفع بالنجوم أو الجواهر فقط. اختر من جديد:",
+                reply_markup=fund_channel_kb())
+            return
         try:
             member_count = int(text.strip().replace(",", "").replace(".", ""))
             if member_count <= 0:
@@ -2060,97 +2069,35 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("⚠️ أرسل رقماً صحيحاً يمثل عدد أعضاء قناتك.")
             return
-
-        if fund_type == "mandatory_points":
-            _pts_price = int(get_setting("mandatory_points_price") or "5")
-            _pts_min   = int(get_setting("mandatory_points_min")   or "50")
-            if member_count < _pts_min:
+        _quote = fund_quote(_kind, member_count)
+        if member_count < _quote["min"]:
+            await update.message.reply_text(
+                f"❌ *عدد الأعضاء أقل من الحد الأدنى!*\n\n"
+                f"الحد الأدنى المطلوب: *{_quote['min']:,} عضو*\n"
+                f"العدد الذي أدخلته: {member_count:,}",
+                parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb("fund_channel"))
+            context.user_data["state"] = "main_menu"
+            return
+        if _pay == "jewels":
+            _bal = _D(str((get_user(user.id) or {}).get("jewels") or 0))
+            if _bal < _quote["jewels"]:
                 await update.message.reply_text(
-                    f"❌ *عدد الأعضاء أقل من الحد الأدنى!*\n\n"
-                    f"الحد الأدنى: *{_pts_min:,} عضو* | أدخلت: {member_count:,}",
+                    f"❌ *جواهرك غير كافية!*\n\n💎 التكلفة: *{fmt_decimal(_quote['jewels'])}*\n"
+                    f"💼 رصيدك: {fmt_decimal(_bal)}",
                     parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb("fund_channel"))
                 context.user_data["state"] = "main_menu"
                 return
-            total_pts = _pts_price * member_count
-            db_user = get_user(user.id)
-            if (db_user["points"] if db_user else 0) < total_pts:
-                await update.message.reply_text(
-                    f"❌ *نقاطك غير كافية!*\n\n💰 التكلفة: {_pts_price} × {member_count:,} = *{total_pts:,} نقطة*\n💎 رصيدك: {db_user['points'] if db_user else 0} نقطة",
-                    parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb("fund_channel"))
-                context.user_data["state"] = "main_menu"
-                return
-            context.user_data["fund_member_count"] = member_count
-            context.user_data["fund_total_cost"]   = total_pts
-            context.user_data["state"] = "await_fund_channel"
-            await update.message.reply_text(
-                f"✅ *عدد الأعضاء: {member_count:,}*\n💰 التكلفة: {_pts_price} × {member_count:,} = *{total_pts:,} نقطة*\n\n📊 *الخطوة 2/3:* أرسل *رابط أو يوزرنيم قناتك* (مثال: @mychannel):",
-                parse_mode=ParseMode.MARKDOWN)
-            return
-
-        if fund_type == "mandatory":
-            _stars_min    = int(get_setting("mandatory_stars_min_members")     or "50")
-            _stars_t1_max = int(get_setting("mandatory_stars_tier1_max")       or "120")
-            _t1_x100      = int(get_setting("mandatory_stars_tier1_price_x100") or "50")
-            _t2_x100      = int(get_setting("mandatory_stars_tier2_price_x100") or "33")
-            if member_count < _stars_min:
-                await update.message.reply_text(
-                    f"❌ *عدد الأعضاء أقل من الحد الأدنى!*\n\n"
-                    f"الحد الأدنى المطلوب: *{_stars_min:,} عضو*\n"
-                    f"العدد الذي أدخلته: {member_count:,}",
-                    parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=back_kb("fund_channel")
-                )
-                context.user_data["state"] = "main_menu"
-                return
-            if member_count <= _stars_t1_max:
-                total_stars = math.ceil(member_count * _t1_x100 / 100)
-            else:
-                total_stars = math.ceil(member_count * _t2_x100 / 100)
-            context.user_data["fund_member_count"] = member_count
-            context.user_data["fund_stars_total"]  = total_stars
-            context.user_data["state"] = "await_fund_channel"
-            await update.message.reply_text(
-                f"✅ *عدد الأعضاء: {member_count:,}*\n"
-                f"⭐ التكلفة: *{total_stars} نجمة*\n\n"
-                f"📊 *الخطوة 2/3:* أرسل *رابط أو يوزرنيم قناتك* (مثال: @mychannel):",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            return
-
-        cost_per    = int(get_setting("internal_channel_cost") or "100")
-        min_members = int(get_setting("internal_channel_min_members") or "0")
-        db_user     = get_user(user.id)
-        if min_members > 0 and member_count < min_members:
-            await update.message.reply_text(
-                f"❌ *عدد الأعضاء غير كافٍ!*\n\n"
-                f"الحد الأدنى المطلوب: *{min_members:,} عضو*\n"
-                f"العدد الذي أدخلته: {member_count:,}\n\n"
-                f"يجب أن تمتلك قناة بعدد أعضاء لا يقل عن الحد الأدنى.",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=back_kb("fund_channel")
-            )
-            context.user_data["state"] = "main_menu"
-            return
-        total_cost = cost_per * member_count
-        if (db_user["points"] if db_user else 0) < total_cost:
-            await update.message.reply_text(
-                f"❌ *نقاطك غير كافية!*\n\n"
-                f"💰 السعر: {cost_per} × {member_count:,} = *{total_cost:,} نقطة*\n"
-                f"💎 رصيدك الحالي: {db_user['points'] if db_user else 0} نقطة",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=back_kb("fund_channel")
-            )
-            context.user_data["state"] = "main_menu"
-            return
+            _cost_line = f"💎 التكلفة: *{fmt_decimal(_quote['jewels'])} جوهرة*"
+        else:
+            _cost_line = f"⭐ التكلفة: *{_quote['stars']:,} نجمة*"
         context.user_data["fund_member_count"] = member_count
-        context.user_data["fund_total_cost"]   = total_cost
+        context.user_data["fund_stars_total"]  = _quote["stars"]
+        context.user_data["fund_jewels_total"] = str(_quote["jewels"])
         context.user_data["state"] = "await_fund_channel"
         await update.message.reply_text(
-            f"✅ *عدد الأعضاء: {member_count:,}*\n"
-            f"💰 التكلفة الإجمالية: {cost_per} × {member_count:,} = *{total_cost:,} نقطة*\n\n"
+            f"✅ *عدد الأعضاء: {member_count:,}*\n{_cost_line}\n\n"
             f"📊 *الخطوة 2/3:* أرسل *رابط أو يوزرنيم قناتك* (مثال: @mychannel):",
-            parse_mode=ParseMode.MARKDOWN
-        )
+            parse_mode=ParseMode.MARKDOWN)
         return
 
     if state == "await_fund_channel":
@@ -2202,44 +2149,36 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             real_count = 0
 
         # ════════════════════════════════════════════════════
-        if fund_type == "mandatory":
-            total_stars = context.user_data.get("fund_stars_total", 1)
-            context.user_data["fund_channel_username"] = channel
+        _pay = context.user_data.get("fund_pay")
+        if fund_type not in FUND_KINDS or _pay not in FUND_PAYMENTS or member_count < 1:
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text(
+                "⚠️ انتهت جلسة التمويل. اختر من جديد:", reply_markup=fund_channel_kb())
+            return
+        _quote = fund_quote(fund_type, member_count)
+        context.user_data["fund_channel_username"] = channel
+        _label = FUND_KIND_LABELS[fund_type]
+        if _pay == "stars":
             context.user_data["state"] = "await_fund_stars_confirm"
             await update.message.reply_text(
-                f"📋 *مراجعة تمويل القناة بالنجوم:*\n\n📢 القناة: @{channel_md}\n👥 عدد الأعضاء الفعلي: {real_count:,}\n⭐ التكلفة: *{total_stars} نجمة*\n\n⚠️ بعد التأكيد ستظهر فاتورة Telegram، والنجوم المدفوعة لا تُسترد. هل تريد المتابعة؟",
+                f"📋 *مراجعة تمويل القناة بالنجوم:*\n\n📢 القناة: @{channel_md}\n"
+                f"⚙️ النوع: {_label}\n👥 عدد الأعضاء الفعلي: {real_count:,}\n"
+                f"⭐ التكلفة: *{_quote['stars']:,} نجمة*\n\n"
+                f"⚠️ بعد التأكيد ستظهر فاتورة Telegram، والنجوم المدفوعة لا تُسترد. هل تريد المتابعة؟",
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تأكيد وإرسال الفاتورة", callback_data="fund_stars_confirm:yes")], [InlineKeyboardButton("❌ إلغاء", callback_data="fund_stars_confirm:no")]])
-            )
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ تأكيد وإرسال الفاتورة", callback_data="fund_stars_confirm:yes")],
+                    [InlineKeyboardButton("❌ إلغاء", callback_data="fund_stars_confirm:no")]]))
             return
-
-        # ════════════════════════════════════════════════════
-        cost_per = int(get_setting("internal_channel_cost") or "100")
-        cost     = context.user_data.get("fund_total_cost", cost_per * max(member_count, 1))
-        db_user  = get_user(user.id)
-        if (db_user["points"] if db_user else 0) < cost:
-            await update.message.reply_text(
-                f"❌ نقاطك غير كافية. التكلفة الإجمالية: {cost:,} نقطة.",
-                reply_markup=main_menu_kb(is_own)
-            )
-            context.user_data["state"] = "main_menu"
-            return
-        context.user_data["fund_channel_username"] = channel
         context.user_data["state"] = "await_fund_confirm"
-        ft_label = "داخلي بطيء"
         await update.message.reply_text(
-            f"📋 *مراجعة طلب التمويل — الخطوة 3/3:*\n\n"
-            f"📢 القناة: @{channel_md}\n"
-            f"⚙️ النوع: {ft_label}\n"
-            f"👥 عدد الأعضاء الفعلي: {real_count:,}\n"
-            f"💰 التكلفة: {cost_per} × {member_count:,} = *{cost:,} نقطة*\n\n"
-            f"هل تريد تأكيد الطلب؟",
+            f"📋 *مراجعة طلب التمويل بالجواهر — الخطوة 3/3:*\n\n📢 القناة: @{channel_md}\n"
+            f"⚙️ النوع: {_label}\n👥 عدد الأعضاء الفعلي: {real_count:,}\n"
+            f"💎 التكلفة: *{fmt_decimal(_quote['jewels'])} جوهرة*\n\nهل تريد تأكيد الطلب؟",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("✅ تأكيد", callback_data="fund_confirm:yes"),
-                 InlineKeyboardButton("❌ إلغاء", callback_data="fund_confirm:no")]
-            ])
-        )
+                 InlineKeyboardButton("❌ إلغاء", callback_data="fund_confirm:no")]]))
         return
       except Exception as _fund_err:
         logger.error(f"❌ خطأ في await_fund_channel للمستخدم {user.id}: {_fund_err}", exc_info=True)

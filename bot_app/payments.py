@@ -373,7 +373,7 @@ async def pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     valid = True
 
         # ─── الاشتراك الإجباري بالنجوم ───
-        if payload.startswith("fund_mandatory:"):
+        if payload.startswith(("fund_mandatory:", "fund_internal:")):
             parts = payload.split(":")
             if len(parts) == 5 and parts[1].isdigit() and parts[4].isdigit():
                 uid_in_payload = int(parts[1])
@@ -1082,33 +1082,17 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
         return
 
-    # ─── تمويل الاشتراك الإجباري بالنجوم ───
-    elif payload.startswith("fund_mandatory:"):
+    # ─── تمويل القنوات بالنجوم (إجباري سريع / داخلي بطيء) ───
+    elif payload.startswith(("fund_mandatory:", "fund_internal:")):
         parts        = payload.split(":")
-        _uid         = int(parts[1])
+        _kind        = "internal" if parts[0] == "fund_internal" else "mandatory"
         member_count = int(parts[2])
         channel      = parts[3]
         total_stars  = int(parts[4])
         channel_md   = md_escape(channel)
+        ft_label     = FUND_KIND_LABELS[_kind]
 
-        is_queued = False
-        if count_active_mandatory_channels() >= MANDATORY_MAX_ACTIVE:
-            is_queued = True
-
-        code = next_order_code(user.id)
-        with db_conn() as c:
-            c.execute(
-                "INSERT INTO channel_funding (user_id,channel_username,funding_type,cost_points,target_members,current_members,status) "
-                "VALUES (%s,%s,'mandatory',0,%s,0,'active')",
-                (user.id, channel, member_count)
-            )
-            c.execute(
-                "INSERT INTO mandatory_channels (channel_username,owner_user_id,funding_type,active,queued) "
-                "VALUES (%s,%s,'mandatory',%s,%s) "
-                "ON CONFLICT (channel_username) DO UPDATE SET funding_type=EXCLUDED.funding_type, owner_user_id=EXCLUDED.owner_user_id, "
-                "active=EXCLUDED.active, queued=EXCLUDED.queued",
-                (channel, user.id, 0 if is_queued else 1, 1 if is_queued else 0)
-            )
+        is_queued, code = activate_channel_funding(user.id, _kind, channel, member_count)
 
         if is_queued:
             await update.message.reply_text(
@@ -1123,8 +1107,9 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
         else:
             await update.message.reply_text(
-                f"✅ *تم تفعيل قناتك الإجبارية بنجاح!*\n\n"
+                f"✅ *تم تفعيل تمويل قناتك بنجاح!*\n\n"
                 f"📢 القناة: @{channel_md}\n"
+                f"⚙️ النوع: {ft_label}\n"
                 f"👥 عدد الأعضاء: {member_count:,}\n"
                 f"⭐ دفعت: {total_stars} نجمة\n"
                 f"📌 كود العملية: `{code}`",
@@ -1133,11 +1118,11 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
 
         _queue_note = "\n⏳ <b>ملاحظة:</b> دخلت قائمة الانتظار وستُفعَّل عند توفر مكان." if is_queued else ""
-        _terms = mandatory_terms_text_html()
+        _terms = mandatory_terms_text_html() if _kind == "mandatory" else ""
         try:
             await context.application.bot.send_message(
                 ADMIN_GROUP_ID,
-                f"📢 <b>تمويل قناة إجباري — نجوم</b>\n"
+                f"📢 <b>تمويل قناة {ft_label} — نجوم</b>\n"
                 f"📡 القناة: @{channel}\n"
                 f"👥 {member_count:,} عضو\n"
                 f"⭐ {total_stars} نجمة\n"
