@@ -20,6 +20,7 @@ def _load():
         "WHEEL_ROLL_SCALE", "WHEEL_PRIZES", "WHEEL_DISPLAY_ORDER",
         "WHEEL_RANDOM_WEIGHTS", "WHEEL_REMAINDER_PRIZE", "_WHEEL_NAME_STRIP_RE",
         "WHEEL_FREE_PRIZE_KEYS", "WHEEL_FREE_POINTS1000_WEIGHT",
+        "WHEEL_BEAR_DAILY_MAX", "WHEEL_DAY_OFFSET_SECONDS",
     }
     nodes = []
     for node in tree.body:
@@ -71,14 +72,22 @@ class WheelRulesTests(unittest.TestCase):
         for start in range(0, 10_000, 100):
             self.assertGreaterEqual(prizes[start:start + 100].count("jewel"), 1, start)
 
-    def test_jewel_and_star_are_about_six_percent_and_bear_two(self):
+    def test_jewel_and_star_are_about_six_percent(self):
         w = self.w
         engine = w["WheelEngine"](rng=random.Random(3))
         n = 200_000
         counts = Counter(engine.next_prize(0.0) for _ in range(n))
         self.assertAlmostEqual(counts["jewel"] / n, 0.06, delta=0.004)
         self.assertAlmostEqual(counts["star1"] / n, 0.06, delta=0.004)
-        self.assertAlmostEqual(counts["bear"] / n, 0.02, delta=0.003)
+
+    def test_bear_never_more_than_two_per_day_and_resets_next_day(self):
+        w = self.w
+        engine = w["WheelEngine"](rng=random.Random(4))
+        start = 86_400 * 20_000 - w["WHEEL_DAY_OFFSET_SECONDS"]  # بداية يوم بتوقيت بغداد
+        today = [engine.next_prize(start + 100 + i) for i in range(60_000)]
+        self.assertEqual(today.count("bear"), w["WHEEL_BEAR_DAILY_MAX"])
+        tomorrow = [engine.next_prize(start + 86_400 + 100 + i) for i in range(60_000)]
+        self.assertEqual(tomorrow.count("bear"), 2)
 
     def test_free_spins_win_only_500_or_1000_points_and_skip_counters(self):
         w = self.w
@@ -158,13 +167,13 @@ class WheelRulesTests(unittest.TestCase):
         counts = Counter(pick(roll) for roll in range(scale))
         self.assertEqual(counts["ring"], 1)            # 0.01%
         self.assertEqual(counts["rose"], 5)            # 0.05%
-        self.assertEqual(counts["bear"], 200)          # 2%
+        self.assertEqual(counts["bear"], 100)          # 1%
         self.assertEqual(counts["boost_monthly"], 50)  # 0.5%
         self.assertEqual(counts["jewels10"], 10)       # 0.1%
         self.assertEqual(counts["star1"], 600)         # 6%
         self.assertEqual(counts["jewel"], 505)         # 5.05% + 1% مضمونة
         self.assertEqual(counts["points1000"], 7000)   # 70%
-        self.assertEqual(counts["points500"], scale - 8371)
+        self.assertEqual(counts["points500"], scale - 8271)
         for never in ("premium3", "premium6", "premium12", "boost_weekly", "boost_daily"):
             self.assertEqual(counts[never], 0)
 
