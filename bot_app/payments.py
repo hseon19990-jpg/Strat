@@ -404,21 +404,8 @@ async def pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if query.from_user.id == uid_in_payload and query.total_amount == expected_stars:
                     valid = True
 
-        if payload.startswith("smm_stars:"):
-            parts = payload.split(":")
-            if len(parts) == 2 and parts[1].isdigit():
-                intent = get_smm_payment_intent(int(parts[1]), query.from_user.id)
-                if (
-                    intent
-                    and query.currency == "XTR"
-                    and intent.get("payment_method") == "stars"
-                    and validate_smm_stars_invoice(
-                        int(parts[1]),
-                        query.from_user.id,
-                        int(query.total_amount),
-                    )
-                ):
-                    valid = True
+        # فواتير النجوم لخدمات الرشق من المواقع أُلغيت: الدفع بالمجوهرات فقط،
+        # لذلك تُرفض أي فاتورة "smm_stars:" قديمة هنا (valid يبقى False).
 
         if valid:
             await query.answer(ok=True)

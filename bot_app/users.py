@@ -557,6 +557,36 @@ def exchange_stars_cost(stars, rate=None) -> Decimal:
     )
 
 
+def exchange_package_cost(pkg) -> Decimal:
+    """سعر باقة النجوم بالجواهر كما حدده المالك؛ الباقات القديمة بلا سعر تُسعَّر بالمعدل."""
+    try:
+        jewels = pkg.get("jewels")
+    except AttributeError:
+        jewels = None
+    if jewels is not None:
+        return Decimal(str(jewels)).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+    return exchange_stars_cost(pkg["stars"])
+
+
+def get_exchange_package(stars):
+    """الباقة الفعّالة بعدد النجوم المحدد أو None (لا يُقبل أي عدد خارج الباقات)."""
+    with db_conn() as c:
+        return c.execute(
+            "SELECT * FROM exchange_star_packages WHERE stars=%s AND active=1 ORDER BY id LIMIT 1",
+            (int(stars),),
+        ).fetchone()
+
+
+EXCHANGE_STARS_REFERRAL_NOTICE = (
+    "⚠️ *ستتم مراجعة إحالاتك عند الشراء.*\n"
+    "يجب أن تكون جميعها حقيقية.\n\n"
+    "الحسابات الحقيقية هي حصراً الحسابات التي لديها:\n"
+    "( ستوري + أفتار )\n"
+    "والحسابات التي تمتلك مطورة أو مميز تُعتبر حقيقية دائماً.\n\n"
+    "🚫 جلبك إحالات لا تحتوي هذه الشروط يجعل طلبك *مرفوضاً* ولن يتم استرداد أي شيء."
+)
+
+
 def get_referral_level1_jewels() -> Decimal:
     try:
         return parse_referral_jewels(get_setting("referral_jewels") or "0")

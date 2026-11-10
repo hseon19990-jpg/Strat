@@ -972,10 +972,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         intent_id = int(intent["id"])
         preview_rows = [
             [InlineKeyboardButton(
-                f"⭐ الدفع بالنجوم — {intent['cost_stars']:,}",
-                callback_data=f"smm:pay:stars:{intent_id}",
-            )],
-            [InlineKeyboardButton(
                 f"💎 الدفع بالمجوهرات — {intent['cost_jewels']:,}",
                 callback_data=f"smm:pay:jewels:{intent_id}",
             )],
@@ -991,7 +987,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔢 الكمية: {qty}\n"
             f"🔗 الرابط: <code>{link_html}</code>\n"
             + (f"📝 {desc_html}\n" if desc_text else "")
-            + f"⭐ السعر: {int(intent['cost_stars']):,} نجمة\n"
             + f"💎 السعر: {int(intent['cost_jewels']):,} مجوهرة\n"
             + f"💎 رصيد مجوهراتك: {fmt_jewel_amount(jewels)}"
         )
@@ -1011,7 +1006,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🔢 الكمية: {qty}\n"
                 f"🔗 الرابط: {link[:1500]}\n"
                 + (f"📝 {str(desc_text)[:1200]}\n" if desc_text else "")
-                + f"⭐ السعر: {int(intent['cost_stars']):,} نجمة\n"
                 + f"💎 السعر: {int(intent['cost_jewels']):,} مجوهرة\n"
                 + f"💎 رصيد مجوهراتك: {fmt_jewel_amount(jewels)}",
                 reply_markup=preview_markup,
@@ -1051,7 +1045,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "await_smm_link"
         await update.message.reply_text(
             f"✅ الكمية: {qty}\n"
-            f"⭐ السعر التقريبي: {smm_stars_cost(cost)} نجمة\n"
             f"💎 السعر التقريبي: {smm_jewels_cost(cost)} مجوهرة\n\n"
             f"📎 أرسل *رابط* الحساب/القناة/البوست:",
             parse_mode=ParseMode.MARKDOWN,
@@ -1063,7 +1056,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if state == "confirm_smm":
         await update.message.reply_text(
-            "اختر طريقة الدفع من الأزرار في معاينة الطلب: النجوم أو المجوهرات.",
+            "اختر طريقة الدفع من الأزرار في معاينة الطلب: الدفع بالمجوهرات فقط.",
             reply_markup=main_menu_kb(is_own),
         )
         return
@@ -5484,11 +5477,40 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ يجب أن يكون أكبر من صفر.")
             return
         with db_conn() as c:
-            c.execute("INSERT INTO exchange_star_packages (stars) VALUES (?)", (stars,))
-        rate = get_exchange_star_rate()
-        cost = exchange_stars_cost(stars, rate)
+            exists = c.execute(
+                "SELECT 1 FROM exchange_star_packages WHERE stars=%s", (stars,)
+            ).fetchone()
+        if exists:
+            await update.message.reply_text(
+                "⚠️ توجد باقة بهذا العدد من النجوم مسبقاً. احذفها أو أرسل عدداً آخر."
+            )
+            return
+        context.user_data["new_pkg_stars"] = stars
+        context.user_data["state"] = "os_await_pkg_jewels"
         await update.message.reply_text(
-            f"✅ *تمت إضافة الباقة بنجاح!*\n\n⭐ {stars} نجمة = {fmt_decimal(cost)} جوهرة",
+            f"⭐ عدد النجوم: *{stars}*\n\n💎 الآن أرسل *عدد الجواهر* التي يدفعها العضو مقابلها (يقبل الكسور مثل 2.5):",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    if is_own and state == "os_await_pkg_jewels":
+        stars = int(context.user_data.get("new_pkg_stars") or 0)
+        if stars <= 0:
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text("⚠️ انتهت الجلسة. ابدأ إضافة الباقة من جديد.", reply_markup=owner_settings_kb())
+            return
+        jewels = parse_positive_decimal(text)
+        if jewels is None:
+            await update.message.reply_text("⚠️ أرسل رقماً أكبر من صفر، ويمكن أن يكون عشرياً مثل 2.5.")
+            return
+        with db_conn() as c:
+            c.execute(
+                "INSERT INTO exchange_star_packages (stars, jewels) VALUES (%s, %s)",
+                (stars, format(jewels.normalize(), "f")),
+            )
+        context.user_data.pop("new_pkg_stars", None)
+        await update.message.reply_text(
+            f"✅ *تمت إضافة الباقة بنجاح!*\n\n⭐ {stars} نجمة = {fmt_decimal(jewels)} جوهرة",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=owner_settings_kb()
         )

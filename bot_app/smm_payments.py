@@ -7,15 +7,12 @@ from .services import smm_jewels_cost, smm_stars_cost
 
 
 def _is_valid_smm_payment(intent: dict, payment_method: str, paid_amount: int) -> bool:
-    """Accept only a positive Stars or jewels payment matching the saved quote."""
-    if payment_method not in {"stars", "jewels"}:
+    """Accept only a positive jewels payment matching the saved quote."""
+    if payment_method != "jewels":
         return False
     try:
         service_value_points = int(intent.get("service_value_points") or 0)
-        expected_amount = int(
-            intent.get("cost_stars" if payment_method == "stars" else "cost_jewels")
-            or 0
-        )
+        expected_amount = int(intent.get("cost_jewels") or 0)
         actual_amount = int(paid_amount or 0)
     except (AttributeError, TypeError, ValueError):
         return False

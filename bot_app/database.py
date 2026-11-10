@@ -978,6 +978,11 @@ def init_db():
               stars  INTEGER NOT NULL,
               active INTEGER DEFAULT 1
           )""")
+          try:
+              # سعر الباقة بالجواهر يحدده المالك لكل باقة (NULL = باقة قديمة تُسعَّر بالمعدل).
+              c.execute("ALTER TABLE exchange_star_packages ADD COLUMN IF NOT EXISTS jewels NUMERIC(18,6)")
+          except Exception:
+              pass
           c.execute("""
           CREATE TABLE IF NOT EXISTS channel_join_rewards (
               user_id    BIGINT,

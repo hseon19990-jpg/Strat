@@ -765,7 +765,6 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 + (
                     f"💰 السعر: {fmt_price(svc['price_per_point'])} نقطة / 1000 وحدة\n"
                     if is_own else
-                    f"⭐ السعر: {stars_rate} نجمة / 1000 وحدة\n"
                     f"💎 السعر: {jewels_rate} مجوهرة / 1000 وحدة\n"
                 )
                 + (f"🟢 الحالة: {'✅ مفعّلة' if svc['active'] else '❌ معطّلة'}\n\n" if is_own else "\n")
@@ -883,7 +882,6 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 f"🔹 *{md_escape(svc['name_ar'])}*\n\n"
                 f"📉 الحد الأدنى: {svc['min_qty']}\n"
                 f"📈 الحد الأعلى: {svc['max_qty']}\n"
-                f"⭐ السعر: {stars_rate} نجمة / 1000 وحدة\n"
                 f"💎 السعر: {jewels_rate} مجوهرة / 1000 وحدة\n\n"
                 f"🔢 أرسل *الكمية* المطلوبة:",
                 parse_mode=ParseMode.MARKDOWN,
@@ -911,7 +909,6 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             context.user_data["state"] = "await_smm_link"
             await q.edit_message_text(
                 f"✅ الكمية: {qty}\n"
-                f"⭐ السعر التقريبي: {smm_stars_cost(cost)} نجمة\n"
                 f"💎 السعر التقريبي: {smm_jewels_cost(cost)} مجوهرة\n\n"
                 f"📎 أرسل *رابط* الحساب/القناة/البوست:",
                 parse_mode=ParseMode.MARKDOWN,
@@ -947,31 +944,11 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 return
             method = parts[2]
             intent_id = int(parts[3])
-            if method == "stars":
-                intent = start_smm_stars_invoice(intent_id, user.id)
-                if not intent:
-                    await q.answer("⚠️ انتهت صلاحية الطلب أو تمت معالجته.", show_alert=True)
-                    return
-                try:
-                    await context.bot.send_invoice(
-                        chat_id=user.id,
-                        title=str(intent["service_name"])[:32],
-                        description=(
-                            f"{int(intent['quantity']):,} وحدة | "
-                            f"{int(intent['cost_stars']):,} نجمة"
-                        )[:255],
-                        payload=f"smm_stars:{intent_id}",
-                        provider_token="",
-                        currency="XTR",
-                        prices=[LabeledPrice("الخدمة", int(intent["cost_stars"]))],
-                    )
-                except Exception:
-                    reset_smm_stars_invoice(intent_id, user.id)
-                    logger.exception("تعذر إرسال فاتورة نجوم لخدمة مواقع الرشق")
-                    await q.answer("تعذر إرسال الفاتورة الآن. حاول مرة أخرى.", show_alert=True)
-                    return
-                await q.edit_message_text(
-                    "⭐ أرسلت فاتورة النجوم إلى محادثتك. أكمل الدفع من رسالة الفاتورة."
+            if method != "jewels":
+                # الدفع لخدمات الرشق من المواقع بالمجوهرات حصراً.
+                await q.answer(
+                    "💎 الدفع لهذه الخدمة بالمجوهرات فقط. اشحن مجوهراتك أولاً من «شحن مجوهرات».",
+                    show_alert=True,
                 )
                 return
 
@@ -1082,7 +1059,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 await q.edit_message_text("❌ تم إلغاء الطلب.", reply_markup=main_menu_kb(is_own))
             else:
                 await q.answer(
-                    "هذه الخدمة تُدفع بالنجوم أو المجوهرات فقط. ابدأ الطلب مجدداً واختر إحداهما.",
+                    "هذه الخدمة تُدفع بالمجوهرات فقط. ابدأ الطلب مجدداً وادفع بالمجوهرات.",
                     show_alert=True,
                 )
             return
@@ -2586,7 +2563,6 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             return
 
         if data == "exchange:stars":
-            rate = get_exchange_star_rate()
             with db_conn() as c:
                 packages = c.execute("SELECT * FROM exchange_star_packages WHERE active=1 ORDER BY stars").fetchall()
             if not packages:
@@ -2599,15 +2575,15 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             rows = []
             for pkg in packages:
                 stars = pkg["stars"]
-                cost = exchange_stars_cost(stars, rate)
+                cost = exchange_package_cost(pkg)
                 rows.append([InlineKeyboardButton(f"⭐ {stars} نجمة = {fmt_decimal(cost)} جوهرة", callback_data=f"exchange:pkg:{stars}")])
             rows += contact_owner_row()
             rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="exchange_points")])
             await q.edit_message_text(
                 f"⭐ *استبدال جواهر بنجوم*\n\n"
-                f"💡 سعر النجمة الواحدة: {fmt_decimal(rate)} جوهرة\n"
                 f"ℹ️ يُستبدل بجواهر الإحالة فقط.\n"
                 f"💎 رصيد جواهر الإحالة: {fmt_jewel_amount(get_user_referral_jewels(user.id))} جوهرة\n\n"
+                f"{EXCHANGE_STARS_REFERRAL_NOTICE}\n\n"
                 f"اختر الباقة المطلوبة:",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup(rows)
@@ -2627,14 +2603,17 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
 
         if data.startswith("exchange:pkg:"):
             stars = int(data.split(":")[2])
-            rate = get_exchange_star_rate()
-            cost = exchange_stars_cost(stars, rate)
+            pkg = get_exchange_package(stars)
+            if not pkg:
+                await q.answer("⚠️ هذه الباقة لم تعد متاحة.", show_alert=True)
+                return
+            cost = exchange_package_cost(pkg)
             # النجوم تُشترى بجواهر الإحالة فقط
             jw = get_user_referral_jewels(user.id)
             confirmed = len(data.split(":") ) == 4 and data.endswith(":confirm")
             if not confirmed:
                 await q.edit_message_text(
-                    f"📋 *تأكيد استبدال الجواهر بنجوم*\n\n⭐ الباقة: *{stars} نجمة*\n💎 الخصم: *{fmt_decimal(cost)} جوهرة*\n💎 رصيد جواهر الإحالة بعد العملية تقريباً: *{fmt_jewel_amount(jw - cost)} جوهرة*\nℹ️ هذه الخدمة تُستبدل بجواهر الإحالة فقط.\n\n⚠️ سيتم تسجيل الطلب لدى الإدارة بعد التأكيد.",
+                    f"📋 *تأكيد استبدال الجواهر بنجوم*\n\n⭐ الباقة: *{stars} نجمة*\n💎 الخصم: *{fmt_decimal(cost)} جوهرة*\n💎 رصيد جواهر الإحالة بعد العملية تقريباً: *{fmt_jewel_amount(jw - cost)} جوهرة*\nℹ️ هذه الخدمة تُستبدل بجواهر الإحالة فقط.\n\n{EXCHANGE_STARS_REFERRAL_NOTICE}\n\n⚠️ سيتم تسجيل الطلب لدى الإدارة بعد التأكيد.",
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تأكيد الخصم والطلب", callback_data=f"exchange:pkg:{stars}:confirm")], [InlineKeyboardButton("❌ إلغاء", callback_data="exchange:stars")]])
                 )

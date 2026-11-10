@@ -688,7 +688,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             lines = ["📦 *باقات الاستبدال بنجوم:*\n"]
             for pkg in packages:
                 status = "✅" if pkg["active"] else "❌"
-                cost = exchange_stars_cost(pkg["stars"], rate)
+                cost = exchange_package_cost(pkg)
                 lines.append(f"{status} {pkg['stars']} نجمة = {fmt_decimal(cost)} جوهرة")
             rows = []
             for pkg in packages:
@@ -707,7 +707,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
 
         if data == "os_add_pkg" and is_own:
             context.user_data["state"] = "os_await_pkg_stars"
-            await q.edit_message_text("⭐ *إضافة باقة جديدة*\n\nأرسل عدد النجوم (مثال: 15):",
+            await q.edit_message_text("⭐ *إضافة باقة جديدة*\n\nأرسل عدد النجوم التي يحصل عليها العضو (مثال: 15):",
                                        parse_mode=ParseMode.MARKDOWN)
             return
 
@@ -723,7 +723,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             lines = ["📦 *باقات الاستبدال بنجوم:*\n"]
             for pkg in packages:
                 status = "✅" if pkg["active"] else "❌"
-                cost = exchange_stars_cost(pkg["stars"], rate)
+                cost = exchange_package_cost(pkg)
                 lines.append(f"{status} {pkg['stars']} نجمة = {fmt_decimal(cost)} جوهرة")
             rows = []
             for pkg in packages:

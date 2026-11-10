@@ -36,13 +36,14 @@ WHEEL_PRIZES = {
     "boost_daily":   ("🚀 تعزيز يومي", "owner", 0),
     "boost_weekly":  ("🚀 تعزيز أسبوعي", "owner", 0),
     "boost_monthly": ("🚀 تعزيز شهر", "owner", 0),
+    "star1":         ("⭐ نجمة واحدة", "owner", 0),
     "bear":          ("🧸 دب", "owner", 0),
     "rose":          ("🌹 وردة", "owner", 0),
     "ring":          ("💍 خاتم", "owner", 0),
     "jewel":         ("💎 جوهرة", "jewels", 1),
     "jewels10":      ("💎 10 جواهر", "jewels", 10),
-    "points1000":    ("⭐ 1000 نقطة", "points", 1000),
-    "points50":      ("⭐ 50 نقطة", "points", 50),
+    "points1000":    ("🪙 1000 نقطة", "points", 1000),
+    "points500":    ("🪙 500 نقطة", "points", 500),
 }
 
 # ترتيب العرض على العجلة.
@@ -50,21 +51,28 @@ WHEEL_DISPLAY_ORDER = (
     "premium3", "premium6", "premium12",
     "boost_daily", "boost_weekly", "boost_monthly",
     "bear", "rose", "ring",
-    "jewel", "jewels10", "points1000", "points50",
+    "star1", "jewel", "jewels10", "points1000", "points500",
 )
 
-# أوزان السحب العشوائي من 10000 (1 = 0.01%). الباقي كله «50 نقطة».
-# لا يظهر هنا: المميز/التعزيز الأسبوعي (0%)، ولا الجوهرة (مضمونة بالكتلة)،
-# ولا التعزيز اليومي (دورة واحدة كل 6 ساعات).
+# الجوائز التي تربحها الدورة المجانية (من الإحالات): النقاط فقط.
+# كل الجوائز تُربح بالدورة المدفوعة (نجوم/جواهر)، والنقاط تبقى لها الكفة العليا.
+WHEEL_FREE_PRIZE_KEYS = ("points1000", "points500")
+WHEEL_FREE_POINTS1000_WEIGHT = 7000   # 70% للدورة المجانية، والباقي 500 نقطة
+
+# أوزان السحب العشوائي للدورة المدفوعة من 10000 (1 = 0.01%). الباقي كله «500 نقطة».
+# الجوهرة: 5.05% عشوائياً + جوهرة مضمونة من كل 100 دورة مدفوعة = 6% تقريباً.
+# لا يظهر هنا: المميز/التعزيز الأسبوعي (0%)، ولا التعزيز اليومي (دورة واحدة كل 6 ساعات).
 WHEEL_RANDOM_WEIGHTS = (
     ("ring", 1),            # 0.01%
     ("rose", 5),            # 0.05%
-    ("bear", 8),            # 0.08%
+    ("bear", 200),          # 2%
     ("boost_monthly", 50),  # 0.5%
     ("jewels10", 10),       # 0.1%
+    ("star1", 600),         # 6%
+    ("jewel", 505),         # 5.05% (+1% مضمونة = 6%)
     ("points1000", 7000),   # 70%
 )
-WHEEL_REMAINDER_PRIZE = "points50"
+WHEEL_REMAINDER_PRIZE = "points500"
 
 
 def wheel_pick_prize(roll: int, jewel_guarantee: bool = False, daily_boost_open: bool = False) -> str:
@@ -91,7 +99,11 @@ class WheelEngine:
         self.last_boost_ts = float(last_boost_ts or 0)
         self.rng = rng or _secrets.SystemRandom()
 
-    def next_prize(self, now_ts: float) -> str:
+    def next_prize(self, now_ts: float, paid: bool = True) -> str:
+        if not paid:
+            # الدورة المجانية: نقاط فقط، ولا تحتسب في ضمان الجوهرة ولا التعزيز اليومي.
+            roll = self.rng.randrange(WHEEL_ROLL_SCALE)
+            return "points1000" if roll < WHEEL_FREE_POINTS1000_WEIGHT else "points500"
         self.total += 1
         block, position = divmod(self.total - 1, WHEEL_BLOCK_SIZE)
         if block != self.slot_block:
@@ -212,7 +224,7 @@ def wheel_spin_once(user_id: int, source: str = "free") -> dict:
         # قفل عام: عدّاد الدورات وحصة اليوم وضمان الجوهرة يجب أن تكون متسلسلة.
         c.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", ("wheel_global",))
         engine = _wheel_load_engine(c)
-        prize_key = engine.next_prize(time.time())
+        prize_key = engine.next_prize(time.time(), paid=(source != "free"))
         _wheel_save_engine(c, engine)
         label, kind, value = WHEEL_PRIZES[prize_key]
 
@@ -250,13 +262,17 @@ def wheel_spin_once(user_id: int, source: str = "free") -> dict:
 
 
 def wheel_menu_text(include_user_spins: int | None = None) -> str:
-    prizes = "\n".join(f"• {WHEEL_PRIZES[key][0]}" for key in WHEEL_DISPLAY_ORDER)
+    prizes = "\n".join(
+        f"• {WHEEL_PRIZES[key][0]} — "
+        + ("مجاني أو بالنجوم/الجواهر" if key in WHEEL_FREE_PRIZE_KEYS else "بالنجوم والجواهر فقط")
+        for key in WHEEL_DISPLAY_ORDER
+    )
     text = (
         "🎡 *دورة وهداية كبيرة*\n\n"
         "أدر العجلة واربح إحدى الجوائز:\n\n"
         f"{prizes}\n\n"
-        "💎 الجواهر و⭐ النقاط تصلك تلقائياً، وأي جائزة أخرى تتواصل مع المالك لاستلامها.\n"
-        "🎟 تحصل على دورة مجانية عن كل إحالة جديدة."
+        "💎 الجواهر و🪙 النقاط تصلك تلقائياً، وأي جائزة أخرى تتواصل مع المالك لاستلامها.\n"
+        "🎟 تحصل على دورة مجانية عن كل إحالة جديدة (تربح 500 أو 1000 نقطة فقط)."
     )
     if include_user_spins is not None:
         text += f"\n\n🎟 دوراتك المجانية: *{include_user_spins}*"
@@ -380,7 +396,7 @@ async def wheel_run_spins(context, user, count: int, source: str, message=None) 
 
 async def _wheel_animate(message) -> None:
     """رسوم بسيطة قبل إظهار النتيجة (لا تكشف أي نسب)."""
-    frames = [WHEEL_PRIZES[k][0] for k in ("bear", "points1000", "jewel", "ring", "points50", "rose")]
+    frames = [WHEEL_PRIZES[k][0] for k in ("bear", "points1000", "jewel", "ring", "points500", "rose")]
     for frame in frames[:4]:
         try:
             await message.edit_text(f"🎡 العجلة تدور...\n\n➡️ {frame}")
