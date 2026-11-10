@@ -3,13 +3,14 @@
 «دورة وهداية كبيرة» — عجلة الحظ للأعضاء.
 
 القواعد (كما حددها المالك):
+  * ثلاثة أقسام لكلٍّ منها نسبه الخاصة: الجواهر، النجوم، المجانية (الإحالات).
   * الجواهر والنقاط تُسلَّم تلقائياً من البوت، وأي جائزة أخرى يُبلَّغ بها المالك
     ليتواصل مع الفائز.
-  * لا تُعرض النسب للأعضاء إطلاقاً.
+  * لا تُعرض النسب للأعضاء إطلاقاً، لكن يرى العضو الجوائز الممكنة في كل قسم.
   * دورة مجانية لكل إحالة صالحة، أو شراء دورة بنجمة/جوهرة، أو 10 دورات بـ 9.
-  * «مميز» (3/6/12 شهر) و«تعزيز أسبوعي» يظهران في العجلة لكن نسبتهما 0%.
-  * ضمان الجوهرة: من كل 100 دورة (عالمياً) يفوز واحد بجوهرة، أي 10 من كل 1000.
-  * التعزيز اليومي: يفوز به دورة واحدة فقط كل 6 ساعات (من وقت آخر فوز فعلي به).
+  * الجوهرة والنجمة: 5% لكل منهما بحد أقصى 3 فائزين يومياً (لكل قسم مدفوع).
+  * التعزيز اليومي: فوز واحد عشوائي من كل 100 دورة جواهر / 50 دورة نجوم،
+    بحد أقصى فائزين يومياً لكل قسم، وما زاد عن الحد لا يُعوَّض.
 
 This section is loaded with the shared compatibility namespace so existing
 handlers can continue to call each other while the code stays separated by
@@ -19,15 +20,13 @@ domain.
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
+import json as _json
 import secrets as _secrets
 from decimal import Decimal
 
-WHEEL_BLOCK_SIZE = 100            # كل 100 دورة: جوهرة واحدة مضمونة
-WHEEL_BOOST_INTERVAL_SECONDS = 6 * 3600   # التعزيز اليومي: فوز واحد كل 6 ساعات
 WHEEL_TEN_SPINS = 10
-WHEEL_BEAR_DAILY_MAX = 2           # حدّ فوز الدب يومياً (حسب توقيت بغداد UTC+3)
-WHEEL_DAY_OFFSET_SECONDS = 3 * 3600
-WHEEL_ROLL_SCALE = 10_000         # دقة 0.01%
+WHEEL_DAY_OFFSET_SECONDS = 3 * 3600   # اليوم بتوقيت بغداد (UTC+3)
+WHEEL_ROLL_SCALE = 10_000             # دقة 0.01%
 
 # (المفتاح، الاسم الظاهر، نوع التسليم، القيمة)
 #   kind: "jewels" و"points" تلقائي، "owner" يدوي عبر المالك.
@@ -45,95 +44,145 @@ WHEEL_PRIZES = {
     "jewel":         ("💎 جوهرة", "jewels", 1),
     "jewels10":      ("💎 10 جواهر", "jewels", 10),
     "points1000":    ("🪙 1000 نقطة", "points", 1000),
-    "points500":    ("🪙 500 نقطة", "points", 500),
+    "points500":     ("🪙 500 نقطة", "points", 500),
+    "points250":     ("🪙 250 نقطة", "points", 250),
+    "points200":     ("🪙 200 نقطة", "points", 200),
+    "points100":     ("🪙 100 نقطة", "points", 100),
+    "points50":      ("🪙 50 نقطة", "points", 50),
 }
 
-# ترتيب العرض على العجلة.
+# ترتيب عرض الجوائز الممكنة للأعضاء. المميز والتعزيز الأسبوعي غير موجودين لأنهما
+# لا يُربحان في أي قسم.
 WHEEL_DISPLAY_ORDER = (
-    "premium3", "premium6", "premium12",
-    "boost_daily", "boost_weekly", "boost_monthly",
-    "bear", "rose", "ring",
-    "star1", "jewel", "jewels10", "points1000", "points500",
+    "boost_daily", "boost_monthly", "bear", "rose", "ring",
+    "star1", "jewel", "jewels10",
+    "points1000", "points500", "points250", "points200", "points100", "points50",
 )
 
-# الجوائز التي تربحها الدورة المجانية (من الإحالات): النقاط فقط.
-# كل الجوائز تُربح بالدورة المدفوعة (نجوم/جواهر)، والنقاط تبقى لها الكفة العليا.
-WHEEL_FREE_PRIZE_KEYS = ("points1000", "points500")
-WHEEL_FREE_POINTS1000_WEIGHT = 7000   # 70% للدورة المجانية، والباقي 500 نقطة
-
-# أوزان السحب العشوائي للدورة المدفوعة من 10000 (1 = 0.01%). الباقي كله «500 نقطة».
-# الجوهرة: 5.05% عشوائياً + جوهرة مضمونة من كل 100 دورة مدفوعة = 6% تقريباً.
-# لا يظهر هنا: المميز/التعزيز الأسبوعي (0%)، ولا التعزيز اليومي (دورة واحدة كل 6 ساعات).
-WHEEL_RANDOM_WEIGHTS = (
+# أوزان الدورات المدفوعة من 10000 (1 = 0.01%). الباقي كله «الجائزة المتبقية».
+_WHEEL_PAID_WEIGHTS = (
     ("ring", 1),            # 0.01%
     ("rose", 5),            # 0.05%
-    ("bear", 100),          # 1% (بحد أقصى دبين يومياً)
+    ("bear", 100),          # 1%
     ("boost_monthly", 50),  # 0.5%
     ("jewels10", 10),       # 0.1%
-    ("star1", 600),         # 6%
-    ("jewel", 505),         # 5.05% (+1% مضمونة = 6%)
-    ("points1000", 7000),   # 70%
+    ("star1", 500),         # 5%
+    ("jewel", 500),         # 5%
+    ("points1000", 100),    # 1%
+    ("points500", 100),     # 1%
 )
-WHEEL_REMAINDER_PRIZE = "points500"
+_WHEEL_PAID_DAILY_CAPS = {
+    "jewel": 3,        # حد أقصى 3 فائزين يومياً
+    "star1": 3,        # حد أقصى 3 فائزين يومياً
+    "bear": 1,         # دبّان يومياً في القسمين معاً (واحد لكل قسم)
+    "boost_daily": 2,  # فائزان يومياً
+}
+
+# إعدادات كل قسم. لكل قسم نسبه الخاصة؛ عدّل هنا فقط عند تغيير النسب.
+#   weights:    (جائزة، وزن من 10000)
+#   remainder:  الجائزة التي تأخذ الباقي (وتُعطى أيضاً عند اكتمال حد يومي)
+#   boost_block: فوز عشوائي واحد بالتعزيز اليومي من كل N دورة (0 = لا تعزيز)
+WHEEL_SECTIONS = {
+    "jewels": {
+        "weights": _WHEEL_PAID_WEIGHTS,
+        "remainder": "points200",
+        "boost_block": 100,
+        "daily_caps": _WHEEL_PAID_DAILY_CAPS,
+    },
+    "stars": {
+        "weights": _WHEEL_PAID_WEIGHTS,
+        "remainder": "points250",
+        "boost_block": 50,
+        "daily_caps": _WHEEL_PAID_DAILY_CAPS,
+    },
+    "free": {
+        "weights": (
+            ("points1000", 500),   # 5%
+            ("points50", 2500),    # 25%
+        ),
+        "remainder": "points100",  # 70%
+        "boost_block": 0,
+        "daily_caps": {},
+    },
+}
+
+WHEEL_SECTION_TITLES = {
+    "free": "🎟 الدورة المجانية (عن كل إحالة)",
+    "jewels": "💎 الدورة بالجواهر",
+    "stars": "⭐ الدورة بالنجوم",
+}
 
 
-def wheel_pick_prize(roll: int, jewel_guarantee: bool = False, daily_boost_open: bool = False) -> str:
+def wheel_pick_prize(roll: int, section: str = "jewels") -> str:
     """يحدد الجائزة من رقم عشوائي 0..9999 دون أي اتصال بقاعدة البيانات."""
-    if jewel_guarantee:
-        return "jewel"
-    if daily_boost_open:
-        return "boost_daily"
+    cfg = WHEEL_SECTIONS[section]
     total = 0
-    for key, weight in WHEEL_RANDOM_WEIGHTS:
+    for key, weight in cfg["weights"]:
         total += weight
         if roll < total:
             return key
-    return WHEEL_REMAINDER_PRIZE
+    return cfg["remainder"]
+
+
+def wheel_section_prize_keys(section: str) -> list:
+    """الجوائز التي يمكن ربحها فعلاً في القسم (بدون نسب)."""
+    cfg = WHEEL_SECTIONS[section]
+    possible = {key for key, weight in cfg["weights"] if weight > 0}
+    possible.add(cfg["remainder"])
+    if cfg["boost_block"]:
+        possible.add("boost_daily")
+    return [key for key in WHEEL_DISPLAY_ORDER if key in possible]
 
 
 class WheelEngine:
-    """حالة العجلة العالمية: عدّاد الدورات، موضع الجوهرة المضمونة، وآخر فوز بالتعزيز اليومي."""
+    """حالة عجلة قسم واحد: عدّاد الدورات، موضع التعزيز اليومي، والحدود اليومية."""
 
-    def __init__(self, total=0, slot_block=-1, slot=0, last_boost_ts=0.0, rng=None, bear_day=-1, bear_count=0):
-        self.bear_day = int(bear_day)
-        self.bear_count = int(bear_count)
+    def __init__(self, section="jewels", total=0, slot_block=-1, slot=0, caps=None, rng=None):
+        if section not in WHEEL_SECTIONS:
+            raise ValueError(f"قسم عجلة غير معروف: {section}")
+        self.section = section
         self.total = int(total)
         self.slot_block = int(slot_block)
         self.slot = int(slot)
-        self.last_boost_ts = float(last_boost_ts or 0)
+        self.caps = {}
+        for key, value in (caps or {}).items():
+            try:
+                self.caps[str(key)] = [int(value[0]), int(value[1])]
+            except (TypeError, ValueError, IndexError):
+                continue
         self.rng = rng or _secrets.SystemRandom()
 
-    def next_prize(self, now_ts: float, paid: bool = True) -> str:
-        if not paid:
-            # الدورة المجانية: نقاط فقط، ولا تحتسب في ضمان الجوهرة ولا التعزيز اليومي.
-            roll = self.rng.randrange(WHEEL_ROLL_SCALE)
-            return "points1000" if roll < WHEEL_FREE_POINTS1000_WEIGHT else "points500"
-        self.total += 1
-        block, position = divmod(self.total - 1, WHEEL_BLOCK_SIZE)
-        if block != self.slot_block:
-            # كتلة جديدة من 100 دورة: نختار عشوائياً أي دورة فيها تفوز بالجوهرة.
-            self.slot_block = block
-            self.slot = self.rng.randrange(WHEEL_BLOCK_SIZE)
+    def _take_cap(self, key: str, limit: int, day: int) -> bool:
+        """يحجز فوزاً من الحد اليومي؛ False إن اكتمل الحد."""
+        cap_day, count = self.caps.get(key, [-1, 0])
+        if cap_day != day:
+            cap_day, count = day, 0
+        if count >= limit:
+            self.caps[key] = [cap_day, count]
+            return False
+        self.caps[key] = [cap_day, count + 1]
+        return True
 
-        jewel_hit = position == self.slot
-        # أول دورة بعد مرور 6 ساعات على آخر فوز بالتعزيز اليومي تفوز به.
-        boost_open = (not jewel_hit) and (
-            now_ts - self.last_boost_ts >= WHEEL_BOOST_INTERVAL_SECONDS
-        )
-        prize = wheel_pick_prize(
-            self.rng.randrange(WHEEL_ROLL_SCALE),
-            jewel_guarantee=jewel_hit,
-            daily_boost_open=boost_open,
-        )
-        if prize == "boost_daily":
-            self.last_boost_ts = float(now_ts)
-        if prize == "bear":
-            day = int((now_ts + WHEEL_DAY_OFFSET_SECONDS) // 86400)
-            if day != self.bear_day:
-                self.bear_day, self.bear_count = day, 0
-            if self.bear_count >= WHEEL_BEAR_DAILY_MAX:
-                return WHEEL_REMAINDER_PRIZE   # اكتمل دبّا اليوم: تتحول لـ 500 نقطة
-            self.bear_count += 1
+    def next_prize(self, now_ts: float) -> str:
+        cfg = WHEEL_SECTIONS[self.section]
+        day = int((now_ts + WHEEL_DAY_OFFSET_SECONDS) // 86400)
+        caps = cfg["daily_caps"]
+        self.total += 1
+
+        block_size = cfg["boost_block"]
+        if block_size:
+            block, position = divmod(self.total - 1, block_size)
+            if block != self.slot_block:
+                # كتلة جديدة: نختار عشوائياً أي دورة فيها تفوز بالتعزيز اليومي.
+                self.slot_block = block
+                self.slot = self.rng.randrange(block_size)
+            if position == self.slot and self._take_cap("boost_daily", caps.get("boost_daily", 0), day):
+                return "boost_daily"
+
+        prize = wheel_pick_prize(self.rng.randrange(WHEEL_ROLL_SCALE), self.section)
+        limit = caps.get(prize)
+        if limit is not None and not self._take_cap(prize, limit, day):
+            return cfg["remainder"]   # اكتمل الحد اليومي: تتحول للجائزة المتبقية
         return prize
 
 
@@ -198,33 +247,33 @@ def consume_wheel_spins(user_id: int, count: int) -> bool:
         return c.rowcount > 0
 
 
-def _wheel_load_engine(c) -> WheelEngine:
+def _wheel_load_engine(c, section: str) -> WheelEngine:
     def _get(key, default=""):
         row = c.execute("SELECT value FROM settings WHERE key=%s", (key,)).fetchone()
         return row["value"] if row and row["value"] not in (None, "") else default
 
-    block_s, _, slot_s = str(_get("wheel_jewel_slot", "-1:0")).partition(":")
+    block_s, _, slot_s = str(_get(f"wheel_{section}_slot", "-1:0")).partition(":")
     try:
-        last_boost_ts = float(_get("wheel_last_boost_ts", "0") or 0)
+        caps = _json.loads(_get(f"wheel_{section}_caps", "{}"))
     except ValueError:
-        last_boost_ts = 0.0
-    bear_day_s, _, bear_count_s = str(_get("wheel_bear_today", "-1:0")).partition(":")
+        caps = {}
+    if not isinstance(caps, dict):
+        caps = {}
     return WheelEngine(
-        bear_day=int(bear_day_s or -1),
-        bear_count=int(bear_count_s or 0),
-        total=int(_get("wheel_total_spins", "0") or 0),
+        section=section,
+        total=int(_get(f"wheel_{section}_total", "0") or 0),
         slot_block=int(block_s or -1),
         slot=int(slot_s or 0),
-        last_boost_ts=last_boost_ts,
+        caps=caps,
     )
 
 
 def _wheel_save_engine(c, engine: WheelEngine) -> None:
+    section = engine.section
     for key, value in (
-        ("wheel_total_spins", str(engine.total)),
-        ("wheel_jewel_slot", f"{engine.slot_block}:{engine.slot}"),
-        ("wheel_last_boost_ts", format(engine.last_boost_ts, ".3f")),
-        ("wheel_bear_today", f"{engine.bear_day}:{engine.bear_count}"),
+        (f"wheel_{section}_total", str(engine.total)),
+        (f"wheel_{section}_slot", f"{engine.slot_block}:{engine.slot}"),
+        (f"wheel_{section}_caps", _json.dumps(engine.caps, separators=(",", ":"))),
     ):
         c.execute(
             "INSERT INTO settings (key, value) VALUES (%s, %s) "
@@ -236,10 +285,11 @@ def _wheel_save_engine(c, engine: WheelEngine) -> None:
 def wheel_spin_once(user_id: int, source: str = "free") -> dict:
     """يدور العجلة مرة: يختار الجائزة، يسلّم الجواهر/النقاط تلقائياً، ويسجل الباقي للمالك."""
     with db_conn() as c:
-        # قفل عام: عدّاد الدورات وحصة اليوم وضمان الجوهرة يجب أن تكون متسلسلة.
+        # قفل عام: عدّاد الدورات والحدود اليومية والتعزيز اليومي يجب أن تكون متسلسلة.
         c.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", ("wheel_global",))
-        engine = _wheel_load_engine(c)
-        prize_key = engine.next_prize(time.time(), paid=(source != "free"))
+        section = source if source in WHEEL_SECTIONS else "jewels"
+        engine = _wheel_load_engine(c, section)
+        prize_key = engine.next_prize(time.time())
         _wheel_save_engine(c, engine)
         label, kind, value = WHEEL_PRIZES[prize_key]
 
@@ -251,7 +301,7 @@ def wheel_spin_once(user_id: int, source: str = "free") -> dict:
             c.execute(
                 "INSERT INTO jewel_transactions (user_id,amount,transaction_type,admin_id,reference) "
                 "VALUES (%s,%s,'gift',NULL,%s)",
-                (user_id, Decimal(value), f"wheel:{engine.total}"),
+                (user_id, Decimal(value), f"wheel:{section}:{engine.total}"),
             )
             status = "delivered"
         elif kind == "points":
@@ -277,17 +327,17 @@ def wheel_spin_once(user_id: int, source: str = "free") -> dict:
 
 
 def wheel_menu_text(include_user_spins: int | None = None) -> str:
-    prizes = "\n".join(
-        f"• {WHEEL_PRIZES[key][0]} — "
-        + ("مجاني أو بالنجوم/الجواهر" if key in WHEEL_FREE_PRIZE_KEYS else "بالنجوم والجواهر فقط")
-        for key in WHEEL_DISPLAY_ORDER
+    sections = "\n\n".join(
+        f"{WHEEL_SECTION_TITLES[section]}:\n"
+        + " · ".join(WHEEL_PRIZES[key][0] for key in wheel_section_prize_keys(section))
+        for section in ("free", "jewels", "stars")
     )
     text = (
         "🎡 *دورة وهداية كبيرة*\n\n"
-        "أدر العجلة واربح إحدى الجوائز:\n\n"
-        f"{prizes}\n\n"
+        "أدر العجلة واربح إحدى الجوائز، ولكل قسم جوائزه:\n\n"
+        f"{sections}\n\n"
         "💎 الجواهر و🪙 النقاط تصلك تلقائياً، وأي جائزة أخرى تتواصل مع المالك لاستلامها.\n"
-        "🎟 تحصل على دورة مجانية عن كل إحالة جديدة (تربح 500 أو 1000 نقطة فقط)."
+        "🎟 تحصل على دورة مجانية عن كل إحالة جديدة (تربح 50 أو 100 أو 1000 نقطة)."
     )
     if include_user_spins is not None:
         text += f"\n\n🎟 دوراتك المجانية: *{include_user_spins}*"
