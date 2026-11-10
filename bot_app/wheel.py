@@ -25,6 +25,8 @@ from decimal import Decimal
 WHEEL_BLOCK_SIZE = 100            # كل 100 دورة: جوهرة واحدة مضمونة
 WHEEL_BOOST_INTERVAL_SECONDS = 6 * 3600   # التعزيز اليومي: فوز واحد كل 6 ساعات
 WHEEL_TEN_SPINS = 10
+WHEEL_BEAR_DAILY_MAX = 2           # حدّ فوز الدب يومياً (حسب توقيت بغداد UTC+3)
+WHEEL_DAY_OFFSET_SECONDS = 3 * 3600
 WHEEL_ROLL_SCALE = 10_000         # دقة 0.01%
 
 # (المفتاح، الاسم الظاهر، نوع التسليم، القيمة)
@@ -65,7 +67,7 @@ WHEEL_FREE_POINTS1000_WEIGHT = 7000   # 70% للدورة المجانية، وا
 WHEEL_RANDOM_WEIGHTS = (
     ("ring", 1),            # 0.01%
     ("rose", 5),            # 0.05%
-    ("bear", 200),          # 2%
+    ("bear", 100),          # 1% (بحد أقصى دبين يومياً)
     ("boost_monthly", 50),  # 0.5%
     ("jewels10", 10),       # 0.1%
     ("star1", 600),         # 6%
@@ -92,7 +94,9 @@ def wheel_pick_prize(roll: int, jewel_guarantee: bool = False, daily_boost_open:
 class WheelEngine:
     """حالة العجلة العالمية: عدّاد الدورات، موضع الجوهرة المضمونة، وآخر فوز بالتعزيز اليومي."""
 
-    def __init__(self, total=0, slot_block=-1, slot=0, last_boost_ts=0.0, rng=None):
+    def __init__(self, total=0, slot_block=-1, slot=0, last_boost_ts=0.0, rng=None, bear_day=-1, bear_count=0):
+        self.bear_day = int(bear_day)
+        self.bear_count = int(bear_count)
         self.total = int(total)
         self.slot_block = int(slot_block)
         self.slot = int(slot)
@@ -123,6 +127,13 @@ class WheelEngine:
         )
         if prize == "boost_daily":
             self.last_boost_ts = float(now_ts)
+        if prize == "bear":
+            day = int((now_ts + WHEEL_DAY_OFFSET_SECONDS) // 86400)
+            if day != self.bear_day:
+                self.bear_day, self.bear_count = day, 0
+            if self.bear_count >= WHEEL_BEAR_DAILY_MAX:
+                return WHEEL_REMAINDER_PRIZE   # اكتمل دبّا اليوم: تتحول لـ 500 نقطة
+            self.bear_count += 1
         return prize
 
 
@@ -197,7 +208,10 @@ def _wheel_load_engine(c) -> WheelEngine:
         last_boost_ts = float(_get("wheel_last_boost_ts", "0") or 0)
     except ValueError:
         last_boost_ts = 0.0
+    bear_day_s, _, bear_count_s = str(_get("wheel_bear_today", "-1:0")).partition(":")
     return WheelEngine(
+        bear_day=int(bear_day_s or -1),
+        bear_count=int(bear_count_s or 0),
         total=int(_get("wheel_total_spins", "0") or 0),
         slot_block=int(block_s or -1),
         slot=int(slot_s or 0),
@@ -210,6 +224,7 @@ def _wheel_save_engine(c, engine: WheelEngine) -> None:
         ("wheel_total_spins", str(engine.total)),
         ("wheel_jewel_slot", f"{engine.slot_block}:{engine.slot}"),
         ("wheel_last_boost_ts", format(engine.last_boost_ts, ".3f")),
+        ("wheel_bear_today", f"{engine.bear_day}:{engine.bear_count}"),
     ):
         c.execute(
             "INSERT INTO settings (key, value) VALUES (%s, %s) "
