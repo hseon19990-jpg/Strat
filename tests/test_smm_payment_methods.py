@@ -96,13 +96,18 @@ class SmmPaymentMethodTests(unittest.TestCase):
         self.assertIn("payment_method", source)
         self.assertIn("cost_jewels", source)
 
-    def test_checkout_offers_stars_or_jewels_and_not_points(self):
+    def test_checkout_offers_jewels_only(self):
         source = (ROOT / "bot_app" / "messages.py").read_text(encoding="utf-8")
-        self.assertIn('callback_data=f"smm:pay:stars:{intent_id}"', source)
+        self.assertNotIn('callback_data=f"smm:pay:stars:{intent_id}"', source)
         self.assertIn('callback_data=f"smm:pay:jewels:{intent_id}"', source)
         self.assertNotIn('callback_data=f"smm:pay:free:{intent_id}"', source)
-        self.assertIn("⭐ السعر:", source)
+        self.assertNotIn("⭐ السعر:", source)
         self.assertIn("💎 السعر:", source)
+        callbacks = (ROOT / "bot_app" / "callback_groups_01.py").read_text(encoding="utf-8")
+        self.assertNotIn("start_smm_stars_invoice(", callbacks)
+        payments = (ROOT / "bot_app" / "payments.py").read_text(encoding="utf-8")
+        pre = payments.split("async def pre_checkout", 1)[1].split("async def successful_payment", 1)[0]
+        self.assertNotIn("validate_smm_stars_invoice(", pre)
 
     def test_smm_quote_is_not_waived_by_referral_free_access(self):
         message_source = (ROOT / "bot_app" / "messages.py").read_text(encoding="utf-8")
@@ -131,14 +136,15 @@ class SmmPaymentMethodTests(unittest.TestCase):
             "cost_jewels": 125,
         }
 
-        self.assertTrue(is_valid(intent, "stars", 125))
+        self.assertFalse(is_valid(intent, "stars", 125))
         self.assertTrue(is_valid(intent, "jewels", 125))
         self.assertFalse(is_valid(intent, "free", 0))
         self.assertFalse(is_valid(intent, "stars", 0))
         self.assertFalse(is_valid(intent, "stars", 124))
         self.assertFalse(
-            is_valid({**intent, "service_value_points": 0}, "stars", 125)
+            is_valid({**intent, "service_value_points": 0}, "jewels", 125)
         )
+        self.assertFalse(is_valid(intent, "jewels", 124))
 
     def test_owner_can_gift_jewels_and_smm_rate_is_fixed(self):
         callback_source = (ROOT / "bot_app" / "callback_groups_04.py").read_text(encoding="utf-8")
