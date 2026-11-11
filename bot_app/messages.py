@@ -8,6 +8,8 @@ domain.
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
+from .owner_details import handle_od_text, record_thank_message, od_thank_reply_kb
+
 def _extract_imported_twofa(payload) -> str:
     """Extract an imported cloud-password hint without exposing it in logs/messages."""
     if isinstance(payload, list):
@@ -207,6 +209,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     _sv_admin_state = is_supervisor_txt and state.startswith("sv_")
     _thank_owner_state = state in {"thank_owner_menu", "thank_owner_ar", "thank_owner_en", "thank_owner_photo"}
+
+    # رد المالك على رسائل الشكر وبقية حالات «زر التفاصيل».
+    if is_own and state.startswith("os_od_"):
+        if await handle_od_text(update, context, text, state):
+            return
     if state != "verify_math" and not _thank_owner_state and not _owner_admin_state and not _sv_admin_state:
         try:
             _db_user = get_user(user.id)
@@ -237,26 +244,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     InlineKeyboardButton("❌ إلغاء", callback_data="raksh_cancel")
                 ]]),
             )
-            return
-
-    if state == ORDER_INSPECT_STATE:
-        try:
-            if await handle_order_inspect_text(update, context, text):
-                return
-        except Exception as exc:
-            logger.exception("فشل فحص الطلب: %s", exc)
-            context.user_data["state"] = "main_menu"
-            await update.message.reply_text("⚠️ حدث خطأ أثناء فحص الطلب.")
-            return
-
-    if state == OV_BUYER_STATE:
-        try:
-            if await handle_orders_view_text(update, context, text):
-                return
-        except Exception as exc:
-            logger.exception("فشل فلتر المشتري: %s", exc)
-            context.user_data["state"] = "main_menu"
-            await update.message.reply_text("⚠️ حدث خطأ أثناء تطبيق الفلتر.")
             return
 
     if state.startswith("tgnum_") or state.startswith("os_tgnum_"):
@@ -387,7 +374,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{text}"
         )
         try:
-            await context.bot.send_message(chat_id=OWNER_ID, text=owner_text[:4096])
+            _thank_id = record_thank_message(
+                user, "text", language, text
+            )
+            await context.bot.send_message(
+                chat_id=OWNER_ID, text=owner_text[:4096],
+                reply_markup=od_thank_reply_kb(_thank_id),
+            )
             await update.message.reply_text(
                 get_setting("thank_owner_success_message")
                 or "✅ تم إرسال شكرك إلى المالك، شكراً لك!",
@@ -7288,10 +7281,15 @@ async def handle_unsupported_message(update: Update, context: ContextTypes.DEFAU
             sender += f" (@{user.username})"
         caption = f"💌 صورة شكر جديدة\n\n👤 المرسل: {sender}\n🆔 ID: {user.id}"
         try:
+            _thank_id = record_thank_message(
+                user, "photo", "", update.message.caption or "",
+                update.message.photo[-1].file_id,
+            )
             await context.bot.send_photo(
                 chat_id=OWNER_ID,
                 photo=update.message.photo[-1].file_id,
-                caption=caption
+                caption=caption,
+                reply_markup=od_thank_reply_kb(_thank_id),
             )
             await update.message.reply_text(
                 get_setting("thank_owner_success_message")

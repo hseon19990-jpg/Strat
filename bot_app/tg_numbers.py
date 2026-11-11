@@ -843,6 +843,11 @@ async def tgnum_successful_payment(update, context) -> None:
         await context.bot.refund_star_payment(
             user_id=user.id, telegram_payment_charge_id=charge_id
         )
+        try:
+            from .owner_details import mark_star_income_refunded
+            mark_star_income_refunded(charge_id)
+        except Exception:
+            logger.exception("تعذر تحديث سجل النجوم بعد الاسترداد")
         await update.message.reply_text(
             "⚠️ تعذر ربط الدفعة بطلب صالح، وأُعيدت نجومك تلقائياً. أعد الطلب من القائمة."
         )

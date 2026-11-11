@@ -8,6 +8,8 @@ domain.
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
+from .owner_details import record_star_income
+
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 
 JEWEL_STAR_TOPUP_MAX = 10000
@@ -436,6 +438,8 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
     payload = payment.invoice_payload
     user    = update.effective_user
     is_own  = (user.id == OWNER_ID)
+
+    record_star_income(payment, user)  # للتقرير اليومي (آمن ولا يكسر الدفع)
 
     if payload.startswith("smm_stars:"):
         parts = payload.split(":")

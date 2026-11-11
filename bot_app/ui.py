@@ -276,7 +276,7 @@ MAIN_MENU_GROUPS = {
         "label": "💼 حسابي ومحفظتي",
         "title": "💼 *حسابي ومحفظتي*\n\nاختر من القائمة:",
         "actions": (
-            "my_info", "my_numbers", "ov:me:0", "collect_points",
+            "my_info", "my_numbers", "collect_points",
             "transfer_points", "contributor_accounts", "share_account:menu",
             "buyback:start",
         ),
@@ -320,6 +320,9 @@ def main_menu_group_kb(group_key, is_owner=False):
         if _group_of_action(item["action_value"]) == group_key
     ]
     rows = build_kb_rows(items)
+    if group_key == "wallet":
+        # عرض طلبات الرشق من المواقع (حالة، واصل، متبقي) — بلا اسم موقع.
+        rows.insert(0, [InlineKeyboardButton("📋 عرض طلباتي", callback_data="smo:0")])
     rows.append([InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")])
     return InlineKeyboardMarkup(rows)
 
@@ -366,6 +369,8 @@ def main_menu_kb(
     _place_currency_exchange_button(rows)
     if is_owner or is_tgnum_visible():
         _ensure_tgnum_button(rows, "main", "tgnum:start", "📲 أرقام تلي كل دول العالم")
+    if is_owner:
+        rows.append([InlineKeyboardButton("📊 زر التفاصيل", callback_data="od:menu")])
     if is_supervisor_user:
         rows.append([InlineKeyboardButton("🛡 لوحة المشرف", callback_data="sv:panel")])
     if is_number_admin_user:
@@ -963,7 +968,7 @@ async def show_orders_section(update: Update, context: ContextTypes.DEFAULT_TYPE
 OWNER_SETTINGS_GROUPS = [
     ("services", "🛍 الخدمات والطلبات", (
         "os:add_service", "os:list_services", "os:view_services", "os:inspect_services",
-        "os:orders_section", "ov:own:0", "os:oi:ask", "os:share_description", "os:cancel_order", "os:complete_order",
+        "os:orders_section", "os:oi:ask", "os:share_description", "os:cancel_order", "os:complete_order",
         "os:failed_deliveries", "os:new_services", "import_services", "os:site_balance",
         "os:edit_internal_cost", "os:edit_internal_min",
     ), ()),
@@ -1164,6 +1169,7 @@ def _owner_settings_groups_markup():
         if counts.get(key)
     ]
     rows = [buttons[index:index + 2] for index in range(0, len(buttons), 2)]
+    rows.insert(0, [InlineKeyboardButton("📊 زر التفاصيل", callback_data="od:menu")])
     rows.append([InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")])
     return InlineKeyboardMarkup(rows)
 

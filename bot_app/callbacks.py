@@ -11,6 +11,7 @@ globals().update({key: value for key, value in vars(_shared).items() if not key.
 # Ensure fmt_price is available (defined in services.py). Importing directly
 # avoids a NameError when formatting prices in _save_service.
 from .services import fmt_price
+from .owner_details import handle_od_callback, handle_smo_callback
 from .number_admin import (
     is_number_admin,
     number_admin_can_manage,
@@ -287,8 +288,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if await handle_order_inspect_callback(update, context, q, data, user, is_own):
             return
 
-    if data.startswith("ov:"):
-        if await handle_orders_view_callback(update, context, q, data, user, is_own):
+    if data.startswith("od:") and is_own:
+        if await handle_od_callback(update, context, q, data, user, is_own):
+            return
+
+    if data.startswith("smo:"):
+        if await handle_smo_callback(update, context, q, data, user, is_own):
             return
 
     # ── العضو يُبلغ المالك بعد إكمال تحقق حساب الجيميل ──
