@@ -31,6 +31,7 @@ _SECTION_NAMES = (
     "callback_groups_04",
     "order_inspect",
     "owner_details",
+    "payment_audit",
     "orders_view",
     "gift_profit",
     "callbacks",

@@ -111,15 +111,32 @@ async def pre_checkout_router(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def successful_payment_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """يوجّه إشعار الدفع الناجح إلى معالجه حسب نوع الفاتورة."""
-    payload = update.message.successful_payment.invoice_payload or ""
-    if payload.startswith("raksh_stars:"):
-        await raksh_successful_payment(update, context)
-    elif payload.startswith("tgnum_stars:"):
-        await tgnum_successful_payment(update, context)
-    elif payload.startswith("wheel_stars:"):
-        await wheel_successful_payment(update, context)
-    else:
-        await successful_payment(update, context)
+    payment = update.message.successful_payment
+    payload = payment.invoice_payload or ""
+    try:
+        if payload.startswith("raksh_stars:"):
+            await raksh_successful_payment(update, context)
+        elif payload.startswith("tgnum_stars:"):
+            await tgnum_successful_payment(update, context)
+        elif payload.startswith("wheel_stars:"):
+            await wheel_successful_payment(update, context)
+        else:
+            await successful_payment(update, context)
+    except Exception:
+        logger.exception("فشلت معالجة دفعة نجوم ناجحة: %s", payment.telegram_payment_charge_id)
+        try:
+            await _notify_owner_manual_star_purchase(
+                context,
+                "🚨 فشلت معالجة دفعة نجوم ناجحة وقد لا يكون العضو استلم ما دفع لأجله.\n"
+                f"المستخدم: {update.effective_user.id}\n"
+                f"المبلغ: {payment.total_amount} نجمة\n"
+                f"النوع: {payload.split(':', 1)[0]}\n"
+                f"رقم العملية: {payment.telegram_payment_charge_id}\n"
+                "افحصها من: الإعدادات ← تدقيق دفعات النجوم.",
+            )
+        except Exception:
+            logger.exception("تعذر إشعار المالك بفشل معالجة الدفعة")
+        raise
 
 
 async def cmd_set_button_emoji(update: Update, context: ContextTypes.DEFAULT_TYPE):

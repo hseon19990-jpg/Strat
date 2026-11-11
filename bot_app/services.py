@@ -437,6 +437,7 @@ BUILTIN_DEFAULTS = {
         ("🔍 الفحص", "os:inspect_services", 2),
         ("📦 قسم الطلبات", "os:orders_section", 2),
         ("🔎 فحص الطلب", "os:oi:ask", 2),
+        ("🧾 تدقيق دفعات النجوم", "os:pa:ask", 2),
          ("👤 تتبع عضو", "os:member_tracking", 2),
         ("📝 تعديل وصف عدة خدمات", "os:share_description", 2),
         ("🎀 جوائز مخصصة", "os:manage_prizes", 2),

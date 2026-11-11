@@ -12,6 +12,7 @@ from .owner_details import handle_od_text, record_thank_message, od_thank_reply_
 from .orders_view import handle_orders_view_text
 from .gift_profit import handle_gift_profit_text
 from .order_inspect import handle_order_inspect_text
+from .payment_audit import handle_payment_audit_text
 
 def _extract_imported_twofa(payload) -> str:
     """Extract an imported cloud-password hint without exposing it in logs/messages."""
@@ -219,6 +220,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
     if is_own and state == "os_oi_await_code":
         if await handle_order_inspect_text(update, context, text):
+            return
+    if is_own and state == "os_pa_await_query":
+        if await handle_payment_audit_text(update, context, text):
             return
     if is_own and state == "ov_await_buyer":
         if await handle_orders_view_text(update, context, text):

@@ -60,6 +60,7 @@ def od_ensure_tables() -> None:
             refunded   BOOLEAN NOT NULL DEFAULT FALSE,
             created_at TIMESTAMPTZ DEFAULT NOW()
         )""")
+        c.execute("ALTER TABLE star_income_log ADD COLUMN IF NOT EXISTS payload TEXT")
         c.execute("""
         CREATE TABLE IF NOT EXISTS od_alert_seen (
             alert_key  TEXT PRIMARY KEY,
@@ -822,9 +823,10 @@ def record_star_income(payment, user) -> None:
         kind = str(getattr(payment, "invoice_payload", "") or "").split(":", 1)[0][:40]
         with db_conn() as c:
             c.execute(
-                "INSERT INTO star_income_log (telegram_payment_id,user_id,stars,kind) "
-                "VALUES (%s,%s,%s,%s) ON CONFLICT (telegram_payment_id) DO NOTHING",
-                (charge, getattr(user, "id", None), stars, kind),
+                "INSERT INTO star_income_log (telegram_payment_id,user_id,stars,kind,payload) "
+                "VALUES (%s,%s,%s,%s,%s) ON CONFLICT (telegram_payment_id) DO NOTHING",
+                (charge, getattr(user, "id", None), stars, kind,
+                 str(getattr(payment, "invoice_payload", "") or "")[:200]),
             )
     except Exception:
         logger.exception("تعذر تسجيل دفعة النجوم للتقرير اليومي")

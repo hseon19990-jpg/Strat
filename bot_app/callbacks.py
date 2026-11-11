@@ -290,6 +290,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if await handle_order_inspect_callback(update, context, q, data, user, is_own):
             return
 
+    if data.startswith("os:pa:") and is_own:
+        if await handle_payment_audit_callback(update, context, q, data, user, is_own):
+            return
+
     if data.startswith("od:") and is_own:
         if await handle_od_callback(update, context, q, data, user, is_own):
             return

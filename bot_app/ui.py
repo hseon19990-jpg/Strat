@@ -982,7 +982,7 @@ OWNER_SETTINGS_GROUPS = [
         "os:bot_ref_numbers", "tgnum:admin",
     ), ()),
     ("prices", "💰 الأسعار والعملات", (
-        "os:edit_star_rate", "os:edit_exchange_rate", "os:edit_jewel_star_price", "os:edit_jewel_to_points_rate",
+        "os:pa:ask", "os:edit_star_rate", "os:edit_exchange_rate", "os:edit_jewel_star_price", "os:edit_jewel_to_points_rate",
         "os:edit_points_to_jewel_rate", "os:manage_star_packages", "os:edit_asiacell",
         "os:edit_jewels_asiacell", "os:edit_jewels_ewallet", "os:manage_points",
     ), ()),
