@@ -239,6 +239,26 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+    if state == ORDER_INSPECT_STATE:
+        try:
+            if await handle_order_inspect_text(update, context, text):
+                return
+        except Exception as exc:
+            logger.exception("فشل فحص الطلب: %s", exc)
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text("⚠️ حدث خطأ أثناء فحص الطلب.")
+            return
+
+    if state == OV_BUYER_STATE:
+        try:
+            if await handle_orders_view_text(update, context, text):
+                return
+        except Exception as exc:
+            logger.exception("فشل فلتر المشتري: %s", exc)
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text("⚠️ حدث خطأ أثناء تطبيق الفلتر.")
+            return
+
     if state.startswith("tgnum_") or state.startswith("os_tgnum_"):
         try:
             if await handle_tgnum_text(update, context, text):

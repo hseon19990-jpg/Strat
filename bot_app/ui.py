@@ -276,7 +276,7 @@ MAIN_MENU_GROUPS = {
         "label": "💼 حسابي ومحفظتي",
         "title": "💼 *حسابي ومحفظتي*\n\nاختر من القائمة:",
         "actions": (
-            "my_info", "my_numbers", "collect_points",
+            "my_info", "my_numbers", "ov:me:0", "collect_points",
             "transfer_points", "contributor_accounts", "share_account:menu",
             "buyback:start",
         ),
@@ -963,7 +963,7 @@ async def show_orders_section(update: Update, context: ContextTypes.DEFAULT_TYPE
 OWNER_SETTINGS_GROUPS = [
     ("services", "🛍 الخدمات والطلبات", (
         "os:add_service", "os:list_services", "os:view_services", "os:inspect_services",
-        "os:orders_section", "os:oi:ask", "os:share_description", "os:cancel_order", "os:complete_order",
+        "os:orders_section", "ov:own:0", "os:oi:ask", "os:share_description", "os:cancel_order", "os:complete_order",
         "os:failed_deliveries", "os:new_services", "import_services", "os:site_balance",
         "os:edit_internal_cost", "os:edit_internal_min",
     ), ()),

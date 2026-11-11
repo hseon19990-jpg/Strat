@@ -211,6 +211,17 @@ def init_db():
                refund_jewels NUMERIC(20,6) NOT NULL DEFAULT 0
           )""")
           c.execute("""
+          CREATE TABLE IF NOT EXISTS order_inspect_snapshots (
+              order_id        BIGINT PRIMARY KEY,
+              order_code      TEXT,
+              order_code_norm TEXT,
+              user_id         BIGINT,
+              data            TEXT NOT NULL,
+              created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )""")
+          c.execute("CREATE INDEX IF NOT EXISTS order_inspect_snapshots_code_idx ON order_inspect_snapshots (order_code_norm)")
+          c.execute("CREATE INDEX IF NOT EXISTS order_inspect_snapshots_time_idx ON order_inspect_snapshots (created_at)")
+          c.execute("""
           CREATE TABLE IF NOT EXISTS smm_payment_intents (
               id                  BIGSERIAL PRIMARY KEY,
               user_id             BIGINT NOT NULL,

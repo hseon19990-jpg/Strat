@@ -287,6 +287,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if await handle_order_inspect_callback(update, context, q, data, user, is_own):
             return
 
+    if data.startswith("ov:"):
+        if await handle_orders_view_callback(update, context, q, data, user, is_own):
+            return
+
     # ── العضو يُبلغ المالك بعد إكمال تحقق حساب الجيميل ──
     for _callback_group in (
         _handle_callback_group_01,

@@ -546,6 +546,7 @@ def main():
 
     if app.job_queue:
         app.job_queue.run_repeating(check_pending_orders_job, interval=300, first=30)
+        ov_schedule_daily_report(app.job_queue)
         app.job_queue.run_repeating(cleanup_transient_storage_job, interval=21600, first=60)
         logger.info("🧹 تم تفعيل تنظيف البيانات المؤقتة بدفعات كل 6 ساعات")
         logger.info("⏱️ تم تفعيل الفحص الدوري لحالة الطلبات (كل 5 دقائق)")

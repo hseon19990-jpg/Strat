@@ -2218,7 +2218,7 @@ async def check_pending_orders_job(context: ContextTypes.DEFAULT_TYPE):
     try:
         with db_conn() as c:
             pending = c.execute(
-                "SELECT o.*, s.panel AS svc_panel, s.api_service_id AS svc_api_id FROM orders o "
+                "SELECT o.*, s.panel AS svc_panel, s.api_service_id AS svc_api_id, s.name_ar AS svc_name FROM orders o "
                 "LEFT JOIN services s ON s.id = o.service_id "
                 "WHERE o.status='pending' AND o.api_order_id IS NOT NULL AND o.api_order_id != ''"
             ).fetchall()
@@ -2248,7 +2248,14 @@ async def check_pending_orders_job(context: ContextTypes.DEFAULT_TYPE):
             try:
                 await context.bot.send_message(
                     o["user_id"],
-                    f"🎉 تم اكتمال طلبك بكود {o['order_code']} بنجاح!\nنتمنى أن تكون راضياً عن الخدمة 🌟"
+                    f"🎉 تم اكتمال طلبك بكود {o['order_code']} بنجاح!\n"
+                    f"🔹 الخدمة: {o.get('svc_name') or '—'}\n"
+                    f"✅ وصل: {int(o.get('quantity') or 0):,} من {int(o.get('quantity') or 0):,}\n"
+                    "نتمنى أن تكون راضياً عن الخدمة 🌟",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🔁 إعادة الطلب", callback_data=f"ov:re:{o['id']}:0"),
+                        InlineKeyboardButton("📦 طلباتي", callback_data="ov:me:0"),
+                    ]]),
                 )
             except Exception:
                 pass

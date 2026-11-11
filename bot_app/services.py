@@ -226,6 +226,7 @@ def owner_settings_with_purchase_rate_after_sale(items):
 # but they are still ordinary owner buttons. Keeping their definitions in the
 # same menu_items store makes them visible to the button manager as well.
 OWNER_SETTINGS_EXTRA_DEFAULTS = [
+    ("📊 الطلبات", "ov:own:0", 2),
     ("🤖 مفتاح OpenAI", "os:openai_api", 1),
     ("📲 إعدادات أرقام تلي", "tgnum:admin", 1),
     ("👥 كروب إشعار الأعضاء الجدد", "os:edit_new_users_group", 2),
@@ -351,6 +352,7 @@ BUILTIN_DEFAULTS = {
         ("⭐ تجميع نقاط", "collect_points", 2),
         ("🎁 هدية يومية", "daily_gift", 2),
         ("🎁 هدية مؤقتة", "temporary_gift", 2),
+        ("📦 عرض طلباتي", "ov:me:0", 2),
         ("🎁 استبدال جواهر بجوائز", "exchange_points", 2),
         ("🎡 دورة وهداية كبيرة", "wheel:menu", 1),
         ("↔️ تحويل بين النقاط والمجوهرات", "currency_exchange", 2),
