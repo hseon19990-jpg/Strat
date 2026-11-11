@@ -1304,7 +1304,7 @@ def add_contributor_account(
     with db_conn() as c:
         existing = c.execute(
             """
-            SELECT id, contributed_by, ever_sold, last_authorized,
+            SELECT id, contributed_by, ever_sold, last_authorized, session_string,
                    COALESCE(contributor_share_percent, 50) AS contributor_share_percent
             FROM number_stock
             WHERE phone_number=%s
@@ -1313,24 +1313,32 @@ def add_contributor_account(
             (phone,),
         ).fetchone()
         if existing:
-            if existing["contributed_by"] != user_id:
-                return False, "هذا الرقم موجود مسبقاً ولا يمكن ربطه بحساب مستخدم آخر."
-            # الحساب المبيوع يُسمح بإعادته للرشق فقط إذا فقد البوت جلسته
-            # (last_authorized=FALSE)؛ وإلا يبقى ممنوعاً كما كان.
-            _was_sold = bool(existing["ever_sold"])
-            if _was_sold and existing["last_authorized"] is not False:
-                return False, "هذا الحساب استُخدم في عملية بيع سابقة ولا يمكن إعادته للرشق."
-            if int(existing["contributor_share_percent"]) != share_percent:
-                return False, (
-                    "هذا الرقم مضاف مسبقاً من خلال قسم التأجير أو مشاركة الرقم، "
-                    "ولا يمكن تغيير نوعه من هنا."
-                )
+            # الجلسة مفقودة = البوت لا يملك جلسة صالحة لهذا الرقم (طُرد/منتهية/فارغة).
+            # في هذه الحالة يُقبل التأجير من أي مستخدم وبأي طريقة، وينتقل الحساب
+            # للمستأجر الجديد (باع الرقم أو طرد البوت ثم أعاد تأجيره من رقم آخر).
+            _session_lost = (
+                existing["last_authorized"] is False
+                or not str(existing["session_string"] or "").strip()
+            )
+            _same_owner = existing["contributed_by"] == user_id
+            if not _session_lost:
+                if not _same_owner:
+                    return False, "هذا الرقم موجود مسبقاً ولا يمكن ربطه بحساب مستخدم آخر."
+                if existing["ever_sold"]:
+                    return False, "هذا الحساب استُخدم في عملية بيع سابقة ولا يمكن إعادته للرشق."
+                if int(existing["contributor_share_percent"]) != share_percent:
+                    return False, (
+                        "هذا الرقم مضاف مسبقاً من خلال قسم التأجير أو مشاركة الرقم، "
+                        "ولا يمكن تغيير نوعه من هنا."
+                    )
             c.execute(
                 """
                 UPDATE number_stock
                 SET session_string=%s,
                     twofa_password=COALESCE(NULLIF(%s, ''), number_stock.twofa_password),
                     contributor_method=%s,
+                    contributed_by=%s,
+                    contributor_share_percent=%s,
                     deleted_at=NULL,
                     raksh_only=TRUE,
                     source_type='raksh',
@@ -1341,8 +1349,12 @@ def add_contributor_account(
                     assigned_at=CASE WHEN %s THEN NULL ELSE assigned_at END
                 WHERE id=%s
                 """,
-                (session_str, twofa_password, contributor_method,
-                 _was_sold, _was_sold, _was_sold, existing["id"]),
+                (
+                    session_str, twofa_password, contributor_method,
+                    user_id, share_percent,
+                    _session_lost, _session_lost, _session_lost,
+                    existing["id"],
+                ),
             )
             return True, "updated"
 
