@@ -147,7 +147,30 @@ async def _clear_buyback_pending(user_id: int) -> None:
         await _disconnect_buyback_client(pending.get("client"))
 
 
-def _active_buyback_phone_exists(phone: str) -> bool:
+async def _stock_session_alive(session_string: str):
+    """True=جلسة البوت شغالة، False=ميتة/مطرودة، None=تعذر الفحص (شبكة...)."""
+    client = None
+    try:
+        client = TelegramClient(StringSession(session_string), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+        await asyncio.wait_for(client.connect(), timeout=20)
+        return bool(await asyncio.wait_for(client.is_user_authorized(), timeout=10))
+    except Exception:
+        return None
+    finally:
+        if client is not None:
+            await _disconnect_buyback_client(client)
+
+
+async def _active_buyback_phone_exists(phone: str) -> bool:
+    """هل يُرفض الرقم؟ يُرفض فقط في حالتين:
+
+    1) يوجد طلب بيع جارٍ لنفس الرقم (انتظار/حجز/جاهز للدفع).
+    2) الرقم مسند حالياً لزبون (مؤجَّر/مباع الآن) وجلسة البوت عليه ما زالت
+       شغالة، لأن استبداله سيقطع الزبون.
+    غير ذلك يُقبل: لا سجل في المخزون، أو لا جلسة للبوت، أو جلسته ميتة
+    (مطرود)، أو الرقم غير مسند (حتى لو بيع/دُفع سابقاً). البائع أثبت
+    سيطرته بدخوله الحساب، وعند الدفع تُستبدل الجلسة القديمة بالجديدة.
+    """
     with db_conn() as c:
         row = c.execute(
             "SELECT id FROM account_buyback_offers "
@@ -158,16 +181,27 @@ def _active_buyback_phone_exists(phone: str) -> bool:
         ).fetchone()
         if row:
             return True
-        # الرقم المطرود (last_authorized=FALSE) والمتاح في المخزون غير المسند
-        # لا يُعتبر "موجوداً": جلسة البوت عليه ميتة، فيجوز للمالك الحقيقي
-        # بيعه أو تأجيره للبوت من جديد (mark_buyback_paid يستبدل جلسته القديمة).
         stock = c.execute(
-            "SELECT id FROM number_stock WHERE phone_number=%s AND deleted_at IS NULL "
-            "AND NOT (last_authorized IS FALSE AND assigned_to IS NULL "
-            "AND ever_sold IS NOT TRUE) LIMIT 1",
+            "SELECT id, session_string, assigned_to, last_authorized FROM number_stock "
+            "WHERE phone_number=%s AND deleted_at IS NULL LIMIT 1",
             (phone,),
         ).fetchone()
-    return bool(stock)
+    if not stock:
+        return False
+    if stock["assigned_to"] is None:
+        return False
+    if stock["last_authorized"] is False or not stock["session_string"]:
+        return False
+    if await _stock_session_alive(stock["session_string"]) is False:
+        with db_conn() as c:
+            c.execute(
+                "UPDATE number_stock SET last_authorized=FALSE, "
+                "kicked_at=CASE WHEN last_authorized IS FALSE THEN kicked_at ELSE NOW() END "
+                "WHERE id=%s",
+                (stock["id"],),
+            )
+        return False
+    return True
 
 
 async def _finish_buyback_login(update, context, user_id: int) -> bool:
@@ -183,7 +217,7 @@ async def _finish_buyback_login(update, context, user_id: int) -> bool:
         if not await asyncio.wait_for(client.is_user_authorized(), timeout=15):
             raise RuntimeError("الجلسة غير مصرح بها")
         me = await asyncio.wait_for(client.get_me(), timeout=15)
-        if _active_buyback_phone_exists(phone):
+        if await _active_buyback_phone_exists(phone):
             await update.message.reply_text(
                 "⚠️ هذا الحساب موجود مسبقاً في طلب بيع أو في المخزون.",
                 reply_markup=main_menu_kb(False),
@@ -499,7 +533,7 @@ async def handle_buyback_document(update, context) -> bool:
             context.user_data["state"] = "buyback_await_session_document"
             await progress.edit_text("❌ تعذر قراءة رقم الحساب من الجلسة. استخدم طريقة الرقم وكود الدخول بدلاً منها.")
             return True
-        if _active_buyback_phone_exists(phone):
+        if await _active_buyback_phone_exists(phone):
             context.user_data["state"] = "main_menu"
             await progress.edit_text("⚠️ هذا الحساب موجود مسبقاً في طلب بيع أو في المخزون.")
             return True
@@ -568,7 +602,7 @@ async def handle_buyback_text(update, context, text: str) -> bool:
             await update.message.reply_text("❌ إعدادات Telegram API غير مكتملة حالياً.", reply_markup=main_menu_kb(False))
             context.user_data["state"] = "main_menu"
             return True
-        if _active_buyback_phone_exists(phone):
+        if await _active_buyback_phone_exists(phone):
             await update.message.reply_text("⚠️ هذا الحساب موجود مسبقاً في طلب بيع أو في المخزون.", reply_markup=main_menu_kb(False))
             context.user_data["state"] = "main_menu"
             return True
