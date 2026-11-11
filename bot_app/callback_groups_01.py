@@ -440,6 +440,12 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                         f"🔐 حفظ 2FA {row.get('phone_number')}",
                         callback_data=f"contributor:save_2fa:{row.get('id')}",
                     )])
+            # حساب كانت جلسته منتهية/مطرودة: زر مباشر لإعادة تأجيره بجلسة جديدة.
+            for row in [r for r in rows[:30] if r.get("last_authorized") is False][:10]:
+                account_buttons.append([InlineKeyboardButton(
+                    f"🔄 إعادة تأجير {row.get('phone_number')}",
+                    callback_data=f"contributor:relogin:{row.get('id')}",
+                )])
             await q.edit_message_text(
                 "\n".join(lines),
                 parse_mode=ParseMode.MARKDOWN,
@@ -529,6 +535,84 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton("🔙 إلغاء", callback_data="share_session:menu")
                 ]]),
+            )
+            return
+
+        if data.startswith("contributor:relogin:"):
+            # إعادة تأجير حساب فقد البوت جلسته (طُرد/انتهت): نطلب كود دخول جديد
+            # لنفس الرقم، ثم يحدّث add_contributor_account الجلسة لنفس المالك.
+            if is_user_banned(user.id):
+                await q.answer("🚫 لا يمكنك استخدام هذه الميزة.", show_alert=True)
+                return
+            if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
+                await q.answer("❌ إعدادات Telegram API غير مكتملة.", show_alert=True)
+                return
+            try:
+                stock_id = int(data.rsplit(":", 1)[-1])
+            except ValueError:
+                await q.answer("⚠️ الحساب غير صحيح.", show_alert=True)
+                return
+            with db_conn() as c:
+                rec = c.execute(
+                    "SELECT phone_number, COALESCE(contributor_share_percent, 50) AS share "
+                    "FROM number_stock WHERE id=%s AND contributed_by=%s "
+                    "AND raksh_only IS TRUE AND ever_sold IS NOT TRUE",
+                    (stock_id, user.id),
+                ).fetchone()
+            if not rec:
+                await q.answer("⚠️ الحساب غير موجود ضمن حساباتك.", show_alert=True)
+                return
+            from .messages import _login_code_delivery_note, _login_code_error_message
+            phone = rec["phone_number"]
+            share = int(rec["share"])
+            old_pending = _pending_number_logins.pop(user.id, None)
+            if old_pending:
+                try:
+                    await old_pending["client"].disconnect()
+                except Exception:
+                    pass
+            client = None
+            try:
+                client = TelegramClient(StringSession(), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+                await asyncio.wait_for(client.connect(), timeout=20)
+                sent = await client.send_code_request(phone)
+            except FloodWaitError as e:
+                if client:
+                    await client.disconnect()
+                await q.answer(f"⚠️ انتظر {e.seconds} ثانية وحاول مجدداً.", show_alert=True)
+                return
+            except Exception as e:
+                logger.error(f"❌ تعذر إرسال كود إعادة التأجير ({type(e).__name__}): {e}")
+                if client:
+                    await client.disconnect()
+                await q.edit_message_text(
+                    _login_code_error_message(e),
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔙 رجوع", callback_data="contributor_accounts")],
+                    ]),
+                )
+                return
+            _pending_number_logins[user.id] = {
+                "client": client,
+                "phone": phone,
+                "phone_code_hash": sent.phone_code_hash,
+                "raksh_only": False,
+                "contributor_id": user.id,
+                "contributor_share_percent": share,
+            }
+            context.user_data["state"] = (
+                "share_number_await_login_code" if share == 0
+                else "contributor_await_login_code"
+            )
+            await q.edit_message_text(
+                f"🔄 *إعادة تأجير* `{phone}`\n\n"
+                f"{_login_code_delivery_note(sent)}\n\n"
+                "أرسل آخر كود وصلك هنا (أرقام فقط). سيتم تحديث جلسة الحساب "
+                "نفسه دون إنشاء حساب جديد، وتبقى أرباحك السابقة محفوظة.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 إلغاء", callback_data="contributor_accounts")],
+                ]),
             )
             return
 

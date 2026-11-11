@@ -867,8 +867,13 @@ async def _finish_number_login(update: Update, context: ContextTypes.DEFAULT_TYP
                 else "🎁 مكافأتك: يمكنك الرشق مجاناً باستخدام أرقام المشاركة الخاصة بك فقط؛ "
                 "استخدام حسابات أخرى يبقى مدفوعاً."
             )
+            _added_title = (
+                "🔄 *تمت إعادة تأجير حسابك وتحديث جلسته بنجاح!*\n\n"
+                if reason == "updated"
+                else "✅ *تمت إضافة حسابك للرشق بنجاح!*\n\n"
+            )
             await reply_target.reply_text(
-                "✅ *تمت إضافة حسابك للرشق بنجاح!*\n\n"
+                f"{_added_title}"
                 f"📱 {phone}\n"
                 "🔥 سيُستخدم لخدمات الرشق فقط.\n"
                 "🔒 لم يطرد البوت أي جلسة ولم يغيّر كلمة مرور أو إعداداً.\n"
