@@ -1304,7 +1304,7 @@ def add_contributor_account(
     with db_conn() as c:
         existing = c.execute(
             """
-            SELECT id, contributed_by, ever_sold,
+            SELECT id, contributed_by, ever_sold, last_authorized,
                    COALESCE(contributor_share_percent, 50) AS contributor_share_percent
             FROM number_stock
             WHERE phone_number=%s
@@ -1315,7 +1315,10 @@ def add_contributor_account(
         if existing:
             if existing["contributed_by"] != user_id:
                 return False, "هذا الرقم موجود مسبقاً ولا يمكن ربطه بحساب مستخدم آخر."
-            if existing["ever_sold"]:
+            # الحساب المبيوع يُسمح بإعادته للرشق فقط إذا فقد البوت جلسته
+            # (last_authorized=FALSE)؛ وإلا يبقى ممنوعاً كما كان.
+            _was_sold = bool(existing["ever_sold"])
+            if _was_sold and existing["last_authorized"] is not False:
                 return False, "هذا الحساب استُخدم في عملية بيع سابقة ولا يمكن إعادته للرشق."
             if int(existing["contributor_share_percent"]) != share_percent:
                 return False, (
@@ -1332,10 +1335,14 @@ def add_contributor_account(
                     raksh_only=TRUE,
                     source_type='raksh',
                     raksh_excluded=FALSE,
-                    last_authorized=TRUE
+                    last_authorized=TRUE,
+                    ever_sold=CASE WHEN %s THEN FALSE ELSE ever_sold END,
+                    assigned_to=CASE WHEN %s THEN NULL ELSE assigned_to END,
+                    assigned_at=CASE WHEN %s THEN NULL ELSE assigned_at END
                 WHERE id=%s
                 """,
-                (session_str, twofa_password, contributor_method, existing["id"]),
+                (session_str, twofa_password, contributor_method,
+                 _was_sold, _was_sold, _was_sold, existing["id"]),
             )
             return True, "updated"
 
