@@ -731,6 +731,9 @@ async def _cmd_start_impl(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user.id,
     )
 
+    # المدعو بلا يوزر: صامت تماماً — لا إشعار للداعي ولا ذكر للإحالة للمدعو.
+    if not (user.username or "").strip():
+        referral_link_just_opened = False
     if referral_link_just_opened:
         await notify_referral_link_opened(context.bot, user, invited_by)
 

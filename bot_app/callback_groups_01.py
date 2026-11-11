@@ -1942,15 +1942,16 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             db_user = get_user(user.id)
             rows = [
                 [InlineKeyboardButton("📡 الانضمام بقنوات", callback_data="join_channels")],
-                [InlineKeyboardButton(get_setting("gmail_button_label") or "📧 احصل على نقاط مقابل إيميل جيميل", callback_data="gmail_points")],
-                [InlineKeyboardButton("🔐 التحقق", callback_data="totp_generator")],
-                [InlineKeyboardButton("📋 الإيميلات المقبولة والمرفوضة", callback_data="my_gmail_history")],
-                [InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")],
+                [InlineKeyboardButton("📱 تأجير حسابات", callback_data="contributor_accounts")],
             ]
+            # زر بيع الحسابات يحترم إعداد المالك لإظهار/إخفاء قسم البيع.
+            if is_own or is_buyback_visible():
+                rows.append([InlineKeyboardButton("💰 بيع حسابات", callback_data="buyback:start")])
+            rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")])
             await q.edit_message_text(
                 f"💰 *تجميع النقاط*\n\n"
                 f"💰 رصيدك الحالي: {db_user['points'] if db_user else 0} نقطة\n\n"
-                f"اختر أحد الخيارين للحصول على نقاط:",
+                f"اختر طريقة للحصول على نقاط:",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup(rows)
             )

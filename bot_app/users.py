@@ -798,7 +798,7 @@ def credit_referral_if_pending(user_id: int, context=None):
     upper_rewards = []
     with db_conn() as c:
         row = c.execute(
-            "SELECT invited_by, referral_credited, verified FROM users WHERE user_id=%s",
+            "SELECT invited_by, referral_credited, verified, username FROM users WHERE user_id=%s",
             (user_id,),
         ).fetchone()
         if not row:
@@ -812,6 +812,10 @@ def credit_referral_if_pending(user_id: int, context=None):
             or already
             or not row["verified"]
         ):
+            return None
+        # المدعو بلا يوزر تيليجرام: لا تُمنح إحالة ولا يُرسل أي إشعار (صامت).
+        # لا نضع referral_credited=1 هنا، فتُحتسب تلقائياً لاحقاً إن أضاف يوزر.
+        if not str(row.get("username") or "").strip():
             return None
 
         c.execute(
