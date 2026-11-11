@@ -401,6 +401,90 @@ async def notify_referral_link_opened(bot, invited_user, inviter_id: int):
     except Exception as exc:
         logger.warning(f"⚠️ فشل إرسال إشعار فتح رابط الإحالة: {exc}")
 
+NO_USERNAME_ALERT_WINDOW = 5      # آخر كم مدعو نفحص
+NO_USERNAME_ALERT_THRESHOLD = 3   # كم مدعو بلا يوزر يُطلق إنذار المالك
+
+
+def get_recent_invitees_without_username(inviter_id: int, limit: int = NO_USERNAME_ALERT_WINDOW) -> list:
+    """آخر `limit` مدعوّين لهذا الداعي (الأحدث أولاً) مع حقل no_username لكل واحد."""
+    with db_conn() as c:
+        rows = c.execute(
+            "SELECT user_id, full_name, username, bot_user_num FROM users "
+            "WHERE invited_by=%s AND user_id != %s "
+            "ORDER BY bot_user_num DESC NULLS LAST, user_id DESC LIMIT %s",
+            (int(inviter_id), int(inviter_id), int(limit)),
+        ).fetchall()
+    out = []
+    for r in rows or []:
+        d = dict(r)
+        d["no_username"] = not str(d.get("username") or "").strip()
+        out.append(d)
+    return out
+
+
+async def notify_invited_without_username(bot, invited_user, inviter_id: int, user_num=None):
+    """إشعار سرّي (كروب الطلبات + المالك فقط) عند دخول مدعو بلا يوزر.
+
+    لا يصل شيء للداعي ولا للمدعو. رسالة الكروب بلا آيديات أو منشن.
+    وإذا كان 3 من آخر 5 مدعوّين لنفس الداعي بلا يوزر يصل المالك إنذار خاص.
+    """
+    try:
+        if not bot or not inviter_id or int(inviter_id) == int(invited_user.id):
+            return
+        inviter = get_user(int(inviter_id)) or {}
+        invited_name = html.escape(invited_user.full_name or "بلا اسم")
+        inviter_name = html.escape(inviter.get("full_name") or "غير معروف")
+        invited_num = f" (رقم {int(user_num):,})" if user_num else ""
+        inviter_num = f" (رقم {int(inviter['bot_user_num']):,})" if inviter.get("bot_user_num") else ""
+
+        group_target = ADMIN_GROUP_ID or OWNER_ID
+        if group_target:
+            try:
+                await bot.send_message(
+                    chat_id=group_target,
+                    text=(
+                        "⚠️ <b>مدعو بلا يوزر</b>\n\n"
+                        f"👤 المدعو: {invited_name}{invited_num}\n"
+                        f"🔗 الداعي: {inviter_name}{inviter_num}\n"
+                        "⏳ لن تُحتسب الإحالة إلا بعد إضافته يوزراً."
+                    ),
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception as exc:
+                logger.warning(f"⚠️ فشل إشعار كروب الطلبات بمدعو بلا يوزر: {exc}")
+
+        # إنذار المالك: 3 من آخر 5 مدعوّين بلا يوزر
+        recent = get_recent_invitees_without_username(int(inviter_id))
+        no_user = [r for r in recent if r["no_username"]]
+        count = len(no_user)
+        key = f"nouser_alert_{int(inviter_id)}"
+        if count < NO_USERNAME_ALERT_THRESHOLD:
+            if str(get_setting(key) or "") not in ("", "0"):
+                set_setting(key, "0")
+            return
+        try:
+            last_alerted = int(get_setting(key) or 0)
+        except (TypeError, ValueError):
+            last_alerted = 0
+        if count <= last_alerted or not OWNER_ID:
+            return
+        set_setting(key, str(count))
+        lines = "\n".join(
+            f"• {html.escape(r.get('full_name') or 'بلا اسم')} — <code>{r['user_id']}</code>"
+            for r in no_user
+        )
+        await bot.send_message(
+            chat_id=OWNER_ID,
+            text=(
+                "🚨 <b>إنذار: دعوات مشبوهة</b>\n\n"
+                f"الداعي: {inviter_name} — <code>{int(inviter_id)}</code>\n"
+                f"{count} من آخر {len(recent)} مدعوّين بلا يوزر:\n{lines}"
+            ),
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception as exc:
+        logger.warning(f"⚠️ فشل إشعار المدعو بلا يوزر: {exc}")
+
 NEW_USERS_GROUP_SETTING = "new_users_group"
 
 

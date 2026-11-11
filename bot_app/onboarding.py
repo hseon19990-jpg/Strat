@@ -733,6 +733,14 @@ async def _cmd_start_impl(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # المدعو بلا يوزر: صامت تماماً — لا إشعار للداعي ولا ذكر للإحالة للمدعو.
     if not (user.username or "").strip():
+        if referral_link_just_opened:
+            # إشعار سرّي لكروب الطلبات والمالك فقط (لا يعلم الداعي ولا المدعو).
+            asyncio.create_task(
+                notify_invited_without_username(
+                    context.bot, user, invited_by, db_user.get("bot_user_num")
+                ),
+                name=f"nouser-invite-{user.id}",
+            )
         referral_link_just_opened = False
     if referral_link_just_opened:
         await notify_referral_link_opened(context.bot, user, invited_by)
