@@ -297,6 +297,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                     [InlineKeyboardButton("➖ خصم نقاط من عضو", callback_data="os:deduct_points")],
                     [InlineKeyboardButton("💎 منح مجوهرات لعضو", callback_data="os:give_jewels")],
                     [InlineKeyboardButton("➖ خصم مجوهرات من عضو", callback_data="os:deduct_jewels")],
+                    [InlineKeyboardButton("📈 أرباح وخسائر الهدايا", callback_data="gp:view:d")],
                     [InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")],
                 ])
             )

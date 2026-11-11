@@ -9,6 +9,9 @@ from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
 from .owner_details import handle_od_text, record_thank_message, od_thank_reply_kb
+from .orders_view import handle_orders_view_text
+from .gift_profit import handle_gift_profit_text
+from .order_inspect import handle_order_inspect_text
 
 def _extract_imported_twofa(payload) -> str:
     """Extract an imported cloud-password hint without exposing it in logs/messages."""
@@ -211,6 +214,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _thank_owner_state = state in {"thank_owner_menu", "thank_owner_ar", "thank_owner_en", "thank_owner_photo"}
 
     # رد المالك على رسائل الشكر وبقية حالات «زر التفاصيل».
+    if is_own and state == "os_await_gift_rate":
+        if await handle_gift_profit_text(update, context, text):
+            return
+    if is_own and state == "os_oi_await_code":
+        if await handle_order_inspect_text(update, context, text):
+            return
+    if is_own and state == "ov_await_buyer":
+        if await handle_orders_view_text(update, context, text):
+            return
     if is_own and state.startswith("os_od_"):
         if await handle_od_text(update, context, text, state):
             return

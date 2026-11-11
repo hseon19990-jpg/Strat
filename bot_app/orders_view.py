@@ -62,6 +62,26 @@ _OV_STATUS_AR = {
     "refund_required": "⚠️ استرداد قيد المراجعة",
 }
 
+OV_CATEGORY_TABS = {
+    "followers": "👥 متابعين", "views": "👁 مشاهدات", "interactions": "❤️ تفاعلات",
+    "story_views": "📖 ستوري", "start_bot": "🤖 بوت", "boost": "🚀 تعزيز",
+    "post_stars": "⭐ نجوم", "other": "📦 أخرى",
+}
+
+
+def ov_category_tabs(current, scope):
+    """صفوف أزرار التصنيفات (تظهر أعلى القائمة). scope: m=عضو، o=مالك."""
+    items = [("a", "🔘 الكل")] + list(OV_CATEGORY_TABS.items())
+    buttons = [InlineKeyboardButton(("✅ " if k == current else "") + label, callback_data=f"ov:cat:{k}:{scope}")
+               for k, label in items]
+    return [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
+
+
+def ov_current_category(context):
+    cat = context.user_data.get("ov_cat", "a")
+    return cat if cat == "a" or cat in OV_CATEGORY_TABS else "a"
+
+
 OV_STATUS_FILTERS = (
     ("a", "الكل"), ("p", "⏳ قيد التنفيذ"), ("c", "✅ مكتمل"),
     ("r", "⚠️ جزئي"), ("x", "❌ ملغي"),
@@ -182,7 +202,7 @@ def ov_filter_describe(status="a", period="a", buyer=0) -> str:
     return "🎛 الفلتر: " + " · ".join(bits)
 
 
-def ov_build_query_parts(status="a", period="a", buyer=0, user_id=None):
+def ov_build_query_parts(status="a", period="a", buyer=0, user_id=None, category="a"):
     """يبني (FROM، شروط WHERE، وسائط) — نقية لتسهّل اختبارها."""
     conds, params = [], []
     if user_id is not None:
@@ -199,6 +219,9 @@ def ov_build_query_parts(status="a", period="a", buyer=0, user_id=None):
         conds.append("LOWER(COALESCE(o.status,'')) = 'completed' AND COALESCE(o.partial_refund_pts,0) > 0")
     elif status == "x":
         conds.append(f"LOWER(COALESCE(o.status,'')) IN {_OV_CANCELLED_SQL}")
+    if category and category != "a" and category in OV_CATEGORY_TABS:
+        conds.append("s.category = %s")
+        params.append(category)
     hours = _OV_PERIOD_HOURS.get(period)
     if hours:
         conds.append("o.ts >= NOW() - (%s * INTERVAL '1 hour')")
@@ -360,10 +383,10 @@ def ov_render_report(stats, top_services, stuck) -> str:
 
 # ───────────────────────────── قاعدة البيانات ─────────────────────────────
 
-def ov_fetch_page(offset, limit, user_id=None, status="a", period="a", buyer=0):
+def ov_fetch_page(offset, limit, user_id=None, status="a", period="a", buyer=0, category="a"):
     """يعيد (الصفوف، الإجمالي، عدد غير المنتهية). user_id=None ⇒ كل الطلبات (للمالك)."""
     offset = max(0, int(offset))
-    source, where, params = ov_build_query_parts(status, period, buyer, user_id)
+    source, where, params = ov_build_query_parts(status, period, buyer, user_id, category)
     with db_conn() as c:
         rows = c.execute(
             "SELECT o.*, u.full_name AS u_full_name, u.username AS u_username, "
@@ -376,7 +399,7 @@ def ov_fetch_page(offset, limit, user_id=None, status="a", period="a", buyer=0):
         counts = c.execute(
             "SELECT COUNT(*) AS total, "
             f"COUNT(*) FILTER (WHERE LOWER(COALESCE(o.status,'')) IN {_OV_ACTIVE_SQL}) AS active "
-            f"FROM {source} {where}",
+            f"FROM {source} LEFT JOIN services s ON s.id = o.service_id {where}",
             params,
         ).fetchone()
     return [dict(r) for r in rows], int(counts["total"] or 0), int(counts["active"] or 0)
@@ -514,17 +537,19 @@ def _ov_btn(text, data):
 
 async def ov_show_my_orders(update, context, q, offset=0):
     user_id = update.effective_user.id
-    rows, total, active = await asyncio.to_thread(ov_fetch_page, offset, OV_USER_PAGE_SIZE, user_id)
+    cat = ov_current_category(context)
+    rows, total, active = await asyncio.to_thread(ov_fetch_page, offset, OV_USER_PAGE_SIZE, user_id, "a", "a", 0, cat)
     if not rows and offset > 0:
         offset = 0
-        rows, total, active = await asyncio.to_thread(ov_fetch_page, 0, OV_USER_PAGE_SIZE, user_id)
+        rows, total, active = await asyncio.to_thread(ov_fetch_page, 0, OV_USER_PAGE_SIZE, user_id, "a", "a", 0, cat)
+    tabs = ov_category_tabs(cat, "m")
     if not rows:
-        await _ov_edit(q, ["📦 <b>طلباتي</b>\n\nلا توجد طلبات لديك بعد."],
-                       InlineKeyboardMarkup([[_ov_btn("🔙 رجوع", "main_menu")]]))
+        await _ov_edit(q, ["📦 <b>طلباتي</b>\n\nلا توجد طلبات " + ("في هذا التصنيف." if cat != "a" else "لديك بعد.")],
+                       InlineKeyboardMarkup(tabs + [[_ov_btn("🔙 رجوع", "main_menu")]]))
         return
     lives = await ov_fetch_live(rows)
     text = ov_render_user_page(rows, lives, offset, total, active)
-    keyboard = []
+    keyboard = list(ov_category_tabs(cat, "m"))
     for order in rows:
         code = str(order.get("order_code") or order["id"])
         keyboard.append([_ov_btn(f"🔄 تتبّع {code}", f"ov:tr:{order['id']}:{offset}"),
@@ -665,23 +690,25 @@ def _ov_report_toggle_label():
 
 async def ov_show_owner_orders(update, context, q, offset=0, flt=("a", "a", 0)):
     status, period, buyer = flt
+    cat = ov_current_category(context)
+    tabs = ov_category_tabs(cat, "o")
     rows, total, active = await asyncio.to_thread(
-        ov_fetch_page, offset, OV_OWNER_PAGE_SIZE, None, status, period, buyer)
+        ov_fetch_page, offset, OV_OWNER_PAGE_SIZE, None, status, period, buyer, cat)
     if not rows and offset > 0:
         offset = 0
         rows, total, active = await asyncio.to_thread(
-            ov_fetch_page, 0, OV_OWNER_PAGE_SIZE, None, status, period, buyer)
+            ov_fetch_page, 0, OV_OWNER_PAGE_SIZE, None, status, period, buyer, cat)
     suffix = ov_filter_suffix(status, period, buyer)
     flt_btn = _ov_btn("🎛 فلاتر" + ("" if ov_filter_is_default(*flt) else " ●"), f"ov:flt:{suffix}")
     back = [_ov_btn("⚙️ الإعدادات", "owner_settings")]
     if not rows:
-        kb = InlineKeyboardMarkup([[flt_btn], back])
+        kb = InlineKeyboardMarkup(tabs + [[flt_btn], back])
         note = ov_filter_describe(*flt)
         await _ov_edit(q, [f"📊 <b>الطلبات</b>\n{_html.escape(note)}\n\nلا توجد طلبات مطابقة."], kb)
         return
     lives = await ov_fetch_live(rows)
     text = ov_render_owner_page(rows, lives, offset, total, active, ov_filter_describe(*flt))
-    keyboard = []
+    keyboard = list(tabs)
     nav = ov_nav_row("ov:own", offset, OV_OWNER_PAGE_SIZE, total, suffix)
     if nav:
         keyboard.append(nav)
@@ -783,6 +810,14 @@ async def handle_orders_view_callback(update, context, q, data: str, user, is_ow
     if scope == "me":
         context.user_data["state"] = "main_menu"
         await ov_show_my_orders(update, context, q, _ov_int(parts, 2))
+        return True
+    if scope == "cat":
+        key = parts[2] if len(parts) > 2 else "a"
+        context.user_data["ov_cat"] = key if key == "a" or key in OV_CATEGORY_TABS else "a"
+        if (parts[3] if len(parts) > 3 else "m") == "o" and is_owner:
+            await ov_show_owner_orders(update, context, q, 0)
+        else:
+            await ov_show_my_orders(update, context, q, 0)
         return True
     if scope == "tr":
         await ov_show_track(update, context, q, _ov_int(parts, 2), _ov_int(parts, 3), is_owner)

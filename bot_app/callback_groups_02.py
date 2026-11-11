@@ -1792,6 +1792,22 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             )
             return
 
+        if data == "ns_use_api_name" and is_own:
+            name = (context.user_data.get("ns_api_name") or "").strip()
+            if not name:
+                await q.answer("⚠️ انتهت الجلسة، أعد إدخال رقم الخدمة.", show_alert=True)
+                return
+            context.user_data["ns_name"] = name
+            info = context.user_data.get("ns_info", {})
+            mn = info.get("min", 0)
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"✅ استخدم ({mn})", callback_data=f"os:ns_use_min:{mn}")]])
+            await q.edit_message_text(
+                f"✅ الاسم: {name}\n\n📉 *الحد الأدنى من الموقع: {mn}*\n\nاضغط الزر أو أرسل رقماً مختلفاً:",
+                parse_mode=ParseMode.MARKDOWN, reply_markup=kb
+            )
+            context.user_data["state"] = "ns_await_min"
+            return
+
         if data.startswith("os:ns_use_min:") and is_own:
             mn = int(data.split(":")[2])
             context.user_data["ns_min"] = mn

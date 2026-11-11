@@ -12,6 +12,8 @@ globals().update({key: value for key, value in vars(_shared).items() if not key.
 # avoids a NameError when formatting prices in _save_service.
 from .services import fmt_price
 from .owner_details import handle_od_callback, handle_smo_callback
+from .orders_view import handle_orders_view_callback
+from .gift_profit import handle_gift_profit_callback
 from .number_admin import (
     is_number_admin,
     number_admin_can_manage,
@@ -294,6 +296,22 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("smo:"):
         if await handle_smo_callback(update, context, q, data, user, is_own):
+            return
+
+    if data.startswith("ov:"):
+        try:
+            if await handle_orders_view_callback(update, context, q, data, user, is_own):
+                return
+        except Exception:
+            logger.exception("orders_view callback failed: %s", data)
+            try:
+                await q.answer("⚠️ حدث خطأ، حاول مرة أخرى.", show_alert=True)
+            except Exception:
+                pass
+            return
+
+    if data.startswith("gp:") and is_own:
+        if await handle_gift_profit_callback(update, context, q, data, user, is_own):
             return
 
     # ── العضو يُبلغ المالك بعد إكمال تحقق حساب الجيميل ──

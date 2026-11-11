@@ -481,6 +481,28 @@ def od_load_nouser_alerts():
     return alerts
 
 
+def od_nouser_key(a: dict) -> str:
+    return f"nouser:{a['inviter']}:{a['block_no']}"
+
+
+def od_load_unseen_nouser_alerts():
+    """التنبيهات التي لم يشاهدها المالك بعد (المشاهَدة تختفي من القائمة والعدّاد)."""
+    alerts = od_load_nouser_alerts()
+    if not alerts:
+        return []
+    with db_conn() as c:
+        seen = {r["alert_key"] for r in c.execute(
+            "SELECT alert_key FROM od_alert_seen WHERE alert_key LIKE 'nouser_viewed:%%'").fetchall()}
+    return [a for a in alerts if f"nouser_viewed:{a['inviter']}:{a['block_no']}" not in seen]
+
+
+def od_mark_nouser_viewed(alerts) -> None:
+    with db_conn() as c:
+        for a in alerts:
+            for key in (f"nouser_viewed:{a['inviter']}:{a['block_no']}", od_nouser_key(a)):
+                c.execute("INSERT INTO od_alert_seen (alert_key) VALUES (%s) ON CONFLICT DO NOTHING", (key,))
+
+
 def od_nouser_alert_text(a: dict) -> str:
     inv = a.get("inviter_info") or {}
     lines = [
@@ -526,7 +548,7 @@ async def od_show_alerts_menu(q) -> None:
     except Exception:
         fraud_total = 0
     try:
-        nouser_total = len(od_load_nouser_alerts())
+        nouser_total = len(od_load_unseen_nouser_alerts())
     except Exception:
         logger.exception("تعذر حساب تنبيهات الدعوات بلا يوزر")
         nouser_total = 0
@@ -558,18 +580,24 @@ async def od_show_fraud_list(q, offset: int = 0) -> None:
 
 
 async def od_show_nouser_list(q, offset: int = 0) -> None:
-    offset = max(0, int(offset))
-    alerts = od_load_nouser_alerts()
-    total = len(alerts)
-    page = alerts[offset:offset + 3]
+    """يعرض أول 3 حالات غير مشاهَدة ثم يخفيها؛ «التالي» يعرض الباقي."""
+    od_ensure_tables()
+    alerts = od_load_unseen_nouser_alerts()
+    page = alerts[:3]
+    remaining = max(0, len(alerts) - len(page))
     kb_rows = []
-    nav = od_nav_row("od:aln", offset, total, 3)
-    if nav:
-        kb_rows.append(nav)
+    if remaining:
+        kb_rows.append([InlineKeyboardButton(f"➡️ التالي ({remaining} متبقي)", callback_data="od:aln:0")])
     kb_rows.append([InlineKeyboardButton("🔙 التنبيهات", callback_data="od:alerts")])
-    text = ("👥 <b>3 من 5 بدون يوزر</b>\n\n" + "\n➖➖➖\n".join(od_nouser_alert_text(a) for a in page)) \
-        if page else "👥 <b>3 من 5 بدون يوزر</b>\n\nلا توجد حالات."
+    text = ("👥 <b>3 من 5 بدون يوزر</b>\n\n" + "\n➖➖➖\n".join(od_nouser_alert_text(a) for a in page)
+            + "\n\n🧹 <i>هذه الحالات تُخفى من القائمة بعد مشاهدتها.</i>") \
+        if page else "👥 <b>3 من 5 بدون يوزر</b>\n\nلا توجد حالات جديدة ✅"
     await od_show(q, text, InlineKeyboardMarkup(kb_rows))
+    if page:
+        try:
+            od_mark_nouser_viewed(page)
+        except Exception:
+            logger.exception("تعذر تسجيل مشاهدة التنبيهات")
 
 
 async def run_owner_alerts_job(context) -> None:

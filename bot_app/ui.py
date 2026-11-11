@@ -276,7 +276,7 @@ MAIN_MENU_GROUPS = {
         "label": "💼 حسابي ومحفظتي",
         "title": "💼 *حسابي ومحفظتي*\n\nاختر من القائمة:",
         "actions": (
-            "my_info", "my_numbers", "collect_points",
+            "my_info", "my_numbers",
             "transfer_points", "contributor_accounts", "share_account:menu",
             "buyback:start",
         ),

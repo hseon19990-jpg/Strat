@@ -561,6 +561,7 @@ def main():
         # التقرير اليومي للمالك (23:55 بتوقيت UTC+3 افتراضياً) وتنبيهات الغش/الدعوات بلا يوزر.
         app.job_queue.run_repeating(run_daily_report_job, interval=300, first=60)
         app.job_queue.run_repeating(run_owner_alerts_job, interval=1800, first=120)
+        ov_schedule_daily_report(app.job_queue)
         logger.info("⚡ تم تفعيل تنفيذ حملات تفاعلات Telegram كل 30 ثانية")
         # طلبات التفاعل المستمر تحتاج استئنافاً دورياً بعد إعادة نشر Railway.
         # قد يتزامن الإقلاع مع تأخر قاعدة البيانات أو Telegram؛ المحاولة
