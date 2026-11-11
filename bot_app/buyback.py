@@ -158,8 +158,13 @@ def _active_buyback_phone_exists(phone: str) -> bool:
         ).fetchone()
         if row:
             return True
+        # الرقم المطرود (last_authorized=FALSE) والمتاح في المخزون غير المسند
+        # لا يُعتبر "موجوداً": جلسة البوت عليه ميتة، فيجوز للمالك الحقيقي
+        # بيعه أو تأجيره للبوت من جديد (mark_buyback_paid يستبدل جلسته القديمة).
         stock = c.execute(
-            "SELECT id FROM number_stock WHERE phone_number=%s AND deleted_at IS NULL LIMIT 1",
+            "SELECT id FROM number_stock WHERE phone_number=%s AND deleted_at IS NULL "
+            "AND NOT (last_authorized IS FALSE AND assigned_to IS NULL "
+            "AND ever_sold IS NOT TRUE) LIMIT 1",
             (phone,),
         ).fetchone()
     return bool(stock)
@@ -1111,7 +1116,7 @@ def mark_buyback_paid(offer_id: int) -> int | None:
             "ON CONFLICT (phone_number) DO UPDATE SET "
             "session_string=EXCLUDED.session_string, twofa_password=EXCLUDED.twofa_password, "
             "auto_2fa_enabled=TRUE, assigned_to=NULL, deleted_at=NULL, ever_sold=FALSE, "
-            "sessions_reset=TRUE, last_authorized=TRUE, raksh_only=FALSE",
+            "sessions_reset=TRUE, last_authorized=TRUE, kicked_at=NULL, raksh_only=FALSE",
             (row["phone_number"], row["session_string"], row["twofa_password"]),
         )
         c.execute(

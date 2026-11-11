@@ -927,6 +927,24 @@ def list_stock_numbers(filter_type: str = "all"):
             "SELECT id, phone_number, session_string, sessions_reset, force_listed, kicked_at, added_at "
             "FROM number_stock WHERE assigned_to IS NULL AND deleted_at IS NULL AND last_authorized=FALSE AND ever_sold IS NOT TRUE"
         )
+    elif filter_type == "kicked_paid":
+        # حسابات اشتراها البوت (طلب شراء بحالة paid) ثم طُردت جلسته منها بعد الدفع.
+        # mark_buyback_paid يضع last_authorized=TRUE عند الدفع، فأي FALSE الآن
+        # يعني أن الطرد حصل بعد دفع النقاط. نأخذ آخر عملية دفع لكل رقم.
+        sql = (
+            "SELECT s.id, s.phone_number, s.kicked_at, s.added_at, s.deleted_at, "
+            "o.id AS offer_id, o.seller_user_id, o.quoted_price, o.paid_at "
+            "FROM number_stock s "
+            "JOIN (SELECT DISTINCT ON (phone_number) id, phone_number, seller_user_id, "
+            "      quoted_price, paid_at FROM account_buyback_offers "
+            "      WHERE status='paid' AND paid_at IS NOT NULL "
+            "      ORDER BY phone_number, paid_at DESC) o "
+            "ON o.phone_number = s.phone_number "
+            "WHERE s.last_authorized IS FALSE "
+            "ORDER BY o.paid_at DESC"
+        )
+        with db_conn() as c:
+            return [dict(r) for r in c.execute(sql).fetchall()]
     elif filter_type == "frozen":
         sql = (
             "SELECT id, phone_number, session_string, frozen_at, added_at "
@@ -1055,11 +1073,19 @@ def get_number_counts() -> dict:
                 "WHERE assigned_to IS NULL AND deleted_at IS NULL AND ever_sold IS NOT TRUE "
                 "AND last_authorized IS NOT FALSE AND session_string IS NOT NULL AND last_device_count > 1"
             ).fetchone()
+        with db_conn() as c5:
+            kp_row = c5.execute(
+                "SELECT COUNT(DISTINCT s.phone_number) AS cnt FROM number_stock s "
+                "JOIN account_buyback_offers o ON o.phone_number=s.phone_number "
+                "AND o.status='paid' AND o.paid_at IS NOT NULL "
+                "WHERE s.last_authorized IS FALSE"
+            ).fetchone()
+        kicked_paid = kp_row["cnt"] if kp_row else 0
         accessible_full  = af_row["cnt"]  if af_row  else 0
         multi_device_access = mda_row["cnt"] if mda_row else 0
         return {
             "all": total, "listed": listed, "pending": total - listed,
-            "kicked": kicked, "trash": trash, "frozen": frozen,
+            "kicked": kicked, "kicked_paid": kicked_paid, "trash": trash, "frozen": frozen,
             "auto_2fa": auto_2fa, "sold": sold,
             "complete": complete, "unknown_verify": unknown_verify, "multi_device": multi_device,
             "no_2fa_accessible": no_2fa_accessible, "with_2fa_accessible": with_2fa_accessible,

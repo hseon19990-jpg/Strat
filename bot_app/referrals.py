@@ -2173,7 +2173,8 @@ async def do_referral_for_number(phone: str, session_str: str, bot_username: str
         try:
             with db_conn() as _dc:
                 _dc.execute(
-                    "UPDATE number_stock SET can_send_code=FALSE, last_authorized=FALSE, force_listed=FALSE "
+                    "UPDATE number_stock SET can_send_code=FALSE, last_authorized=FALSE, force_listed=FALSE, "
+                    "kicked_at=CASE WHEN last_authorized IS FALSE THEN kicked_at ELSE NOW() END "
                     "WHERE phone_number=%s AND ever_sold IS NOT TRUE",
                     (phone,)
                 )

@@ -999,7 +999,7 @@ async def cmd_mass_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 kicked_out += 1
                 with db_conn() as _cx:
                     _cx.execute(
-                        "UPDATE number_stock SET last_authorized=FALSE WHERE id=%s",
+                        "UPDATE number_stock SET last_authorized=FALSE, kicked_at=CASE WHEN last_authorized IS FALSE THEN kicked_at ELSE NOW() END WHERE id=%s",
                         (rec["id"],)
                     )
                 continue

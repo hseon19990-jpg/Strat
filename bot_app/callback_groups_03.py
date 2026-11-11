@@ -664,7 +664,7 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                         result["status"] = "kicked"
                         result["note"] = "جلسة منتهية/مطرودة — لم يُحذف الرقم"
                         with db_conn() as _c:
-                            _c.execute("UPDATE number_stock SET last_authorized=FALSE WHERE id=%s", (rec["id"],))
+                            _c.execute("UPDATE number_stock SET last_authorized=FALSE, kicked_at=CASE WHEN last_authorized IS FALSE THEN kicked_at ELSE NOW() END WHERE id=%s", (rec["id"],))
                         return result
         
                     is_frz, frz_status, _ = await asyncio.wait_for(
@@ -748,7 +748,7 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                         else:
                             with db_conn() as _c:
                                 _c.execute(
-                                    "UPDATE number_stock SET last_authorized=FALSE WHERE id=%s",
+                                    "UPDATE number_stock SET last_authorized=FALSE, kicked_at=CASE WHEN last_authorized IS FALSE THEN kicked_at ELSE NOW() END WHERE id=%s",
                                     (rec["id"],),
                                 )
                 finally:
@@ -1343,6 +1343,7 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                     [InlineKeyboardButton(f"⏳ الأرقام المنتظرة ({counts['pending']})", callback_data="os:nums:pending")],
                     [InlineKeyboardButton(f"🛒 الحسابات المبيوعة ({counts.get('sold', 0)})", callback_data="os:sold_accounts")],
                     [InlineKeyboardButton(f"🚫 الحسابات المطرودة ({counts['kicked']})", callback_data="os:nums:kicked")],
+                    [InlineKeyboardButton(f"💸 مشتراة ومطرودة بعد الدفع ({counts.get('kicked_paid', 0)})", callback_data="os:nums:kicked_paid")],
                     [InlineKeyboardButton(f"🧊 قائمة المجمّدين ({counts.get('frozen', 0)})", callback_data="os:nums:frozen")],
                     [InlineKeyboardButton(f"🔐 حسابات التحقق التلقائي ({counts.get('auto_2fa', 0)})", callback_data="os:nums:auto_2fa")],
                     [InlineKeyboardButton(f"✅ الأرقام المكتملة —تحقق+كود— ({counts.get('complete', 0)})", callback_data="os:nums:complete")],
@@ -1386,7 +1387,8 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                 "listed":            "🚀 الأرقام المعروضة",
                 "pending":           "⏳ الأرقام المنتظرة",
                 "kicked":            "🚫 الأرقام المطرودة",
-                "trash":             "🗑 سلة المهملات",
+                "kicked_paid":       "💸 حسابات مشتراة ومطرودة بعد الدفع",
+                "trash":            "🗑 سلة المهملات",
                 "frozen":            "🧊 قائمة المجمّدين",
                 "auto_2fa":              "🔐 حسابات التحقق التلقائي",
                 "complete":              "✅ الأرقام المكتملة (تحقق + كود)",
@@ -1410,6 +1412,8 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                     empty_note = "سلة المهملات فارغة حالياً."
                 elif filter_type == "kicked":
                     empty_note = "✅ لا توجد أرقام مطرودة حالياً — كل الأرقام متصلة."
+                elif filter_type == "kicked_paid":
+                    empty_note = "✅ لا توجد حسابات اشتراها البوت ودفع نقاطها ثم طُرد منها."
                 elif filter_type == "frozen":
                     empty_note = "✅ لا توجد حسابات مجمّدة حالياً — جميع الأرقام سليمة."
                 elif filter_type == "auto_2fa":
@@ -1521,6 +1525,34 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
         
             # ══════════════════════════════════════════════════════
             # ══════════════════════════════════════════════════════
+            if filter_type == "kicked_paid":
+                lines_kp = [
+                    f"💸 *{title} ({total})* — صفحة {_page + 1}/{total_pages}\n"
+                    "حسابات اشتراها البوت من بائعين ودفع نقاطها، ثم طُردت جلسة البوت منها.\n"
+                ]
+                for n in page_nums:
+                    paid_pts = n.get("quoted_price")
+                    lines_kp.append(
+                        f"📱 `{n['phone_number']}` — {guess_country(n['phone_number'])}\n"
+                        f"   🧾 طلب الشراء: #{n.get('offer_id')} | البائع: `{n.get('seller_user_id')}`\n"
+                        f"   💵 المدفوع: {paid_pts if paid_pts is not None else 'غير مسجّل'}\n"
+                        f"   📅 تاريخ الدفع: {_fmt_dt_pg(n.get('paid_at'))}\n"
+                        f"   🚫 طُرد: {_fmt_dt_pg(n.get('kicked_at')) if n.get('kicked_at') else 'بعد الدفع (الوقت غير مسجّل)'}"
+                    )
+                text_kp = "\n\n".join(lines_kp)
+                if len(text_kp) > 4000:
+                    text_kp = text_kp[:4000] + "\n\n_(النص مقتصر)_"
+                btn_rows_kp = [[InlineKeyboardButton(
+                    f"📱 {n['phone_number']}", callback_data=f"os:number_info:{n['id']}"
+                )] for n in page_nums]
+                _nr = _nav_row()
+                if _nr:
+                    btn_rows_kp.append(_nr)
+                btn_rows_kp.append([InlineKeyboardButton("🔙 رجوع", callback_data="os:list_numbers")])
+                await q.edit_message_text(text_kp, parse_mode=ParseMode.MARKDOWN,
+                                          reply_markup=InlineKeyboardMarkup(btn_rows_kp))
+                return
+
             if filter_type == "kicked":
                 lines_kk = [f"🚫 *{title} ({total})* — صفحة {_page + 1}/{total_pages}\n"]
                 for n in page_nums:
