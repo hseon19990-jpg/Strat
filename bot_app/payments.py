@@ -1096,7 +1096,9 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
         channel_md   = md_escape(channel)
         ft_label     = FUND_KIND_LABELS[_kind]
 
-        is_queued, code = activate_channel_funding(user.id, _kind, channel, member_count)
+        is_queued, code = activate_channel_funding(
+            user.id, _kind, channel, member_count, cost_stars=total_stars
+        )
 
         if is_queued:
             await update.message.reply_text(
@@ -1229,6 +1231,18 @@ async def handle_member_leave(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
     except Exception as _join_exc:
         logger.warning(f"record_mandatory_join error: {_join_exc}")
+    # عدّاد انضمامات القنوات الإجبارية: كل انضمام يُحسب (حتى لو غادر ثم عاد)
+    try:
+        def _in_channel(member):
+            if member.status in ("member", "administrator", "creator"):
+                return True
+            return member.status == "restricted" and bool(getattr(member, "is_member", False))
+
+        if (not _in_channel(cmu.old_chat_member)) and _in_channel(cmu.new_chat_member) \
+                and cmu.chat.username:
+            record_mandatory_channel_join(member_user.id, cmu.chat.username)
+    except Exception as _cnt_exc:
+        logger.warning(f"record_mandatory_channel_join error: {_cnt_exc}")
     was_in = old_status in ("member", "administrator", "creator", "restricted")
     now_out = new_status in ("left", "kicked")
     if not (was_in and now_out):

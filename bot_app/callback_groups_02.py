@@ -614,7 +614,9 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
                     reply_markup=main_menu_kb(is_own))
                 return
             try:
-                is_queued, code = activate_channel_funding(user.id, _kind, channel, member_count)
+                is_queued, code = activate_channel_funding(
+                    user.id, _kind, channel, member_count, cost_jewels=jewels
+                )
             except Exception:
                 logger.exception("فشل تفعيل تمويل القناة بعد خصم الجواهر؛ تُعاد الجواهر")
                 add_jewels(user.id, jewels, reference=f"fund_refund:{channel}")

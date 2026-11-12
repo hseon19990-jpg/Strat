@@ -75,16 +75,22 @@ def fund_price_lines(kind: str) -> str:
     return f"  • السعر التقريبي: *{one['stars']:,} ⭐* لكل 1,000 عضو\n"
 
 
-def activate_channel_funding(user_id: int, kind: str, channel: str, member_count: int):
-    """ينشئ سجل التمويل وقناة الاشتراك. يعيد (is_queued, order_code)."""
+def activate_channel_funding(user_id: int, kind: str, channel: str, member_count: int,
+                             cost_stars: int = 0, cost_jewels=0):
+    """ينشئ سجل التمويل وقناة الاشتراك. يعيد (is_queued, order_code).
+
+    cost_stars / cost_jewels: ما دفعه صاحب القناة فعلياً، ويُحفظ لسجل المصروف.
+    """
     is_queued = kind == "mandatory" and count_active_mandatory_channels() >= MANDATORY_MAX_ACTIVE
     code = next_order_code(user_id)
     with db_conn() as c:
         c.execute(
             "INSERT INTO channel_funding "
-            "(user_id,channel_username,funding_type,cost_points,target_members,current_members,status) "
-            "VALUES (%s,%s,%s,0,%s,0,'active')",
-            (user_id, channel, kind, member_count),
+            "(user_id,channel_username,funding_type,cost_points,target_members,current_members,status,"
+            "cost_stars,cost_jewels) "
+            "VALUES (%s,%s,%s,0,%s,0,'active',%s,%s)",
+            (user_id, channel, kind, member_count,
+             int(cost_stars or 0), Decimal(str(cost_jewels or 0))),
         )
         c.execute(
             "INSERT INTO mandatory_channels (channel_username,owner_user_id,funding_type,active,queued) "
@@ -94,3 +100,123 @@ def activate_channel_funding(user_id: int, kind: str, channel: str, member_count
             (channel, user_id, kind, 0 if is_queued else 1, 1 if is_queued else 0),
         )
     return is_queued, code
+
+
+# ───────────────────────── سجل انضمامات القنوات الإجبارية ─────────────────────────
+
+def record_mandatory_channel_join(user_id: int, channel_username: str) -> bool:
+    """يسجّل انضماماً واحداً لقناة إجبارية فعّالة.
+
+    كل انضمام يُحسب: من انضم وغادر ثم عاد وغادر ثم عاد = 3 انضمامات.
+    لا تُحسب حسابات مخزون البوت (حسابات الدعم) لأنها ليست أعضاء حقيقيين.
+    """
+    channel = (channel_username or "").lstrip("@").strip().lower()
+    if not channel or not user_id:
+        return False
+    with db_conn() as c:
+        row = c.execute(
+            "SELECT channel_username FROM mandatory_channels "
+            "WHERE LOWER(channel_username)=%s AND funding_type='mandatory' AND active=1",
+            (channel,),
+        ).fetchone()
+        if not row:
+            return False
+        is_stock = c.execute(
+            "SELECT 1 FROM number_stock WHERE tg_user_id=%s LIMIT 1", (int(user_id),)
+        ).fetchone()
+        if is_stock:
+            return False
+        c.execute(
+            "INSERT INTO mandatory_channel_joins (channel_username, user_id) VALUES (%s,%s)",
+            (row["channel_username"], int(user_id)),
+        )
+    return True
+
+
+MANDATORY_LOG_PAGE_SIZE = 6
+
+
+def get_mandatory_channels_log(page: int = 0, page_size: int = MANDATORY_LOG_PAGE_SIZE) -> dict:
+    """سجل كل القنوات الإجبارية (الحالية والسابقة) مع الانضمامات والمصروف."""
+    page = max(0, int(page))
+    with db_conn() as c:
+        totals = c.execute(
+            """
+            SELECT
+              (SELECT COUNT(*) FROM mandatory_channels WHERE funding_type='mandatory') AS channels,
+              (SELECT COUNT(*) FROM mandatory_channel_joins) AS joins,
+              (SELECT COALESCE(SUM(cost_stars),0) FROM channel_funding
+                 WHERE funding_type='mandatory' AND COALESCE(status,'')<>'refunded') AS stars,
+              (SELECT COALESCE(SUM(cost_jewels),0) FROM channel_funding
+                 WHERE funding_type='mandatory' AND COALESCE(status,'')<>'refunded') AS jewels
+            """
+        ).fetchone()
+        rows = c.execute(
+            """
+            SELECT mc.id, mc.channel_username, mc.active, mc.queued, mc.owner_user_id,
+                   COALESCE(j.joins,0) AS joins,
+                   COALESCE(f.stars,0) AS stars, COALESCE(f.jewels,0) AS jewels,
+                   COALESCE(f.target,0) AS target, COALESCE(f.n,0) AS fundings
+            FROM mandatory_channels mc
+            LEFT JOIN (
+                SELECT LOWER(channel_username) AS ch, COUNT(*) AS joins
+                FROM mandatory_channel_joins GROUP BY 1
+            ) j ON j.ch = LOWER(mc.channel_username)
+            LEFT JOIN (
+                SELECT LOWER(channel_username) AS ch,
+                       SUM(cost_stars) AS stars, SUM(cost_jewels) AS jewels,
+                       SUM(target_members) AS target, COUNT(*) AS n
+                FROM channel_funding
+                WHERE funding_type='mandatory' AND COALESCE(status,'')<>'refunded'
+                GROUP BY 1
+            ) f ON f.ch = LOWER(mc.channel_username)
+            WHERE mc.funding_type='mandatory'
+            ORDER BY mc.id DESC
+            LIMIT %s OFFSET %s
+            """,
+            (int(page_size), page * int(page_size)),
+        ).fetchall()
+    return {
+        "page": page,
+        "page_size": int(page_size),
+        "totals": dict(totals or {}),
+        "rows": [dict(r) for r in rows or []],
+    }
+
+
+def format_mandatory_channels_log(data: dict) -> str:
+    """نص Markdown جاهز للإرسال لصفحة واحدة من السجل."""
+    t = data.get("totals") or {}
+    total_channels = int(t.get("channels") or 0)
+    page = int(data.get("page") or 0)
+    size = int(data.get("page_size") or MANDATORY_LOG_PAGE_SIZE)
+    pages = max(1, -(-total_channels // size))
+    lines = [
+        "📊 *سجل القنوات الإجبارية*\n",
+        f"📡 عدد القنوات: *{total_channels:,}*",
+        f"👥 إجمالي الانضمامات: *{int(t.get('joins') or 0):,}*",
+        f"⭐ إجمالي المصروف بالنجوم: *{int(t.get('stars') or 0):,}*",
+        f"💎 إجمالي المصروف بالجواهر: *{fmt_decimal(t.get('jewels'))}*",
+        f"\n📄 الصفحة {page + 1}/{pages}\n",
+    ]
+    rows = data.get("rows") or []
+    if not rows:
+        lines.append("لا توجد قنوات إجبارية مسجلة بعد.")
+    for r in rows:
+        if r.get("queued"):
+            state = "⏳ بالانتظار"
+        elif r.get("active"):
+            state = "🟢 فعّالة"
+        else:
+            state = "⚪ منتهية"
+        if int(r.get("fundings") or 0) == 0:
+            spent = "أضافها المالك (بلا تمويل)"
+        else:
+            spent = f"⭐ {int(r.get('stars') or 0):,} | 💎 {fmt_decimal(r.get('jewels'))}"
+        lines.append(
+            f"• @{md_escape(r['channel_username'])} — {state}\n"
+            f"   👥 الانضمامات: *{int(r.get('joins') or 0):,}*"
+            f" (المطلوب: {int(r.get('target') or 0):,})\n"
+            f"   💸 المصروف: {spent}"
+        )
+    return "\n".join(lines)

@@ -54,9 +54,42 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                     callback_data=f"os_del_ch:{ch['id']}"
                 )])
             rows.append([InlineKeyboardButton("➕ إضافة قناة", callback_data="os_add_ch")])
+            rows.append([InlineKeyboardButton("📊 سجل القنوات الإجبارية", callback_data="os:mc_log:0")])
             rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")])
             await q.edit_message_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN,
                                        reply_markup=InlineKeyboardMarkup(rows))
+            return
+
+        if data.startswith("os:mc_log:") and is_own:
+            try:
+                _page = max(0, int(data.split(":")[2]))
+            except (IndexError, ValueError):
+                _page = 0
+            _log = get_mandatory_channels_log(_page)
+            _total = int((_log["totals"] or {}).get("channels") or 0)
+            _pages = max(1, -(-_total // _log["page_size"]))
+            if _page >= _pages:
+                _page = _pages - 1
+                _log = get_mandatory_channels_log(_page)
+            _nav = []
+            if _page > 0:
+                _nav.append(InlineKeyboardButton("⬅️ السابق", callback_data=f"os:mc_log:{_page - 1}"))
+            if _page + 1 < _pages:
+                _nav.append(InlineKeyboardButton("التالي ➡️", callback_data=f"os:mc_log:{_page + 1}"))
+            _kb = ([_nav] if _nav else []) + [
+                [InlineKeyboardButton("🔄 تحديث", callback_data=f"os:mc_log:{_page}")],
+                [InlineKeyboardButton("🔙 رجوع", callback_data="os:manage_channels")],
+            ]
+            try:
+                await q.edit_message_text(
+                    format_mandatory_channels_log(_log),
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=InlineKeyboardMarkup(_kb),
+                )
+            except Exception as _e:
+                if "not modified" not in str(_e).lower():
+                    raise
+                await q.answer("لا تغييرات جديدة")
             return
 
         if data.startswith("os_del_ch:") and is_own:

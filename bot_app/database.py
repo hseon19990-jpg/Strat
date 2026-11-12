@@ -316,6 +316,17 @@ def init_db():
           ON mandatory_join_events (user_id, joined_second)
           """)
           c.execute("""
+          CREATE TABLE IF NOT EXISTS mandatory_channel_joins (
+              id               BIGSERIAL PRIMARY KEY,
+              channel_username TEXT NOT NULL,
+              user_id          BIGINT NOT NULL,
+              joined_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )""")
+          c.execute("""
+          CREATE INDEX IF NOT EXISTS mandatory_channel_joins_chan_idx
+          ON mandatory_channel_joins (channel_username)
+          """)
+          c.execute("""
           CREATE TABLE IF NOT EXISTS referral_fraud_log (
               id            BIGSERIAL PRIMARY KEY,
               inviter_id    BIGINT NOT NULL,
@@ -803,6 +814,8 @@ def init_db():
               "ALTER TABLE channel_funding ADD COLUMN IF NOT EXISTS target_members INTEGER DEFAULT 0",
               "ALTER TABLE channel_funding ADD COLUMN IF NOT EXISTS current_members INTEGER DEFAULT 0",
               "ALTER TABLE channel_funding ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active'",
+              "ALTER TABLE channel_funding ADD COLUMN IF NOT EXISTS cost_stars INTEGER NOT NULL DEFAULT 0",
+              "ALTER TABLE channel_funding ADD COLUMN IF NOT EXISTS cost_jewels NUMERIC(20,6) NOT NULL DEFAULT 0",
               "ALTER TABLE mandatory_channels ADD COLUMN IF NOT EXISTS queued INTEGER DEFAULT 0",
               "ALTER TABLE prize_exchanges ADD COLUMN IF NOT EXISTS order_code TEXT",
               "ALTER TABLE prize_exchanges ADD COLUMN IF NOT EXISTS owner_seen BOOLEAN DEFAULT FALSE",
