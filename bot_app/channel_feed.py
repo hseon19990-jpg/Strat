@@ -4,10 +4,12 @@
 
 1. كليشة كل ساعة: المالك يضيف أكثر من كليشة، والبوت ينشر واحدة كل ساعة
    بالتتابع (طابور دائري): 1 ثم 2 ثم 3 ... ثم يعود للأولى.
-2. كود وهمي كل ربع ساعة: يُنشر في القناة كود بقيمة ٣٠٠٠ نقطة (القيمة قابلة
-   للتعديل) مع زر «فتح الكود». هذا الكود **وهمي بالكامل**:
-   - لا يُحفظ في جدول promo_codes، لذلك لا يقبله زر «استخدام كود» أبداً.
-   - عند ضغط أي عضو على الزر يظهر له أن الكود مستخدم، ولا تُمنح أي نقاط.
+2. كود وهمي كل ربع ساعة: يُنشر في القناة كود بصيغة عادية (لمستخدم واحد، بقيمة
+   ٣٠٠٠ نقطة قابلة للتعديل)، بدون أي زر، ولا يُعدَّل المنشور ولا يُشطب ولا يُحذف.
+   هذا الكود **وهمي بالكامل**:
+   - لا يُحفظ في جدول promo_codes ولا تُمنح به نقاط.
+   - عندما يدخله عضو في «استخدام كود» يرد البوت بنفس رسالة الكود العادي
+     المستنفد: «هذا الكود وصل للحد الأقصى من الاستخدامات».
    أما الأكواد الحقيقية التي ينشئها المالك من «إنشاء كود ترويجي» فتبقى كما هي.
 
 كل المؤقتات محفوظة في جدول settings، فلا تتكرر المنشورات ولا تضيع بعد
@@ -15,7 +17,6 @@
 
 callback_data:
   feed:*      — لوحة المالك (للمالك فقط)
-  feedcode:*  — زر «فتح الكود» داخل القناة (لأي عضو)
 حالات النص: os_await_feed_channel / os_await_feed_cliche / os_await_feed_points
 """
 
@@ -120,21 +121,30 @@ def feed_make_fake_code() -> str:
 # ────────────────────────────────────────────────────────────
 # النشر في القناة
 # ────────────────────────────────────────────────────────────
-def _feed_code_text(code: str, points: int, used: bool = False) -> str:
-    if used:
-        return (
-            "🎟 <b>كود ترويجي</b>\n\n"
-            f"<s>{html.escape(code)}</s>\n"
-            f"💰 {points:,} نقطة\n\n"
-            "❌ <b>تم استخدام هذا الكود</b>"
-        )
+def _feed_code_text(code: str, points: int) -> str:
+    """منشور الكود بصيغة عادية (يُنسخ بضغطة واحدة). لا يُعدَّل ولا يُشطب بعد النشر."""
     return (
         "🎟 <b>كود ترويجي جديد!</b>\n\n"
-        f"<code>{html.escape(code)}</code>\n"
-        f"💰 القيمة: <b>{points:,}</b> نقطة\n"
-        "👤 لشخص واحد فقط\n\n"
-        "اضغط الزر قبل أن يسبقك أحد 👇"
+        f"<code>{html.escape(code)}</code>\n\n"
+        "👥 الحد الأقصى: 1 مستخدم\n"
+        f"💰 النقاط: <b>{points:,}</b> نقطة"
     )
+
+
+def feed_is_fake_code(code: str) -> bool:
+    """هل هذا الكود من أكواد القناة الوهمية؟ (يستخدمها معالج «استخدام كود»)"""
+    code = (code or "").strip().upper()
+    if not code:
+        return False
+    try:
+        _feed_ensure_tables()
+        with db_conn() as c:
+            return c.execute(
+                "SELECT 1 FROM channel_fake_codes WHERE code=?", (code,)
+            ).fetchone() is not None
+    except Exception:
+        logger.exception("feed_is_fake_code failed")
+        return False
 
 
 async def feed_post_next_cliche(context) -> bool:
@@ -166,17 +176,12 @@ async def feed_post_fake_code(context) -> bool:
         chat_id=channel,
         text=_feed_code_text(code, points),
         parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("🔓 فتح الكود", callback_data=f"feedcode:open:{code}")
-        ]]),
     )
     with db_conn() as c:
         c.execute(
             "INSERT INTO channel_fake_codes (code, points, message_id) VALUES (%s,%s,%s)",
             (code, points, sent.message_id),
         )
-        # تنظيف السجلات القديمة حتى لا يكبر الجدول.
-        c.execute("DELETE FROM channel_fake_codes WHERE created_at < NOW() - INTERVAL '3 days'")
     return True
 
 
@@ -206,48 +211,6 @@ async def run_channel_feed_job(context) -> None:
 
 
 # ────────────────────────────────────────────────────────────
-# زر «فتح الكود» داخل القناة (أي عضو)
-# ────────────────────────────────────────────────────────────
-async def handle_feedcode_callback(update, context, q, data: str, user) -> bool:
-    if not data.startswith("feedcode:open:"):
-        return False
-    code = data[len("feedcode:open:"):]
-    _feed_ensure_tables()
-    first_open = False
-    points = feed_code_points()
-    try:
-        with db_conn() as c:
-            row = c.execute(
-                "UPDATE channel_fake_codes SET opened_by=%s, opened_at=NOW() "
-                "WHERE code=%s AND opened_by IS NULL RETURNING points",
-                (user.id, code),
-            ).fetchone()
-        if row:
-            first_open = True
-            points = int(row["points"])
-    except Exception:
-        logger.exception("feedcode open failed")
-
-    # دائماً نفس الرد: الكود مستخدم. لا نقاط تُمنح ولا شيء يُحفظ للعضو.
-    try:
-        await q.answer("❌ هذا الكود تم استخدامه بالفعل.", show_alert=True)
-    except Exception:
-        pass
-
-    if first_open:
-        # أول ضغطة تحوّل المنشور إلى «مستخدم» وتُزيل الزر.
-        try:
-            await q.edit_message_text(
-                _feed_code_text(code, points, used=True),
-                parse_mode=ParseMode.HTML,
-                reply_markup=None,
-            )
-        except Exception as exc:
-            logger.warning(f"⚠️ تعذر تحديث منشور الكود: {exc}")
-    return True
-
-
-# ────────────────────────────────────────────────────────────
 # لوحة المالك
 # ────────────────────────────────────────────────────────────
 def _feed_status_text() -> str:
@@ -263,7 +226,7 @@ def _feed_status_text() -> str:
         + "\n\n"
         f"🎟 كود وهمي كل ربع ساعة: {'مفعّل ✅' if feed_is_on(FEED_CODE_ON_KEY) else 'متوقف ❌'}\n"
         f"   قيمته المعروضة: {feed_code_points():,} نقطة\n"
-        "   ⚠️ وهمي: لا يُمنح به أي نقاط ولا يقبله زر «استخدام كود»."
+        "   ⚠️ وهمي: لا يُمنح به أي نقاط، ويظهر للعضو أنه مستنفد."
     )
 
 

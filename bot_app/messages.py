@@ -11,7 +11,7 @@ globals().update({key: value for key, value in vars(_shared).items() if not key.
 from .owner_details import handle_od_text, record_thank_message, od_thank_reply_kb
 from .orders_view import handle_orders_view_text
 from .gift_profit import handle_gift_profit_text
-from .channel_feed import handle_channel_feed_text
+from .channel_feed import handle_channel_feed_text, feed_is_fake_code
 from .order_inspect import handle_order_inspect_text
 from .payment_audit import handle_payment_audit_text
 
@@ -1636,6 +1636,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if state == "await_promo_code":
         code = text.strip().upper()
+        # كود القناة الوهمي: نفس رد الكود العادي المستنفد، بدون أي نقاط.
+        if feed_is_fake_code(code):
+            await update.message.reply_text(
+                "⚠️ هذا الكود وصل للحد الأقصى من الاستخدامات.",
+                reply_markup=main_menu_kb(is_own)
+            )
+            context.user_data["state"] = "main_menu"
+            return
         with db_conn() as c:
             promo = c.execute("SELECT * FROM promo_codes WHERE code=? AND active=1", (code,)).fetchone()
             if not promo:
