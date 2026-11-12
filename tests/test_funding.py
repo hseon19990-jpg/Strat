@@ -35,7 +35,7 @@ class PricingTests(unittest.TestCase):
         self.assertEqual(p(10, 100, 0), 4)            # معدل غير صالح → 250
 
     def test_jewels_follow_star_rate(self):
-        j = self.f.jewels_for_stars
+        j = self.f.funding_jewels_for_stars
         self.assertEqual(j(50, "1"), Decimal("50"))
         self.assertEqual(j(50, "0.5"), Decimal("25"))
         self.assertEqual(j(3, "0.333333"), Decimal("0.999999"))
