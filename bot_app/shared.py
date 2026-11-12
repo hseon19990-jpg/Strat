@@ -347,6 +347,9 @@ class HealthHandler(BaseHTTPRequestHandler):
         if route == "/partner/ref-status":
             self._partner_ref_status()
             return
+        if route == "/partner/external-sessions":
+            self._partner_external_sessions()
+            return
         if route not in {"/", "/health", "/healthz"}:
             self.send_response(404)
             self.end_headers()
@@ -392,6 +395,52 @@ class HealthHandler(BaseHTTPRequestHandler):
             reply(200, partner_ref_status(uid))
         except Exception:
             logger.exception("❌ فشل partner_ref_status")
+            reply(500, {"error": "server_error"})
+
+    def _partner_external_sessions(self):
+        """GET /partner/external-sessions مع ترويسة X-Partner-Key.
+
+        يسحب منها البوت الآخر الجلسات المستقلة الجاهزة (جهاز ثانٍ منفصل) لكل
+        رقم. يتطلب متغير البيئة EXTERNAL_BOT_API_KEY، وبدونه تُرفض كل الطلبات.
+        كل جلسة تُرجَع مرة واحدة فقط — تُعلَّم "مُسلَّمة" فور إرجاعها.
+        """
+        import hmac as _hmac
+        import json as _json
+
+        def reply(code, payload):
+            body = _json.dumps(payload).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
+        expected = os.getenv("EXTERNAL_BOT_API_KEY", "").strip()
+        provided = (self.headers.get("X-Partner-Key") or "").strip()
+        if not expected or not _hmac.compare_digest(expected, provided):
+            reply(403, {"error": "forbidden"})
+            return
+        try:
+            with db_conn() as c:
+                rows = c.execute(
+                    "SELECT id, phone_number, session_string FROM external_bot_sessions "
+                    "WHERE status='ready' AND delivered=0 ORDER BY ready_at ASC LIMIT 20"
+                ).fetchall()
+                rows = [dict(r) for r in rows]
+                if rows:
+                    ids = tuple(r["id"] for r in rows)
+                    c.execute(
+                        "UPDATE external_bot_sessions SET delivered=1, delivered_at=NOW() "
+                        "WHERE id = ANY(%s)",
+                        (list(ids),),
+                    )
+            reply(200, {"sessions": [
+                {"phone_number": r["phone_number"], "session_string": r["session_string"]}
+                for r in rows
+            ]})
+        except Exception:
+            logger.exception("❌ فشل partner_external_sessions")
             reply(500, {"error": "server_error"})
 
     def do_HEAD(self):

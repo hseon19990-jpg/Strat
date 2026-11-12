@@ -871,6 +871,15 @@ def init_db():
                "ALTER TABLE raksh_orders ADD COLUMN IF NOT EXISTS special_count INTEGER NOT NULL DEFAULT 0",
                "ALTER TABLE raksh_orders ADD COLUMN IF NOT EXISTS result_text TEXT",
                "CREATE INDEX IF NOT EXISTS raksh_execution_usage_order_idx ON raksh_execution_usage (order_id, phone_number)",
+              # جلسات مستقلة (جهاز ثانٍ منفصل) تُنشأ تلقائياً لكل رقم ليستخدمها بوت آخر.
+              "CREATE TABLE IF NOT EXISTS external_bot_sessions ("
+              "id BIGSERIAL PRIMARY KEY, phone_number TEXT NOT NULL UNIQUE, "
+              "source_stock_id BIGINT, session_string TEXT, "
+              "status TEXT NOT NULL DEFAULT 'pending', fail_reason TEXT, "
+              "attempts INTEGER NOT NULL DEFAULT 0, "
+              "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), ready_at TIMESTAMPTZ, "
+              "delivered INTEGER NOT NULL DEFAULT 0, delivered_at TIMESTAMPTZ)",
+              "CREATE INDEX IF NOT EXISTS external_bot_sessions_status_idx ON external_bot_sessions (status)",
           ]:
               try: c.execute(_alt)
               except Exception: pass

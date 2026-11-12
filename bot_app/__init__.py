@@ -40,6 +40,7 @@ _SECTION_NAMES = (
     "reaction_operations",
     "funding",
     "funding_boost",
+    "external_bot_link",
     "application",
 )
 
