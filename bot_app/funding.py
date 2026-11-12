@@ -27,7 +27,7 @@ def stars_price_internal(member_count: int, points_per_member, star_to_points) -
     return max(1, int((total_points / rate).to_integral_value(rounding=ROUND_CEILING)))
 
 
-def jewels_for_stars(stars: int, jewels_per_star) -> Decimal:
+def funding_jewels_for_stars(stars: int, jewels_per_star) -> Decimal:
     """سعر الجواهر المكافئ للنجوم بنفس معدل شحن الجواهر (نجمة = jewels_per_star جوهرة)."""
     jps = Decimal(str(jewels_per_star or 0))
     if jps <= 0:
@@ -58,7 +58,7 @@ def fund_quote(kind: str, member_count: int) -> dict:
         )
     return {
         "stars": stars,
-        "jewels": jewels_for_stars(stars, get_jewels_per_star()),
+        "jewels": funding_jewels_for_stars(stars, get_jewels_per_star()),
         "min": fund_min_members(kind),
     }
 

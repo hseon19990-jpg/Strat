@@ -664,6 +664,20 @@ async def _notify_referral_credit(context, user, credited) -> str:
     return f"\n\n🔗 لقد دخلت إلى رابط دعوة صديقك {inviter_name} وقد حصل على {reward_text}."
 
 
+async def _notify_referral_rejected_no_username(context, user):
+    """يُشعر كروب الطلبات (مرة واحدة) بأن إحالة المدعو رُفضت لأنه بلا يوزر."""
+    inviter_id = context.user_data.pop("referral_rejected_no_username", None)
+    if not inviter_id:
+        return
+    db_user = get_user(user.id) or {}
+    try:
+        await notify_invited_without_username(
+            context.bot, user, int(inviter_id), db_user.get("bot_user_num")
+        )
+    except Exception:
+        logger.exception("❌ تعذر إشعار كروب الطلبات برفض الإحالة")
+
+
 async def finalize_verification(update: Update, context: ContextTypes.DEFAULT_TYPE, user, edit=False, skip_referral=False):
     """يُفعّل المستخدم بعد الاشتراك الإجباري، ويمنح مكافأة الإحالة مرة واحدة."""
     set_user_verified(user.id)
@@ -679,6 +693,7 @@ async def finalize_verification(update: Update, context: ContextTypes.DEFAULT_TY
         if not skip_referral
         else None
     )
+    await _notify_referral_rejected_no_username(context, user)
     referral_note = await _notify_referral_credit(context, user, credited)
 
     context.user_data["state"] = "main_menu"
@@ -731,16 +746,23 @@ async def _cmd_start_impl(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user.id,
     )
 
-    # المدعو بلا يوزر: صامت تماماً — لا إشعار للداعي ولا ذكر للإحالة للمدعو.
+    # المدعو بلا يوزر: تُرفض الإحالة نهائياً ويصل إشعار سرّي لكروب الطلبات والمالك فقط
+    # (لا يعلم الداعي ولا المدعو). لا تُحتسب حتى لو أضاف يوزراً لاحقاً.
     if not (user.username or "").strip():
-        if referral_link_just_opened:
-            # إشعار سرّي لكروب الطلبات والمالك فقط (لا يعلم الداعي ولا المدعو).
-            asyncio.create_task(
-                notify_invited_without_username(
-                    context.bot, user, invited_by, db_user.get("bot_user_num")
-                ),
-                name=f"nouser-invite-{user.id}",
-            )
+        invitee_inviter = int(db_user.get("invited_by") or 0)
+        if invitee_inviter and invitee_inviter != user.id:
+            try:
+                newly_rejected = reject_referral_no_username(user.id)
+            except Exception:
+                logger.exception("❌ تعذر رفض إحالة المدعو بلا يوزر")
+                newly_rejected = False
+            if newly_rejected:
+                asyncio.create_task(
+                    notify_invited_without_username(
+                        context.bot, user, invitee_inviter, db_user.get("bot_user_num")
+                    ),
+                    name=f"nouser-invite-{user.id}",
+                )
         referral_link_just_opened = False
     if referral_link_just_opened:
         await notify_referral_link_opened(context.bot, user, invited_by)
@@ -775,6 +797,7 @@ async def _cmd_start_impl(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         welcome = get_setting("welcome_message") or "أهلاً بك!"
         credited = credit_referral_if_pending(user.id, context)
+        await _notify_referral_rejected_no_username(context, user)
         referral_note = await _notify_referral_credit(context, user, credited)
         db_user = get_user(user.id)
         pts = db_user["points"] if db_user else 0

@@ -41,6 +41,12 @@ class FakeDb:
         sql = " ".join(sql.split())
         if sql.startswith("SELECT invited_by, referral_credited, verified"):
             return FakeResult([self.users[params[0]]])
+        if sql.startswith("UPDATE users SET referral_rejected=1"):
+            u = self.users[params[0]]
+            if u.get("referral_rejected"):
+                return FakeResult(rowcount=0)
+            u["referral_rejected"] = 1
+            return FakeResult()
         if sql.startswith("UPDATE users SET referral_credited=1"):
             u = self.users[params[0]]
             if u["referral_credited"]:
@@ -115,21 +121,23 @@ class ReferralLevelsTest(unittest.TestCase):
         # لا تكرار
         self.assertIsNone(ns["credit_referral_if_pending"](4, ctx))
 
-    def test_invited_without_username_is_silent_and_not_credited(self):
+    def test_invited_without_username_is_rejected_permanently(self):
         users = make_users()
         users[4]["username"] = ""
         db = FakeDb(users, {2: {"points": 10, "jewels": Decimal(0)}})
         ns = load(db, {"referral_reward_type": "points", "referral_points": "30"})
         ctx = SimpleNamespace(user_data={})
-        # لا مكافأة ولا إشعار (None) ولا نقاط لأي مستوى
         self.assertIsNone(ns["credit_referral_if_pending"](4, ctx))
         self.assertEqual((users[3]["points"], users[2]["points"]), (0, 0))
         self.assertEqual(users[4]["referral_credited"], 0)
-        self.assertNotIn("referral_upper_rewards", ctx.user_data)
-        # عند إضافته يوزر لاحقاً تُحتسب الإحالة مرة واحدة
+        self.assertEqual(users[4]["referral_rejected"], 1)
+        self.assertEqual(ctx.user_data["referral_rejected_no_username"], 3)
+        # إضافة يوزر لاحقاً لا تُعيد احتساب الإحالة، ولا إشعار مكرر
         users[4]["username"] = "now_has_username"
-        self.assertEqual(ns["credit_referral_if_pending"](4, ctx), (3, 30))
-        self.assertEqual(users[3]["points"], 30)
+        ctx2 = SimpleNamespace(user_data={})
+        self.assertIsNone(ns["credit_referral_if_pending"](4, ctx2))
+        self.assertEqual(users[3]["points"], 0)
+        self.assertNotIn("referral_rejected_no_username", ctx2.user_data)
 
     def test_jewels_only(self):
         users = make_users()

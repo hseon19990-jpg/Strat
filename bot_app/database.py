@@ -1333,6 +1333,12 @@ def init_db():
           pass
       try:
           with db_conn() as c:
+              # إحالة مرفوضة نهائياً لأن المدعو دخل بلا يوزر؛ لا تُحتسب حتى لو أضاف يوزراً لاحقاً.
+              c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_rejected INTEGER DEFAULT 0")
+      except Exception:
+          pass
+      try:
+          with db_conn() as c:
               c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS credited_at TIMESTAMPTZ")
               # المستخدم غير المتحقق لم يحصل على مكافأة بعد؛ لا نسمح
               # لمايغريشن قديم أن يتركه بحالة credited بلا نقاط.

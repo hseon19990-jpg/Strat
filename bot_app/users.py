@@ -422,6 +422,22 @@ def get_recent_invitees_without_username(inviter_id: int, limit: int = NO_USERNA
     return out
 
 
+def reject_referral_no_username(user_id: int) -> bool:
+    """يرفض إحالة المدعو نهائياً لأنه بلا يوزر. يُعيد True مرة واحدة فقط (أول رفض).
+
+    بعد الرفض لا تُحتسب الإحالة حتى لو أضاف المدعو يوزراً لاحقاً.
+    """
+    with db_conn() as c:
+        c.execute(
+            "UPDATE users SET referral_rejected=1 "
+            "WHERE user_id=%s AND invited_by IS NOT NULL AND invited_by != 0 "
+            "AND invited_by != user_id "
+            "AND COALESCE(referral_credited,0)=0 AND COALESCE(referral_rejected,0)=0",
+            (int(user_id),),
+        )
+        return c.rowcount > 0
+
+
 async def notify_invited_without_username(bot, invited_user, inviter_id: int, user_num=None):
     """إشعار سرّي (كروب الطلبات + المالك فقط) عند دخول مدعو بلا يوزر.
 
@@ -443,10 +459,10 @@ async def notify_invited_without_username(bot, invited_user, inviter_id: int, us
                 await bot.send_message(
                     chat_id=group_target,
                     text=(
-                        "⚠️ <b>مدعو بلا يوزر</b>\n\n"
+                        "❌ <b>لم تُقبل الإحالة: المدعو بلا يوزر</b>\n\n"
                         f"👤 المدعو: {invited_name}{invited_num}\n"
                         f"🔗 الداعي: {inviter_name}{inviter_num}\n"
-                        "⏳ لن تُحتسب الإحالة إلا بعد إضافته يوزراً."
+                        "🚫 رُفضت الإحالة نهائياً، ولن تُحتسب حتى لو أضاف يوزراً لاحقاً."
                     ),
                     parse_mode=ParseMode.HTML,
                 )
@@ -878,11 +894,12 @@ def credit_referral_if_pending(user_id: int, context=None):
         context.user_data.pop("referral_upper_rewards", None)
         context.user_data.pop("referral_reward_type", None)
         context.user_data.pop("referral_fraud", None)
+        context.user_data.pop("referral_rejected_no_username", None)
     reward_type = get_referral_reward_type()
     upper_rewards = []
     with db_conn() as c:
         row = c.execute(
-            "SELECT invited_by, referral_credited, verified, username FROM users WHERE user_id=%s",
+            "SELECT invited_by, referral_credited, verified, username, referral_rejected FROM users WHERE user_id=%s",
             (user_id,),
         ).fetchone()
         if not row:
@@ -895,11 +912,19 @@ def credit_referral_if_pending(user_id: int, context=None):
             or invited_by == user_id
             or already
             or not row["verified"]
+            or row.get("referral_rejected")
         ):
             return None
-        # المدعو بلا يوزر تيليجرام: لا تُمنح إحالة ولا يُرسل أي إشعار (صامت).
-        # لا نضع referral_credited=1 هنا، فتُحتسب تلقائياً لاحقاً إن أضاف يوزر.
+        # المدعو بلا يوزر تيليجرام: تُرفض الإحالة نهائياً (حتى لو أضاف يوزراً لاحقاً)،
+        # ويُرسل إشعار لكروب الطلبات مرة واحدة عبر context.user_data["referral_rejected_no_username"].
         if not str(row.get("username") or "").strip():
+            c.execute(
+                "UPDATE users SET referral_rejected=1 "
+                "WHERE user_id=%s AND COALESCE(referral_rejected,0)=0",
+                (user_id,),
+            )
+            if c.rowcount and context is not None:
+                context.user_data["referral_rejected_no_username"] = invited_by
             return None
 
         c.execute(
