@@ -992,7 +992,7 @@ OWNER_SETTINGS_GROUPS = [
         "os:top_referrers", "os:weekly_ref", "os:referral_contest", "os:edit_join_reward",
         "os:edit_daily_gift", "os:create_temporary_gift", "os:edit_leave_penalty",
         "os:edit_leave_grace", "os:create_promo", "os:list_promos", "os:search_code",
-        "os:manage_prizes",
+        "os:manage_prizes", "feed:menu",
     ), ("os:ref_level_del:",)),
     ("channels", "📡 الاشتراك الإجباري", (
         "os:manage_channels", "os:edit_mstars_min", "os:edit_mstars_t1max",

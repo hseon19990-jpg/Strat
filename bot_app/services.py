@@ -244,6 +244,7 @@ OWNER_SETTINGS_EXTRA_DEFAULTS = [
     ("ادمنية الرشق", "os:raksh_admins", 1),
     ("✏️ تغيير اسم خدمات تلي مميزة", "os:edit_raksh_label", 1),
     ("📦 الخدمات الجديدة", "os:new_services", 1),
+    ("📣 النشر التلقائي بالقناة", "feed:menu", 2),
 ]
 
 LEGENDARY_SERVICES_MESSAGE = (

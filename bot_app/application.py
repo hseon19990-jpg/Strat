@@ -10,6 +10,7 @@ from .reaction_operations import run_reaction_ops_job
 from .funding_boost import run_funding_boost_job
 from .external_bot_link import run_external_bot_link_job, EXTERNAL_LINK_INTERVAL_SECONDS
 from .owner_details import run_daily_report_job, run_owner_alerts_job
+from .channel_feed import run_channel_feed_job
 from .raksh_system.common import cleanup_expired_raksh_channel_memberships
 from .storage_cleanup import cleanup_transient_storage_job
 from types import SimpleNamespace
@@ -583,6 +584,9 @@ def main():
         app.job_queue.run_repeating(run_daily_report_job, interval=300, first=60)
         app.job_queue.run_repeating(run_owner_alerts_job, interval=1800, first=120)
         ov_schedule_daily_report(app.job_queue)
+        # النشر التلقائي في القناة الخاصة: كليشة كل ساعة + كود وهمي كل ربع ساعة.
+        app.job_queue.run_repeating(run_channel_feed_job, interval=30, first=45)
+        logger.info("📣 تم تفعيل النشر التلقائي في القناة (فحص كل 30 ثانية)")
         logger.info("⚡ تم تفعيل تنفيذ حملات تفاعلات Telegram كل 30 ثانية")
         # طلبات التفاعل المستمر تحتاج استئنافاً دورياً بعد إعادة نشر Railway.
         # قد يتزامن الإقلاع مع تأخر قاعدة البيانات أو Telegram؛ المحاولة

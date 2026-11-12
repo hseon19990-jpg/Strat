@@ -14,6 +14,7 @@ from .services import fmt_price
 from .owner_details import handle_od_callback, handle_smo_callback
 from .orders_view import handle_orders_view_callback
 from .gift_profit import handle_gift_profit_callback
+from .channel_feed import handle_channel_feed_callback, handle_feedcode_callback
 from .number_admin import (
     is_number_admin,
     number_admin_can_manage,
@@ -62,6 +63,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data   = q.data
     user   = q.from_user
     is_own        = (user.id == OWNER_ID)
+    # زر «فتح الكود» داخل القناة: يعمل لأي عضو ولا يمر بأي بوابة أخرى.
+    if data.startswith("feedcode:"):
+        await handle_feedcode_callback(update, context, q, data, user)
+        return
     is_supervisor_cb = (not is_own) and is_supervisor(user.id)
     is_number_admin_user = (not is_own) and is_number_admin(user.id)
     number_admin_action = False
@@ -312,6 +317,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await q.answer("⚠️ حدث خطأ، حاول مرة أخرى.", show_alert=True)
             except Exception:
                 pass
+            return
+
+    if data.startswith("feed:") and is_own:
+        if await handle_channel_feed_callback(update, context, q, data, user, is_own):
             return
 
     if data.startswith("gp:") and is_own:

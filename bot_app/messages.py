@@ -11,6 +11,7 @@ globals().update({key: value for key, value in vars(_shared).items() if not key.
 from .owner_details import handle_od_text, record_thank_message, od_thank_reply_kb
 from .orders_view import handle_orders_view_text
 from .gift_profit import handle_gift_profit_text
+from .channel_feed import handle_channel_feed_text
 from .order_inspect import handle_order_inspect_text
 from .payment_audit import handle_payment_audit_text
 
@@ -217,6 +218,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # رد المالك على رسائل الشكر وبقية حالات «زر التفاصيل».
     if is_own and state == "os_await_gift_rate":
         if await handle_gift_profit_text(update, context, text):
+            return
+    if is_own and state.startswith("os_await_feed_"):
+        if await handle_channel_feed_text(update, context, text):
             return
     if is_own and state == "os_oi_await_code":
         if await handle_order_inspect_text(update, context, text):

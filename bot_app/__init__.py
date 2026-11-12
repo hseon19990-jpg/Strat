@@ -34,6 +34,7 @@ _SECTION_NAMES = (
     "payment_audit",
     "orders_view",
     "gift_profit",
+    "channel_feed",
     "callbacks",
     "smm_payments",
     "payments",
