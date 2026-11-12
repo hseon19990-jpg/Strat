@@ -78,7 +78,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                 _nav.append(InlineKeyboardButton("التالي ➡️", callback_data=f"os:mc_log:{_page + 1}"))
             _kb = ([_nav] if _nav else []) + [
                 [InlineKeyboardButton("🔄 تحديث", callback_data=f"os:mc_log:{_page}")],
-                [InlineKeyboardButton("🔙 رجوع", callback_data="os:manage_channels")],
+                [InlineKeyboardButton("🔙 رجوع", callback_data="osg:channels")],
             ]
             try:
                 await q.edit_message_text(
