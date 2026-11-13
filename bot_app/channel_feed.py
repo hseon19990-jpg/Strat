@@ -4,7 +4,7 @@
 
 1. كليشة كل ساعة: المالك يضيف أكثر من كليشة، والبوت ينشر واحدة كل ساعة
    بالتتابع (طابور دائري): 1 ثم 2 ثم 3 ... ثم يعود للأولى.
-2. كود وهمي كل ربع ساعة: يُنشر في القناة كود بصيغة عادية (لمستخدم واحد، بقيمة
+2. كود وهمي كل فترة يحددها المالك بالدقائق (الافتراضي 180 دقيقة = 3 ساعات): يُنشر في القناة كود بصيغة عادية (لمستخدم واحد، بقيمة
    ٣٠٠٠ نقطة قابلة للتعديل)، بدون أي زر، ولا يُعدَّل المنشور ولا يُشطب ولا يُحذف.
    هذا الكود **وهمي بالكامل**:
    - لا يُحفظ في جدول promo_codes ولا تُمنح به نقاط.
@@ -17,7 +17,7 @@
 
 callback_data:
   feed:*      — لوحة المالك (للمالك فقط)
-حالات النص: os_await_feed_channel / os_await_feed_cliche / os_await_feed_points
+حالات النص: os_await_feed_channel / os_await_feed_cliche / os_await_feed_points / os_await_feed_interval
 """
 
 import secrets
@@ -35,9 +35,12 @@ FEED_NEXT_INDEX_KEY = "feed_cliche_next"
 FEED_CLICHE_TS_KEY = "feed_cliche_last_ts"
 FEED_CODE_TS_KEY = "feed_code_last_ts"
 FEED_CODE_POINTS_KEY = "feed_code_points"
+FEED_CODE_INTERVAL_KEY = "feed_code_interval_min"   # الفاصل بالدقائق
 
 FEED_CLICHE_INTERVAL = 3600      # كل ساعة
-FEED_CODE_INTERVAL = 900         # كل ربع ساعة
+FEED_DEFAULT_CODE_INTERVAL_MIN = 180   # الافتراضي: 3 ساعات (بالدقائق)
+FEED_MIN_CODE_INTERVAL_MIN = 1
+FEED_MAX_CODE_INTERVAL_MIN = 10080      # أسبوع
 FEED_RETRY_AFTER_FAILURE = 300   # إعادة المحاولة بعد فشل النشر (5 دقائق)
 FEED_DEFAULT_CODE_POINTS = 3000
 FEED_MAX_CLICHES = 50
@@ -103,6 +106,24 @@ def feed_get_int(key: str, default: int = 0) -> int:
 def feed_code_points() -> int:
     value = feed_get_int(FEED_CODE_POINTS_KEY, FEED_DEFAULT_CODE_POINTS)
     return value if value > 0 else FEED_DEFAULT_CODE_POINTS
+
+
+def feed_code_interval_min() -> int:
+    """الفاصل بين الأكواد الوهمية بالدقائق (قابل للتعديل من المالك)."""
+    value = feed_get_int(FEED_CODE_INTERVAL_KEY, FEED_DEFAULT_CODE_INTERVAL_MIN)
+    if value < FEED_MIN_CODE_INTERVAL_MIN or value > FEED_MAX_CODE_INTERVAL_MIN:
+        return FEED_DEFAULT_CODE_INTERVAL_MIN
+    return value
+
+
+def feed_code_interval_seconds() -> int:
+    return feed_code_interval_min() * 60
+
+
+def _feed_format_minutes(minutes: int) -> str:
+    if minutes % 60 == 0:
+        return f"{minutes} دقيقة ({minutes // 60} ساعة)"
+    return f"{minutes} دقيقة"
 
 
 def feed_make_fake_code() -> str:
@@ -201,13 +222,15 @@ async def run_channel_feed_job(context) -> None:
             logger.warning(f"⚠️ فشل نشر الكليشة في القناة: {exc}")
             set_setting(FEED_CLICHE_TS_KEY, str(now - FEED_CLICHE_INTERVAL + FEED_RETRY_AFTER_FAILURE))
 
-    if feed_is_on(FEED_CODE_ON_KEY) and now - feed_get_int(FEED_CODE_TS_KEY) >= FEED_CODE_INTERVAL:
+    code_interval = feed_code_interval_seconds()
+    if feed_is_on(FEED_CODE_ON_KEY) and now - feed_get_int(FEED_CODE_TS_KEY) >= code_interval:
         set_setting(FEED_CODE_TS_KEY, str(now))
         try:
             await feed_post_fake_code(context)
         except Exception as exc:
             logger.warning(f"⚠️ فشل نشر الكود في القناة: {exc}")
-            set_setting(FEED_CODE_TS_KEY, str(now - FEED_CODE_INTERVAL + FEED_RETRY_AFTER_FAILURE))
+            retry = min(FEED_RETRY_AFTER_FAILURE, code_interval)
+            set_setting(FEED_CODE_TS_KEY, str(now - code_interval + retry))
 
 
 # ────────────────────────────────────────────────────────────
@@ -224,7 +247,8 @@ def _feed_status_text() -> str:
         f"   عدد الكليشات: {len(cliches)}"
         + (f" | التالية: رقم {nxt}" if cliches else "")
         + "\n\n"
-        f"🎟 كود وهمي كل ربع ساعة: {'مفعّل ✅' if feed_is_on(FEED_CODE_ON_KEY) else 'متوقف ❌'}\n"
+        f"🎟 كود وهمي: {'مفعّل ✅' if feed_is_on(FEED_CODE_ON_KEY) else 'متوقف ❌'}\n"
+        f"   ⏱ يُنشر كل: {_feed_format_minutes(feed_code_interval_min())}\n"
         f"   قيمته المعروضة: {feed_code_points():,} نقطة\n"
         "   ⚠️ وهمي: لا يُمنح به أي نقاط، ويظهر للعضو أنه مستنفد."
     )
@@ -247,7 +271,10 @@ def _feed_menu_kb() -> InlineKeyboardMarkup:
                 callback_data="feed:tk",
             ),
         ],
-        [InlineKeyboardButton("💰 نقاط الكود المعروضة", callback_data="feed:pts")],
+        [
+            InlineKeyboardButton("💰 نقاط الكود المعروضة", callback_data="feed:pts"),
+            InlineKeyboardButton("⏱ فاصل الكود (دقائق)", callback_data="feed:int"),
+        ],
         [InlineKeyboardButton("🚀 نشر كليشة الآن (تجربة)", callback_data="feed:now")],
         [InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")],
     ])
@@ -383,6 +410,20 @@ async def handle_channel_feed_callback(update, context, q, data: str, user, is_o
         )
         return True
 
+    if action == "int":
+        await q.answer()
+        context.user_data["state"] = "os_await_feed_interval"
+        await q.edit_message_text(
+            f"⏱ الفاصل الحالي بين الأكواد الوهمية: {_feed_format_minutes(feed_code_interval_min())}\n\n"
+            "أرسل الفاصل الجديد بالدقائق:\n"
+            "• 15 = ربع ساعة\n"
+            "• 60 = ساعة\n"
+            "• 180 = 3 ساعات (الافتراضي)\n\n"
+            f"الحد الأدنى {FEED_MIN_CODE_INTERVAL_MIN} والأقصى {FEED_MAX_CODE_INTERVAL_MIN} دقيقة.",
+            reply_markup=_feed_cancel_kb(),
+        )
+        return True
+
     if action == "now":
         if feed_get_channel() is None:
             await q.answer("⚠️ اضبط القناة أولاً.", show_alert=True)
@@ -455,6 +496,24 @@ async def handle_channel_feed_text(update, context, text: str) -> bool:
         set_setting(FEED_CODE_POINTS_KEY, str(value))
         context.user_data["state"] = "main_menu"
         await _feed_show_menu(message=msg, note=f"✅ القيمة المعروضة = {value:,} نقطة.")
+        return True
+
+    if state == "os_await_feed_interval":
+        try:
+            value = int(text.strip().replace(",", ""))
+        except ValueError:
+            value = 0
+        if not (FEED_MIN_CODE_INTERVAL_MIN <= value <= FEED_MAX_CODE_INTERVAL_MIN):
+            await msg.reply_text(
+                f"⚠️ أرسل رقماً صحيحاً بالدقائق بين {FEED_MIN_CODE_INTERVAL_MIN} و {FEED_MAX_CODE_INTERVAL_MIN}."
+            )
+            return True
+        set_setting(FEED_CODE_INTERVAL_KEY, str(value))
+        context.user_data["state"] = "main_menu"
+        await _feed_show_menu(
+            message=msg,
+            note=f"✅ سيُنشر الكود الوهمي كل {_feed_format_minutes(value)}.",
+        )
         return True
 
     return False
