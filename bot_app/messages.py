@@ -4894,12 +4894,35 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
+    if is_own and state == "os_await_mc_stats":
+        _ch = parse_channel_username(text)
+        if not _ch:
+            await update.message.reply_text("⚠️ أرسل يوزر القناة بصيغة @channel أو رابط t.me/channel.")
+            return
+        _st = get_mandatory_channel_stats(_ch)
+        _kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔎 قناة أخرى", callback_data="os:mc_stats")],
+            [InlineKeyboardButton("📊 سجل القنوات", callback_data="os:mc_log:0")],
+            [InlineKeyboardButton("🔙 رجوع", callback_data="osg:channels")],
+        ])
+        context.user_data["state"] = "main_menu"
+        if not _st:
+            await update.message.reply_text(
+                f"⚠️ القناة @{_ch} غير مسجلة ضمن القنوات الإجبارية ولا انضمامات لها.",
+                reply_markup=_kb)
+            return
+        await update.message.reply_text(
+            format_mandatory_channel_stats(_st), parse_mode=ParseMode.MARKDOWN, reply_markup=_kb)
+        return
+
     if is_own and state == "os_await_channel":
         channel = text.lstrip("@")
         with db_conn() as c:
             c.execute(
-                "INSERT INTO mandatory_channels (channel_username,funding_type,active) VALUES (%s,'mandatory',1) "
-                "ON CONFLICT (channel_username) DO UPDATE SET active=1, funding_type='mandatory'",
+                "INSERT INTO mandatory_channels (channel_username,funding_type,active,owner_adds) "
+                "VALUES (%s,'mandatory',1,1) "
+                "ON CONFLICT (channel_username) DO UPDATE SET active=1, funding_type='mandatory', "
+                "owner_adds=COALESCE(mandatory_channels.owner_adds,0)+1",
                 (channel,)
             )
         await update.message.reply_text(f"✅ تمت إضافة القناة @{channel} بنجاح! 🎉 أحسنت.", reply_markup=owner_settings_kb())

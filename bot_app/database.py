@@ -817,6 +817,7 @@ def init_db():
               "ALTER TABLE channel_funding ADD COLUMN IF NOT EXISTS cost_stars INTEGER NOT NULL DEFAULT 0",
               "ALTER TABLE channel_funding ADD COLUMN IF NOT EXISTS cost_jewels NUMERIC(20,6) NOT NULL DEFAULT 0",
               "ALTER TABLE mandatory_channels ADD COLUMN IF NOT EXISTS queued INTEGER DEFAULT 0",
+              "ALTER TABLE mandatory_channels ADD COLUMN IF NOT EXISTS owner_adds INTEGER NOT NULL DEFAULT 0",
               "ALTER TABLE prize_exchanges ADD COLUMN IF NOT EXISTS order_code TEXT",
               "ALTER TABLE prize_exchanges ADD COLUMN IF NOT EXISTS owner_seen BOOLEAN DEFAULT FALSE",
               "ALTER TABLE prize_exchanges ADD COLUMN IF NOT EXISTS compensated_at TIMESTAMPTZ",

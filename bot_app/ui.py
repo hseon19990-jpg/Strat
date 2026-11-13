@@ -995,7 +995,7 @@ OWNER_SETTINGS_GROUPS = [
         "os:manage_prizes", "feed:menu",
     ), ("os:ref_level_del:",)),
     ("channels", "📡 الاشتراك الإجباري", (
-        "os:mc_log:0", "os:manage_channels", "os:edit_mstars_min", "os:edit_mstars_t1max",
+        "os:mc_log:0", "os:mc_stats", "os:manage_channels", "os:edit_mstars_min", "os:edit_mstars_t1max",
         "os:edit_mstars_t1p", "os:edit_mstars_t2p", "os:edit_mpoints_price",
         "os:edit_mpoints_min",
     ), ()),
@@ -1148,6 +1148,12 @@ def _owner_settings_visible_items():
         items.append({
             "id": -2, "menu": "owner_settings", "label": "📊 سجل القنوات الإجبارية",
             "action_type": "builtin", "action_value": "os:mc_log:0",
+            "width": 1, "enabled": 1,
+        })
+    if not any(item["action_value"] == "os:mc_stats" for item in items):
+        items.append({
+            "id": -3, "menu": "owner_settings", "label": "🔎 إحصائيات قناة إجبارية",
+            "action_type": "builtin", "action_value": "os:mc_stats",
             "width": 1, "enabled": 1,
         })
     return items

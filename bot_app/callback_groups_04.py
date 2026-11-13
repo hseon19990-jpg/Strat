@@ -60,6 +60,15 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                                        reply_markup=InlineKeyboardMarkup(rows))
             return
 
+        if data == "os:mc_stats" and is_own:
+            reset_owner_flow(context, state="os_await_mc_stats")
+            await q.edit_message_text(
+                "🔎 *إحصائيات قناة إجبارية*\n\nأرسل يوزر القناة (مثال: @channel):",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="osg:channels")]]),
+            )
+            return
+
         if data.startswith("os:mc_log:") and is_own:
             try:
                 _page = max(0, int(data.split(":")[2]))
@@ -77,6 +86,7 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             if _page + 1 < _pages:
                 _nav.append(InlineKeyboardButton("التالي ➡️", callback_data=f"os:mc_log:{_page + 1}"))
             _kb = ([_nav] if _nav else []) + [
+                [InlineKeyboardButton("🔎 إحصائيات قناة", callback_data="os:mc_stats")],
                 [InlineKeyboardButton("🔄 تحديث", callback_data=f"os:mc_log:{_page}")],
                 [InlineKeyboardButton("🔙 رجوع", callback_data="osg:channels")],
             ]
