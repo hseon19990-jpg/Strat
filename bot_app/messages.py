@@ -12,6 +12,7 @@ from .owner_details import handle_od_text, record_thank_message, od_thank_reply_
 from .orders_view import handle_orders_view_text
 from .gift_profit import handle_gift_profit_text
 from .channel_feed import handle_channel_feed_text, feed_is_fake_code
+from .ai_help import handle_aih_text, AIH_CHAT_STATE, AIH_NOTES_STATE
 from .order_inspect import handle_order_inspect_text
 from .payment_audit import handle_payment_audit_text
 
@@ -222,6 +223,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_own and state.startswith("os_await_feed_"):
         if await handle_channel_feed_text(update, context, text):
             return
+    if is_own and state == AIH_NOTES_STATE:
+        if await handle_aih_text(update, context, text):
+            return
     if is_own and state == "os_oi_await_code":
         if await handle_order_inspect_text(update, context, text):
             return
@@ -245,6 +249,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return
         except Exception as _gate_err:
             logger.warning(f"⚠️ خطأ في فحص القنوات الإجبارية للمستخدم {user.id}: {_gate_err}")
+
+    # ─── محادثة المساعد الذكي (بعد فحص الحظر والصيانة والاشتراك الإجباري) ───
+    if state == AIH_CHAT_STATE:
+        try:
+            if await handle_aih_text(update, context, text):
+                return
+        except Exception:
+            logger.exception("فشل المساعد الذكي للمستخدم %s", user.id)
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text(
+                "⚠️ حدث خطأ مؤقت في المساعد الذكي.",
+                reply_markup=main_menu_kb(is_own),
+            )
+            return
 
     # ─── نظام الرشق يستخدم نفس مسار استقبال الرسائل لكل خطوات الطلب ───
     if context.user_data.get("raksh_step"):

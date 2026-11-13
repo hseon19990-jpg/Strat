@@ -22,6 +22,7 @@ _SECTION_NAMES = (
     "tg_numbers",
     "services",
     "legendary_comment",
+    "ai_help",
     "ui",
     "onboarding",
     "messages",

@@ -15,6 +15,7 @@ from .owner_details import handle_od_callback, handle_smo_callback
 from .orders_view import handle_orders_view_callback
 from .gift_profit import handle_gift_profit_callback
 from .channel_feed import handle_channel_feed_callback
+from .ai_help import handle_aih_callback
 from .number_admin import (
     is_number_admin,
     number_admin_can_manage,
@@ -317,6 +318,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("feed:") and is_own:
         if await handle_channel_feed_callback(update, context, q, data, user, is_own):
+            return
+
+    if data.startswith("aih:"):
+        if await handle_aih_callback(update, context, q, data, user, is_own):
             return
 
     if data.startswith("gp:") and is_own:

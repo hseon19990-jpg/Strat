@@ -245,6 +245,7 @@ OWNER_SETTINGS_EXTRA_DEFAULTS = [
     ("✏️ تغيير اسم خدمات تلي مميزة", "os:edit_raksh_label", 1),
     ("📦 الخدمات الجديدة", "os:new_services", 1),
     ("📣 النشر التلقائي بالقناة", "feed:menu", 2),
+    ("🤖 الذكاء الاصطناعي للأعضاء", "aih:panel", 1),
 ]
 
 LEGENDARY_SERVICES_MESSAGE = (
