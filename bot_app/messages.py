@@ -4901,6 +4901,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         _st = get_mandatory_channel_stats(_ch)
         _kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✏️ ضبط الانضمامات السابقة", callback_data=f"os:mc_base:{_ch}")],
             [InlineKeyboardButton("🔎 قناة أخرى", callback_data="os:mc_stats")],
             [InlineKeyboardButton("📊 سجل القنوات", callback_data="os:mc_log:0")],
             [InlineKeyboardButton("🔙 رجوع", callback_data="osg:channels")],
@@ -4911,8 +4912,36 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"⚠️ القناة @{_ch} غير مسجلة ضمن القنوات الإجبارية ولا انضمامات لها.",
                 reply_markup=_kb)
             return
+        try:
+            _live = await context.bot.get_chat_member_count(f"@{_ch}")
+        except Exception:
+            _live = None
         await update.message.reply_text(
-            format_mandatory_channel_stats(_st), parse_mode=ParseMode.MARKDOWN, reply_markup=_kb)
+            format_mandatory_channel_stats(_st, live_members=_live),
+            parse_mode=ParseMode.MARKDOWN, reply_markup=_kb)
+        return
+
+    if is_own and state == "os_await_mc_base":
+        _ch = (context.user_data.get("mc_base_channel") or "").lower()
+        _raw = (text or "").strip().replace(",", "").replace("،", "")
+        if not _ch or not _raw.isdigit():
+            await update.message.reply_text("⚠️ أرسل رقماً صحيحاً (مثال: 1500).")
+            return
+        with db_conn() as c:
+            c.execute(
+                "UPDATE mandatory_channels SET joins_baseline=%s WHERE LOWER(channel_username)=%s",
+                (int(_raw), _ch),
+            )
+            _done = c.rowcount
+        context.user_data["state"] = "main_menu"
+        context.user_data.pop("mc_base_channel", None)
+        await update.message.reply_text(
+            (f"✅ ضُبطت الانضمامات السابقة لـ @{_ch} على {int(_raw):,}." if _done
+             else f"⚠️ القناة @{_ch} غير مسجلة."),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔎 عرض الإحصائيات", callback_data="os:mc_stats")],
+                [InlineKeyboardButton("🔙 رجوع", callback_data="osg:channels")],
+            ]))
         return
 
     if is_own and state == "os_await_channel":

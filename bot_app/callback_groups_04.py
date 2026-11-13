@@ -60,6 +60,18 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                                        reply_markup=InlineKeyboardMarkup(rows))
             return
 
+        if data.startswith("os:mc_base:") and is_own:
+            _bch = data.split(":", 2)[2].lower()
+            reset_owner_flow(context, state="os_await_mc_base")
+            context.user_data["mc_base_channel"] = _bch
+            await q.edit_message_text(
+                f"✏️ *ضبط الانضمامات السابقة لـ @{md_escape(_bch)}*\n\n"
+                "أرسل عدد الانضمامات التي حدثت *قبل* تفعيل العدّاد (يُجمع مع الانضمامات الجديدة):",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="osg:channels")]]),
+            )
+            return
+
         if data == "os:mc_stats" and is_own:
             reset_owner_flow(context, state="os_await_mc_stats")
             await q.edit_message_text(

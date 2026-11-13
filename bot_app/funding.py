@@ -144,7 +144,7 @@ def get_mandatory_channels_log(page: int = 0, page_size: int = MANDATORY_LOG_PAG
             """
             SELECT
               (SELECT COUNT(*) FROM mandatory_channels WHERE funding_type='mandatory') AS channels,
-              (SELECT COUNT(*) FROM mandatory_channel_joins) AS joins,
+              ((SELECT COUNT(*) FROM mandatory_channel_joins) + (SELECT COALESCE(SUM(joins_baseline),0) FROM mandatory_channels WHERE funding_type='mandatory')) AS joins,
               (SELECT COALESCE(SUM(cost_stars),0) FROM channel_funding
                  WHERE funding_type='mandatory' AND COALESCE(status,'')<>'refunded') AS stars,
               (SELECT COALESCE(SUM(cost_jewels),0) FROM channel_funding
@@ -155,7 +155,8 @@ def get_mandatory_channels_log(page: int = 0, page_size: int = MANDATORY_LOG_PAG
             """
             SELECT mc.id, mc.channel_username, mc.active, mc.queued, mc.owner_user_id,
                    COALESCE(mc.owner_adds,0) AS owner_adds,
-                   COALESCE(j.joins,0) AS joins,
+                   COALESCE(mc.joins_baseline,0) AS baseline,
+                   COALESCE(j.joins,0) + COALESCE(mc.joins_baseline,0) AS joins,
                    COALESCE(f.stars,0) AS stars, COALESCE(f.jewels,0) AS jewels,
                    COALESCE(f.target,0) AS target, COALESCE(f.n,0) AS fundings
             FROM mandatory_channels mc
@@ -247,7 +248,7 @@ def get_mandatory_channel_stats(channel: str) -> dict | None:
     with db_conn() as c:
         mc = c.execute(
             "SELECT id, channel_username, active, queued, funding_type, "
-            "COALESCE(owner_adds,0) AS owner_adds "
+            "COALESCE(owner_adds,0) AS owner_adds, COALESCE(joins_baseline,0) AS baseline "
             "FROM mandatory_channels WHERE LOWER(channel_username)=%s",
             (ch,),
         ).fetchone()
@@ -277,7 +278,7 @@ def get_mandatory_channel_stats(channel: str) -> dict | None:
     }
 
 
-def format_mandatory_channel_stats(st: dict) -> str:
+def format_mandatory_channel_stats(st: dict, live_members=None) -> str:
     mc = st.get("mc") or {}
     j = st.get("joins") or {}
     fundings = st.get("fundings") or []
@@ -289,7 +290,9 @@ def format_mandatory_channel_stats(st: dict) -> str:
         state = "⚪ منتهية/متوقفة"
     else:
         state = "غير مسجلة حالياً"
-    total = int(j.get("total") or 0)
+    recorded = int(j.get("total") or 0)
+    base = int(mc.get("baseline") or 0)
+    total = recorded + base
     uniq = int(j.get("uniq") or 0)
     valid = [f for f in fundings if (f.get("status") or "") != "refunded"]
     stars = sum(int(f.get("cost_stars") or 0) for f in valid)
@@ -303,8 +306,10 @@ def format_mandatory_channel_stats(st: dict) -> str:
         f"📊 *إحصائيات @{md_escape(st['channel'])}*\n",
         f"الحالة: {state}",
         f"👥 إجمالي الانضمامات: *{total:,}*",
-        f"🧍 أشخاص مختلفون: *{uniq:,}*",
-        f"🔁 انضمامات مكررة (عودة بعد مغادرة): *{max(0, total - uniq):,}*",
+        f"   • قبل التحديث (تقدير/مضبوط يدوياً): {base:,}",
+        f"   • بعد التحديث (مسجّلة بدقة): {recorded:,}",
+        f"🧍 أشخاص مختلفون (بعد التحديث): *{uniq:,}*",
+        f"🔁 مكررة بعد التحديث (عودة بعد مغادرة): *{max(0, recorded - uniq):,}*",
         f"🕐 آخر 24 ساعة: *{int(j.get('d1') or 0):,}* | آخر 7 أيام: *{int(j.get('d7') or 0):,}*",
         f"▶️ أول انضمام: {_d(j.get('first_join'))}",
         f"⏹ آخر انضمام: {_d(j.get('last_join'))}",
@@ -312,6 +317,8 @@ def format_mandatory_channel_stats(st: dict) -> str:
         f"🎯 مجموع المطلوب في التمويلات: {target:,}",
         f"🛠 عدد التمويلات: {len(fundings)} | مرات إضافة المالك: {int(mc.get('owner_adds') or 0)}",
     ]
+    if live_members is not None:
+        lines.append(f"📣 أعضاء القناة الآن في تيليجرام: *{int(live_members):,}*")
     for f in fundings[:5]:
         lines.append(
             f"   • {_d(f.get('created_at'))} — ID {f.get('user_id')} — "

@@ -897,6 +897,43 @@ def init_db():
           ]:
               try: c.execute(_alt)
               except Exception: pass
+          # ── عدّاد انضمامات القنوات الإجبارية: رصيد ما قبل التحديث (يُحسب مرة واحدة) ──
+          try:
+              _has_base = c.execute(
+                  "SELECT 1 FROM information_schema.columns "
+                  "WHERE table_name='mandatory_channels' AND column_name='joins_baseline'"
+              ).fetchone()
+              if not _has_base:
+                  c.execute("ALTER TABLE mandatory_channels ADD COLUMN joins_baseline BIGINT NOT NULL DEFAULT 0")
+                  # تقدير من السجلات القديمة: أكبر قيمة بين أحداث الانضمام المسجّلة قبل أول
+                  # انضمام جديد، وعدّاد التمويل بعد طرح الانضمامات الجديدة (حتى لا تتكرر).
+                  c.execute(
+                      """
+                      UPDATE mandatory_channels mc SET joins_baseline = GREATEST(
+                          COALESCE((
+                              SELECT COUNT(*) FROM mandatory_join_events e
+                              WHERE LOWER(e.channel_username) = LOWER(mc.channel_username)
+                                AND e.created_at < COALESCE((
+                                    SELECT MIN(j.joined_at) FROM mandatory_channel_joins j
+                                    WHERE LOWER(j.channel_username) = LOWER(mc.channel_username)
+                                ), 'infinity'::timestamptz)
+                          ), 0),
+                          GREATEST(0,
+                              COALESCE((
+                                  SELECT SUM(f.current_members) FROM channel_funding f
+                                  WHERE LOWER(f.channel_username) = LOWER(mc.channel_username)
+                                    AND COALESCE(f.status,'') <> 'refunded'
+                              ), 0)
+                              - COALESCE((
+                                  SELECT COUNT(*) FROM mandatory_channel_joins j2
+                                  WHERE LOWER(j2.channel_username) = LOWER(mc.channel_username)
+                              ), 0)
+                          )
+                      )
+                      """
+                  )
+          except Exception as _base_err:
+              logger.warning(f"mandatory joins baseline migration: {_base_err}")
           # ── مصدر الجواهر: الجواهر المحصّلة عبر الإحالة وحدها تصلح لاستبدال الجوائز المخصصة ──
           try:
               c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_jewels NUMERIC(20,6) NOT NULL DEFAULT 0")
