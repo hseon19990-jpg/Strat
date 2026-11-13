@@ -4948,10 +4948,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         channel = text.lstrip("@")
         with db_conn() as c:
             c.execute(
-                "INSERT INTO mandatory_channels (channel_username,funding_type,active,owner_adds) "
-                "VALUES (%s,'mandatory',1,1) "
+                "INSERT INTO mandatory_channels (channel_username,funding_type,active,owner_adds,activated_at) "
+                "VALUES (%s,'mandatory',1,1,NOW()) "
                 "ON CONFLICT (channel_username) DO UPDATE SET active=1, funding_type='mandatory', "
-                "owner_adds=COALESCE(mandatory_channels.owner_adds,0)+1",
+                "owner_adds=COALESCE(mandatory_channels.owner_adds,0)+1, activated_at=NOW()",
                 (channel,)
             )
         await update.message.reply_text(f"✅ تمت إضافة القناة @{channel} بنجاح! 🎉 أحسنت.", reply_markup=owner_settings_kb())

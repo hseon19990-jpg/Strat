@@ -32,7 +32,7 @@ async def promote_queued_mandatory_channel(context: ContextTypes.DEFAULT_TYPE, a
         ).fetchone()
         if not nxt:
             return
-        c.execute("UPDATE mandatory_channels SET active=1, queued=0 WHERE id=%s", (nxt["id"],))
+        c.execute("UPDATE mandatory_channels SET active=1, queued=0, activated_at=NOW() WHERE id=%s", (nxt["id"],))
 
     try:
         await context.bot.send_message(
@@ -98,7 +98,9 @@ async def get_unjoined_mandatory_channels(context: ContextTypes.DEFAULT_TYPE, us
             return ch
 
     checked = await asyncio.gather(*(check_channel(ch) for ch in channels))
-    return [channel for channel in checked if channel is not None]
+    pending = [channel for channel in checked if channel is not None]
+    # روابط دعوة البوت: تُستخدم في أزرار البوابة ليُنسب الانضمام عبرها للبوت
+    return await ensure_bot_invite_links(context, pending, limit=MANDATORY_PAGE_SIZE)
 
 async def count_user_for_fundings(user_id: int, context):
     """
@@ -178,7 +180,7 @@ def mandatory_join_kb(channels, is_owner=False):
     for ch in page:
         rows.append([InlineKeyboardButton(
             f"📢 {ch['channel_title'] or ('@' + ch['channel_username'])}",
-            url=f"https://t.me/{ch['channel_username']}"
+            url=(ch.get("bot_invite_link") or "").strip() or f"https://t.me/{ch['channel_username']}"
         )])
     rows.append([InlineKeyboardButton("✅ متابعة بعد الاشتراك", callback_data="check_mandatory_join")])
     if is_owner:

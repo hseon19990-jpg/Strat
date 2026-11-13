@@ -897,6 +897,27 @@ def init_db():
           ]:
               try: c.execute(_alt)
               except Exception: pass
+          # ── انضمامات عبر رابط البوت: أعمدة جديدة ──
+          for _alt2 in (
+              "ALTER TABLE mandatory_channels ADD COLUMN IF NOT EXISTS bot_invite_link TEXT",
+              "ALTER TABLE mandatory_channels ADD COLUMN IF NOT EXISTS activated_at TIMESTAMPTZ",
+          ):
+              try: c.execute(_alt2)
+              except Exception: pass
+          try:
+              _has_via = c.execute(
+                  "SELECT 1 FROM information_schema.columns "
+                  "WHERE table_name='mandatory_channel_joins' AND column_name='via_bot'"
+              ).fetchone()
+              if not _has_via:
+                  c.execute("ALTER TABLE mandatory_channel_joins ADD COLUMN via_bot BOOLEAN NOT NULL DEFAULT FALSE")
+                  # الانضمامات المسجّلة قبل تتبّع الرابط: تُعدّ عبر البوت إن كان المنضم مستخدماً للبوت (تقدير لمرة واحدة)
+                  c.execute(
+                      "UPDATE mandatory_channel_joins j SET via_bot=TRUE "
+                      "WHERE EXISTS (SELECT 1 FROM users u WHERE u.user_id=j.user_id)"
+                  )
+          except Exception as _via_err:
+              logger.warning(f"mandatory joins via_bot migration: {_via_err}")
           # ── عدّاد انضمامات القنوات الإجبارية: رصيد ما قبل التحديث (يُحسب مرة واحدة) ──
           try:
               _has_base = c.execute(

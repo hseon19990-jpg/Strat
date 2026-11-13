@@ -1240,7 +1240,11 @@ async def handle_member_leave(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         if (not _in_channel(cmu.old_chat_member)) and _in_channel(cmu.new_chat_member) \
                 and cmu.chat.username:
-            record_mandatory_channel_join(member_user.id, cmu.chat.username)
+            _inv = getattr(cmu, "invite_link", None)
+            record_mandatory_channel_join(
+                member_user.id, cmu.chat.username,
+                invite_link=(getattr(_inv, "invite_link", "") or "") if _inv else "",
+            )
     except Exception as _cnt_exc:
         logger.warning(f"record_mandatory_channel_join error: {_cnt_exc}")
     was_in = old_status in ("member", "administrator", "creator", "restricted")
