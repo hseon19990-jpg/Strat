@@ -23,6 +23,11 @@ from .message import (
     send_raksh_message,
 )
 from ..services import get_menu_items
+from .daily_codes import (
+    allocate_daily_seq,
+    classify_order_kind,
+    order_display_code,
+)
 import json
 
 
@@ -375,12 +380,18 @@ def _create_raksh_order(
 ) -> int:
     """حفظ طلب الرشق وحساباته قبل بدء أي تنفيذ."""
     serialized_params = json.dumps(params or {}, ensure_ascii=False, default=str)
+    daily_kind = classify_order_kind(payment_method, total_cost)
     with db_conn() as c:
+        # الرقم اليومي يُحجز في نفس المعاملة التي تُدخل الطلب، فلا يُستهلك
+        # رقم إذا فشل الإدخال. كل نوع (مجاني/نقاط/نجوم) له عدّاد مستقل،
+        # ويبدأ من 1 مع أول طلب في كل يوم جديد بتوقيت العراق.
+        daily_day, daily_seq = allocate_daily_seq(c, daily_kind)
         row = c.execute(
             """
             INSERT INTO raksh_orders
-                (user_id, service_type, quantity, payment_method, total_cost, params, status)
-            VALUES (%s, %s, %s, %s, %s, %s::jsonb, 'pending')
+                (user_id, service_type, quantity, payment_method, total_cost, params, status,
+                 daily_kind, daily_seq, daily_day)
+            VALUES (%s, %s, %s, %s, %s, %s::jsonb, 'pending', %s, %s, %s)
             RETURNING id
             """,
             (
@@ -390,6 +401,9 @@ def _create_raksh_order(
                 payment_method,
                 total_cost,
                 serialized_params,
+                daily_kind,
+                daily_seq,
+                daily_day,
             ),
         ).fetchone()
         order_id = int(row["id"])
@@ -422,6 +436,20 @@ def _create_raksh_order(
             )
             position += 1
     return order_id
+
+
+def _load_order_code(order_id: int) -> str:
+    """الكود اليومي المعروض للطلب (مجاني/نقاط/نجوم #N)، أو فارغ عند الفشل."""
+    try:
+        with db_conn() as c:
+            row = c.execute(
+                "SELECT id, daily_kind, daily_seq FROM raksh_orders WHERE id=%s",
+                (order_id,),
+            ).fetchone()
+        return order_display_code(dict(row)) if row else ""
+    except Exception:
+        logger.exception("تعذر قراءة الكود اليومي للطلب %s", order_id)
+        return ""
 
 
 def _load_raksh_order(order_id: int) -> Optional[Dict]:
@@ -508,7 +536,7 @@ def _cancel_user_raksh_order(user_id: int, order_id: int, no_refund: bool = Fals
 
         cancel_reason = "أُلغي من الإدارة بسبب مخالفة (بدون تعويض)" if no_refund else "أُلغي من المستخدم"
         result_text = (
-            f"❌ أُلغي الطلب #{order_id}"
+            f"❌ أُلغي الطلب {order_display_code(order)}"
             + (" من الإدارة بسبب مخالفة ودون تعويض." if no_refund else ".")
             + "\n"
             f"✅ المنجز قبل الإلغاء: {success_count}/{quantity}"
@@ -561,6 +589,7 @@ def _cancel_user_raksh_order(user_id: int, order_id: int, no_refund: bool = Fals
         "quantity": quantity,
         "payment_method": payment_method,
         "contributor_credits": contributor_credits,
+        "order_code": order_display_code(order),
     }
 
 
@@ -599,6 +628,7 @@ def _raksh_order_service_name(order) -> str:
 
 def _raksh_order_summary(order, current: bool) -> str:
     order_id = int(order["id"])
+    order_code = order_display_code(order)
     service_name = md_escape(_raksh_order_service_name(order))
     quantity = int(order["quantity"] or 0)
     success_count = int(order.get("success_count") or 0)
@@ -620,13 +650,13 @@ def _raksh_order_summary(order, current: bool) -> str:
             )
         )
         return (
-            f"• *#{order_id}* — {service_name}\n"
+            f"• *{order_code}* — {service_name}\n"
             f"  {state} | 📊 {success_count}/{quantity} | {payment_detail}\n"
             f"  🕒 {_raksh_order_date(order.get('created_at'))}"
         )
     state = "✅ مكتمل" if order["status"] == "completed" else "❌ ملغى"
     return (
-        f"• *#{order_id}* — {service_name}\n"
+        f"• *{order_code}* — {service_name}\n"
         f"  {state} | ✅ المنجز: {success_count}/{quantity} | ❌ الفاشل: {failed_count}\n"
         f"  🕒 {_raksh_order_date(order.get('created_at'))}"
     )
@@ -2326,7 +2356,7 @@ async def _handle_raksh_callback_impl(
             await query.answer("ℹ️ انتهى هذا الطلب ولا يمكن إلغاؤه الآن.", show_alert=True)
             await _render_user_raksh_orders(query, user.id)
             return
-        message = f"✅ تم إلغاء الطلب #{order_id}."
+        message = f"✅ تم إلغاء الطلب {result.get('order_code') or f'#{order_id}'}."
         if result["refund"] > 0:
             message += f" تمت إعادة {raksh_cost_text(result['refund'])}."
         elif result["payment_method"] == "stars":
@@ -3243,6 +3273,7 @@ async def _send_raksh_order_to_group(
     service_type: str,
     total_cost: int,
     params: Optional[Dict] = None,
+    order_code: str = "",
 ):
     """إرسال إشعار الطلب إلى المجموعة دون كشف بيانات الطلب الحساسة."""
     if not ADMIN_GROUP_ID:
@@ -3255,7 +3286,9 @@ async def _send_raksh_order_to_group(
             await bot.send_message(
                 ADMIN_GROUP_ID,
                 (
-                    "📨 تم طلب رسالة\n"
+                    "📨 تم طلب رسالة"
+                    + (f" — {order_code}" if order_code else "")
+                    + "\n"
                     f"💰 السعر: "
                     + (
                         raksh_cost_text(total_cost)
@@ -3269,7 +3302,8 @@ async def _send_raksh_order_to_group(
             return
 
         notification_lines = [
-            f"📋 طلب {_raksh_order_label(service_type)}",
+            f"📋 طلب {_raksh_order_label(service_type)}"
+            + (f" — {order_code}" if order_code else ""),
             (
                 f"👥 الحسابات لكل منشور: {quantity}"
                 if service_type == "all_posts_reactions"
@@ -4260,6 +4294,7 @@ async def _start_raksh_execution(
         service_type,
         total_cost,
         params,
+        order_code=_load_order_code(order_id),
     )
     await _send_raksh_message_order_to_owner(
         context.bot,
