@@ -46,7 +46,8 @@ AIH_GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model
 # مفاتيح Google الجديدة التي تبدأ بـ AQ. قد لا يقبلها عنوان generativelanguage، فنجرّب أيضاً عنوان Vertex AI (express).
 AIH_VERTEX_URL = "https://aiplatform.googleapis.com/v1/publishers/google/models/{model}:generateContent"
 # يمكن تغييرها من متغير البيئة AIH_GEMINI_MODEL (قائمة مفصولة بفواصل بترتيب المحاولة).
-AIH_GEMINI_DEFAULT_MODELS = "gemini-2.5-flash,gemini-2.5-flash-lite"
+# gemini-2.5-* أُوقفت (404 no longer available)؛ gemini-flash-latest يشير تلقائياً لأحدث Flash.
+AIH_GEMINI_DEFAULT_MODELS = "gemini-flash-latest,gemini-3.8-flash,gemini-3.5-flash"
 
 _AIH_LAST: dict = {}
 _AIH_DAILY: dict = {}
@@ -335,6 +336,7 @@ def _aih_call_sync(provider: tuple, system: str, user: str, max_tokens: int = 60
     """استدعاء واحد (متزامن). يرجع (النص، توكنات_إدخال، توكنات_إخراج) ويرفع RuntimeError عند الفشل."""
     name, kind, url, key, models = provider
     last_error = "no model"
+    errors = []
     for model in models:
         try:
             if kind == "gemini":
@@ -359,6 +361,7 @@ def _aih_call_sync(provider: tuple, system: str, user: str, max_tokens: int = 60
                     return text, int(usage.get("promptTokenCount", 0)), int(usage.get("candidatesTokenCount", 0))
                 trail = getattr(response, "_aih_trail", "")
                 last_error = f"{name} {model}: HTTP {response.status_code}{trail}"
+                errors.append(last_error)
                 continue
             elif kind == "anthropic":
                 response = requests.post(
@@ -398,7 +401,7 @@ def _aih_call_sync(provider: tuple, system: str, user: str, max_tokens: int = 60
             last_error = f"{name} {model}: {type(exc).__name__}"
         except (ValueError, KeyError, TypeError) as exc:
             last_error = f"{name} {model}: bad response ({type(exc).__name__})"
-    raise RuntimeError(last_error)
+    raise RuntimeError(" | ".join(errors)[:190] if errors else last_error)
 
 
 def _aih_parse_json(text: str):
