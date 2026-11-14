@@ -163,6 +163,30 @@ class AiHelpTests(unittest.TestCase):
         check("gemini url/model", sent["url"].endswith("/models/gemini-2.5-flash:generateContent"))
         check("gemini system+user", sent["body"]["systemInstruction"]["parts"][0]["text"] == "SYS"
               and sent["body"]["contents"][0]["parts"][0]["text"] == "USR")
+        # ---- سرعة/احتياط: نموذج 404 يُتجاهل، و400 على thinkingBudget يُجرَّب بصيغة أخف، ثم يُتذكَّر النجاح ----
+        seq = []
+        class R:
+            def __init__(self, c): self.status_code = c
+            def json(self): return {"candidates": [{"content": {"parts": [{"text": "{}"}]}}]}
+        def fake_post2(url, headers=None, json=None, timeout=None, **k):
+            tc = json["generationConfig"].get("thinkingConfig")
+            seq.append((url.split("/models/")[1].split(":")[0], tc and list(tc)[0]))
+            if "dead-model" in url: return R(404)
+            if tc and "thinkingBudget" in tc: return R(400)
+            return R(200)
+        m._AIH_THINK.clear(); m._AIH_MODEL_DEAD.clear(); m._AIH_MODEL_GOOD.clear()
+        real_post, m.requests.post = m.requests.post, fake_post2
+        try:
+            gp2 = ("Gemini", "gemini", m.AIH_GEMINI_URL, "AQ.fakekey1234567890", ["dead-model", "new-model"])
+            m._aih_call_sync(gp2, "S", "U")
+            n1 = len(seq)
+            m._aih_call_sync(gp2, "S", "U")
+        finally:
+            m.requests.post = real_post
+        check("404 model skipped then good model", seq[0][0] == "dead-model" and seq[-1][0] == "new-model")
+        check("thinking fallback to level", ("new-model", "thinkingLevel") in seq)
+        check("second call goes straight to good model, one request", seq[n1:] == [("new-model", "thinkingLevel")])
+        check("no vertex fallback on 404/400", all("aiplatform" not in str(x) for x in seq))
         SETTINGS["ai_api_key"] = "AQ.fake-key-for-test-1234567890"
         check("button shown for member w/ key", m.aih_button_row(False)[0][0].text == m.AIH_BUTTON_LABEL)
         SETTINGS["ai_help_enabled"] = "0"
