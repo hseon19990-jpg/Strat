@@ -287,7 +287,7 @@ KNOWLEDGE:
 # المزوّدون (يعاد استخدام مفاتيح البوت الحالية)
 # ────────────────────────────────────────────────────────────
 def aih_providers() -> list:
-    """[(الاسم، النوع، العنوان، المفتاح، النماذج)] بترتيب الأولوية. المفاتيح لا تخرج من هذا الملف."""
+    """[(الاسم، النوع، العنوان، المفتاح، النماذج)]. مساعد الإجابات يعتمد على Gemini حصراً (مفتاح AI_API_KEY)، بلا Groq ولا OpenAI ولا غيرهما. المفاتيح لا تخرج من هذا الملف."""
     providers = []
     try:
         gemini_key = get_ai_api_key()
@@ -297,33 +297,6 @@ def aih_providers() -> list:
         providers.append((
             "Gemini", "gemini", AIH_GEMINI_URL, gemini_key,
             [m.strip() for m in os.environ.get("AIH_GEMINI_MODEL", AIH_GEMINI_DEFAULT_MODELS).split(",") if m.strip()],
-        ))
-    try:
-        key = get_openai_api_key()
-    except Exception:
-        key = ""
-    if key:
-        providers.append((
-            "OpenAI", "openai", "https://api.openai.com/v1/chat/completions", key,
-            [os.environ.get("AIH_OPENAI_MODEL", "gpt-4o-mini")],
-        ))
-    key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-    if key:
-        providers.append((
-            "Claude", "anthropic", "https://api.anthropic.com/v1/messages", key,
-            [os.environ.get("AI_MODEL", "claude-haiku-5-5")],
-        ))
-    key = os.environ.get("GROQ_API_KEY", "").strip()
-    if key:
-        providers.append((
-            "Groq", "compat", "https://api.groq.com/openai/v1/chat/completions", key,
-            ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
-        ))
-    key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
-    if key:
-        providers.append((
-            "DeepSeek", "compat", "https://api.deepseek.com/chat/completions", key,
-            ["deepseek-chat"],
         ))
     return providers
 
