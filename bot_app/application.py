@@ -9,6 +9,7 @@ from .users import award_weekly_top_referrers_job
 from .reaction_operations import run_reaction_ops_job
 from .funding_boost import run_funding_boost_job
 from .external_bot_link import run_external_bot_link_job, EXTERNAL_LINK_INTERVAL_SECONDS
+from .clone_bot import clone_is_child, clone_supervisor_start
 from .owner_details import run_daily_report_job, run_owner_alerts_job
 from .channel_feed import run_channel_feed_job
 from .raksh_system.common import cleanup_expired_raksh_channel_memberships
@@ -195,6 +196,12 @@ def main():
 
     start_health_server()
     init_db()
+    if not clone_is_child():
+        # يعيد تشغيل البوتات المستنسخة «العاملة» بعد كل نشر، ويراقبها (آمن عند التكرار).
+        try:
+            clone_supervisor_start()
+        except Exception:
+            logger.exception("⚠️ تعذّر تشغيل مشرف البوتات المستنسخة")
     try:
         from .users import get_setting
         _shared.load_button_custom_emoji_ids(get_setting(_shared.BUTTON_CUSTOM_EMOJI_SETTING_KEY))

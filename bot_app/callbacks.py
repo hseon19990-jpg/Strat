@@ -16,6 +16,7 @@ from .orders_view import handle_orders_view_callback
 from .gift_profit import handle_gift_profit_callback
 from .channel_feed import handle_channel_feed_callback
 from .ai_help import handle_aih_callback
+from .clone_bot import handle_clone_callback
 from .number_admin import (
     is_number_admin,
     number_admin_can_manage,
@@ -322,6 +323,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("aih:"):
         if await handle_aih_callback(update, context, q, data, user, is_own):
+            return
+
+    if data.startswith("clone:"):
+        try:
+            if await handle_clone_callback(update, context, q, data, user, is_own):
+                return
+        except Exception:
+            logger.exception("clone callback failed: %s", data)
+            try:
+                await q.answer("⚠️ حدث خطأ، حاول مرة أخرى.", show_alert=True)
+            except Exception:
+                pass
             return
 
     if data.startswith("gp:") and is_own:

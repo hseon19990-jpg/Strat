@@ -12,12 +12,13 @@
    دون أي استدعاء.
 3. تعليمات صارمة للنموذج: خارج نطاق البوت أو أي شيء قد يكون سرياً => in_scope=false.
 4. فلتر بعد النموذج: أي إجابة تحمل أثر مفتاح أو اسم داخلي تُستبدل برفض.
-5. المقدّم: نفس مفاتيح البوت الحالية (مفتاح OpenAI من لوحة المالك، أو متغيرات
-   البيئة OPENAI_API_KEY / ANTHROPIC_API_KEY / GROQ_API_KEY / DEEPSEEK_API_KEY).
+5. المقدّم: Gemini عبر مفتاح عام يضعه المالك من لوحة «الذكاء الاصطناعي» (أو متغير
+   البيئة AI_API_KEY / GEMINI_API_KEY / GOOGLE_API_KEY). لا يُفحص نوع المفتاح ولا بدايته.
+   ما بعده احتياطي فقط إن وُجدت مفاتيح البوت القديمة (OpenAI / Claude / Groq / DeepSeek).
 
 callback_data:
   aih:start                          — العضو يفتح المساعد
-  aih:panel / toggle / test / notes  — لوحة المالك (للمالك فقط)
+  aih:panel / toggle / test / notes / key / keyset / keydel  — لوحة المالك (للمالك فقط)
 حالات النص: aih_chat (العضو) / os_await_aih_notes (المالك)
 """
 
@@ -31,6 +32,7 @@ AIH_USAGE_KEY = "ai_help_usage"          # JSON: إحصاءات الاستخدا
 
 AIH_CHAT_STATE = "aih_chat"
 AIH_NOTES_STATE = "os_await_aih_notes"
+AIH_KEY_STATE = "os_await_aih_key"
 AIH_BUTTON_LABEL = "🤖 اسأل الذكاء الاصطناعي"
 
 AIH_MAX_QUESTION_CHARS = 500
@@ -40,6 +42,9 @@ AIH_NOTES_MAX = 1500
 AIH_MAX_ANSWER_CHARS = 1800
 AIH_HTTP_TIMEOUT = 30
 AIH_MAX_LIVE_SERVICES = 60
+AIH_GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+# يمكن تغييرها من متغير البيئة AIH_GEMINI_MODEL (قائمة مفصولة بفواصل بترتيب المحاولة).
+AIH_GEMINI_DEFAULT_MODELS = "gemini-2.5-flash,gemini-2.5-flash-lite"
 
 _AIH_LAST: dict = {}
 _AIH_DAILY: dict = {}
@@ -283,6 +288,15 @@ def aih_providers() -> list:
     """[(الاسم، النوع، العنوان، المفتاح، النماذج)] بترتيب الأولوية. المفاتيح لا تخرج من هذا الملف."""
     providers = []
     try:
+        gemini_key = get_ai_api_key()
+    except Exception:
+        gemini_key = ""
+    if gemini_key:
+        providers.append((
+            "Gemini", "gemini", AIH_GEMINI_URL, gemini_key,
+            [m.strip() for m in os.environ.get("AIH_GEMINI_MODEL", AIH_GEMINI_DEFAULT_MODELS).split(",") if m.strip()],
+        ))
+    try:
         key = get_openai_api_key()
     except Exception:
         key = ""
@@ -318,7 +332,33 @@ def _aih_call_sync(provider: tuple, system: str, user: str, max_tokens: int = 60
     last_error = "no model"
     for model in models:
         try:
-            if kind == "anthropic":
+            if kind == "gemini":
+                # المفتاح في الترويسة وليس في الرابط حتى لا يظهر في السجلات.
+                body = {
+                    "systemInstruction": {"parts": [{"text": system}]},
+                    "contents": [{"role": "user", "parts": [{"text": user}]}],
+                    "generationConfig": {
+                        "temperature": 0,
+                        "maxOutputTokens": max(max_tokens, 800),
+                        "responseMimeType": "application/json",
+                        "thinkingConfig": {"thinkingBudget": 0},
+                    },
+                }
+                headers = {"x-goog-api-key": key, "Content-Type": "application/json"}
+                endpoint = url.format(model=model)
+                response = requests.post(endpoint, headers=headers, json=body, timeout=AIH_HTTP_TIMEOUT)
+                if response.status_code == 400:
+                    # بعض النماذج لا تدعم thinkingConfig: نعيد المحاولة بدونه.
+                    body["generationConfig"].pop("thinkingConfig", None)
+                    response = requests.post(endpoint, headers=headers, json=body, timeout=AIH_HTTP_TIMEOUT)
+                if response.status_code == 200:
+                    data = response.json()
+                    candidates = data.get("candidates") or [{}]
+                    parts = ((candidates[0].get("content") or {}).get("parts")) or []
+                    text = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
+                    usage = data.get("usageMetadata") or {}
+                    return text, int(usage.get("promptTokenCount", 0)), int(usage.get("candidatesTokenCount", 0))
+            elif kind == "anthropic":
                 response = requests.post(
                     url,
                     headers={"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
@@ -638,7 +678,7 @@ def _aih_panel_text() -> str:
     else:
         provider_line = (
             "المزوّد: ❌ لا يوجد مفتاح.\n"
-            "أضف مفتاح OpenAI من «🤖 مفتاح OpenAI»، أو اضبط GROQ_API_KEY / DEEPSEEK_API_KEY / ANTHROPIC_API_KEY في البيئة."
+            "اضغط «🔑 مفتاح الذكاء الاصطناعي» بالأسفل وأضف مفتاحك."
         )
     lines = [
         "🤖 <b>الذكاء الاصطناعي للأعضاء</b>",
@@ -661,6 +701,7 @@ def _aih_panel_text() -> str:
 
 def _aih_panel_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔑 مفتاح الذكاء الاصطناعي", callback_data="aih:key")],
         [InlineKeyboardButton("🙈 إخفاء الزر" if aih_is_enabled() else "👁 إظهار الزر", callback_data="aih:toggle")],
         [InlineKeyboardButton("📝 ملاحظات للمساعد", callback_data="aih:notes")],
         [InlineKeyboardButton("🧪 تجربة المساعد", callback_data="aih:test")],
@@ -701,6 +742,47 @@ async def handle_aih_callback(update, context, q, data: str, user, is_own: bool)
         await _aih_show_panel(q, note="✅ تم التحديث.")
         return True
 
+    if action == "key":
+        context.user_data["state"] = "main_menu"
+        stored_key, environment_key = get_ai_api_key_details()
+        if stored_key:
+            status = f"✅ محفوظ داخل البوت: <code>{html.escape(mask_api_key(stored_key))}</code>"
+        elif environment_key:
+            status = f"✅ مضبوط من متغير البيئة: <code>{html.escape(mask_api_key(environment_key))}</code>"
+        else:
+            status = "❌ لا يوجد مفتاح مضبوط حالياً"
+        rows = [[InlineKeyboardButton("➕ إضافة/تغيير المفتاح", callback_data="aih:keyset")]]
+        if stored_key:
+            rows.append([InlineKeyboardButton("🗑️ مسح المفتاح المحفوظ", callback_data="aih:keydel")])
+        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="aih:panel")])
+        await q.edit_message_text(
+            "🔑 <b>مفتاح الذكاء الاصطناعي</b>\n\n"
+            f"{status}\n\n"
+            "المفتاح مخفي عن الرسائل والسجلات، ولا يُفحص شكله أو بدايته.\n"
+            "المسح يزيل المفتاح المحفوظ من داخل البوت فقط؛ مفتاح البيئة يبقى فعالاً.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(rows),
+        )
+        return True
+
+    if action == "keyset":
+        context.user_data["state"] = AIH_KEY_STATE
+        await q.edit_message_text(
+            "🔐 <b>إضافة مفتاح الذكاء الاصطناعي</b>\n\n"
+            "أرسل المفتاح في رسالة واحدة فقط، بدون مسافات أو نص إضافي.\n"
+            "سأحذف رسالتك بعد الحفظ ولن أعرض المفتاح.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="aih:key")]]),
+        )
+        return True
+
+    if action == "keydel":
+        set_setting(AI_API_KEY_SETTING, "")
+        await q.answer("✅ تم مسح المفتاح المحفوظ.", show_alert=True)
+        context.user_data["state"] = "main_menu"
+        await _aih_show_panel(q, note="✅ تم مسح مفتاح الذكاء الاصطناعي المحفوظ.")
+        return True
+
     if action == "notes":
         context.user_data["state"] = AIH_NOTES_STATE
         current = (get_setting(AIH_NOTES_KEY) or "").strip()
@@ -739,6 +821,29 @@ async def handle_aih_text(update, context, text: str) -> bool:
     state = context.user_data.get("state", "")
     if user is None:
         return False
+
+    if state == AIH_KEY_STATE:
+        if user.id != OWNER_ID:
+            return False
+        candidate = (text or "").strip()
+        # فحص عام فقط (بدون أي افتراض عن نوع المفتاح أو بدايته).
+        if not candidate or any(ch.isspace() for ch in candidate) or not (16 <= len(candidate) <= 400):
+            await update.message.reply_text(
+                "⚠️ المفتاح غير صالح. أرسله كاملاً في رسالة واحدة، بدون مسافات أو نص إضافي.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="aih:key")]]),
+            )
+            return True
+        set_setting(AI_API_KEY_SETTING, candidate)
+        try:
+            await update.message.delete()
+        except Exception as exc:
+            logger.warning("ai_help: تعذّر حذف رسالة المفتاح بعد حفظها: %s", exc)
+        context.user_data["state"] = "main_menu"
+        await update.effective_chat.send_message(
+            "✅ تم حفظ مفتاح الذكاء الاصطناعي.\nجرّب من «🧪 تجربة المساعد» للتأكد أنه يعمل.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🤖 الذكاء الاصطناعي", callback_data="aih:panel")]]),
+        )
+        return True
 
     if state == AIH_NOTES_STATE:
         if user.id != OWNER_ID:

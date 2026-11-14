@@ -246,6 +246,7 @@ OWNER_SETTINGS_EXTRA_DEFAULTS = [
     ("📦 الخدمات الجديدة", "os:new_services", 1),
     ("📣 النشر التلقائي بالقناة", "feed:menu", 2),
     ("🤖 الذكاء الاصطناعي للأعضاء", "aih:panel", 1),
+    ("🤖 البوتات المستنسخة", "clone:panel", 1),
 ]
 
 LEGENDARY_SERVICES_MESSAGE = (

@@ -43,9 +43,21 @@ def get_pool():
     if _pool is None:
         with _pool_lock:
             if _pool is None:
+                # البوت المستنسخ ("إنشاء بوت كهذا") يعمل داخل مخطط PostgreSQL خاص به:
+                # search_path يحوي مخططه فقط، فتُنشأ جداوله فارغة ولا يرى بيانات البوت الأصلي.
+                _pool_kwargs = {"connect_timeout": 10}
+                _clone_schema = os.environ.get("BOT_DB_SCHEMA", "").strip()
+                if _clone_schema:
+                    if not re.fullmatch(r"clone_\d+", _clone_schema):
+                        raise RuntimeError("BOT_DB_SCHEMA غير صالح")
+                    _pool_kwargs["options"] = f"-c search_path={_clone_schema}"
+                try:
+                    _pool_max = max(2, int(os.environ.get("BOT_DB_POOL_MAX", "20")))
+                except ValueError:
+                    _pool_max = 20
                 _pool = psycopg2.pool.ThreadedConnectionPool(
-                    1, 20, DATABASE_URL,
-                    connect_timeout=10
+                    1, _pool_max, DATABASE_URL,
+                    **_pool_kwargs
                 )
     return _pool
 
@@ -181,6 +193,19 @@ def init_db():
               joined_at    TEXT DEFAULT CURRENT_DATE,
               bot_user_num INTEGER,
               verified     INTEGER DEFAULT 0
+          )""")
+          c.execute("""
+          CREATE TABLE IF NOT EXISTS cloned_bots (
+              id            SERIAL PRIMARY KEY,
+              owner_user_id BIGINT NOT NULL,
+              bot_id        BIGINT NOT NULL UNIQUE,
+              bot_username  TEXT,
+              bot_name      TEXT,
+              token         TEXT NOT NULL,
+              schema_name   TEXT NOT NULL UNIQUE,
+              desired_state TEXT NOT NULL DEFAULT 'running',
+              last_error    TEXT NOT NULL DEFAULT '',
+              created_at    TIMESTAMP NOT NULL DEFAULT (NOW() AT TIME ZONE 'UTC')
           )""")
           c.execute("""
           CREATE TABLE IF NOT EXISTS first_seen (
@@ -907,7 +932,7 @@ def init_db():
           try:
               _has_via = c.execute(
                   "SELECT 1 FROM information_schema.columns "
-                  "WHERE table_name='mandatory_channel_joins' AND column_name='via_bot'"
+                  "WHERE table_schema = current_schema() AND table_name='mandatory_channel_joins' AND column_name='via_bot'"
               ).fetchone()
               if not _has_via:
                   c.execute("ALTER TABLE mandatory_channel_joins ADD COLUMN via_bot BOOLEAN NOT NULL DEFAULT FALSE")
@@ -922,7 +947,7 @@ def init_db():
           try:
               _has_base = c.execute(
                   "SELECT 1 FROM information_schema.columns "
-                  "WHERE table_name='mandatory_channels' AND column_name='joins_baseline'"
+                  "WHERE table_schema = current_schema() AND table_name='mandatory_channels' AND column_name='joins_baseline'"
               ).fetchone()
               if not _has_base:
                   c.execute("ALTER TABLE mandatory_channels ADD COLUMN joins_baseline BIGINT NOT NULL DEFAULT 0")

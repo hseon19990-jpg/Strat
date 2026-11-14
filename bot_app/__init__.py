@@ -23,6 +23,7 @@ _SECTION_NAMES = (
     "services",
     "legendary_comment",
     "ai_help",
+    "clone_bot",
     "ui",
     "onboarding",
     "messages",

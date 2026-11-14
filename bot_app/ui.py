@@ -9,6 +9,7 @@ from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 from .qr_decoder import decode_login_qr_value
 from .ai_help import aih_button_row
+from .clone_bot import clone_button_row
 
 def generate_math():
     a, b = random.randint(1, 9), random.randint(1, 9)
@@ -348,7 +349,7 @@ def main_menu_kb(
 
     rows = build_kb_rows(top_items)
     # زر المساعد الذكي: دائماً أول صف في القائمة الرئيسية.
-    rows = list(aih_button_row(is_owner)) + rows
+    rows = list(aih_button_row(is_owner)) + list(clone_button_row(is_owner)) + rows
     # أزرار المجموعات قبل أزرار الدعم والإحالة: نضعها في صف واحد جنباً إلى جنب.
     if present_groups:
         group_row = [
@@ -1014,7 +1015,7 @@ OWNER_SETTINGS_GROUPS = [
         "os:member_tracking", "os:ban_menu", "os:restricted_members", "os:edit_welcome",
         "os:edit_contact", "os:edit_contact_label", "os:thank_owner_settings",
         "os:edit_support_label", "os:broadcast", "os:stats", "os:toggle_maintenance",
-        "os:manage_buttons", "mb_menu:owner_settings", "os:openai_api", "aih:panel",
+        "os:manage_buttons", "mb_menu:owner_settings", "os:openai_api", "aih:panel", "clone:panel",
     ), ()),
 ]
 OWNER_SETTINGS_GROUP_TITLES = {key: title for key, title, _v, _p in OWNER_SETTINGS_GROUPS}

@@ -306,6 +306,36 @@ def get_openai_api_key() -> str:
     return stored_key or environment_key
 
 
+AI_API_KEY_SETTING = "ai_api_key"
+# أسماء متغيرات البيئة المقبولة لمفتاح الذكاء الاصطناعي (بالترتيب).
+AI_API_KEY_ENV_NAMES = ("AI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY")
+
+
+def get_ai_api_key_details() -> tuple[str, str]:
+    """Return (database_key, environment_key) for the AI section without exposing values.
+
+    المفتاح عام: لا يُفحص شكله ولا بدايته (مفاتيح Google تبدأ عادةً بـ AIza لكن لا نعتمد على ذلك).
+    """
+    stored_key = ""
+    try:
+        from .users import get_setting
+        stored_key = (get_setting(AI_API_KEY_SETTING) or "").strip()
+    except Exception as exc:
+        logger.warning("⚠️ تعذّر قراءة مفتاح الذكاء الاصطناعي المحفوظ: %s", exc)
+    environment_key = ""
+    for name in AI_API_KEY_ENV_NAMES:
+        environment_key = os.environ.get(name, "").strip()
+        if environment_key:
+            break
+    return stored_key, environment_key
+
+
+def get_ai_api_key() -> str:
+    """Prefer the owner-managed key, then fall back to the deployment secret."""
+    stored_key, environment_key = get_ai_api_key_details()
+    return stored_key or environment_key
+
+
 def mask_api_key(value: str) -> str:
     """Show only a safe fingerprint of an API key in owner-facing messages."""
     value = str(value or "").strip()
