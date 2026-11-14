@@ -128,6 +128,23 @@ class AiHelpTests(unittest.TestCase):
         SETTINGS["ai_help_notes"] = "ملاحظة المالك: الدعم يرد من 10 صباحاً"
         check("owner notes included", "ملاحظة المالك" in m.aih_build_knowledge())
 
+        # ---- أسماء الأزرار المعدَّلة ----
+        defaults = {"main": [("⭐ تجميع نقاط", "collect_points", 2), ("🎁 هدية يومية", "daily_gift", 2),
+                             ("🧩 تعديل أزرار الواجهة", "mb_menu:main", 1), ("🎟 استخدام كود", "use_promo", 2)]}
+        rows = [dict(menu="main", label="📊 إحصاء نقاط", action_type="builtin", action_value="collect_points", enabled=1),
+                dict(menu="main", label="🎁 هدية يومية", action_type="builtin", action_value="daily_gift", enabled=1),
+                dict(menu="main", label="🎟 استخدام كود", action_type="builtin", action_value="use_promo", enabled=0),
+                dict(menu="main", label="🛒 متجر خاص", action_type="url", action_value="https://x", enabled=1),
+                dict(menu="main", label="اسم سري للمالك", action_type="builtin", action_value="mb_menu:main", enabled=1)]
+        out = "\n".join(m._aih_button_changes(defaults, rows))
+        check("rename detected", "⭐ تجميع نقاط" in out and "📊 إحصاء نقاط" in out)
+        check("unchanged button not listed", "هدية يومية" not in out)
+        check("hidden button listed", "HIDDEN" in out and "استخدام كود" in out)
+        check("custom button listed", "🛒 متجر خاص" in out)
+        check("owner button not leaked", "اسم سري للمالك" not in out and "تعديل أزرار" not in out)
+        check("no changes -> empty", m._aih_button_changes(defaults, [rows[1]]) == [])
+        check("prompt has rename + one-subject rules", "CURRENT BUTTON NAMES" in m._AIH_SYSTEM and "POINTS AND JEWELS ARE ONE SUBJECT" in m._AIH_SYSTEM)
+
         # ---- providers ----
         for var in ["ANTHROPIC_API_KEY","GROQ_API_KEY","DEEPSEEK_API_KEY","AI_API_KEY","GEMINI_API_KEY","GOOGLE_API_KEY"]: os.environ.pop(var, None)
         check("no providers", m.aih_providers() == [])
