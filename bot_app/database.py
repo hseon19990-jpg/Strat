@@ -909,6 +909,14 @@ def init_db():
                "ALTER TABLE raksh_orders ADD COLUMN IF NOT EXISTS refund_points INTEGER NOT NULL DEFAULT 0",
                "ALTER TABLE raksh_orders ADD COLUMN IF NOT EXISTS special_count INTEGER NOT NULL DEFAULT 0",
                "ALTER TABLE raksh_orders ADD COLUMN IF NOT EXISTS result_text TEXT",
+               # عدّادات يومية مستقلة: مجاني / نقاط / نجوم، تبدأ من 1 كل يوم.
+               "CREATE TABLE IF NOT EXISTS raksh_daily_counters ("
+               "day DATE NOT NULL, kind TEXT NOT NULL, "
+               "last_value INTEGER NOT NULL DEFAULT 0, "
+               "PRIMARY KEY (day, kind))",
+               "ALTER TABLE raksh_orders ADD COLUMN IF NOT EXISTS daily_kind TEXT",
+               "ALTER TABLE raksh_orders ADD COLUMN IF NOT EXISTS daily_seq INTEGER",
+               "ALTER TABLE raksh_orders ADD COLUMN IF NOT EXISTS daily_day DATE",
                "CREATE INDEX IF NOT EXISTS raksh_execution_usage_order_idx ON raksh_execution_usage (order_id, phone_number)",
               # جلسات مستقلة (جهاز ثانٍ منفصل) تُنشأ تلقائياً لكل رقم ليستخدمها بوت آخر.
               "CREATE TABLE IF NOT EXISTS external_bot_sessions ("
