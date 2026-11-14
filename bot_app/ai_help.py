@@ -302,28 +302,57 @@ def aih_providers() -> list:
     return providers
 
 
+# إعدادات السرعة: مهلة قصيرة، وتذكّر النموذج السليم وطريقة التفكير التي قبلها النموذج.
+AIH_GEMINI_TIMEOUT = 6          # ثوانٍ لكل طلب
+AIH_TOTAL_BUDGET = 9            # أقصى زمن إجمالي قبل التوقف عن تجربة نماذج أخرى
+_AIH_THINK_MODES = ({"thinkingBudget": 0}, {"thinkingLevel": "low"}, None)
+_AIH_THINK: dict = {}           # نموذج -> فهرس طريقة التفكير التي نجحت
+_AIH_MODEL_DEAD: dict = {}      # نموذج -> وقت انتهاء تجاهله (بعد 404)
+_AIH_MODEL_GOOD: list = []      # آخر نموذج نجح، يُجرَّب أولاً
+
+
+def _aih_order_models(models: list) -> list:
+    now = time.time()
+    alive = [m for m in models if _AIH_MODEL_DEAD.get(m, 0) < now]
+    ordered = alive or list(models)
+    if _AIH_MODEL_GOOD and _AIH_MODEL_GOOD[0] in ordered:
+        ordered.remove(_AIH_MODEL_GOOD[0])
+        ordered.insert(0, _AIH_MODEL_GOOD[0])
+    return ordered
+
+
 def _aih_gemini_post(url: str, model: str, key: str, body: dict):
     """طلب Gemini واحد. المفتاح بالترويسة لا بالرابط حتى لا يظهر في السجلات.
 
     مفتاح AIza: عنوان generativelanguage فقط.
-    مفتاح AQ. (الجديد): نجرّب generativelanguage ثم Vertex AI express (ترويسة ثم ?key=)،
-    ونتوقف عند أول نجاح. يعيد آخر استجابة مع أثر قصير للمحاولات في _aih_trail (بلا أي مفتاح).
+    مفتاح AQ.: generativelanguage أولاً؛ ولا ننتقل إلى Vertex إلا إذا رفض المفتاح (401/403).
+    التفكير يُقلَّل لأقصى حد (سرعة)، ونتذكر الصيغة التي قبلها النموذج حتى لا نكرر المحاولات.
     """
     headers = {"x-goog-api-key": key, "Content-Type": "application/json"}
-    attempts = [("gl", url.format(model=model), False)]
+    routes = [("gl", url.format(model=model), False)]
     if key.startswith("AQ."):
         vertex = AIH_VERTEX_URL.format(model=model)
-        attempts += [("vx", vertex, False), ("vx-q", vertex, True)]
+        routes += [("vx", vertex, False), ("vx-q", vertex, True)]
     trail, response = [], None
-    for tag, endpoint, use_query in attempts:
+    for tag, endpoint, use_query in routes:
+        if tag != "gl" and response is not None and response.status_code not in (401, 403):
+            break
         kwargs = {"params": {"key": key}} if use_query else {}
-        response = requests.post(endpoint, headers=headers, json=body, timeout=AIH_HTTP_TIMEOUT, **kwargs)
-        if response.status_code == 400:
-            # بعض النماذج لا تدعم thinkingConfig: نعيد المحاولة بدونه.
-            body["generationConfig"].pop("thinkingConfig", None)
-            response = requests.post(endpoint, headers=headers, json=body, timeout=AIH_HTTP_TIMEOUT, **kwargs)
+        idx = _AIH_THINK.get(model, 0)
+        while True:
+            cfg = _AIH_THINK_MODES[idx]
+            gen = body["generationConfig"]
+            gen.pop("thinkingConfig", None)
+            if cfg:
+                gen["thinkingConfig"] = dict(cfg)
+            response = requests.post(endpoint, headers=headers, json=body, timeout=AIH_GEMINI_TIMEOUT, **kwargs)
+            if response.status_code == 400 and idx < len(_AIH_THINK_MODES) - 1:
+                idx += 1  # النموذج لا يدعم هذه الصيغة: نجرّب الأخف التالية
+                continue
+            break
         trail.append(f"{tag}:{response.status_code}")
         if response.status_code == 200:
+            _AIH_THINK[model] = idx
             break
     try:
         response._aih_trail = " [" + ", ".join(trail) + "]" if len(trail) > 1 else ""
@@ -337,7 +366,12 @@ def _aih_call_sync(provider: tuple, system: str, user: str, max_tokens: int = 60
     name, kind, url, key, models = provider
     last_error = "no model"
     errors = []
+    started = time.time()
+    if kind == "gemini":
+        models = _aih_order_models(list(models))
     for model in models:
+        if errors and time.time() - started > AIH_TOTAL_BUDGET:
+            break
         try:
             if kind == "gemini":
                 # المفتاح في الترويسة وليس في الرابط حتى لا يظهر في السجلات.
@@ -346,9 +380,8 @@ def _aih_call_sync(provider: tuple, system: str, user: str, max_tokens: int = 60
                     "contents": [{"role": "user", "parts": [{"text": user}]}],
                     "generationConfig": {
                         "temperature": 0,
-                        "maxOutputTokens": max(max_tokens, 800),
+                        "maxOutputTokens": max(max_tokens, 700),
                         "responseMimeType": "application/json",
-                        "thinkingConfig": {"thinkingBudget": 0},
                     },
                 }
                 response = _aih_gemini_post(url, model, key, body)
@@ -358,7 +391,10 @@ def _aih_call_sync(provider: tuple, system: str, user: str, max_tokens: int = 60
                     parts = ((candidates[0].get("content") or {}).get("parts")) or []
                     text = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
                     usage = data.get("usageMetadata") or {}
+                    _AIH_MODEL_GOOD[:] = [model]
                     return text, int(usage.get("promptTokenCount", 0)), int(usage.get("candidatesTokenCount", 0))
+                if response.status_code == 404:
+                    _AIH_MODEL_DEAD[model] = time.time() + 3600  # نموذج غير موجود: نتجاهله ساعة
                 trail = getattr(response, "_aih_trail", "")
                 last_error = f"{name} {model}: HTTP {response.status_code}{trail}"
                 errors.append(last_error)
