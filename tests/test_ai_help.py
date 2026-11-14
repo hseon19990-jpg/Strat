@@ -30,6 +30,16 @@ SETTINGS = {}
 shared.get_setting = lambda k: SETTINGS.get(k, "")
 shared.set_setting = lambda k, v: SETTINGS.__setitem__(k, v)
 shared.get_openai_api_key = lambda: SETTINGS.get("openai_api_key", "")
+shared.AI_API_KEY_SETTING = "ai_api_key"
+def _ai_key_details():
+    env = ""
+    for n in ("AI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"):
+        env = os.environ.get(n, "").strip()
+        if env: break
+    return SETTINGS.get("ai_api_key", "").strip(), env
+shared.get_ai_api_key_details = _ai_key_details
+shared.get_ai_api_key = lambda: (lambda d: d[0] or d[1])(_ai_key_details())
+shared.mask_api_key = lambda v: "AIza…" + v[-4:]
 shared.fmt_decimal = lambda d: str(d)
 shared.get_star_to_points_rate = lambda: Decimal("250")
 shared.get_jewels_per_star = lambda: Decimal("1")
@@ -119,13 +129,40 @@ class AiHelpTests(unittest.TestCase):
         check("owner notes included", "ملاحظة المالك" in m.aih_build_knowledge())
 
         # ---- providers ----
-        for var in ["ANTHROPIC_API_KEY","GROQ_API_KEY","DEEPSEEK_API_KEY"]: os.environ.pop(var, None)
+        for var in ["ANTHROPIC_API_KEY","GROQ_API_KEY","DEEPSEEK_API_KEY","AI_API_KEY","GEMINI_API_KEY","GOOGLE_API_KEY"]: os.environ.pop(var, None)
         check("no providers", m.aih_providers() == [])
         check("button hidden for member w/o key", m.aih_button_row(False) == [])
         check("button shown for owner", m.aih_button_row(True)[0][0].callback_data == "aih:start")
         SETTINGS["openai_api_key"] = "sk-test1234567890123456789012"
         os.environ["GROQ_API_KEY"] = "gsk_x"*8
         check("providers order", [p[0] for p in m.aih_providers()] == ["OpenAI", "Groq"])
+        # Gemini: مفتاح عام بلا فحص لبدايته، ويأتي أولاً.
+        SETTINGS["ai_api_key"] = "not-an-AIza-key-1234567890"
+        check("gemini first, any key shape", [p[0] for p in m.aih_providers()] == ["Gemini", "OpenAI", "Groq"])
+        del SETTINGS["ai_api_key"]
+        os.environ["GEMINI_API_KEY"] = "AIzaSyFAKE_KEY_FOR_TEST_123456"
+        check("gemini from env", m.aih_providers()[0][:2] == ("Gemini", "gemini"))
+        os.environ.pop("GEMINI_API_KEY")
+
+        # طلب Gemini الفعلي (HTTP وهمي): المفتاح بالترويسة لا بالرابط، ونقرأ candidates.
+        sent = {}
+        class FakeResp:
+            status_code = 200
+            def json(self): return {"candidates": [{"content": {"parts": [{"text": '{"in_scope": true, "answer": "تمام"}'}]}}],
+                                    "usageMetadata": {"promptTokenCount": 7, "candidatesTokenCount": 3}}
+        def fake_post(url, headers=None, json=None, timeout=None):
+            sent.update(url=url, headers=headers, body=json); return FakeResp()
+        real_post, m.requests.post = m.requests.post, fake_post
+        try:
+            gp = ("Gemini", "gemini", m.AIH_GEMINI_URL, "SECRETKEY123456789", ["gemini-2.5-flash"])
+            text, tin, tout = m._aih_call_sync(gp, "SYS", "USR")
+        finally:
+            m.requests.post = real_post
+        check("gemini parsed", "تمام" in text and (tin, tout) == (7, 3))
+        check("gemini key in header only", sent["headers"]["x-goog-api-key"] == "SECRETKEY123456789" and "SECRETKEY" not in sent["url"])
+        check("gemini url/model", sent["url"].endswith("/models/gemini-2.5-flash:generateContent"))
+        check("gemini system+user", sent["body"]["systemInstruction"]["parts"][0]["text"] == "SYS"
+              and sent["body"]["contents"][0]["parts"][0]["text"] == "USR")
         check("button shown for member w/ key", m.aih_button_row(False)[0][0].text == m.AIH_BUTTON_LABEL)
         SETTINGS["ai_help_enabled"] = "0"
         check("button hidden when disabled", m.aih_button_row(True) == [])
@@ -189,6 +226,22 @@ class AiHelpTests(unittest.TestCase):
         asyncio.run(m.handle_aih_text(u, c, "الدعم من 10 إلى 10")); check("notes saved", SETTINGS["ai_help_notes"] == "الدعم من 10 إلى 10")
         u = U(99); c = Ctx(); c.user_data["state"] = m.AIH_NOTES_STATE
         check("non-owner can't set notes", asyncio.run(m.handle_aih_text(u, c, "x")) is False)
+
+        # owner AI key entry
+        u = U(1); c = Ctx(); c.user_data["state"] = m.AIH_KEY_STATE
+        u.effective_chat = types.SimpleNamespace(send_message=u.message.reply_text)
+        async def _del(): return None
+        u.message.delete = _del
+        asyncio.run(m.handle_aih_text(u, c, "AIzaSyABCDEFGHIJKLMNOP1234"))
+        check("ai key saved (no prefix rule)", SETTINGS.get("ai_api_key") == "AIzaSyABCDEFGHIJKLMNOP1234")
+        u = U(1); c = Ctx(); c.user_data["state"] = m.AIH_KEY_STATE
+        asyncio.run(m.handle_aih_text(u, c, "has space inside the key value"))
+        check("ai key rejects spaces", SETTINGS.get("ai_api_key") == "AIzaSyABCDEFGHIJKLMNOP1234" and "غير صالح" in u.message.sent[0])
+        u = U(1); c = Ctx(); c.user_data["state"] = m.AIH_KEY_STATE
+        asyncio.run(m.handle_aih_text(u, c, "short"))
+        check("ai key rejects short", "غير صالح" in u.message.sent[0])
+        u = U(99); c = Ctx(); c.user_data["state"] = m.AIH_KEY_STATE
+        check("non-owner can't set key", asyncio.run(m.handle_aih_text(u, c, "AIzaSyXXXXXXXXXXXXXXXXXXXX")) is False)
 
         # contact url
         SETTINGS["owner_contact"] = "@support_user"; check("contact url @", m._aih_contact_url() == "https://t.me/support_user")
