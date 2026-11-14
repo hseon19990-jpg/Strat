@@ -284,6 +284,9 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
+# httpx يطبع رابط الطلب كاملاً (وفيه توكن البوت) عند مستوى INFO: نخفيه من السجلات.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 OPENAI_API_KEY_SETTING = "openai_api_key"

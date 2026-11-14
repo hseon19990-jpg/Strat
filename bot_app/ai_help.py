@@ -43,6 +43,8 @@ AIH_MAX_ANSWER_CHARS = 1800
 AIH_HTTP_TIMEOUT = 30
 AIH_MAX_LIVE_SERVICES = 60
 AIH_GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+# مفاتيح Google الجديدة التي تبدأ بـ AQ. قد لا يقبلها عنوان generativelanguage، فنجرّب أيضاً عنوان Vertex AI (express).
+AIH_VERTEX_URL = "https://aiplatform.googleapis.com/v1/publishers/google/models/{model}:generateContent"
 # يمكن تغييرها من متغير البيئة AIH_GEMINI_MODEL (قائمة مفصولة بفواصل بترتيب المحاولة).
 AIH_GEMINI_DEFAULT_MODELS = "gemini-2.5-flash,gemini-2.5-flash-lite"
 
@@ -326,6 +328,36 @@ def aih_providers() -> list:
     return providers
 
 
+def _aih_gemini_post(url: str, model: str, key: str, body: dict):
+    """طلب Gemini واحد. المفتاح بالترويسة لا بالرابط حتى لا يظهر في السجلات.
+
+    مفتاح AIza: عنوان generativelanguage فقط.
+    مفتاح AQ. (الجديد): نجرّب generativelanguage ثم Vertex AI express (ترويسة ثم ?key=)،
+    ونتوقف عند أول نجاح. يعيد آخر استجابة مع أثر قصير للمحاولات في _aih_trail (بلا أي مفتاح).
+    """
+    headers = {"x-goog-api-key": key, "Content-Type": "application/json"}
+    attempts = [("gl", url.format(model=model), False)]
+    if key.startswith("AQ."):
+        vertex = AIH_VERTEX_URL.format(model=model)
+        attempts += [("vx", vertex, False), ("vx-q", vertex, True)]
+    trail, response = [], None
+    for tag, endpoint, use_query in attempts:
+        kwargs = {"params": {"key": key}} if use_query else {}
+        response = requests.post(endpoint, headers=headers, json=body, timeout=AIH_HTTP_TIMEOUT, **kwargs)
+        if response.status_code == 400:
+            # بعض النماذج لا تدعم thinkingConfig: نعيد المحاولة بدونه.
+            body["generationConfig"].pop("thinkingConfig", None)
+            response = requests.post(endpoint, headers=headers, json=body, timeout=AIH_HTTP_TIMEOUT, **kwargs)
+        trail.append(f"{tag}:{response.status_code}")
+        if response.status_code == 200:
+            break
+    try:
+        response._aih_trail = " [" + ", ".join(trail) + "]" if len(trail) > 1 else ""
+    except Exception:
+        pass
+    return response
+
+
 def _aih_call_sync(provider: tuple, system: str, user: str, max_tokens: int = 600):
     """استدعاء واحد (متزامن). يرجع (النص، توكنات_إدخال، توكنات_إخراج) ويرفع RuntimeError عند الفشل."""
     name, kind, url, key, models = provider
@@ -344,13 +376,7 @@ def _aih_call_sync(provider: tuple, system: str, user: str, max_tokens: int = 60
                         "thinkingConfig": {"thinkingBudget": 0},
                     },
                 }
-                headers = {"x-goog-api-key": key, "Content-Type": "application/json"}
-                endpoint = url.format(model=model)
-                response = requests.post(endpoint, headers=headers, json=body, timeout=AIH_HTTP_TIMEOUT)
-                if response.status_code == 400:
-                    # بعض النماذج لا تدعم thinkingConfig: نعيد المحاولة بدونه.
-                    body["generationConfig"].pop("thinkingConfig", None)
-                    response = requests.post(endpoint, headers=headers, json=body, timeout=AIH_HTTP_TIMEOUT)
+                response = _aih_gemini_post(url, model, key, body)
                 if response.status_code == 200:
                     data = response.json()
                     candidates = data.get("candidates") or [{}]
@@ -358,6 +384,9 @@ def _aih_call_sync(provider: tuple, system: str, user: str, max_tokens: int = 60
                     text = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
                     usage = data.get("usageMetadata") or {}
                     return text, int(usage.get("promptTokenCount", 0)), int(usage.get("candidatesTokenCount", 0))
+                trail = getattr(response, "_aih_trail", "")
+                last_error = f"{name} {model}: HTTP {response.status_code}{trail}"
+                continue
             elif kind == "anthropic":
                 response = requests.post(
                     url,
