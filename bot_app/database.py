@@ -23,19 +23,39 @@ def record_first_seen(user_id: int) -> None:
 
 
 def partner_ref_status(user_id: int) -> dict:
-    """started: هل المستخدم موجود هنا؟ first_seen: وقت أول /start بـ UTC (أو None
-    للمستخدمين القدامى الذين سبقوا هذه الميزة، فيُعدّون غير جدد)."""
+    """حالة المستخدم لبوت الإيميلات.
+
+    started / first_seen: هل المستخدم هنا ووقت أول /start (UTC) — None للقدامى.
+    verified: أكمل الاشتراك الإجباري والتحقق داخل هذا البوت.
+    referrer_id / referrer_username: من دعاه هنا (حساب المالك الثاني مثلاً).
+    referrer_credited: هل وصلت مكافأة الإحالة فعلاً للداعي.
+    """
     with db_conn() as c:
         row = c.execute(
             "SELECT first_seen_at FROM first_seen WHERE user_id=?", (int(user_id),)
         ).fetchone()
-        if row:
-            return {"started": True,
-                    "first_seen": row["first_seen_at"].strftime("%Y-%m-%dT%H:%M:%S+00:00")}
-        old = c.execute(
-            "SELECT 1 AS x FROM users WHERE user_id=?", (int(user_id),)
+        u = c.execute(
+            "SELECT verified, invited_by, referral_credited FROM users WHERE user_id=?",
+            (int(user_id),),
         ).fetchone()
-    return {"started": bool(old), "first_seen": None}
+        inviter_name = ""
+        inviter_id = int((u or {}).get("invited_by") or 0) if u else 0
+        if inviter_id:
+            iu = c.execute(
+                "SELECT username FROM users WHERE user_id=?", (inviter_id,)
+            ).fetchone()
+            inviter_name = ((iu or {}).get("username") or "") if iu else ""
+    extra = {
+        "verified": bool(u and u["verified"]),
+        "referrer_id": inviter_id or None,
+        "referrer_username": inviter_name or None,
+        "referrer_credited": bool(u and u["referral_credited"]),
+    }
+    if row:
+        return {"started": True,
+                "first_seen": row["first_seen_at"].strftime("%Y-%m-%dT%H:%M:%S+00:00"),
+                **extra}
+    return {"started": bool(u), "first_seen": None, **extra}
 
 
 def get_pool():
