@@ -364,18 +364,28 @@ KNOWLEDGE:
 # ────────────────────────────────────────────────────────────
 # المزوّدون (يعاد استخدام مفاتيح البوت الحالية)
 # ────────────────────────────────────────────────────────────
+def _aih_model_list() -> list:
+    """نماذج Gemini بترتيب المحاولة: ما ضُبط في AIH_GEMINI_MODEL ثم الافتراضية كاحتياط.
+
+    كل نموذج له حصة مستقلة غالباً، فإذا أعطى أحدها 429 ننتقل للتالي بدل الفشل مباشرة.
+    """
+    chosen = [m.strip() for m in os.environ.get("AIH_GEMINI_MODEL", "").split(",") if m.strip()]
+    for m in AIH_GEMINI_DEFAULT_MODELS.split(","):
+        m = m.strip()
+        if m and m not in chosen:
+            chosen.append(m)
+    return chosen
+
+
 def aih_providers() -> list:
-    """[(الاسم، النوع، العنوان، المفتاح، النماذج)]. مساعد الإجابات يعتمد على Gemini حصراً (مفتاح AI_API_KEY)، بلا Groq ولا OpenAI ولا غيرهما. المفاتيح لا تخرج من هذا الملف."""
+    """[(الاسم، النوع، العنوان، المفاتيح، النماذج)]. المساعد يعتمد على Gemini حصراً (بلا Groq ولا OpenAI ولا غيرهما)، ويدعم عدة مفاتيح بتدوير تلقائي. المفاتيح لا تخرج من هذا الملف."""
     providers = []
     try:
-        gemini_key = get_ai_api_key()
+        gemini_keys = get_ai_api_keys()
     except Exception:
-        gemini_key = ""
-    if gemini_key:
-        providers.append((
-            "Gemini", "gemini", AIH_GEMINI_URL, gemini_key,
-            [m.strip() for m in os.environ.get("AIH_GEMINI_MODEL", AIH_GEMINI_DEFAULT_MODELS).split(",") if m.strip()],
-        ))
+        gemini_keys = []
+    if gemini_keys:
+        providers.append(("Gemini", "gemini", AIH_GEMINI_URL, gemini_keys, _aih_model_list()))
     return providers
 
 
@@ -438,9 +448,81 @@ def _aih_gemini_post(url: str, model: str, key: str, body: dict):
     return response
 
 
+_AIH_KEY_COOL: dict = {}        # مفتاح -> وقت انتهاء تجاهله (حصة منتهية أو مفتاح مرفوض)
+_AIH_KEY_RR = [0]               # مؤشر التدوير: كل طلب يبدأ من المفتاح التالي لتوزيع الحمل
+AIH_MAX_KEY_TRIES = 12          # أقصى عدد مفاتيح تُجرَّب للطلب الواحد
+
+
+def _aih_gemini_rotate(name: str, url: str, keys: list, models: list, system: str, user: str, max_tokens: int):
+    """يجرّب مفاتيح Gemini بالتناوب: عند 429 (حصة) أو 401/403 (مفتاح مرفوض) ينتقل للمفتاح التالي.
+
+    المفتاح الذي ينتهي حدّه يُترك دقيقة (أو ساعة إن كان الحد يومياً/مرفوضاً)، فتتوزع الطلبات على
+    كل المفاتيح وتتضاعف الحصة بعددها. يرجع (النص، توكنات_إدخال، توكنات_إخراج) أو يرفع RuntimeError.
+    """
+    keys = list(dict.fromkeys(keys))
+    n = len(keys)
+    if not n:
+        raise RuntimeError("no_provider")
+    start = _AIH_KEY_RR[0] % n
+    order = [(i, keys[i]) for i in [(start + j) % n for j in range(n)]]
+    now = time.time()
+    ready = [kv for kv in order if _AIH_KEY_COOL.get(kv[1], 0) < now]
+    candidates = ready or order[:3]  # كلها في الانتظار: نحاول أول ثلاثة على أي حال
+    models = _aih_order_models(list(models))
+    body = {
+        "systemInstruction": {"parts": [{"text": system}]},
+        "contents": [{"role": "user", "parts": [{"text": user}]}],
+        "generationConfig": {"temperature": 0, "maxOutputTokens": max(max_tokens, 700),
+                             "responseMimeType": "application/json"},
+    }
+    errors, started, tries = [], time.time(), 0
+    for idx, key in candidates:
+        if tries >= AIH_MAX_KEY_TRIES or (errors and time.time() - started > AIH_TOTAL_BUDGET):
+            break
+        tries += 1
+        for model in models:
+            try:
+                response = _aih_gemini_post(url, model, key, body)
+            except requests.RequestException as exc:
+                errors.append(f"key#{idx + 1}/{model}: {type(exc).__name__}")
+                continue
+            code = response.status_code
+            if code == 200:
+                try:
+                    data = response.json()
+                    candidates_ = data.get("candidates") or [{}]
+                    parts = ((candidates_[0].get("content") or {}).get("parts")) or []
+                    text = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
+                    usage = data.get("usageMetadata") or {}
+                except (ValueError, KeyError, TypeError, AttributeError):
+                    errors.append(f"key#{idx + 1}/{model}: bad response")
+                    continue
+                _AIH_MODEL_GOOD[:] = [model]
+                _AIH_KEY_RR[0] = (idx + 1) % n
+                return text, int(usage.get("promptTokenCount", 0)), int(usage.get("candidatesTokenCount", 0))
+            if code == 404:
+                _AIH_MODEL_DEAD[model] = time.time() + 3600
+                errors.append(f"{model}: HTTP 404")
+                continue
+            if code in (429, 401, 403):
+                try:
+                    detail = ((response.json().get("error") or {}).get("message") or "")
+                except Exception:
+                    detail = ""
+                daily = "perday" in detail.lower().replace(" ", "").replace("_", "")
+                _AIH_KEY_COOL[key] = time.time() + (3600 if (code != 429 or daily) else 60)
+                errors.append(f"key#{idx + 1}: HTTP {code}" + (" (daily)" if daily else ""))
+                break  # المفتاح كله محدود/مرفوض: ننتقل للمفتاح التالي
+            errors.append(f"key#{idx + 1}/{model}: HTTP {code}")
+    _AIH_KEY_RR[0] = (start + 1) % n
+    raise RuntimeError(" | ".join(errors)[:190] if errors else "gemini: no response")
+
+
 def _aih_call_sync(provider: tuple, system: str, user: str, max_tokens: int = 600):
     """استدعاء واحد (متزامن). يرجع (النص، توكنات_إدخال، توكنات_إخراج) ويرفع RuntimeError عند الفشل."""
     name, kind, url, key, models = provider
+    if kind == "gemini":
+        return _aih_gemini_rotate(name, url, key if isinstance(key, list) else [key], models, system, user, max_tokens)
     last_error = "no model"
     errors = []
     started = time.time()
@@ -472,6 +554,14 @@ def _aih_call_sync(provider: tuple, system: str, user: str, max_tokens: int = 60
                     return text, int(usage.get("promptTokenCount", 0)), int(usage.get("candidatesTokenCount", 0))
                 if response.status_code == 404:
                     _AIH_MODEL_DEAD[model] = time.time() + 3600  # نموذج غير موجود: نتجاهله ساعة
+                elif response.status_code == 429:
+                    _AIH_MODEL_DEAD[model] = time.time() + 60  # تجاوز الحصة: نجرّب غيره ونرتاح دقيقة
+                    try:
+                        detail = ((response.json().get("error") or {}).get("message") or "")[:90]
+                    except Exception:
+                        detail = ""
+                    if detail:
+                        response._aih_trail = f" ({detail})"
                 trail = getattr(response, "_aih_trail", "")
                 last_error = f"{name} {model}: HTTP {response.status_code}{trail}"
                 errors.append(last_error)
@@ -863,21 +953,23 @@ async def handle_aih_callback(update, context, q, data: str, user, is_own: bool)
     if action == "key":
         context.user_data["state"] = "main_menu"
         stored_key, environment_key = get_ai_api_key_details()
-        if stored_key:
-            status = f"✅ محفوظ داخل البوت: <code>{html.escape(mask_api_key(stored_key))}</code>"
-        elif environment_key:
-            status = f"✅ مضبوط من متغير البيئة: <code>{html.escape(mask_api_key(environment_key))}</code>"
-        else:
-            status = "❌ لا يوجد مفتاح مضبوط حالياً"
-        rows = [[InlineKeyboardButton("➕ إضافة/تغيير المفتاح", callback_data="aih:keyset")]]
-        if stored_key:
-            rows.append([InlineKeyboardButton("🗑️ مسح المفتاح المحفوظ", callback_data="aih:keydel")])
+        stored_list, env_list = split_ai_keys(stored_key), split_ai_keys(environment_key)
+        lines = []
+        if stored_list:
+            masks = "\n".join(f"{i}. <code>{html.escape(mask_api_key(k))}</code>" for i, k in enumerate(stored_list[:60], 1))
+            lines.append(f"✅ محفوظ داخل البوت: <b>{len(stored_list)}</b> مفتاح\n{masks}")
+        if env_list:
+            lines.append(f"✅ من متغير البيئة: <b>{len(env_list)}</b> مفتاح")
+        status = "\n\n".join(lines) if lines else "❌ لا يوجد مفتاح مضبوط حالياً"
+        rows = [[InlineKeyboardButton("➕ إضافة مفاتيح", callback_data="aih:keyset")]]
+        if stored_list:
+            rows.append([InlineKeyboardButton("🗑️ مسح كل المفاتيح المحفوظة", callback_data="aih:keydel")])
         rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="aih:panel")])
         await q.edit_message_text(
-            "🔑 <b>مفتاح الذكاء الاصطناعي</b>\n\n"
+            "🔑 <b>مفاتيح Gemini</b>\n\n"
             f"{status}\n\n"
-            "المفتاح مخفي عن الرسائل والسجلات، ولا يُفحص شكله أو بدايته.\n"
-            "المسح يزيل المفتاح المحفوظ من داخل البوت فقط؛ مفتاح البيئة يبقى فعالاً.",
+            "عند انتهاء حصة مفتاح (429) ينتقل البوت تلقائياً للمفتاح التالي، وتتوزع الطلبات على كل المفاتيح.\n"
+            "المفاتيح مخفية عن الرسائل والسجلات. المسح يزيل المحفوظة داخل البوت فقط؛ مفاتيح البيئة تبقى فعالة.",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(rows),
         )
@@ -886,9 +978,10 @@ async def handle_aih_callback(update, context, q, data: str, user, is_own: bool)
     if action == "keyset":
         context.user_data["state"] = AIH_KEY_STATE
         await q.edit_message_text(
-            "🔐 <b>إضافة مفتاح الذكاء الاصطناعي</b>\n\n"
-            "أرسل المفتاح في رسالة واحدة فقط، بدون مسافات أو نص إضافي.\n"
-            "سأحذف رسالتك بعد الحفظ ولن أعرض المفتاح.",
+            "🔐 <b>إضافة مفاتيح Gemini</b>\n\n"
+            "أرسل مفتاحاً أو عدة مفاتيح في رسالة واحدة (كل مفتاح في سطر، أو افصل بينها بمسافة/فاصلة).\n"
+            "تُضاف للموجودة والمكرر يُتجاهل. سأحذف رسالتك بعد الحفظ ولن أعرض المفاتيح.\n"
+            "إن كانت لديك مفاتيح كثيرة أرسلها على عدة رسائل (بحدود 90 مفتاحاً للرسالة).",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="aih:key")]]),
         )
@@ -943,23 +1036,33 @@ async def handle_aih_text(update, context, text: str) -> bool:
     if state == AIH_KEY_STATE:
         if user.id != OWNER_ID:
             return False
-        candidate = (text or "").strip()
-        # فحص عام فقط (بدون أي افتراض عن نوع المفتاح أو بدايته).
-        if not candidate or any(ch.isspace() for ch in candidate) or not (16 <= len(candidate) <= 400):
+        parts = split_ai_keys(text)
+        valid = [k for k in parts if 16 <= len(k) <= 400]
+        invalid = len(parts) - len(valid)
+        if not valid:
             await update.message.reply_text(
-                "⚠️ المفتاح غير صالح. أرسله كاملاً في رسالة واحدة، بدون مسافات أو نص إضافي.",
+                "⚠️ لم أجد مفتاحاً صالحاً. أرسل المفاتيح كاملة، كل مفتاح في سطر أو مفصولة بمسافة.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="aih:key")]]),
             )
             return True
-        set_setting(AI_API_KEY_SETTING, candidate)
+        existing = split_ai_keys(get_ai_api_key_details()[0])
+        merged = list(dict.fromkeys(existing + valid))[:200]
+        added = len(merged) - len(existing)
+        set_setting(AI_API_KEY_SETTING, ",".join(merged))
         try:
             await update.message.delete()
         except Exception as exc:
-            logger.warning("ai_help: تعذّر حذف رسالة المفتاح بعد حفظها: %s", exc)
+            logger.warning("ai_help: تعذّر حذف رسالة المفاتيح بعد حفظها: %s", exc)
         context.user_data["state"] = "main_menu"
+        note = f"✅ أُضيف {added} مفتاح جديد، والمجموع المحفوظ الآن {len(merged)}."
+        if len(valid) - added > 0:
+            note += f"\n↩️ تُجوهل {len(valid) - added} مكرر."
+        if invalid:
+            note += f"\n⚠️ تُجوهل {invalid} نص غير صالح (قصير جداً)."
         await update.effective_chat.send_message(
-            "✅ تم حفظ مفتاح الذكاء الاصطناعي.\nجرّب من «🧪 تجربة المساعد» للتأكد أنه يعمل.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🤖 الذكاء الاصطناعي", callback_data="aih:panel")]]),
+            note + "\nجرّب من «🧪 تجربة المساعد» للتأكد.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔑 المفاتيح", callback_data="aih:key"),
+                                                InlineKeyboardButton("🤖 الذكاء الاصطناعي", callback_data="aih:panel")]]),
         )
         return True
 

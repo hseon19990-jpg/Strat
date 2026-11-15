@@ -333,10 +333,27 @@ def get_ai_api_key_details() -> tuple[str, str]:
     return stored_key, environment_key
 
 
-def get_ai_api_key() -> str:
-    """Prefer the owner-managed key, then fall back to the deployment secret."""
+def split_ai_keys(raw: str) -> list:
+    """يفصل نصاً يحوي مفتاحاً أو عدة مفاتيح (سطر/فاصلة/مسافة) ويحذف المكرر بالترتيب."""
+    out, seen = [], set()
+    for part in re.split(r"[\s,;]+", str(raw or "")):
+        part = part.strip()
+        if part and part not in seen:
+            seen.add(part)
+            out.append(part)
+    return out
+
+
+def get_ai_api_keys() -> list:
+    """كل مفاتيح Gemini: المحفوظة داخل البوت أولاً ثم مفاتيح البيئة (يقبل عدة مفاتيح بفواصل)."""
     stored_key, environment_key = get_ai_api_key_details()
-    return stored_key or environment_key
+    return split_ai_keys(stored_key + "," + environment_key)
+
+
+def get_ai_api_key() -> str:
+    """أول مفتاح متاح (للتوافق مع الشيفرة القديمة)."""
+    keys = get_ai_api_keys()
+    return keys[0] if keys else ""
 
 
 def mask_api_key(value: str) -> str:
