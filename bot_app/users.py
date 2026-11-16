@@ -453,21 +453,7 @@ async def notify_invited_without_username(bot, invited_user, inviter_id: int, us
         invited_num = f" (رقم {int(user_num):,})" if user_num else ""
         inviter_num = f" (رقم {int(inviter['bot_user_num']):,})" if inviter.get("bot_user_num") else ""
 
-        group_target = ADMIN_GROUP_ID or OWNER_ID
-        if group_target:
-            try:
-                await bot.send_message(
-                    chat_id=group_target,
-                    text=(
-                        "❌ <b>لم تُقبل الإحالة: المدعو بلا يوزر</b>\n\n"
-                        f"👤 المدعو: {invited_name}{invited_num}\n"
-                        f"🔗 الداعي: {inviter_name}{inviter_num}\n"
-                        "🚫 رُفضت الإحالة نهائياً، ولن تُحتسب حتى لو أضاف يوزراً لاحقاً."
-                    ),
-                    parse_mode=ParseMode.HTML,
-                )
-            except Exception as exc:
-                logger.warning(f"⚠️ فشل إشعار كروب الطلبات بمدعو بلا يوزر: {exc}")
+        # لا نرسل شيئاً للجروبات هنا (الجروبات للطلبات وفوز العجلة فقط). الإنذار يصل للمالك بالخاص.
 
         # إنذار المالك: 3 من آخر 5 مدعوّين بلا يوزر
         recent = get_recent_invitees_without_username(int(inviter_id))
@@ -517,6 +503,9 @@ async def notify_new_user_group(bot, user, invited_by: int = 0, user_num=None):
     try:
         chat = get_new_users_group_chat()
         if not bot or chat is None:
+            return
+        # الجروبات والقنوات للطلبات وفوز العجلة فقط: لا إشعار أعضاء جدد فيها (يُسمح بالخاص فقط)
+        if not (isinstance(chat, int) and chat > 0):
             return
         name = html.escape(user.full_name or f"ID:{user.id}")
         username = getattr(user, "username", None)

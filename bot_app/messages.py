@@ -1803,11 +1803,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(OWNER_ID, notif_text, parse_mode=ParseMode.HTML, reply_markup=gmail_kb)
             except Exception as e:
                 logger.warning(f"gmail notify owner error: {e}")
-        if ADMIN_GROUP_ID:
-            try:
-                await context.bot.send_message(ADMIN_GROUP_ID, "تمت عملية الحصول على 10 الالف نقطة معاملة سرية")
-            except Exception as e:
-                logger.warning(f"gmail notify group error: {e}")
+        # لا إشعار للجروب هنا (الجروبات للطلبات وفوز العجلة فقط)
         return
 
     if is_own and state == "os_await_gmail_reward":

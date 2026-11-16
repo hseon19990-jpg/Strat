@@ -250,6 +250,16 @@ def main():
         .build()
     )
 
+    # الجروبات: البوت لا يرد على أي رسالة/أمر فيها (يرسل فقط الطلبات وفائزي العجلة).
+    # رسائل النظام (انضمام/مغادرة) تمر ليحذفها معالج delete_group_service_messages.
+    async def _ignore_group_chatter(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        from telegram.ext import ApplicationHandlerStop
+        raise ApplicationHandlerStop
+
+    app.add_handler(
+        MessageHandler(filters.ChatType.GROUPS & ~filters.StatusUpdate.ALL, _ignore_group_chatter),
+        group=-1,
+    )
     app.add_handler(CommandHandler("start",     cmd_start))
     app.add_handler(CommandHandler("setbuttonemoji", cmd_set_button_emoji))
     app.add_handler(CommandHandler("admin",     cmd_admin))
