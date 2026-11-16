@@ -881,6 +881,81 @@ def _punish_referral_fraud(c, inviter_id: int, invited_id: int, joined: int, tot
     }
 
 
+def _notify_rolet_confirm(user_id: int, inviter_id: int) -> None:
+    """يبلّغ بوت روليت أن هذا المحال أكمل إحالته هنا (خطوات القنوات والتحقق ثم احتساب الإحالة).
+
+    يعمل فقط إذا كان الداعي هو حسابك الثاني (ROLET_REWARD_ACCOUNT_ID) وكانت متغيرات
+    ROLET_CONFIRM_URL و ROLET_CONFIRM_SECRET مضبوطة. الإرسال بخيط منفصل حتى لا يؤخر البوت.
+    """
+    import os as _os
+    import threading as _th
+    import requests as _rq
+
+    # الأولوية للإعداد من داخل البوت (/rolet_link)، ثم متغيرات البيئة كبديل
+    url = (get_setting("rolet_confirm_url") or _os.getenv("ROLET_CONFIRM_URL") or "").strip()
+    secret = (get_setting("rolet_confirm_secret") or _os.getenv("ROLET_CONFIRM_SECRET") or "").strip()
+    reward_id = (get_setting("rolet_reward_account_id") or _os.getenv("ROLET_REWARD_ACCOUNT_ID") or "").strip()
+    if not (url and secret and reward_id.lstrip("-").isdigit()):
+        return
+    if int(reward_id) != int(inviter_id):
+        return
+
+    def _send():
+        for attempt in range(3):
+            try:
+                r = _rq.post(url, json={"user_id": int(user_id), "secret": secret}, timeout=10)
+                if r.status_code == 200:
+                    return
+            except Exception:
+                pass
+            time.sleep(2 * (attempt + 1))
+
+    _th.Thread(target=_send, daemon=True).start()
+
+
+async def cmd_rolet_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر المالك: ربط ستارت ببوت روليت لتأكيد الإحالات.
+
+    /rolet_link <رابط_التأكيد> <السر> <ايدي_الحساب_الثاني>
+    /rolet_link off   → إيقاف الربط
+    /rolet_link       → عرض الحالة
+    """
+    user = update.effective_user
+    if user.id != OWNER_ID:
+        await update.message.reply_text("⛔ هذا الأمر للمالك فقط.")
+        return
+    args = context.args or []
+    if not args:
+        url = get_setting("rolet_confirm_url")
+        rid = get_setting("rolet_reward_account_id")
+        on = bool(url and get_setting("rolet_confirm_secret") and rid)
+        await update.message.reply_text(
+            f"🔗 ربط روليت: {'✅ مفعّل' if on else '❌ غير مفعّل'}\n"
+            f"الرابط: {url or '—'}\nايدي الحساب الثاني: {rid or '—'}\n\n"
+            "للتفعيل:\n/rolet_link <رابط_التأكيد> <السر> <ايدي_الحساب_الثاني>\n"
+            "للإيقاف: /rolet_link off")
+        return
+    if args[0].lower() == "off":
+        for k in ("rolet_confirm_url", "rolet_confirm_secret", "rolet_reward_account_id"):
+            set_setting(k, "")
+        await update.message.reply_text("✅ تم إيقاف الربط مع روليت.")
+        return
+    if len(args) != 3 or not args[0].startswith("http") or not args[2].lstrip("-").isdigit():
+        await update.message.reply_text(
+            "❌ الصيغة: /rolet_link <رابط_التأكيد> <السر> <ايدي_الحساب_الثاني>\n"
+            "مثال: /rolet_link https://rolet.up.railway.app/strat/confirm MySecret123 123456789")
+        return
+    set_setting("rolet_confirm_url", args[0])
+    set_setting("rolet_confirm_secret", args[1])
+    set_setting("rolet_reward_account_id", args[2])
+    try:  # حذف رسالتك لأنها تحتوي السر
+        await update.message.delete()
+    except Exception:
+        pass
+    await context.bot.send_message(update.effective_chat.id,
+                                   "✅ تم حفظ الربط مع روليت (حذفت رسالتك لأنها تحتوي السر).")
+
+
 def credit_referral_if_pending(user_id: int, context=None):
     """يمنح مكافأة الإحالة للداعي مرة واحدة بعد اكتمال دخول المدعو.
 
@@ -1007,6 +1082,12 @@ def credit_referral_if_pending(user_id: int, context=None):
             context.user_data["referral_reward_type"] = reward_type
             if upper_rewards:
                 context.user_data["referral_upper_rewards"] = upper_rewards
+    try:
+        _notify = globals().get("_notify_rolet_confirm")
+        if _notify:
+            _notify(user_id, invited_by)
+    except Exception:
+        pass
     return (invited_by, rp)
 
 

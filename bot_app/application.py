@@ -255,6 +255,7 @@ def main():
     app.add_handler(CommandHandler("admin",     cmd_admin))
     app.add_handler(CommandHandler("addpoints", cmd_addpoints))
     app.add_handler(CommandHandler("grant_ref", cmd_grant_ref))
+    app.add_handler(CommandHandler("rolet_link", cmd_rolet_link))
     app.add_handler(CommandHandler("broadcast",           cmd_broadcast))
     app.add_handler(CommandHandler("status",              cmd_status_order))
     app.add_handler(CommandHandler("compensate_partial",  cmd_compensate_partial))
