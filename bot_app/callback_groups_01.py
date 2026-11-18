@@ -2478,9 +2478,11 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             return
 
         if data == "charge:asiacell":
-            asiacell_txt = get_setting("asiacell_text") or "⚠️ الشحن التلقائي عبر اسيا سيل غير متاح حالياً.\nيرجى التواصل مع المالك."
-            kb_rows = contact_owner_row() + [[InlineKeyboardButton("🔙 رجوع", callback_data="charge_points")]]
-            await q.edit_message_text(asiacell_txt, reply_markup=InlineKeyboardMarkup(kb_rows))
+            kb_rows = [
+                [InlineKeyboardButton("⭐ الشحن عبر النجوم", callback_data="charge:stars")],
+                [InlineKeyboardButton("🔙 رجوع", callback_data="charge_points")],
+            ]
+            await q.edit_message_text("⭐ الشحن متاح عبر النجوم فقط.", reply_markup=InlineKeyboardMarkup(kb_rows))
             return
 
         if data == "currency_exchange":

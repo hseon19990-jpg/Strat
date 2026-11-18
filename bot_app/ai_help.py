@@ -142,9 +142,9 @@ BOT PURPOSE: a Telegram bot where members buy social-media growth services ("ر�
 BALANCES: the main menu header shows the member's points and jewels. "⭐ معلوماتي" shows account info and invitation stats.
 
 TOP-UP (CHARGING):
-- Points: button "👍 شحن نقاط", then choose "⭐ الشحن عبر النجوم" (Telegram Stars; quick amounts, or "🔢 شحن عدد نقاط معين", or "⭐ شحن بعدد نجوم معين"; Telegram shows an invoice after confirming; stars paid are not refundable) or "📱 الشحن عبر اسيا سيل" (the instructions are shown inside that screen; there is also a contact button).
-- Jewels: button "💎 شحن مجوهرات", then choose "📱 الشحن برصيد آسيا سيل", "⭐ الشحن بالنجوم" (choose the number of stars; invoice appears) or "💳 العملات الإلكترونية" (payment instructions are shown inside the screen with a contact button).
-- Exact payment details (numbers/addresses/steps) are only inside those screens; never invent them. Tell the member to open the screen and, if anything is unclear, press "✅ تواصل مع الدعم".
+- Points: button "👍 شحن نقاط", then choose "⭐ الشحن عبر النجوم" (Telegram Stars; quick amounts, or "🔢 شحن عدد نقاط معين", or "⭐ شحن بعدد نجوم معين"; Telegram shows an invoice after confirming; stars paid are not refundable).
+- Jewels: button "💎 شحن مجوهرات", then choose "⭐ الشحن بالنجوم" (choose the number of stars; invoice appears).
+- Top-up is available with Telegram Stars ONLY. Never mention, suggest or describe any other payment method (no Asiacell, no e-wallets, no crypto, no bank/card transfers). If asked, say only Telegram Stars is supported, and press "✅ تواصل مع الدعم" if anything is unclear.
 - "↔️ تحويل بين النقاط والمجوهرات": converts jewels to points or points to jewels using the live rates below.
 - "🎁 استبدال جواهر بجوائز": exchange jewels for prizes (stars, a Telegram number, buying through a code, or prizes the bot adds).
 

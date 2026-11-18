@@ -5101,6 +5101,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if is_own and state in ("os_await_audit_target", "os_await_audit_note"):
+        from .member_audit import ma_handle_owner_text
+        if await ma_handle_owner_text(update, context, state, text):
+            return
+
     if is_own and state == "os_await_ban_reason":
         target_id = context.user_data.get("ban_target_id")
         reason = text.strip() if text.strip() != "-" else ""

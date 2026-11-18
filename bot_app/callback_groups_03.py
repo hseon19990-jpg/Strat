@@ -436,6 +436,7 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                 _rows_k = _c.execute(
                     "SELECT id, phone_number, session_string "
                     "FROM number_stock WHERE session_string IS NOT NULL AND deleted_at IS NULL"
+                    " AND contributed_by IS NULL AND raksh_only IS NOT TRUE"
                     " AND (is_solo IS NOT TRUE OR sessions_reset IS NOT TRUE)"
                 ).fetchall()
             if not _rows_k:

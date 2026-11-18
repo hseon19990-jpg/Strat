@@ -987,8 +987,7 @@ OWNER_SETTINGS_GROUPS = [
     ), ()),
     ("prices", "💰 الأسعار والعملات", (
         "os:pa:ask", "os:edit_star_rate", "os:edit_exchange_rate", "os:edit_jewel_star_price", "os:edit_jewel_to_points_rate",
-        "os:edit_points_to_jewel_rate", "os:manage_star_packages", "os:edit_asiacell",
-        "os:edit_jewels_asiacell", "os:edit_jewels_ewallet", "os:manage_points",
+        "os:edit_points_to_jewel_rate", "os:manage_star_packages", "os:manage_points",
     ), ()),
     ("rewards", "🎁 الإحالات والهدايا", (
         "os:edit_new_users_group", "os:edit_referral", "os:referral_levels", "os:ref_type_toggle", "os:ref_fraud_toggle", "os:ref_l1_jewels",
@@ -1009,7 +1008,7 @@ OWNER_SETTINGS_GROUPS = [
     ("accounts", "🛡 الحسابات والمشرفون", (
         "os:toggle_buyback_visible", "buyback:owner:list", "os:edit_buyback_price",
         "os:edit_buyback_restricted_price", "os:add_supervisor", "os:list_supervisors",
-        "os:sv_accounts", "os:account_info",
+        "os:sv_accounts", "os:account_info", "os:ma:menu",
     ), ()),
     ("general", "⚙️ عام وإدارة", (
         "os:member_tracking", "os:ban_menu", "os:restricted_members", "os:edit_welcome",
@@ -2581,7 +2580,6 @@ def thank_owner_settings_kb():
 def charge_points_kb():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("⭐ الشحن عبر النجوم", callback_data="charge:stars")],
-        [InlineKeyboardButton("📱 الشحن عبر اسيا سيل", callback_data="charge:asiacell")],
         [InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")],
     ])
 

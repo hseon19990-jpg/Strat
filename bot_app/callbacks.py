@@ -341,6 +341,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if await handle_gift_profit_callback(update, context, q, data, user, is_own):
             return
 
+    # ── تدقيق المؤجّرين (للمالك فقط) ──
+    if data.startswith("os:ma:") and is_own:
+        from .member_audit import handle_member_audit_callback
+        if await handle_member_audit_callback(update, context, q, data, user):
+            return
+
     # ── العضو يُبلغ المالك بعد إكمال تحقق حساب الجيميل ──
     for _callback_group in (
         _handle_callback_group_01,

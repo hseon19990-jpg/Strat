@@ -11,6 +11,7 @@ from .funding_boost import run_funding_boost_job
 from .external_bot_link import run_external_bot_link_job, EXTERNAL_LINK_INTERVAL_SECONDS
 from .clone_bot import clone_is_child, clone_supervisor_start
 from .owner_details import run_daily_report_job, run_owner_alerts_job
+from .member_audit import ma_monitor_job
 from .channel_feed import run_channel_feed_job
 from .raksh_system.common import cleanup_expired_raksh_channel_memberships
 from .storage_cleanup import cleanup_transient_storage_job
@@ -637,6 +638,8 @@ def main():
         app.job_queue.run_repeating(compensate_duplicate_sales_job, interval=21600, first=300)
         logger.info("🔁 تم تفعيل فحص البيع المكرر وتعويض المتضررين (كل 6 ساعات)")
         app.job_queue.run_repeating(check_twofa_reset_job, interval=3600, first=60)
+        app.job_queue.run_repeating(ma_monitor_job, interval=300, first=150)
+        logger.info("🔎 تم تفعيل مراقبة حسابات المؤجّرين (كل 5 دقائق)")
         logger.info("🔐 تم تفعيل فحص إكمال إعادة تعيين 2FA (كل ساعة)")
         app.job_queue.run_repeating(enable_pending_2fa_job, interval=3600, first=120)
         logger.info("🔐 تم تفعيل فحص الحسابات التي تحتاج قراءة/تفعيل 2FA (كل ساعة)")

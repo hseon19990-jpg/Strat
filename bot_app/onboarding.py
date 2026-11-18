@@ -992,6 +992,7 @@ async def cmd_mass_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rows = _c.execute(
             "SELECT id, phone_number, session_string FROM number_stock "
             "WHERE ever_sold IS NOT TRUE "
+            "  AND contributed_by IS NULL AND raksh_only IS NOT TRUE "
             "  AND session_string IS NOT NULL"
         ).fetchall()
 
