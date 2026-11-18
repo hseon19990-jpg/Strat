@@ -704,6 +704,47 @@ def _load_raksh_order_items(order_id: int) -> Dict[str, Dict]:
     return {str(row["phone_number"]): dict(row) for row in rows}
 
 
+def _stars_order_points_equivalent(
+    connection, order_id: int, success_count: int
+) -> int:
+    """يحوّل طلباً مدفوعاً بالنجوم إلى نقاط مكافئة لحساب حصة المؤجرين.
+
+    الفكرة: لو دُفع الطلب نفسه بالنقاط، كم كانت ستكون قيمته؟ نأخذ سعر النقاط
+    للطلب كاملاً (مع عدد الأيام لخدمة التفاعل على كل المنشورات) ثم نوزّعه
+    بنسبة الحسابات الناجحة إلى الحسابات المطلوبة.
+    """
+    order = connection.execute(
+        "SELECT service_type, quantity, params, total_cost "
+        "FROM raksh_orders WHERE id=%s",
+        (order_id,),
+    ).fetchone()
+    if not order:
+        return 0
+    quantity = max(0, int(order["quantity"] or 0))
+    if quantity <= 0 or success_count <= 0:
+        return 0
+    params = order.get("params") or {}
+    if isinstance(params, str):
+        try:
+            params = json.loads(params)
+        except (TypeError, ValueError):
+            params = {}
+    full_points = 0
+    try:
+        svc = get_raksh_service(order["service_type"])
+        if svc:
+            full_points = int(svc.get_total(quantity, "points") or 0)
+            if order["service_type"] == "all_posts_reactions":
+                days = max(1, int(params.get("duration_days") or 1))
+                full_points *= min(days, getattr(svc, "MAX_DURATION_DAYS", days))
+    except Exception:
+        full_points = 0
+    if full_points <= 0:
+        # احتياط: نحوّل النجوم المدفوعة بسعر الصرف الثابت للنقاط.
+        full_points = int(order["total_cost"] or 0) * RAKSH_POINTS_PER_STAR
+    return (full_points * min(success_count, quantity)) // quantity
+
+
 def _credit_raksh_contributors(
     connection,
     order_id: int,
@@ -715,11 +756,17 @@ def _credit_raksh_contributors(
     """يسجل ويدفع حصة أصحاب الحسابات مرة واحدة لكل طلب وحساب.
 
     الحصة تُحسب من المبلغ المدفوع فعلياً للحسابات الناجحة فقط. الدفع بالنجوم
-    لا يولّد نقاطاً، لذلك لا تُنشأ منه أرباح نقاط للمساهمين.
+    يُحوَّل إلى نقاط مكافئة (سعر الطلب لو دُفع بالنقاط) فيحصل المؤجر على نسبته
+    من النقاط كما لو دفع العميل بالنقاط.
     """
-    if payment_method != "points" or success_count <= 0:
+    if payment_method not in {"points", "stars"} or success_count <= 0:
         return []
-    net_points = max(0, int(total_cost or 0) - int(refund_points or 0))
+    if payment_method == "stars":
+        net_points = _stars_order_points_equivalent(
+            connection, order_id, int(success_count)
+        )
+    else:
+        net_points = max(0, int(total_cost or 0) - int(refund_points or 0))
     if net_points <= 0:
         return []
 

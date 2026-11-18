@@ -93,6 +93,13 @@ def get_raksh_menu_keyboard(is_owner: bool = False):
 # ═══ 1. الثوابت العامة ═══
 # ════════════════════════════════════════════════════════
 
+# شرط SQL يستثني حسابات المؤجرين الذين رفضوا الخدمة (يأخذ service_type كمعامل).
+RAKSH_CONTRIBUTOR_BLOCK_SQL = (
+    " AND NOT EXISTS (SELECT 1 FROM raksh_contributor_service_blocks b "
+    "WHERE b.contributor_id = number_stock.contributed_by "
+    "AND b.service_type = %s)"
+)
+
 RAKSH_PAID_REACTION = "__raksh_paid_reaction__"
 RAKSH_PAID_REACTION_LABEL = "⭐ تفاعل مدفوع"
 RAKSH_POINTS_PER_STAR = 250
@@ -433,6 +440,10 @@ def _get_sessions_for_service(
         if contributor_share_percent is not None:
             query += " AND COALESCE(contributor_share_percent, 50)=%s"
             params = (*params, int(contributor_share_percent))
+        if contributor_id is None:
+            # رفض المؤجر لهذه الخدمة يستثني حساباته من طلبات الآخرين.
+            query += RAKSH_CONTRIBUTOR_BLOCK_SQL
+            params = (*params, str(service_type))
         query += " ORDER BY last_authorized DESC NULLS LAST, id ASC"
         rows = c.execute(query, params).fetchall()
         sessions = _dedupe_raksh_sessions([dict(row) for row in rows])

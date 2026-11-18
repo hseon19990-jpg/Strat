@@ -12,6 +12,7 @@ from ..accounts import check_spam_status_detailed
 from ..database import db_conn
 from ..shared import TELEGRAM_API_HASH, TELEGRAM_API_ID
 from .common import (
+    RAKSH_CONTRIBUTOR_BLOCK_SQL,
     RakshService,
     ServiceConfig,
     _get_raksh_session_lock,
@@ -125,6 +126,9 @@ def _message_sessions(
     if contributor_share_percent is not None:
         query += " AND COALESCE(contributor_share_percent, 50)=%s"
         params = (*params, int(contributor_share_percent))
+    if contributor_id is None:
+        query += RAKSH_CONTRIBUTOR_BLOCK_SQL
+        params = (*params, "send_message")
     query += " ORDER BY last_authorized DESC NULLS LAST, id ASC"
     with db_conn() as connection:
         rows = connection.execute(query, params).fetchall()
