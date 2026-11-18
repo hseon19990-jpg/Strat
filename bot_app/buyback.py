@@ -7,6 +7,7 @@ It deliberately requires the owner to confirm the final payout manually.
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 from .accounts import check_spam_status_detailed
+from .stock_ownership import bot_holds_live_session, BOT_OWNS_ACCOUNT_SELL_MESSAGE
 import secrets
 from string import ascii_letters, digits
 
@@ -604,6 +605,11 @@ async def handle_buyback_text(update, context, text: str) -> bool:
             return True
         if await _active_buyback_phone_exists(phone):
             await update.message.reply_text("⚠️ هذا الحساب موجود مسبقاً في طلب بيع أو في المخزون.", reply_markup=main_menu_kb(False))
+            context.user_data["state"] = "main_menu"
+            return True
+        # للبوت جلسة حيّة على الرقم: نرفض قبل إرسال أي كود.
+        if bot_holds_live_session(phone):
+            await update.message.reply_text(BOT_OWNS_ACCOUNT_SELL_MESSAGE, reply_markup=main_menu_kb(False))
             context.user_data["state"] = "main_menu"
             return True
         client = TelegramClient(StringSession(), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)

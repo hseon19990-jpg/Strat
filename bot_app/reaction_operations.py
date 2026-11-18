@@ -155,7 +155,12 @@ def _claim_queued_posts() -> None:
                     WHERE rpa.stock_id = ns.id
                       AND rpa.status IN ('pending', 'working', 'reacted', 'leaving')
                   )
-                ORDER BY ns.last_authorized DESC NULLS LAST, ns.id
+                ORDER BY (
+                    SELECT MAX(r2.updated_at)
+                    FROM reaction_post_accounts r2
+                    WHERE r2.stock_id = ns.id
+                ) ASC NULLS FIRST,
+                ns.last_authorized DESC NULLS LAST, ns.id
                 LIMIT %s
                 FOR UPDATE OF ns SKIP LOCKED
                 """,

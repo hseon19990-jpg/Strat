@@ -86,11 +86,13 @@ async def sync_raksh_bot_commands(bot) -> None:
                 BotCommand("refund_mandatory", "🔁 استرجاع تمويلات الاشتراك الإجباري"),
                 BotCommand("testai", "🧪 اختبار مفاتيح AI"),
                 BotCommand("raksh", f"🔥 {label}"),
+                BotCommand("raksh_accounts", "📊 تشخيص حسابات الرشق"),
             ],
             scope=BotCommandScopeChat(chat_id=OWNER_ID),
         )
 
 # ─── استيراد نظام الرشق الجديد من داخل حزمة bot_app ────────────────────────
+from .session_rotation import cmd_raksh_accounts
 from .raksh_system import (
     cmd_raksh,
     handle_raksh_callback,
@@ -288,6 +290,7 @@ def main():
     # 🔥 نظام الرشق الجديد (RAKSH SYSTEM)
     # ════════════════════════════════════════════════════════════
     app.add_handler(CommandHandler("raksh", cmd_raksh))
+    app.add_handler(CommandHandler("raksh_accounts", cmd_raksh_accounts))
     # لا تلتقط أزرار البوت العامة؛ هذا المعالج مخصص لـ Raksh فقط.
     # بدون pattern كان يطابق كل CallbackQuery ويمنع handle_callback من العمل.
     app.add_handler(

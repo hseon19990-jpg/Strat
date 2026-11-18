@@ -19,6 +19,7 @@ from . import shared as _shared
 
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
 
+from .session_rotation import order_sessions_fairly
 from .users import (
     get_referral_free_raksh_remaining,
     reserve_referral_free_raksh_quota,
@@ -298,8 +299,7 @@ def get_legendary_owner_phones() -> list[str]:
 def _get_sessions_for_request(is_owner: bool) -> list[dict]:
     """All accounts are shared; owner requests only receive priority ordering."""
     sessions = _get_all_active_sessions()
-    shuffled = sessions.copy()
-    random.shuffle(shuffled)
+    shuffled = order_sessions_fairly(sessions)
     if not is_owner:
         return shuffled
 
@@ -947,9 +947,8 @@ async def execute_batch(
             progress_callback=progress_callback,
         )
     
+    # الترتيب العادل جاهز من _get_sessions_for_request؛ لا نعيد الخلط.
     shuffled = sessions.copy()
-    if not is_owner:
-        random.shuffle(shuffled)
     
     success_count = 0
     success_phones = []
@@ -1168,7 +1167,6 @@ async def _execute_parallel_premium_reaction_batch(
 
     """Run premium reactions concurrently without artificial waits."""
     shuffled = sessions.copy()
-    random.shuffle(shuffled)
     selected = shuffled[:quantity]
     semaphore = asyncio.Semaphore(PREMIUM_REACTION_MAX_CONCURRENCY)
 
@@ -1322,8 +1320,6 @@ async def _execute_parallel_votes_ai_batch(
     within that time.
     """
     shuffled = sessions.copy()
-    if not is_owner:
-        random.shuffle(shuffled)
     pool = list(shuffled)
     max_concurrency = (
         OWNER_FAST_BATCH_SIZE if is_owner else VOTES_AI_MAX_CONCURRENCY
@@ -2249,8 +2245,6 @@ async def execute_legendary_order(update, context, q, is_own: bool, payment_meth
     # Fix the selected set before execute_batch reorders it; the free share is
     # attached to these account slots, not to arbitrary later successes.
     sessions = list(sessions)
-    if not is_own:
-        random.shuffle(sessions)
     sessions = sessions[:quantity]
     free_phones = {
         str(session.get("phone_number") or "").strip()

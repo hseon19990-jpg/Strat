@@ -339,6 +339,9 @@ def ma_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔎 فحص عضو (ID أو @يوزر)", callback_data="os:ma:ask")],
         [InlineKeyboardButton("📉 أعضاء عندهم حسابات مطرودة", callback_data="os:ma:kicked")],
+        [InlineKeyboardButton("🏆 أكثر الأعضاء وضعاً للأرقام", callback_data="os:ma:top")],
+        [InlineKeyboardButton("💎 أكثر الأرقام ربحاً", callback_data="os:ma:best")],
+        [InlineKeyboardButton("🚫 أرقام طُرد منها البوت وأرباحها", callback_data="os:ma:kickedearn")],
         [InlineKeyboardButton("⚙️ إعدادات التدقيق", callback_data="os:ma:settings")],
         [InlineKeyboardButton("ℹ️ كيف أقرأ النتائج", callback_data="os:ma:help")],
         [InlineKeyboardButton("🔙 رجوع", callback_data="owner_settings")],
@@ -698,6 +701,10 @@ async def handle_member_audit_callback(update, context, q, data: str, user) -> b
                        InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="os:ma:menu")]]))
     elif action == "kicked":
         text, kb = ma_kicked_overview()
+        await _ma_edit(q, text, kb)
+    elif action in {"top", "best", "kickedearn"}:
+        from .contributor_stats import stats_view
+        text, kb = stats_view(action)
         await _ma_edit(q, text, kb)
     elif action == "settings":
         text, kb = ma_settings_text_kb()

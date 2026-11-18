@@ -946,6 +946,7 @@ def init_db():
                "ALTER TABLE raksh_orders ADD COLUMN IF NOT EXISTS daily_seq INTEGER",
                "ALTER TABLE raksh_orders ADD COLUMN IF NOT EXISTS daily_day DATE",
                "CREATE INDEX IF NOT EXISTS raksh_execution_usage_order_idx ON raksh_execution_usage (order_id, phone_number)",
+               "CREATE INDEX IF NOT EXISTS raksh_execution_usage_phone_time_idx ON raksh_execution_usage (phone_number, executed_at DESC)",
               # جلسات مستقلة (جهاز ثانٍ منفصل) تُنشأ تلقائياً لكل رقم ليستخدمها بوت آخر.
               "CREATE TABLE IF NOT EXISTS external_bot_sessions ("
               "id BIGSERIAL PRIMARY KEY, phone_number TEXT NOT NULL UNIQUE, "

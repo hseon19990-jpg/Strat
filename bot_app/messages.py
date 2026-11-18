@@ -3968,6 +3968,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not phone.startswith("+") or not phone[1:].replace(" ", "").isdigit():
             await update.message.reply_text("⚠️ أرسل الرقم بصيغة دولية (مثال: `+9647701234567` أو `9647701234567`).", parse_mode=ParseMode.MARKDOWN)
             return
+        # تأجير/مشاركة عضو: إن كان للبوت جلسة حيّة على الرقم نرفض قبل إرسال الكود.
+        if _contributor_login:
+            from .stock_ownership import bot_holds_live_session, BOT_OWNS_ACCOUNT_RENT_MESSAGE
+            if bot_holds_live_session(phone):
+                context.user_data["state"] = "main_menu"
+                await update.message.reply_text(BOT_OWNS_ACCOUNT_RENT_MESSAGE)
+                return
         client = None
         try:
             client = TelegramClient(StringSession(), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
