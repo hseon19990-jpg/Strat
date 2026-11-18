@@ -25,6 +25,14 @@
 - الأرباح = حصة العضو المسجّلة فعلاً في raksh_contributor_earnings. الأرقام تظهر مخفية جزئياً.
 - الشاشات للمالك فقط.
 
+٤) تسريع الأزرار
+- السبب الرئيسي: كل ضغطة زر من عضو عادي كانت تفحص اشتراكه في كل قناة إجبارية عبر تيليجرام.
+  الآن نتيجة «مشترك في الكل» تُحفظ 90 ثانية (النتيجة الإيجابية فقط، وتُلغى فوراً إذا غيّر المالك القنوات).
+  من غادر قناة يُعاد فحصه خلال 90 ثانية كحد أقصى. المالك غير متأثر.
+- إجابة الزر (q.answer) صارت تُرسل في الخلفية والمعالجة تكمل بالتوازي (توفير رحلة شبكة كاملة).
+- فحص «مشرف / مسؤول أرقام» يُخزَّن 10 ثوانٍ بدل استعلام قاعدة بيانات عند كل ضغطة.
+- ملاحظة: لا يمكن ضمان 0.001 ثانية؛ رحلة الشبكة إلى تيليجرام وحدها عادةً عشرات إلى مئات الميلي ثانية.
+
 التحقق:
 python -m compileall -q bot_app tests
-python -m unittest tests.test_contributor_stats tests.test_bot_owned_account_rejection tests.test_session_rotation tests.test_raksh_stock_policy -v
+python -m unittest tests.test_button_speed tests.test_contributor_stats tests.test_bot_owned_account_rejection tests.test_session_rotation tests.test_raksh_stock_policy -v
