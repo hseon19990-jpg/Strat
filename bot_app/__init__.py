@@ -64,3 +64,8 @@ for _section in _sections:
 globals().update(_namespace)
 
 __all__ = [key for key in _namespace if not key.startswith("_")]
+
+# حماية الحسابات المؤجّرة من أي طرد (يعترض طلبات Telethon عند نقطة واحدة).
+from . import rental_guard as _rental_guard
+
+_rental_guard.install()

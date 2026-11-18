@@ -2235,11 +2235,44 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data=f"os:number_info:{stock_id}")]])
                 )
                 return
+            _owner_manual_kick = False
+            with db_conn() as _cb:
+                _member_row = _cb.execute(
+                    "SELECT 1 FROM number_stock WHERE id=%s "
+                    "AND contributed_by IS NOT NULL AND ever_sold IS NOT TRUE",
+                    (stock_id,),
+                ).fetchone()
+            if _member_row:
+                # حساب مؤجَّر: لا يطرد منه أحد ولا البوت، إلا المالك يدوياً وبتأكيد.
+                if user.id != OWNER_ID:
+                    await q.answer(
+                        "🔴 حساب مؤجَّر محمي: لا يُطرد منه أي جهاز.",
+                        show_alert=True,
+                    )
+                    return
+                if len(parts) < 5 or parts[4] != "ok":
+                    await q.edit_message_text(
+                        f"🔴 *{rec['phone_number']} حساب مؤجَّر محمي*\n\n"
+                        "لا يطرد البوت أي جهاز من الحسابات المؤجَّرة تلقائياً. "
+                        "هل تريد طرد هذا الجهاز يدوياً بصفتك المالك؟",
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("✅ نعم، اطرده", callback_data=f"os:kick_device:{stock_id}:{device_hash}:ok")],
+                            [InlineKeyboardButton("❌ إلغاء", callback_data=f"os:number_devices:{stock_id}")],
+                        ]),
+                    )
+                    return
+                _owner_manual_kick = True
             await q.edit_message_text("⏳ يتم طرد الجهاز...")
             client = TelegramClient(StringSession(rec["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
             try:
                 await asyncio.wait_for(client.connect(), timeout=20)
-                await client(ResetAuthorizationRequest(hash=device_hash))
+                if _owner_manual_kick:
+                    from .rental_guard import owner_manual_kick
+                    with owner_manual_kick():
+                        await client(ResetAuthorizationRequest(hash=device_hash))
+                else:
+                    await client(ResetAuthorizationRequest(hash=device_hash))
                 remaining = await get_authorizations_detail(client)
                 non_current = [d for d in remaining if not d["current"]]
                 if not non_current:

@@ -405,6 +405,11 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
             )
             return
 
+        if data.startswith("contributor:"):
+            from .contributor_tools import handle_contributor_tools_callback
+            if await handle_contributor_tools_callback(update, context, q, data, user):
+                return
+
         if data == "contributor_accounts":
             context.user_data["state"] = "contributor_accounts"
             rows = get_contributor_accounts(user.id, share_percent=50)
@@ -414,7 +419,9 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 "",
                 "أضف حساباتك لتأجيرها واستخدامها في خدمات الرشق فقط.",
                 "لن يطرد البوت أي جلسة منها ولن يغيّر كلمة مرورها أو إعداداتها.",
-                "تحصل على *50٪ من نقاط* كل طلب نقاط يُنفّذ بنجاح باستخدام حسابك.",
+                "تحصل على *50٪ من نقاط* كل طلب يُنفّذ بنجاح باستخدام حسابك، "
+                "سواء دفعه العميل بالنقاط أو بالنجوم (تُحسب كأنه دُفع بالنقاط).",
+                "يمكنك رفض أي نوع خدمة من «🎛 خدمات الرشق المسموحة».",
                 "",
                 f"📦 الحسابات المضافة: *{len(rows)}*",
                 f"💰 أرباحك المسجلة: *{total_earned:,} نقطة*",
@@ -446,11 +453,18 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                     f"🔄 إعادة تأجير {row.get('phone_number')}",
                     callback_data=f"contributor:relogin:{row.get('id')}",
                 )])
+            # أدوات المالك على حساباتهم: الكود والأجهزة والطرد.
+            for row in rows[:10]:
+                account_buttons.append([InlineKeyboardButton(
+                    f"⚙️ إدارة {row.get('phone_number')}",
+                    callback_data=f"contributor:acct:{row.get('id')}",
+                )])
             await q.edit_message_text(
                 "\n".join(lines),
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
                     *account_buttons,
+                    [InlineKeyboardButton("🎛 خدمات الرشق المسموحة", callback_data="contributor:services")],
                     [InlineKeyboardButton("➕ إضافة حساب", callback_data="contributor:add")],
                     [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")],
                 ]),

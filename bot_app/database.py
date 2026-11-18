@@ -532,6 +532,14 @@ def init_db():
            CREATE INDEX IF NOT EXISTS raksh_contributor_earnings_user_idx
            ON raksh_contributor_earnings (contributor_id, created_at DESC)
            """)
+          # خدمات الرشق التي رفض المؤجر استخدام حساباته فيها. الغياب = مسموح.
+          c.execute("""
+           CREATE TABLE IF NOT EXISTS raksh_contributor_service_blocks (
+               contributor_id BIGINT NOT NULL,
+               service_type   TEXT NOT NULL,
+               created_at     TIMESTAMPTZ DEFAULT NOW(),
+               PRIMARY KEY (contributor_id, service_type)
+           )""")
           # ترقية قواعد البيانات القديمة التي أنشأت جداول الرشق قبل إضافة
           # الاستئناف. CREATE TABLE IF NOT EXISTS لا يضيف الأعمدة إلى جدول
           # موجود، لذلك يجب تنفيذ هذه الترقية قبل إنشاء فهارس الاستئناف.
