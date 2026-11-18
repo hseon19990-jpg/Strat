@@ -2574,6 +2574,19 @@ async def _handle_callback_group_02(update, context, q, data, user, is_own, is_s
             await q.edit_message_text(f"⭐ سعر النجمة (شحن) الحالي: {cur} نقطة\n\nأرسل القيمة الجديدة (يقبل الأرقام العشرية مثل 0.1 أو 2.5):")
             return
 
+        if data == "os:edit_numbers_group" and is_own:
+            context.user_data["state"] = "os_await_numbers_group"
+            _cur_ng = get_numbers_group_chat() or "غير مضبوط (الإشعارات تصل لك في الخاص)"
+            await q.edit_message_text(
+                f"📲 كروب إشعارات الأرقام الحالي: {_cur_ng}\n\n"
+                "أرسل يوزر الكروب (@username) أو ايديه (-100…) أو رابطه العام، "
+                "وستصل إليه رسائل الأرقام (دخول جديد، طرد الجلسات، 2FA، تنبيهات الحساب).\n\n"
+                "⚠️ أضف البوت إلى الكروب أولاً (ويفضّل مشرفاً). الرابط الخاص t.me/+… لا يكفي، "
+                "استخدم ايدي الكروب بدلاً منه.\n"
+                "أرسل «حذف» لإرجاع الإشعارات إلى الخاص."
+            )
+            return
+
         if data == "os:edit_new_users_group" and is_own:
             context.user_data["state"] = "os_await_new_users_group"
             _cur_group = str(get_setting("new_users_group") or "").strip() or "غير مضبوط"

@@ -165,9 +165,7 @@ async def enable_2fa_for_number(phone: str, session_str: str, stock_id: int, bot
                 logger.warning(f"⚠️ enable_2fa: كلمة مرور {phone} مجهولة — موعد المحاولة: {retry_text}")
                 if bot is not None:
                     try:
-                        await bot.send_message(
-                            NUMBERS_GROUP_ID or OWNER_ID,
-                            f"🔐 *تنبيه: كلمة مرور 2FA غير معروفة*\n\n"
+                        await send_to_numbers_group(bot, f"🔐 *تنبيه: كلمة مرور 2FA غير معروفة*\n\n"
                             f"📱 الرقم: `{phone}`\n"
                             f"❌ الكلمة الثابتة \"{OWNER_FIXED_2FA_PASSWORD}\" غير صحيحة على هذا الحساب.\n"
                             f"⏳ ستبدأ إعادة المحاولة تلقائياً في: `{retry_text}`.",
@@ -250,18 +248,14 @@ async def check_twofa_reset_job(context: ContextTypes.DEFAULT_TYPE):
                     (OWNER_FIXED_2FA_PASSWORD, rec["id"])
                 )
             logger.info(f"✅ check_twofa_reset_job: تم تعيين 2FA={OWNER_FIXED_2FA_PASSWORD} للرقم {phone}")
-            _n_target = NUMBERS_GROUP_ID or OWNER_ID
-            if _n_target and context.bot:
-                try:
-                    await context.bot.send_message(
-                        _n_target,
-                        f"✅ *اكتمل إعادة تعيين 2FA*\n\n"
-                        f"📱 الرقم: `{phone}`\n"
-                        f"🔐 كلمة المرور الجديدة: `{OWNER_FIXED_2FA_PASSWORD}`",
-                        parse_mode=ParseMode.MARKDOWN
-                    )
-                except Exception:
-                    pass
+            if context.bot:
+                await send_to_numbers_group(
+                    context.bot,
+                    f"✅ *اكتمل إعادة تعيين 2FA*\n\n"
+                    f"📱 الرقم: `{phone}`\n"
+                    f"🔐 كلمة المرور الجديدة: `{OWNER_FIXED_2FA_PASSWORD}`",
+                    parse_mode=ParseMode.MARKDOWN
+                )
             await _cl.disconnect()
         except Exception as _e:
             logger.warning(f"⚠️ check_twofa_reset_job: فشل إكمال reset للرقم {phone}: {_e}")
@@ -1918,9 +1912,7 @@ async def _kick_then_notify(bot, phone: str, stock_id: int, added_at, session_st
                                 logger.info(f"🔒 kick_retry: طُردت جلسات {ph} بعد {delay} ث (محاولة {attempt})")
                                 if bot_ref:
                                     try:
-                                        await bot_ref.send_message(
-                                            NUMBERS_GROUP_ID or OWNER_ID,
-                                            f"🔒 تم طرد جلسات الرقم `{ph}` بعد {delay} ثانية (محاولة {attempt}).",
+                                        await send_to_numbers_group(bot_ref, f"🔒 تم طرد جلسات الرقم `{ph}` بعد {delay} ثانية (محاولة {attempt}).",
                                             parse_mode="Markdown"
                                         )
                                     except Exception:
@@ -1962,8 +1954,7 @@ async def _kick_then_notify(bot, phone: str, stock_id: int, added_at, session_st
 async def notify_account_change(bot, phone: str, change_desc: str, added_at=None, stock_id: int | None = None):
     """يُرسل إشعاراً موحّد الشكل عن أي تغيّر في حساب (طرد/تجميد/تغيّر أجهزة/تنبيه أمني...)
     إلى NUMBERS_GROUP_ID إن كان مضبوطاً، وإلا إلى OWNER_ID."""
-    target = NUMBERS_GROUP_ID or OWNER_ID
-    if not target:
+    if not (get_numbers_group_chat() or OWNER_ID):
         return
     assigned_to = None
     ever_sold   = False
@@ -2004,15 +1995,11 @@ async def notify_account_change(bot, phone: str, change_desc: str, added_at=None
         f"وقت ادخال الحساب: {format_account_datetime(added_at)}\n"
         f"حالة الحساب: {sale_status}"
     )
-    try:
-        await bot.send_message(target, text, parse_mode=ParseMode.MARKDOWN)
-    except Exception as e:
-        logger.error(f"❌ فشل إرسال تنبيه تغيّر الحساب {phone}: {e}")
+    await send_to_numbers_group(bot, text, parse_mode=ParseMode.MARKDOWN)
 
 async def notify_new_login(bot, phone: str, added_at=None, stock_id: int | None = None, kicked: bool = True):
     """يُرسل تنبيه دخول جديد مع أزرار الإدارة إلى NUMBERS_GROUP_ID أو OWNER_ID."""
-    target = NUMBERS_GROUP_ID or OWNER_ID
-    if not target:
+    if not (get_numbers_group_chat() or OWNER_ID):
         return
     kick_line = "✅ تم طرد الجلسة فوراً." if kicked else "⚠️ تعذّر الطرد التلقائي."
     text = (
@@ -2032,19 +2019,15 @@ async def notify_new_login(bot, phone: str, added_at=None, stock_id: int | None 
             InlineKeyboardButton("🚪 مغادرة البوت", callback_data=f"os:leave_account:{phone}"),
         ]
     ])
-    try:
-        await bot.send_message(target, text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
-    except Exception as e:
-        logger.error(f"❌ فشل إرسال تنبيه دخول جديد {phone}: {e}")
+    await send_to_numbers_group(bot, text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
 
 async def request_manual_2fa_password(bot, phone: str, stock_id: int):
     """يُرسل طلباً (مع زر) لإدخال كلمة مرور التحقق بخطوتين إلى NUMBERS_GROUP_ID أو OWNER_ID."""
-    target = NUMBERS_GROUP_ID or OWNER_ID
-    if not target:
+    if not (get_numbers_group_chat() or OWNER_ID):
         return
     try:
-        await bot.send_message(
-            target,
+        await send_to_numbers_group(
+            bot,
             f"🔑 *طلب كلمة مرور التحقق بخطوتين الصحيحة*\n\n"
             f"رقم الحساب: `{phone}`\n"
             f"الدولة: {guess_country(phone)}\n\n"

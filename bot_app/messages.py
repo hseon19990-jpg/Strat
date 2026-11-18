@@ -2773,6 +2773,37 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "main_menu"
         return
 
+    if is_own and state == "os_await_numbers_group":
+        _raw_ng = (text or "").strip()
+        if _raw_ng in ("حذف", "delete", "-"):
+            set_setting("numbers_group", "")
+            context.user_data["state"] = "main_menu"
+            await update.message.reply_text("✅ أُلغي ربط كروب الأرقام (يُستخدم المتغير البيئي إن وُجد وإلا الخاص).", reply_markup=owner_settings_kb())
+            return
+        _ref_ng = parse_tgnum_chat_ref(_raw_ng)
+        if not _ref_ng:
+            await update.message.reply_text(
+                "⚠️ لم أتعرف على الكروب. أرسل @username أو ايديه (-100…) أو رابطه العام.\n"
+                "الرابط الخاص (t.me/+…) لا يكفي؛ أضف البوت للكروب ثم استخدم ايديه."
+            )
+            return
+        try:
+            _chat_ng = await context.bot.get_chat(int(_ref_ng) if re.fullmatch(r"-?\d+", _ref_ng) else _ref_ng)
+            await context.bot.send_message(_chat_ng.id, "✅ تم ربط هذا الكروب لإشعارات الأرقام.")
+        except Exception as _ng_err:
+            await update.message.reply_text(
+                "⚠️ لا يستطيع البوت الإرسال لهذا الكروب. أضفه إليه (ويفضّل مشرفاً) ثم أعد الإرسال.\n"
+                f"السبب: {type(_ng_err).__name__}: {_ng_err}"
+            )
+            return
+        set_setting("numbers_group", str(_chat_ng.id))
+        context.user_data["state"] = "main_menu"
+        await update.message.reply_text(
+            f"✅ تم ضبط كروب الأرقام: {_chat_ng.title or _chat_ng.id}",
+            reply_markup=owner_settings_kb(),
+        )
+        return
+
     if is_own and state == "os_await_new_users_group":
         _raw_group = (text or "").strip()
         if _raw_group in ("حذف", "delete", "-"):
@@ -6498,12 +6529,11 @@ async def handle_session_file(update: Update, context: ContextTypes.DEFAULT_TYPE
                                         )
                                 await _rc2.disconnect()
                                 logger.info(f"🔒 retry_kick: طُردت الجلسات للرقم {ph} بعد {delay - step} ث | is_solo={_solo_r}")
-                                _ng_rk = NUMBERS_GROUP_ID or OWNER_ID
-                                if _ng_rk and bot_ref:
+                                if bot_ref:
                                     try:
                                         _solo_note = " ✅ البوت الجلسة الوحيدة" if _solo_r else " ⚠️ ما زالت هناك جلسات"
-                                        await bot_ref.send_message(
-                                            _ng_rk,
+                                        await send_to_numbers_group(
+                                            bot_ref,
                                             f"🔒 تم طرد كل الجلسات الأخرى للرقم `{ph}` "
                                             f"(بعد {delay - step} ثانية من الاستيراد).{_solo_note}",
                                             parse_mode=ParseMode.MARKDOWN
@@ -6945,11 +6975,10 @@ async def _retry_zip_kick(phone: str, session_str: str, stock_id: int, bot_ref):
                 asyncio.create_task(_ensure_can_send_code(phone, session_str, stock_id))
             await _rc.disconnect()
             logger.info(f"🔒 retry_zip_kick: طُرد {phone} بعد {delay - step} ث | is_solo={_solo}")
-            _ng_zk = NUMBERS_GROUP_ID or OWNER_ID
-            if _ng_zk and bot_ref:
+            if bot_ref:
                 try:
-                    await bot_ref.send_message(
-                        _ng_zk,
+                    await send_to_numbers_group(
+                        bot_ref,
                         f"🔒 طُردت جلسات `{phone}` (ZIP, بعد {delay - step} ث)"
                         + (" ✅ البوت وحده" if _solo else ""),
                         parse_mode=ParseMode.MARKDOWN

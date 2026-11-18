@@ -23,11 +23,11 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
     if (
         not _numbers_admin
         and _read_only_number_callback
-        and NUMBERS_GROUP_ID
-        and getattr(getattr(q, "message", None), "chat_id", None) == NUMBERS_GROUP_ID
+        and get_numbers_group_chat()
+        and getattr(getattr(q, "message", None), "chat_id", None) == get_numbers_group_chat()
     ):
         try:
-            _member = await context.bot.get_chat_member(NUMBERS_GROUP_ID, user.id)
+            _member = await context.bot.get_chat_member(get_numbers_group_chat(), user.id)
             _member_status = getattr(_member, "status", "")
             _numbers_admin = _member_status in {"administrator", "creator"}
         except Exception as _member_error:

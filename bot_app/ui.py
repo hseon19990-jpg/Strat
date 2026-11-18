@@ -983,7 +983,7 @@ OWNER_SETTINGS_GROUPS = [
     ("numbers", "📱 أرقام تيليجرام", (
         "os:manage_numbers", "os:manage_num_codes", "os:edit_number_cost",
         "os:edit_number_stars", "os:toggle_number_exchange", "os:edit_exchange_msg",
-        "os:bot_ref_numbers", "tgnum:admin",
+        "os:bot_ref_numbers", "tgnum:admin", "os:edit_numbers_group",
     ), ()),
     ("prices", "💰 الأسعار والعملات", (
         "os:pa:ask", "os:edit_star_rate", "os:edit_exchange_rate", "os:edit_jewel_star_price", "os:edit_jewel_to_points_rate",

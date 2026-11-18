@@ -112,6 +112,72 @@ def set_setting(key: str, value: str):
     """حفظ إعداد مع إعادة محاولة تلقائية عند انقطاع الاتصال"""
     with_db_retry(_do_set_setting, key, value)
 
+NUMBERS_GROUP_SETTING = "numbers_group"
+_numbers_group_warn_ts = 0.0
+
+
+def get_numbers_group_chat():
+    """كروب إشعارات الأرقام: الإعداد المحفوظ من لوحة المالك أولاً ثم NUMBERS_GROUP_ID، أو None."""
+    raw = ""
+    try:
+        raw = str(get_setting(NUMBERS_GROUP_SETTING) or "").strip()
+    except Exception:
+        raw = ""
+    if raw:
+        return int(raw) if re.fullmatch(r"-?\d+", raw) else raw
+    return NUMBERS_GROUP_ID or None
+
+
+async def send_to_numbers_group(bot, text, **kwargs):
+    """يرسل إلى كروب الأرقام بدون ابتلاع الأخطاء بصمت.
+
+    - يتعامل مع ترقية الكروب إلى سوبرجروب (ChatMigrated) ويحفظ الآيدي الجديد.
+    - عند الفشل يسجّل السبب ويرسل الرسالة للمالك بدلاً من ضياعها، مع تنبيه
+      مختصر بسبب الفشل (مرة كل 10 دقائق).
+    """
+    global _numbers_group_warn_ts
+    from telegram.error import ChatMigrated
+    target = get_numbers_group_chat()
+    reason = ""
+    if target:
+        try:
+            return await bot.send_message(target, text, **kwargs)
+        except ChatMigrated as exc:
+            new_id = exc.new_chat_id
+            try:
+                set_setting(NUMBERS_GROUP_SETTING, str(new_id))
+                logger.warning(f"⚠️ كروب الأرقام تحوّل إلى سوبرجروب، الآيدي الجديد {new_id} (حُفظ تلقائياً)")
+                return await bot.send_message(new_id, text, **kwargs)
+            except Exception as exc2:
+                reason = f"{type(exc2).__name__}: {exc2}"
+        except Exception as exc:
+            reason = f"{type(exc).__name__}: {exc}"
+        logger.error(f"❌ فشل الإرسال إلى كروب الأرقام {target}: {reason}")
+    else:
+        reason = "كروب الأرقام غير مضبوط"
+    if OWNER_ID and target != OWNER_ID:
+        try:
+            msg = await bot.send_message(OWNER_ID, text, **kwargs)
+        except Exception as exc:
+            logger.error(f"❌ فشل الإرسال للمالك أيضاً: {exc}")
+            return None
+        now = time.time()
+        if now - _numbers_group_warn_ts > 600:
+            _numbers_group_warn_ts = now
+            try:
+                await bot.send_message(
+                    OWNER_ID,
+                    f"⚠️ لم تصل الرسالة أعلاه إلى كروب الأرقام ({target or 'غير مضبوط'}).\n"
+                    f"السبب: {reason}\n"
+                    "تأكد أن البوت عضو (ويفضّل مشرف) في الكروب، ثم أعد ضبطه من "
+                    "الإعدادات ← 📲 كروب إشعارات الأرقام."
+                )
+            except Exception:
+                pass
+        return msg
+    return None
+
+
 DAILY_GIFT_POINTS_SETTING = "daily_gift_points"
 DEFAULT_DAILY_GIFT_POINTS = 100
 
