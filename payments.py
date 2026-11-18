@@ -262,31 +262,21 @@ async def handle_jewel_topup_callback(update, context, q, data, user, is_owner):
             "💎 *شحن مجوهرات*\n\nاختر طريقة الشحن:",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📱 الشحن برصيد آسيا سيل", callback_data="jtopup:asiacell")],
                 [InlineKeyboardButton("⭐ الشحن بالنجوم", callback_data="jtopup:stars")],
-                [InlineKeyboardButton("💳 العملات الإلكترونية", callback_data="jtopup:ewallet")],
                 [InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="main_menu")],
             ]),
         )
         return
 
     if data in ("jtopup:asiacell", "jtopup:ewallet"):
-        if data.endswith("asiacell"):
-            setting_key = "jewels_asiacell_text"
-            default_text = "💎 تواصل مع المالك لمعرفة تعليمات التحويل عبر آسيا سيل."
-        else:
-            setting_key = "jewels_ewallet_text"
-            default_text = "💎 تواصل مع المالك لمعرفة تعليمات التحويل عبر العملات الإلكترونية."
-        text = get_setting(setting_key) or default_text
-        contact = get_setting("owner_contact") or (
-            f"tg://user?id={OWNER_ID}" if OWNER_ID else ""
-        )
-        rows = []
-        if contact:
-            rows.append([InlineKeyboardButton("💬 التواصل مع المالك", url=contact)])
-        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="jtopup:menu")])
         context.user_data["state"] = "main_menu"
-        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(rows))
+        await q.edit_message_text(
+            "💎 الشحن متاح بالنجوم فقط.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⭐ الشحن بالنجوم", callback_data="jtopup:stars")],
+                [InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="main_menu")],
+            ]),
+        )
         return
 
     if data == "jtopup:stars":

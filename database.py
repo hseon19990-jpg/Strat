@@ -1168,9 +1168,6 @@ def init_db():
               ('owner_contact', ''),
               ('total_bot_orders', '0'),
               ('total_bot_users', '0'),
-              ('asiacell_text', '⚠️ الشحن التلقائي عبر اسيا سيل غير متاح حالياً.\nيرجى التواصل مع المالك.'),
-              ('jewels_asiacell_text', '💎 لشحن المجوهرات عبر آسيا سيل، اتبع تعليمات التحويل ثم اضغط «التواصل مع المالك» لإرسال طلبك.'),
-              ('jewels_ewallet_text', '💎 لشحن المجوهرات عبر العملات الإلكترونية، اتبع تعليمات التحويل ثم اضغط «التواصل مع المالك» لإرسال طلبك.'),
               ('captcha_enabled', '0'),
               ('phone_verification_enabled', '1'),
               ('maintenance_mode', '0'),
@@ -1233,6 +1230,11 @@ def init_db():
                   "INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING",
                   (k, v)
               )
+          # Stars-only: امسح أي نص دفع خارجي (آسيا سيل / عملات إلكترونية) محفوظ سابقاً
+          c.execute(
+              "UPDATE settings SET value=%s WHERE key IN (%s, %s, %s)",
+              ("", "asiacell_text", "jewels_asiacell_text", "jewels_ewallet_text"),
+          )
           # استبدال الاسم الافتراضي القديم بالاسم الجديد فقط؛
           # لا نلمس أي اسم مخصص اختاره المالك بنفسه.
           c.execute(
