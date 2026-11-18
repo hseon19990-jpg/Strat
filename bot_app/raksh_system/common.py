@@ -7,6 +7,7 @@
 from ..shared import *
 from ..accounts import get_forced_ref_account_count, get_raksh_account_count
 from ..database import db_conn
+from ..session_rotation import order_sessions_fairly
 from ..security import (
     add_points as _security_add_points,
     deduct_points as _security_deduct_points,
@@ -217,9 +218,8 @@ def get_raksh_owner_phones() -> list[str]:
 
 
 def get_raksh_sessions_for_request(sessions: List[Dict], is_owner: bool = False) -> List[Dict]:
-    """Randomize all accounts; owner requests place configured priority accounts first."""
-    shuffled = list(sessions)
-    random.shuffle(shuffled)
+    """Rotate all accounts fairly (never/least recently used first); owner requests place configured priority accounts first."""
+    shuffled = order_sessions_fairly(sessions)
     if not is_owner:
         return shuffled
 
