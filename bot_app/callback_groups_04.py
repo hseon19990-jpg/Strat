@@ -478,6 +478,8 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
             current = int(get_setting("maintenance_mode") or "0")
             new_val = "0" if current else "1"
             set_setting("maintenance_mode", new_val)
+            from .maintenance_gate import reset_maintenance_cache
+            reset_maintenance_cache()
             status = "مفعّل 🛠" if new_val == "1" else "معطّل ✅"
             await q.edit_message_text(
                 f"🛠 *وضع الصيانة الآن: {status}*\n\n"

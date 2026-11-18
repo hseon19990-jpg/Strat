@@ -86,6 +86,9 @@ ALL_POSTS_REACTIONS_MENU_MIGRATION_SETTING = (
 POINTS_TO_JEWELS_RATE_BUTTON_MIGRATION_SETTING = (
     "owner_points_to_jewels_rate_button_exposed_v1"
 )
+SELL_RENT_MENU_PLACEMENT_MIGRATION_SETTING = (
+    "main_menu_sell_rent_button_placed_v1"
+)
 
 def get_raksh_accounts_label() -> str:
     """يعيد الاسم المخصص لقسم حسابات الرشق مع قيمة افتراضية آمنة."""
@@ -343,6 +346,7 @@ BUILTIN_DEFAULTS = {
 "main": [
         ("🐺 خدمات", "services_menu", 2),
          ("🛍 خدمات الرشق", "raksh_menu", 2),
+         ("💰 بيع وتأجير الحسابات", "sell_rent:menu", 1),
          ("📱 تأجير أرقامي", "contributor_accounts", 2),
          ("📤 مشاركة حساب", "share_account:menu", 2),
         ("💰 بيع حساب تيليجرام", "buyback:start", 2),
@@ -532,6 +536,7 @@ GOTO_TARGETS = [
     ("🎟 استخدام كود", "use_promo"),
     ("ℹ️ معلوماتي", "my_info"),
     ("📱 ارقامي", "my_numbers"),
+    ("💰 بيع وتأجير الحسابات", "sell_rent:menu"),
     ("📱 تأجير أرقامي", "contributor_accounts"),
     ("📤 مشاركة حساب", "share_account:menu"),
     ("📺 تمويل قناتك حقيقي", "fund_channel"),
@@ -674,6 +679,36 @@ def seed_menu_items(menu: str):
                     (sort_order, item["id"]),
                 )
         set_setting(POINTS_TO_JEWELS_RATE_BUTTON_MIGRATION_SETTING, "1")
+
+    if (
+        menu == "main"
+        and get_setting(SELL_RENT_MENU_PLACEMENT_MIGRATION_SETTING) != "1"
+    ):
+        # الزر أُضيف بعد إنشاء قوائم قديمة فيُلحق عادةً بآخر القائمة. نضعه مرة واحدة
+        # بعد «خدمات الرشق» ليظهر في أعلى القائمة الرئيسية، دون لمس أي ترتيب
+        # أو إخفاء يختاره المالك لاحقاً.
+        with db_conn() as c:
+            sell_rent = c.execute(
+                "SELECT id FROM menu_items WHERE menu='main' "
+                "AND action_type='builtin' AND action_value='sell_rent:menu'"
+            ).fetchone()
+            anchor_row = c.execute(
+                "SELECT sort_order FROM menu_items WHERE menu='main' "
+                "AND action_type='builtin' AND action_value='raksh_menu' "
+                "ORDER BY id LIMIT 1"
+            ).fetchone()
+            if sell_rent and anchor_row:
+                target = int(anchor_row["sort_order"] or 0) + 1
+                c.execute(
+                    "UPDATE menu_items SET sort_order=sort_order+1 "
+                    "WHERE menu='main' AND sort_order>=? AND id<>?",
+                    (target, sell_rent["id"]),
+                )
+                c.execute(
+                    "UPDATE menu_items SET sort_order=?, enabled=1 WHERE id=?",
+                    (target, sell_rent["id"]),
+                )
+        set_setting(SELL_RENT_MENU_PLACEMENT_MIGRATION_SETTING, "1")
 
     if (
         menu == "raksh_menu"

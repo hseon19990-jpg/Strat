@@ -263,6 +263,11 @@ def main():
         MessageHandler(filters.ChatType.GROUPS & ~filters.StatusUpdate.ALL, _ignore_group_chatter),
         group=-1,
     )
+    # بوابة الصيانة العامة: تعمل قبل كل المعالجات الأخرى (مجموعة -2) فلا يصل
+    # أي عضو لأي ميزة أثناء الصيانة، بما فيها قائمة الرشق والأوامر والرفع.
+    from telegram.ext import TypeHandler
+    from .maintenance_gate import maintenance_gate
+    app.add_handler(TypeHandler(Update, maintenance_gate), group=-2)
     app.add_handler(CommandHandler("start",     cmd_start))
     app.add_handler(CommandHandler("setbuttonemoji", cmd_set_button_emoji))
     app.add_handler(CommandHandler("admin",     cmd_admin))

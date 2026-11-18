@@ -914,6 +914,80 @@ async def _notify_buyback_owner(context, offer_id: int, ready: bool = False) -> 
     )
 
 
+_BUYBACK_STAGE_LABELS = {
+    "awaiting_seller_confirm": "⏸ بانتظار تأكيدك النهائي",
+    "quarantine_24h": "🔒 الحجز — بانتظار فحص 24 ساعة",
+    "quarantine_48h": "🔒 الحجز — بانتظار الفحص النهائي (48 ساعة)",
+    "ready_for_payment": "✅ نجح الفحص — بانتظار تحويل المبلغ",
+    "paid": "💵 تم اعتماد الدفع",
+    "rejected": "🚫 مرفوض",
+    "cancelled": "❌ ملغى",
+}
+
+
+def _format_buyback_remaining(target) -> str:
+    """وقت متبقٍّ مفهوم للعضو (ساعات ودقائق) أو «قريباً» إن حان الموعد."""
+    if not target:
+        return ""
+    try:
+        seconds = int((target - datetime.now(timezone.utc)).total_seconds())
+    except Exception:
+        return ""
+    if seconds <= 60:
+        return "قريباً (خلال دقائق)"
+    hours, rest = divmod(seconds, 3600)
+    minutes = rest // 60
+    if hours:
+        return f"{hours} ساعة و{minutes} دقيقة"
+    return f"{minutes} دقيقة"
+
+
+def user_has_buyback_offers(user_id: int) -> bool:
+    try:
+        with db_conn() as c:
+            row = c.execute(
+                "SELECT 1 FROM account_buyback_offers WHERE seller_user_id=%s LIMIT 1",
+                (int(user_id),),
+            ).fetchone()
+        return bool(row)
+    except Exception:
+        return False
+
+
+def render_buyback_member_status(user_id: int) -> str:
+    """نص حالة طلبات البيع الخاصة بالعضو: المرحلة والوقت المتبقي والخطوة التالية."""
+    with db_conn() as c:
+        rows = c.execute(
+            "SELECT id,phone_number,status,quoted_price,next_check_at,accepted_at,paid_at "
+            "FROM account_buyback_offers WHERE seller_user_id=%s "
+            "ORDER BY id DESC LIMIT 10",
+            (int(user_id),),
+        ).fetchall()
+    if not rows:
+        return "📋 *حالة طلبات البيع*\n\nلا توجد لديك طلبات بيع بعد."
+    lines = ["📋 *حالة طلبات البيع*", ""]
+    for row in rows:
+        status = row["status"]
+        lines.append(f"📌 *طلب #{row['id']}* — `{_mask_buyback_phone(row['phone_number'])}`")
+        lines.append(_BUYBACK_STAGE_LABELS.get(status, status))
+        if status in ("quarantine_24h", "quarantine_48h"):
+            remaining = _format_buyback_remaining(row["next_check_at"])
+            if remaining:
+                lines.append(f"⏳ المتبقي للفحص التالي: {remaining}")
+            lines.append("➡️ لا تحتاج لفعل شيء الآن، سيصلك إشعار تلقائي عند كل مرحلة.")
+        elif status == "ready_for_payment":
+            if row["quoted_price"]:
+                lines.append(f"💰 المبلغ: {format_buyback_price(row['quoted_price'])}")
+            lines.append("➡️ المالك سيؤكد دفع المبلغ، وسيصلك إشعار عند اعتماد الدفع.")
+        elif status == "paid":
+            lines.append("➡️ تواصل مع المالك إن لم تستلم مستحقاتك.")
+        elif status == "rejected":
+            lines.append("➡️ لم يُقبل الطلب. يمكنك تقديم حساب آخر.")
+        lines.append("")
+    lines.append("🔔 تصلك رسالة تلقائية عند: نجاح فحص 24 ساعة، ونجاح الفحص النهائي، واعتماد الدفع، وأي رفض.")
+    return "\n".join(lines).strip()
+
+
 async def handle_buyback_callback(update, context, q, data: str, user, is_owner: bool) -> bool:
     if data == "buyback:start":
         if not is_owner and not is_buyback_visible():
@@ -928,7 +1002,19 @@ async def handle_buyback_callback(update, context, q, data: str, user, is_owner:
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📱 رقم + كود الدخول", callback_data="buyback:begin")],
                 [InlineKeyboardButton("📁 رفع ملف جلسة (.session / .json / .zip)", callback_data="buyback:begin_session")],
+                [InlineKeyboardButton("📋 حالة طلباتي", callback_data="buyback:my_status")],
                 [InlineKeyboardButton("❌ إلغاء", callback_data="buyback:cancel")],
+            ]),
+        )
+        return True
+
+    if data == "buyback:my_status":
+        await q.edit_message_text(
+            render_buyback_member_status(user.id),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 تحديث", callback_data="buyback:my_status")],
+                [InlineKeyboardButton("🔙 رجوع", callback_data="sell_rent:menu")],
             ]),
         )
         return True

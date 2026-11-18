@@ -17,6 +17,7 @@ from .gift_profit import handle_gift_profit_callback
 from .channel_feed import handle_channel_feed_callback
 from .ai_help import handle_aih_callback
 from .clone_bot import handle_clone_callback
+from .sell_rent import handle_sell_rent_callback
 from .number_admin import (
     is_number_admin,
     number_admin_can_manage,
@@ -318,6 +319,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("tgnum:"):
         if await handle_tgnum_callback(update, context, q, data, user, is_own):
+            return
+
+    if data.startswith("sell_rent:"):
+        if await handle_sell_rent_callback(update, context, q, data, user, is_own):
             return
 
     if data.startswith("buyback:"):
