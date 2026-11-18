@@ -56,11 +56,44 @@ def mandatory_terms_text_html() -> str:
         f"• مغادرة القناة بعد التحقق تخصم {penalty} نقطة تلقائياً من رصيد المستخدم."
     )
 
-async def get_unjoined_mandatory_channels(context: ContextTypes.DEFAULT_TYPE, user_id: int):
+# ذاكرة مؤقتة لنتيجة «مشترك في كل القنوات» فقط، لأزرار البوت. فحص كل قناة عبر
+# تيليجرام عند كل ضغطة زر كان أكبر سبب لبطء الأزرار. النتيجة الإيجابية فقط
+# تُخزَّن، ومفتاحها يشمل قائمة القنوات الحالية فإذا غيّر المالك القنوات تُعاد
+# الفحوص فوراً. من غادر قناة يُعاد فحصه خلال المدة أدناه.
+_JOINED_ALL_CACHE: dict = {}
+_JOINED_ALL_TTL_SECONDS = 90
+_JOINED_ALL_CACHE_MAX = 20000
+
+
+def _joined_all_cache_get(user_id: int, signature: tuple) -> bool:
+    import time as _t
+    entry = _JOINED_ALL_CACHE.get(int(user_id))
+    if not entry:
+        return False
+    stamp, cached_signature = entry
+    if cached_signature != signature or _t.monotonic() - stamp > _JOINED_ALL_TTL_SECONDS:
+        _JOINED_ALL_CACHE.pop(int(user_id), None)
+        return False
+    return True
+
+
+def _joined_all_cache_set(user_id: int, signature: tuple) -> None:
+    import time as _t
+    if len(_JOINED_ALL_CACHE) >= _JOINED_ALL_CACHE_MAX:
+        _JOINED_ALL_CACHE.clear()
+    _JOINED_ALL_CACHE[int(user_id)] = (_t.monotonic(), signature)
+
+
+async def get_unjoined_mandatory_channels(
+    context: ContextTypes.DEFAULT_TYPE, user_id: int, use_cache: bool = False
+):
     """يُرجع قائمة القنوات الإجبارية التي لم ينضم لها المستخدم بعد.
 
     المالك مستثنى دائماً من بوابة الاشتراك حتى يستطيع إدارة القنوات،
     بما فيها حذف قناة غير صالحة أو لم يعد بالإمكان الانضمام إليها.
+
+    use_cache=True (لأزرار البوت فقط): إن كان المستخدم مشتركاً في كل القنوات
+    قبل أقل من 90 ثانية لا نعيد فحص تيليجرام.
     """
     if user_id == OWNER_ID:
         return []
@@ -68,6 +101,11 @@ async def get_unjoined_mandatory_channels(context: ContextTypes.DEFAULT_TYPE, us
         channels = c.execute(
             "SELECT * FROM mandatory_channels WHERE active=1 AND funding_type='mandatory'"
         ).fetchall()
+    signature = tuple(sorted(
+        (str(ch["channel_username"]), ch.get("id")) for ch in channels
+    ))
+    if use_cache and _joined_all_cache_get(user_id, signature):
+        return []
     # This semaphore lives in bot_data so concurrent /start requests share
     # one limit instead of each opening up to ten Telegram API calls.
     check_semaphore = context.bot_data.setdefault(
@@ -99,6 +137,10 @@ async def get_unjoined_mandatory_channels(context: ContextTypes.DEFAULT_TYPE, us
 
     checked = await asyncio.gather(*(check_channel(ch) for ch in channels))
     pending = [channel for channel in checked if channel is not None]
+    if not pending:
+        _joined_all_cache_set(user_id, signature)
+    else:
+        _JOINED_ALL_CACHE.pop(int(user_id), None)
     # روابط دعوة البوت: تُستخدم في أزرار البوابة ليُنسب الانضمام عبرها للبوت
     return await ensure_bot_invite_links(context, pending, limit=MANDATORY_PAGE_SIZE)
 

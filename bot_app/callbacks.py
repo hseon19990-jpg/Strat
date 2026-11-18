@@ -60,13 +60,49 @@ from .callback_groups_04 import _handle_callback_group_04
 
 _CALLBACK_NOT_HANDLED = object()
 
+_ROLE_CACHE: dict = {}
+_ROLE_CACHE_TTL_SECONDS = 10
+_BACKGROUND_ANSWERS: set = set()
+
+
+def _cached_role(kind: str, user_id: int, loader) -> bool:
+    """نتيجة فحص دور (مشرف/مسؤول أرقام) مخزّنة 10 ثوانٍ لتخفيف قاعدة البيانات.
+
+    الإجراءات الحساسة تتحقق من قاعدة البيانات بنفسها؛ هذا يحدد المسار فقط.
+    """
+    import time as _t
+    key = (kind, int(user_id))
+    hit = _ROLE_CACHE.get(key)
+    now = _t.monotonic()
+    if hit and now - hit[0] < _ROLE_CACHE_TTL_SECONDS:
+        return hit[1]
+    value = bool(loader(user_id))
+    if len(_ROLE_CACHE) > 20000:
+        _ROLE_CACHE.clear()
+    _ROLE_CACHE[key] = (now, value)
+    return value
+
+
+def _spawn_callback_answer(q) -> None:
+    """أرسل q.answer() دون انتظار رده، مع تجاهل أي خطأ."""
+    async def _answer():
+        try:
+            await q.answer()
+        except Exception:
+            pass
+
+    task = asyncio.get_running_loop().create_task(_answer())
+    _BACKGROUND_ANSWERS.add(task)
+    task.add_done_callback(_BACKGROUND_ANSWERS.discard)
+
+
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q      = update.callback_query
     data   = q.data
     user   = q.from_user
     is_own        = (user.id == OWNER_ID)
-    is_supervisor_cb = (not is_own) and is_supervisor(user.id)
-    is_number_admin_user = (not is_own) and is_number_admin(user.id)
+    is_supervisor_cb = (not is_own) and _cached_role("sv", user.id, is_supervisor)
+    is_number_admin_user = (not is_own) and _cached_role("na", user.id, is_number_admin)
     number_admin_action = False
 
     # Number-admin callbacks are translated to the existing owner account
@@ -206,10 +242,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Acknowledge immediately so Telegram never leaves the button spinning
     # while database checks or message rendering are in progress.
-    try:
-        await q.answer()
-    except Exception:
-        pass
+    # الإجابة تُرسل في الخلفية: نكمل المعالجة بالتوازي بدل انتظار رد تيليجرام
+    # (يوفّر رحلة شبكة كاملة في كل ضغطة زر).
+    _spawn_callback_answer(q)
 
     # Log the incoming callback for debugging.
     try:
@@ -240,7 +275,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             _db_user = get_user(user.id)
             if _db_user and _db_user.get("verified", 0):
-                _unjoined = await get_unjoined_mandatory_channels(context, user.id)
+                _unjoined = await get_unjoined_mandatory_channels(context, user.id, use_cache=True)
                 if _unjoined:
                     _remaining = max(0, len(_unjoined) - MANDATORY_PAGE_SIZE)
                     _more_note = (
