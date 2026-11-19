@@ -50,6 +50,149 @@ def _find_vote_button(message):
     return _select_post_action_button(message)
 
 
+# ── منع التصويت المكرر لنفس الهدف ─────────────────────────────────────────
+# الضغط الثاني من الحساب نفسه على زر التصويت نفسه قد يُحتسب "صوتاً مكرراً" أو
+# يسحب الصوت السابق في بعض البوتات. لذلك نسجّل (الهدف + الحساب) ونتخطى الحساب
+# الذي صوّت لهذا الهدف سابقاً، فينتقل الطلب إلى حساب آخر لم يصوّت بعد.
+
+def _vote_target_key(kind: str, ref: str, button) -> str:
+    data = getattr(button, "data", None)
+    if isinstance(data, (bytes, bytearray)):
+        signature = bytes(data).hex()
+    else:
+        signature = str(getattr(button, "text", "") or "")
+    return f"{kind}:{str(ref).strip().lower()}|{signature}"[:500]
+
+
+def _vote_phone_key(phone_number) -> str:
+    return re.sub(r"\D+", "", str(phone_number or "")) or str(phone_number or "")
+
+
+def _claim_vote(target_key: str, phone_number) -> bool:
+    """احجز (الهدف، الحساب). False = هذا الحساب صوّت لهذا الهدف من قبل."""
+    try:
+        with db_conn() as c:
+            c.execute(
+                "CREATE TABLE IF NOT EXISTS raksh_vote_claims ("
+                "target_key TEXT NOT NULL, phone_number TEXT NOT NULL, "
+                "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), "
+                "PRIMARY KEY (target_key, phone_number))"
+            )
+            row = c.execute(
+                "INSERT INTO raksh_vote_claims (target_key, phone_number) "
+                "VALUES (%s, %s) ON CONFLICT DO NOTHING RETURNING phone_number",
+                (target_key, _vote_phone_key(phone_number)),
+            ).fetchone()
+        return bool(row)
+    except Exception:
+        # لا نوقف التصويت بسبب عطل في جدول التتبع.
+        logger.exception("تعذر تسجيل تصويت الحساب؛ سيُنفَّذ دون منع التكرار")
+        return True
+
+
+def _unclaim_vote(target_key: str, phone_number) -> None:
+    try:
+        with db_conn() as c:
+            c.execute(
+                "DELETE FROM raksh_vote_claims WHERE target_key=%s AND phone_number=%s",
+                (target_key, _vote_phone_key(phone_number)),
+            )
+    except Exception:
+        logger.exception("تعذر التراجع عن تسجيل التصويت")
+
+
+# ── قراءة حالة التصويت (هل الحساب مصوّت أم لا) ─────────────────────────────
+# بوتات التصويت تغيّر شيئاً عند التصويت: نص الزر أو الـcallback أو ردّ البوت
+# (مثل "تم احتساب صوتك" أو "لقد صوّتَّ سابقاً" أو "تم سحب صوتك"). نقرأ هذه
+# الإشارات بدل الاعتماد على سجلّنا الداخلي وحده. القوائم أدناه يمكن توسيعها
+# بسهولة لتطابق صياغة بوت التصويت الذي تستخدمه.
+
+_VOTED_BUTTON_PATTERNS = (
+    r"تم\s+التصويت", r"صوّ?تّ?\s*(?:لهذا|مسبق)", r"صوتك\s+مسجل", r"تم\s+احتساب\s+صوتك",
+    r"\byou\s+voted\b", r"\byou(?:'ve| have)\s+voted\b", r"\balready\s+voted\b",
+    r"\bvoted\s+for\b", r"\bvote\s+recorded\b",
+)
+_UNVOTE_DATA_MARKERS = ("unvote", "un_vote", "remove_vote", "cancel_vote", "revoke", "retract")
+_VOTE_REMOVED_PATTERNS = (
+    r"vote\s+(?:was\s+)?(?:removed|cancel+ed|revoked|withdrawn)", r"removed\s+your\s+vote",
+    r"\bunvoted\b", r"تم\s+(?:إلغاء|الغاء|سحب|حذف)\s+(?:ال)?(?:تصويت|صوت)",
+    r"(?:إلغاء|الغاء|سحب)\s+صوتك",
+)
+
+
+def _button_shows_voted(button) -> bool:
+    """الزر نفسه يدلّ أن الحساب مصوّت (نص: تم التصويت / callback: unvote ...)."""
+    text = str(getattr(button, "text", "") or "").casefold()
+    if text and any(re.search(pat, text) for pat in _VOTED_BUTTON_PATTERNS):
+        return True
+    data = getattr(button, "data", None)
+    if isinstance(data, (bytes, bytearray)):
+        decoded = bytes(data).decode("utf-8", "ignore").casefold()
+        if any(marker in decoded for marker in _UNVOTE_DATA_MARKERS):
+            return True
+    return False
+
+
+def _classify_vote_answer(answer) -> str:
+    """صنّف ردّ البوت: duplicate (صوّت سابقاً) / removed (سُحب صوته) / unknown."""
+    text = str(getattr(answer, "message", None) or "").casefold()
+    if not text:
+        return "unknown"
+    if any(re.search(pat, text) for pat in _VOTE_REMOVED_PATTERNS):
+        return "removed"
+    if _raksh_is_duplicate_text(text):
+        return "duplicate"
+    return "unknown"
+
+
+async def _smart_press_vote(client, peer, msg_id, button, claim_key, phone_number):
+    """اضغط زر التصويت بعد قراءة حالة الحساب. يرجع (ok, msg) أو None عند الفشل.
+
+    1) الزر يبيّن أن الحساب مصوّت  -> تخطٍّ دون ضغط.
+    2) سجلّنا يقول إنه صوّت لهذا الهدف -> تخطٍّ دون ضغط.
+    3) بعد الضغط: ردّ "صوّت سابقاً" -> لا يُحتسب.
+       ردّ "تم سحب صوتك" (الضغط عكس صوتاً سابقاً) -> نعيد الضغط ليعود صوته،
+       ولا يُحتسب صوتاً جديداً.
+    """
+    skip_msg = f"⏭ {phone_number} صوّت لهذا الهدف سابقاً"
+    if _button_shows_voted(button):
+        _claim_vote(claim_key, phone_number)  # نتذكر أنه مصوّت
+        return False, skip_msg
+    if not _claim_vote(claim_key, phone_number):
+        return False, skip_msg
+
+    callback_data = getattr(button, "data", None)
+    try:
+        if callback_data is None:
+            await button.click()
+            return True, f"✅ تم الضغط على زر التصويت من {phone_number}"
+
+        answer = await client(GetBotCallbackAnswerRequest(
+            peer=peer, msg_id=msg_id, data=callback_data,
+        ))
+        state = _classify_vote_answer(answer)
+        if state == "duplicate":
+            return False, skip_msg
+        if state == "removed":
+            await asyncio.sleep(1.0)
+            try:
+                await client(GetBotCallbackAnswerRequest(
+                    peer=peer, msg_id=msg_id, data=callback_data,
+                ))
+            except Exception as restore_exc:
+                logger.warning("تعذر إعادة صوت %s بعد سحبه: %s", phone_number, restore_exc)
+            return False, f"↩️ {phone_number} كان مصوّتاً؛ أُعيد صوته ولم يُحتسب صوتاً جديداً"
+        await asyncio.sleep(1.0)
+        return True, f"✅ تم الضغط على زر التصويت من {phone_number}"
+    except Exception as exc:
+        if _callback_vote_may_have_applied(exc):
+            logger.warning("⚠️ انتهت مهلة رد زر التصويت بعد الإرسال: %s", exc)
+            return True, f"✅ تم إرسال التصويت من {phone_number}"
+        _unclaim_vote(claim_key, phone_number)
+        logger.warning("فشل الضغط على زر التصويت: %s", exc)
+        return None
+
+
 class VotesService(RakshService):
     """خدمة رشق أصوات - كل شيء في مكان واحد"""
     
@@ -431,6 +574,12 @@ class VotesService(RakshService):
             return False, f"تعذر العثور على البوت: {str(exc)[:80]}"
 
         try:
+            _prev = await client.get_messages(bot_entity, limit=1)
+            before_id = int(getattr(_prev[0], "id", 0) or 0) if _prev else 0
+        except Exception:
+            before_id = 0
+
+        try:
             await client(
                 StartBotRequest(
                     bot=bot_entity,
@@ -454,25 +603,23 @@ class VotesService(RakshService):
             for message in messages or []:
                 button = _find_vote_button(message)
                 if button is None:
+                    # البوت ردّ بأن الحساب صوّت سابقاً ولا يعرض زراً جديداً.
+                    if (
+                        not getattr(message, "out", False)
+                        and int(getattr(message, "id", 0) or 0) > before_id
+                        and _raksh_is_duplicate_text(getattr(message, "text", None) or "")
+                    ):
+                        return False, f"⏭ {phone_number} صوّت لهذا الهدف سابقاً"
                     continue
 
-                callback_data = getattr(button, "data", None)
-                try:
-                    if callback_data is not None:
-                        await client(
-                            GetBotCallbackAnswerRequest(
-                                peer=bot_entity,
-                                msg_id=message.id,
-                                data=callback_data,
-                            )
-                        )
-                    else:
-                        await button.click()
-                    return True, f"✅ تم الضغط على زر التصويت من {phone_number}"
-                except Exception as exc:
-                    if _callback_vote_may_have_applied(exc):
-                        return True, f"✅ تم إرسال التصويت من {phone_number}"
-                    logger.warning("فشل الضغط على زر التصويت في البوت: %s", exc)
+                claim_key = _vote_target_key(
+                    "bot", f"{bot_username}/{start_param or ''}", button
+                )
+                result = await _smart_press_vote(
+                    client, bot_entity, message.id, button, claim_key, phone_number
+                )
+                if result is not None:
+                    return result
 
         return False, "لم يُعثر على زر تصويت قابل للضغط داخل البوت"
 
@@ -509,28 +656,15 @@ class VotesService(RakshService):
             # 4️⃣ اختيار زر التصويت المناسب، لا أول زر عشوائي
             vote_button = _find_vote_button(message)
             if vote_button is not None:
-                callback_data = getattr(vote_button, "data", None)
-                try:
-                    if callback_data is not None:
-                        await client(GetBotCallbackAnswerRequest(
-                            peer=entity,
-                            msg_id=msg_id,
-                            data=callback_data,
-                        ))
-                    else:
-                        await vote_button.click()
-
-                    await asyncio.sleep(1.0)
-                    return True, f"✅ تم الضغط على زر التصويت من {session['phone_number']}"
-                except Exception as e:
-                    if _callback_vote_may_have_applied(e):
-                        logger.warning(
-                            "⚠️ انتهت مهلة رد زر التصويت بعد الإرسال؛ "
-                            "سيُحتسب التصويت بصورة غير مؤكدة: %s",
-                            e,
-                        )
-                        return True, f"✅ تم إرسال التصويت من {session['phone_number']}"
-                    logger.warning(f"فشل الضغط على زر التصويت: {e}")
+                claim_key = _vote_target_key(
+                    "post", f"{channel_ref}/{msg_id}", vote_button
+                )
+                result = await _smart_press_vote(
+                    client, entity, msg_id, vote_button, claim_key,
+                    session["phone_number"],
+                )
+                if result is not None:
+                    return result
 
             return False, "لم يتم العثور على زر تصويت مناسب في المنشور"
             
