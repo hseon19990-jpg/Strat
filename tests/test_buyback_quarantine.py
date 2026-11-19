@@ -56,14 +56,21 @@ class BuybackQuarantineTests(unittest.TestCase):
         end = source.index("def reject_buyback_offer", start)
         payment_block = source[start:end]
         self.assertIn("status='ready_for_payment'", payment_block)
-        self.assertIn("INSERT INTO number_stock", payment_block)
+        self.assertIn("_release_buyback_account_to_stock", payment_block)
+        self.assertIn("paid=True", payment_block)
         self.assertIn("status='paid'", payment_block)
+        # الدفع وحده يرفع استبعاد البيع؛ الرشق يبدأ عند القبول لا عند الدفع.
+        helper = source[source.index("def _release_buyback_account_to_stock"):start]
+        self.assertIn("INSERT INTO number_stock", helper)
+        self.assertIn("sale_excluded=FALSE", helper)
 
         confirm_start = source.index('if data.startswith("buyback:confirm:")')
         confirm_end = source.index('if data == "buyback:owner:list"', confirm_start)
         confirm_block = source[confirm_start:confirm_end]
         self.assertNotIn("INSERT INTO number_stock", confirm_block)
         self.assertIn("status='quarantine_24h'", confirm_block)
+        self.assertIn("_release_buyback_account_to_stock", confirm_block)
+        self.assertIn("paid=False", confirm_block)
 
     def test_owner_can_change_the_point_price_for_new_offers(self):
         ui_source = (ROOT / "bot_app" / "ui.py").read_text(encoding="utf-8")
