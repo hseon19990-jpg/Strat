@@ -996,7 +996,7 @@ OWNER_SETTINGS_GROUPS = [
         "os:edit_daily_gift", "os:create_temporary_gift", "os:edit_leave_penalty",
         "os:edit_leave_grace", "os:create_promo", "os:list_promos", "os:search_code",
         "os:manage_prizes", "feed:menu",
-    ), ("os:ref_level_del:",)),
+    ), ("os:ref_level_del:", "os:refv:")),
     ("channels", "📡 الاشتراك الإجباري", (
         "os:mc_log:0", "os:mc_stats", "os:manage_channels", "os:edit_mstars_min", "os:edit_mstars_t1max",
         "os:edit_mstars_t1p", "os:edit_mstars_t2p", "os:edit_mpoints_price",

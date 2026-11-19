@@ -1576,6 +1576,12 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 parse_mode=ParseMode.MARKDOWN)
             return
 
+        if data.startswith("os:refv:") and is_own:
+            await q.answer()
+            from .referral_lookup import handle_refv_callback
+            await handle_refv_callback(q, context, data)
+            return
+
         if data == "os:ref_search_user" and is_own:
             context.user_data["state"] = "os_await_ref_user_id"
             await q.edit_message_text(

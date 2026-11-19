@@ -3670,51 +3670,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if is_own and state == "os_await_ref_user_id":
-        _search_id = text.strip().lstrip("@")
-        _inv = None
-        _refs = []
-        with db_conn() as _c:
-            if _search_id.isdigit():
-                _inv = _c.execute("SELECT user_id, full_name, username FROM users WHERE user_id=%s", (int(_search_id),)).fetchone()
-            if not _inv:
-                _inv = _c.execute("SELECT user_id, full_name, username FROM users WHERE username=%s", (_search_id,)).fetchone()
-            if _inv:
-                _inv = dict(_inv)
-                _refs = _c.execute(
-                    "SELECT user_id, full_name, username, credited_at FROM users "
-                    "WHERE invited_by=%s AND referral_credited=1 ORDER BY credited_at DESC LIMIT 30",
-                    (_inv["user_id"],)
-                ).fetchall()
-        if not _inv:
-            await update.message.reply_text(f"❌ لا يوجد مستخدم بـ «{_search_id}».", reply_markup=owner_settings_kb())
-            context.user_data["state"] = "main_menu"
-            return
-        _inv_name = _inv.get("full_name") or f"ID:{_inv['user_id']}"
-        _inv_un   = f" (@{_inv['username']})" if _inv.get("username") else ""
-        if not _refs:
-            _lines = [f"👤 *{_inv_name}{_inv_un}*\n📊 لا توجد إحالات مكتملة حتى الآن."]
-        else:
-            _lines = [f"👤 *{_inv_name}{_inv_un}* — {len(_refs)} إحالة:\n"]
-            for _r in _refs:
-                _r = dict(_r)
-                _rn = _r.get("full_name") or f"ID:{_r['user_id']}"
-                _run = f" (@{_r['username']})" if _r.get("username") else ""
-                _raw_dt = _r.get("credited_at")
-                if _raw_dt:
-                    import datetime as _dt
-                    if hasattr(_raw_dt, "strftime"):
-                        _us = _raw_dt.microsecond
-                        _dat = _raw_dt.strftime("%Y-%m-%d %H:%M:%S") + (f".{_us:06d}"[:8] if _us else "")
-                    else:
-                        _s = str(_raw_dt)
-                        _dat = _s[:26]  # نحتفظ بأجزاء الثانية إن وُجدت
-                else:
-                    _dat = "—"
-                _lines.append(f"• {_rn}{_run} — `{_dat}`")
-        await update.message.reply_text(
-            "\n".join(_lines), parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="os:top_referrers")]]))
+        from .referral_lookup import find_inviter, send_selector
+        _inv = find_inviter(text)
         context.user_data["state"] = "main_menu"
+        if not _inv:
+            await update.message.reply_text(
+                f"❌ لا يوجد مستخدم بـ «{text.strip()}».", reply_markup=owner_settings_kb()
+            )
+            return
+        await send_selector(update.message, _inv, include_pending=False)
+        return
+
+    if is_own and state == "os_await_ref_count":
+        from .referral_lookup import handle_ref_count_text
+        await handle_ref_count_text(update, context, text)
         return
 
     # ─── تحقق بكود الطلب من الحسابات المبيوعة ───

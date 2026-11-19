@@ -1329,12 +1329,16 @@ async def handle_buyback_callback(update, context, q, data: str, user, is_owner:
                         "twofa_reset_date=%s, updated_at=NOW() WHERE id=%s",
                         (retry_at, offer_id),
                     )
+                    # الجلسة صالحة ويملكها البوت: تدخل الرشق فوراً دون انتظار مهلة 2FA.
+                    _release_buyback_account_to_stock(
+                        c, row["phone_number"], row["session_string"], "", paid=False
+                    )
                 context.user_data["state"] = "main_menu"
                 await q.edit_message_text(
                     "🔒 الحساب محمي بكلمة مرور 2FA لا نعرفها.\n\n"
-                    "بدأ تيليجرام مهلته الرسمية لحذفها (نحو أسبوع). سيُقبل "
-                    "الحساب تلقائياً بعد انتهاء المهلة دون أي إجراء إضافي منك، "
-                    "وستُبلَّغ حينها بالنتيجة.",
+                    "بدأ تيليجرام مهلته الرسمية لحذفها (نحو أسبوع). "
+                    "الحساب يعمل الآن في الرشق، وسيُكمَل تأمينه تلقائياً بعد "
+                    "انتهاء المهلة دون أي إجراء إضافي منك، وستُبلَّغ حينها بالنتيجة.",
                     reply_markup=main_menu_kb(False),
                 )
                 return True
@@ -1424,7 +1428,7 @@ def render_buyback_owner_list():
     return "\n".join(lines), InlineKeyboardMarkup(rows_kb)
 
 
-def _release_buyback_account_to_stock(c, phone: str, session_string: str, twofa_password: str, *, paid: bool) -> None:
+def _release_buyback_account_to_stock(c, phone: str, session_string: str, twofa_password: str, *, paid: bool, keep_live: bool = False) -> None:
     """يضع الحساب المشترى في المخزون ليبدأ الرشق به فور وجوده، بلا انتظار حجز الفحص.
 
     paid=False (لحظة قبول البيع وتأمين الحساب): يدخل الرشق فوراً، لكنه يُستبعد
@@ -1432,6 +1436,18 @@ def _release_buyback_account_to_stock(c, phone: str, session_string: str, twofa_
     paid=True (بعد دفع المالك): يُرفع الاستبعاد فقط إن كان الحساب في المخزون
     بجلسة حيّة، وإلا يُدرج كاملاً. هكذا لا تُستبدل جلسة دوّرها البوت أثناء الرشق.
     """
+    if keep_live and not paid:
+        # الحساب دخل المخزون مسبقاً (مثلاً أثناء مهلة 2FA): لا نستبدل جلسته
+        # الحيّة، نحدّث كلمة المرور فقط.
+        row = c.execute(
+            "UPDATE number_stock SET twofa_password=%s, auto_2fa_enabled=TRUE "
+            "WHERE phone_number=%s AND deleted_at IS NULL "
+            "AND BTRIM(COALESCE(session_string,'')) <> '' "
+            "AND last_authorized IS NOT FALSE RETURNING id",
+            (twofa_password, phone),
+        ).fetchone()
+        if row:
+            return
     if paid:
         row = c.execute(
             "UPDATE number_stock SET sale_excluded=FALSE "
@@ -1552,7 +1568,7 @@ async def process_buyback_twofa_reset_job(context) -> None:
                     (_buyback_stage_hours(1), new_password, offer_id),
                 )
                 _release_buyback_account_to_stock(
-                    c, row["phone_number"], row["session_string"], new_password, paid=False,
+                    c, row["phone_number"], row["session_string"], new_password, paid=False, keep_live=True,
                 )
             logger.info("✅ buyback twofa-reset: اكتمل تأمين الطلب #%s بعد مهلة 2FA", offer_id)
             await _notify_buyback_user(
@@ -1567,12 +1583,51 @@ async def process_buyback_twofa_reset_job(context) -> None:
         await asyncio.sleep(3)
 
 
+BUYBACK_BACKFILL_KEY = "buyback_backfill_instant_raksh_v2"
+
+
+def _backfill_quarantined_buyback_to_stock() -> int:
+    """مرة واحدة: أدخل الحسابات المحجوزة قبل التحديث إلى الرشق فوراً.
+
+    الطلبات المقبولة قبل التحديث بقيت خارج المخزون حتى الدفع. هنا نُدرجها
+    بنفس طريقة القبول الجديدة (مستبعدة من بيع الأرقام فقط). لا نستبدل جلسة
+    حيّة موجودة، ولا نعيد حساباً حذفه المالك لاحقاً لأن التنفيذ مرة واحدة.
+    """
+    if get_setting(BUYBACK_BACKFILL_KEY) == "done":
+        return 0
+    added = 0
+    with db_conn() as c:
+        rows = c.execute(
+            "SELECT o.id, o.phone_number, o.session_string, o.twofa_password "
+            "FROM account_buyback_offers o "
+            "WHERE o.status IN ('quarantine_24h','quarantine_48h','ready_for_payment','twofa_reset_pending') "
+            "AND o.session_string IS NOT NULL AND BTRIM(o.session_string) <> '' "
+            "AND NOT EXISTS (SELECT 1 FROM number_stock n "
+            "  WHERE n.phone_number=o.phone_number AND n.deleted_at IS NULL "
+            "  AND BTRIM(COALESCE(n.session_string,'')) <> '')"
+        ).fetchall()
+        for row in rows:
+            _release_buyback_account_to_stock(
+                c, row["phone_number"], row["session_string"],
+                row["twofa_password"] or "", paid=False
+            )
+            added += 1
+    set_setting(BUYBACK_BACKFILL_KEY, "done")
+    if added:
+        logger.info("✅ buyback backfill: أُدخل %s حساب محجوز إلى الرشق فوراً", added)
+    return added
+
+
 async def process_buyback_quarantine_job(context) -> None:
     """حلقة الحماية والفحص الدوري لطلبات بيع الحسابات.
 
     تُستدعى كل خمس دقائق. لذلك لا ننتظر موعد الفحصين الأول والنهائي كي نكتشف
     دخولاً جديداً أو قيداً مستجداً في SpamBot.
     """
+    try:
+        _backfill_quarantined_buyback_to_stock()
+    except Exception:
+        logger.exception("تعذر إدخال الحسابات المحجوزة القديمة إلى الرشق")
     with db_conn() as c:
         rows = c.execute(
             "SELECT id,seller_user_id,session_string,status,next_check_at "
