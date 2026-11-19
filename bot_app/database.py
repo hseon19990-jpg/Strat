@@ -892,6 +892,7 @@ def init_db():
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS auto_2fa_enabled BOOLEAN DEFAULT FALSE",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS twofa_reset_date TIMESTAMPTZ",
               "ALTER TABLE account_buyback_offers ADD COLUMN IF NOT EXISTS twofa_password TEXT DEFAULT ''",
+              "ALTER TABLE account_buyback_offers ADD COLUMN IF NOT EXISTS twofa_reset_date TIMESTAMPTZ",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS is_solo BOOLEAN DEFAULT FALSE",
               "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS can_send_code BOOLEAN DEFAULT FALSE",
                "ALTER TABLE number_stock ADD COLUMN IF NOT EXISTS source_type TEXT DEFAULT 'legacy'",

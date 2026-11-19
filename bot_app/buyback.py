@@ -436,6 +436,73 @@ def _parse_buyback_session_upload(raw_bytes: bytes, filename: str) -> str | None
     return session_string
 
 
+_TWOFA_PASSWORD_KEYS = {
+    "twofa_password", "twofa", "two_fa", "2fa", "password", "pass",
+    "twostep", "two_step_password", "twostepverification", "twofapassword",
+    "cloud_password", "cloudpassword", "mail_password",
+}
+
+
+def _extract_embedded_twofa_password(payload) -> str | None:
+    """يبحث داخل كائن JSON عن حقل يحمل كلمة مرور التحقق بخطوتين (2FA)،
+    مهما اختلف اسم الحقل بين الحزم المختلفة (twoFA / password / 2fa ...)."""
+    if not isinstance(payload, dict):
+        return None
+    normalized_targets = {key.replace("_", "") for key in _TWOFA_PASSWORD_KEYS}
+    for key, value in payload.items():
+        if not isinstance(value, str):
+            continue
+        normalized_key = str(key).strip().lower().replace(" ", "").replace("-", "").replace("_", "")
+        if normalized_key in normalized_targets:
+            candidate = value.strip()
+            if candidate:
+                return candidate
+    return None
+
+
+def _find_embedded_twofa_password(raw_bytes: bytes, filename: str) -> str | None:
+    """يبحث عن كلمة مرور 2FA داخل الملف المرفوع مباشرة (JSON)، أو داخل أي ملف
+    JSON موجود ضمن أرشيف ZIP — بما فيه ملف بنفس اسم ملف الجلسة (.session)،
+    لأن _extract_buyback_session_uploads يستبعد ذلك الملف عمداً من اختيار
+    الجلسة نفسها، فلا يجوز استبعاده أيضاً من البحث عن كلمة المرور."""
+    import json as _json
+    import zipfile as _zipfile
+    import io as _io
+
+    name = str(filename or "").strip().lower()
+    raw = bytes(raw_bytes or b"")
+    if not raw:
+        return None
+    try:
+        if name.endswith(".json"):
+            payload = _json.loads(raw.decode("utf-8"))
+            if isinstance(payload, list) and len(payload) == 1:
+                payload = payload[0]
+            return _extract_embedded_twofa_password(payload)
+        if name.endswith(".zip"):
+            if len(raw) > BUYBACK_SESSION_MAX_BYTES:
+                return None
+            with _zipfile.ZipFile(_io.BytesIO(raw)) as archive:
+                for info in archive.infolist():
+                    if info.is_dir() or info.file_size > BUYBACK_SESSION_MAX_BYTES:
+                        continue
+                    short_name = str(info.filename or "").replace("\\", "/").rsplit("/", 1)[-1]
+                    if not short_name.lower().endswith(".json"):
+                        continue
+                    try:
+                        payload = _json.loads(archive.read(info).decode("utf-8"))
+                    except Exception:
+                        continue
+                    if isinstance(payload, list) and len(payload) == 1:
+                        payload = payload[0]
+                    found = _extract_embedded_twofa_password(payload)
+                    if found:
+                        return found
+    except Exception:
+        return None
+    return None
+
+
 async def handle_buyback_document(update, context) -> bool:
     """Accept seller-owned .session/.json/.zip uploads only in the buyback step."""
     user = update.effective_user
@@ -548,6 +615,27 @@ async def handle_buyback_document(update, context) -> bool:
         }
         keep_client = True
         if getattr(password_state, "has_password", False):
+            # ─── الملف قد يحمل كلمة مرور 2FA مضمّنة (حزم الجلسات الجاهزة
+            # غالباً تُرفق كلمة المرور داخل JSON) — نتحقق منها فعلياً قبل
+            # أن نطلب من المستخدم كتابتها يدوياً. لا نثق بها إلا بعد تأكيد
+            # تيليجرام أنها صحيحة فعلاً عبر CheckPasswordRequest.
+            embedded_password = _find_embedded_twofa_password(raw_bytes, filename)
+            if embedded_password:
+                try:
+                    check = compute_check(password_state, embedded_password)
+                    await asyncio.wait_for(client(CheckPasswordRequest(check)), timeout=15)
+                    _pending_buyback_logins[user.id]["current_password"] = embedded_password
+                    context.user_data["state"] = "buyback_session_processing"
+                    await progress.edit_text(
+                        "🔒 تم العثور على كلمة مرور 2FA داخل الملف والتحقق منها بنجاح. "
+                        "أراجع تفاصيل طلب البيع الآن..."
+                    )
+                    return await _finish_buyback_login(update, context, user.id)
+                except Exception:
+                    logger.info(
+                        "كلمة مرور 2FA الموجودة داخل الملف المرفوع للحساب %s غير صحيحة؛ سيُطلب إدخالها يدوياً.",
+                        _mask_buyback_phone(phone),
+                    )
             context.user_data["state"] = "buyback_session_await_password"
             await progress.edit_text(
                 chr(10).join([
@@ -728,22 +816,46 @@ async def handle_buyback_text(update, context, text: str) -> bool:
     return False
 
 
+async def _start_buyback_twofa_reset(session_string: str):
+    """يبدأ مهلة تيليجرام الرسمية لحذف 2FA (نحو أسبوع) حين لا نعرف كلمة المرور
+    الحالية، بدل رفض الحساب نهائياً. يُرجع موعد انتهاء المهلة أو None عند الفشل."""
+    client = TelegramClient(StringSession(session_string), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+    try:
+        await asyncio.wait_for(client.connect(), timeout=20)
+        if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+            return None
+        result = await asyncio.wait_for(client(ResetPasswordRequest()), timeout=20)
+        retry_at = getattr(result, "retry_date", None) or getattr(result, "until_date", None)
+        if isinstance(retry_at, (int, float)):
+            retry_at = datetime.fromtimestamp(retry_at, tz=timezone.utc)
+        elif isinstance(retry_at, datetime) and retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=timezone.utc)
+        return retry_at or (datetime.now(timezone.utc) + timedelta(days=7))
+    except Exception as exc:
+        logger.warning("تعذر بدء مهلة إعادة تعيين 2FA لحساب شراء: %s", type(exc).__name__)
+        return None
+    finally:
+        await _disconnect_buyback_client(client)
+
+
 async def _secure_buyback_account(
     session_string: str,
     current_password: str | None,
-) -> tuple[bool, str, str | None]:
+) -> tuple[bool, str, str | None, bool]:
     """Rotate 2FA immediately, then revoke every other Telegram session.
 
     If the seller supplied the old password, Telegram can change 2FA
     immediately. If the account has no 2FA, a new password is created
-    directly. An account with an existing but unknown password is rejected
-    instead of being accepted without a password known by the owner.
+    directly. An account with an existing but unknown password cannot be
+    secured right away: the 4th return value (``needs_reset``) tells the
+    caller to start Telegram's week-long password-reset flow instead of
+    rejecting the offer outright.
     """
     client = TelegramClient(StringSession(session_string), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     try:
         await asyncio.wait_for(client.connect(), timeout=20)
         if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
-            return False, "الجلسة غير مصرح بها", None
+            return False, "الجلسة غير مصرح بها", None, False
         password_state = await asyncio.wait_for(client(GetPasswordRequest()), timeout=15)
         new_password = _generate_buyback_2fa_password()
         if getattr(password_state, "has_password", False):
@@ -752,6 +864,7 @@ async def _secure_buyback_account(
                     False,
                     "الحساب محمي بــ2FA لكن كلمة المرور القديمة غير متوفرة.",
                     None,
+                    True,
                 )
             await asyncio.wait_for(
                 client.edit_2fa(
@@ -785,11 +898,15 @@ async def _secure_buyback_account(
                 False,
                 "تعذر حذف بريد استرداد كلمة مرور 2FA.",
                 None,
+                False,
             )
+        # فاصل زمني آمن قبل طرد الجلسات: تغيير 2FA ثم الطرد فوراً نمط يسهل على
+        # تيليجرام كشفه كاستيلاء على حساب. الانتظار العشوائي يفصل الخطوتين.
+        await asyncio.sleep(random.uniform(6, 14))
         await asyncio.wait_for(client(ResetAuthorizationsRequest()), timeout=30)
-        return True, "", new_password
+        return True, "", new_password, False
     except Exception as exc:
-        return False, str(exc)[:180], None
+        return False, str(exc)[:180], None, False
     finally:
         await _disconnect_buyback_client(client)
 
@@ -1141,10 +1258,32 @@ async def handle_buyback_callback(update, context, q, data: str, user, is_owner:
             await q.edit_message_text("⚠️ الطلب غير موجود أو انتهت صلاحيته.", reply_markup=main_menu_kb(False))
             return True
         old_password = _pending_buyback_passwords.pop(offer_id, None)
-        ok, reason, new_password = await _secure_buyback_account(
+        ok, reason, new_password, needs_reset = await _secure_buyback_account(
             row["session_string"],
             old_password,
         )
+        if not ok and needs_reset:
+            # لا نعرف كلمة مرور 2FA الحالية: نبدأ مهلة تيليجرام الرسمية
+            # (أسبوع تقريباً) بدل رفض الحساب نهائياً. ستُكمل
+            # process_buyback_twofa_reset_job العملية تلقائياً عند انتهائها.
+            retry_at = await _start_buyback_twofa_reset(row["session_string"])
+            if retry_at:
+                with db_conn() as c:
+                    c.execute(
+                        "UPDATE account_buyback_offers SET status='twofa_reset_pending', "
+                        "twofa_reset_date=%s, updated_at=NOW() WHERE id=%s",
+                        (retry_at, offer_id),
+                    )
+                context.user_data["state"] = "main_menu"
+                await q.edit_message_text(
+                    "🔒 الحساب محمي بكلمة مرور 2FA لا نعرفها.\n\n"
+                    "بدأ تيليجرام مهلته الرسمية لحذفها (نحو أسبوع). سيُقبل "
+                    "الحساب تلقائياً بعد انتهاء المهلة دون أي إجراء إضافي منك، "
+                    "وستُبلَّغ حينها بالنتيجة.",
+                    reply_markup=main_menu_kb(False),
+                )
+                return True
+            # تعذّر حتى بدء المهلة (جلسة غير صالحة مثلاً) — نرفض كالمعتاد.
         if not ok:
             with db_conn() as c:
                 c.execute(
@@ -1242,7 +1381,8 @@ def mark_buyback_paid(offer_id: int) -> int | None:
             "ON CONFLICT (phone_number) DO UPDATE SET "
             "session_string=EXCLUDED.session_string, twofa_password=EXCLUDED.twofa_password, "
             "auto_2fa_enabled=TRUE, assigned_to=NULL, deleted_at=NULL, ever_sold=FALSE, "
-            "sessions_reset=TRUE, last_authorized=TRUE, kicked_at=NULL, raksh_only=FALSE",
+            "sessions_reset=TRUE, last_authorized=TRUE, kicked_at=NULL, raksh_only=FALSE, "
+            "contributed_by=NULL",
             (row["phone_number"], row["session_string"], row["twofa_password"]),
         )
         c.execute(
@@ -1265,6 +1405,73 @@ def reject_buyback_offer(offer_id: int, reason: str = "") -> int | None:
             (reason[:500], offer_id),
         )
     return int(row["seller_user_id"])
+
+
+async def process_buyback_twofa_reset_job(context) -> None:
+    """يُكمل تأمين الحسابات التي كانت محمية بكلمة مرور 2FA مجهولة بعد انتهاء
+    مهلة تيليجرام الرسمية (نحو أسبوع)، ثم يتابعها بنفس مسار التأمين العادي:
+    تعيين كلمة مرور جديدة، وطرد الجلسات الأخرى بفاصل زمني آمن، ثم دخول حجز
+    48 ساعة المعتاد. تُستدعى كل ساعة.
+    """
+    with db_conn() as c:
+        rows = c.execute(
+            "SELECT id, seller_user_id, session_string FROM account_buyback_offers "
+            "WHERE status='twofa_reset_pending' AND twofa_reset_date IS NOT NULL "
+            "AND twofa_reset_date <= NOW() AND session_string IS NOT NULL "
+            "ORDER BY twofa_reset_date LIMIT 20"
+        ).fetchall()
+    for row in rows:
+        offer_id = int(row["id"])
+        client = TelegramClient(StringSession(row["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+        try:
+            await asyncio.wait_for(client.connect(), timeout=20)
+            if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+                seller_id = reject_buyback_offer(offer_id, "الجلسة لم تعد مصرحاً بها بعد مهلة إعادة تعيين 2FA")
+                if seller_id:
+                    await _notify_buyback_user(context, seller_id, f"🚫 لم ينجح استكمال طلب بيع الحساب #{offer_id}، وتم إلغاء الطلب.")
+                continue
+            result = await asyncio.wait_for(client(ResetPasswordRequest()), timeout=20)
+            retry_at = getattr(result, "retry_date", None) or getattr(result, "until_date", None)
+            if retry_at:
+                # تيليجرام مدّد المهلة (نادر) — نحدّث الموعد ونعيد المحاولة لاحقاً.
+                if isinstance(retry_at, (int, float)):
+                    retry_at = datetime.fromtimestamp(retry_at, tz=timezone.utc)
+                elif isinstance(retry_at, datetime) and retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=timezone.utc)
+                with db_conn() as c:
+                    c.execute(
+                        "UPDATE account_buyback_offers SET twofa_reset_date=%s, updated_at=NOW() WHERE id=%s",
+                        (retry_at, offer_id),
+                    )
+                continue
+
+            new_password = _generate_buyback_2fa_password()
+            await asyncio.wait_for(
+                client.edit_2fa(new_password=new_password, hint="Auto", email=""),
+                timeout=30,
+            )
+            # نفس الفاصل الآمن المستخدم في _secure_buyback_account قبل الطرد.
+            await asyncio.sleep(random.uniform(6, 14))
+            await asyncio.wait_for(client(ResetAuthorizationsRequest()), timeout=30)
+
+            with db_conn() as c:
+                c.execute(
+                    "UPDATE account_buyback_offers SET status='quarantine_24h', "
+                    "accepted_at=NOW(), next_check_at=NOW()+INTERVAL '24 hours', "
+                    "twofa_password=%s, updated_at=NOW() WHERE id=%s",
+                    (new_password, offer_id),
+                )
+            logger.info("✅ buyback twofa-reset: اكتمل تأمين الطلب #%s بعد مهلة 2FA", offer_id)
+            await _notify_buyback_user(
+                context, int(row["seller_user_id"]),
+                f"✅ اكتمل تأمين حساب طلب البيع #{offer_id} بعد انتهاء مهلة 2FA. سيبدأ الحجز والفحص الآن.",
+            )
+            await _notify_buyback_owner(context, offer_id)
+        except Exception as exc:
+            logger.warning("⚠️ buyback twofa-reset: فشل استكمال الطلب #%s: %s", offer_id, type(exc).__name__)
+        finally:
+            await _disconnect_buyback_client(client)
+        await asyncio.sleep(3)
 
 
 async def process_buyback_quarantine_job(context) -> None:

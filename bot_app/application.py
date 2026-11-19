@@ -652,6 +652,7 @@ def main():
         app.job_queue.run_repeating(enable_pending_2fa_job, interval=3600, first=120)
         logger.info("🔐 تم تفعيل فحص الحسابات التي تحتاج قراءة/تفعيل 2FA (كل ساعة)")
         app.job_queue.run_repeating(process_buyback_quarantine_job, interval=300, first=60)
+        app.job_queue.run_repeating(process_buyback_twofa_reset_job, interval=3600, first=90)
         logger.info("💰 تم تفعيل فحوص حجر بيع الحسابات (كل 5 دقائق)")
         app.job_queue.run_repeating(_account_fixup_job, interval=30, first=15)
         logger.info("🔧 تم تفعيل حلقة الإصلاح التلقائي للحسابات (كل 30 ثانية)")
