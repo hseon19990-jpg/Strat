@@ -254,6 +254,24 @@ _RAKSH_VOTE_FLOW_LOCK = asyncio.Lock()
 _RAKSH_SESSION_CACHE: Dict[str, Dict] = {}
 _RAKSH_SESSION_CACHE_TIME: Dict[str, float] = {}
 _RAKSH_SESSION_CACHE_TTL = 60
+# بصمة مخزون الرشق وقت بناء كل كاش: أي حساب جديد (بأي طريقة وصل: جلسة، ملف،
+# ZIP، تأجير، شراء...) يغيّر البصمة فيُعاد التحميل فوراً بدل انتظار انتهاء الـ60 ثانية.
+_RAKSH_SESSION_CACHE_FP: Dict[str, tuple] = {}
+
+
+def _raksh_stock_fingerprint() -> Optional[tuple]:
+    """بصمة رخيصة لمجموعة الحسابات المؤهلة للرشق. None إن تعذّر القراءة."""
+    try:
+        with db_conn() as c:
+            row = c.execute(
+                "SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS m FROM number_stock "
+                "WHERE session_string IS NOT NULL AND BTRIM(session_string) <> '' "
+                "AND deleted_at IS NULL AND frozen_at IS NULL "
+                "AND ever_sold IS NOT TRUE AND raksh_excluded IS NOT TRUE"
+            ).fetchone()
+        return (int(row["n"]), int(row["m"])) if row else None
+    except Exception:
+        return None
 
 def _get_raksh_session_lock(session_or_phone) -> asyncio.Lock:
     """الحصول على قفل مبني على بصمة الجلسة لا على رقم الهاتف.
@@ -415,12 +433,19 @@ def _get_sessions_for_service(
     )
     if cache_key in _RAKSH_SESSION_CACHE:
         cache_time = _RAKSH_SESSION_CACHE_TIME.get(cache_key, 0)
-        if time.time() - cache_time < _RAKSH_SESSION_CACHE_TTL:
+        _fresh = time.time() - cache_time < _RAKSH_SESSION_CACHE_TTL
+        if _fresh:
+            _fp_now = _raksh_stock_fingerprint()
+            _fp_old = _RAKSH_SESSION_CACHE_FP.get(cache_key)
+            if _fp_now is not None and _fp_old is not None and _fp_now != _fp_old:
+                _fresh = False  # دخل حساب جديد أو خرج حساب: لا تنتظر انتهاء الكاش
+        if _fresh:
             return get_raksh_sessions_for_request(
                 _dedupe_raksh_sessions(_RAKSH_SESSION_CACHE[cache_key].copy()),
                 is_owner=is_owner,
             )
 
+    _fp_before = _raksh_stock_fingerprint()  # قبل التحميل، حتى لا يضيع حساب يدخل بينهما
     with db_conn() as c:
         query = """
             SELECT id, phone_number, session_string, raksh_only, last_authorized,
@@ -450,6 +475,7 @@ def _get_sessions_for_service(
 
     _RAKSH_SESSION_CACHE[cache_key] = sessions
     _RAKSH_SESSION_CACHE_TIME[cache_key] = time.time()
+    _RAKSH_SESSION_CACHE_FP[cache_key] = _fp_before
     return get_raksh_sessions_for_request(sessions, is_owner=is_owner)
 
 def get_available_sessions_count(service_type: str = None, is_owner: bool = False) -> int:
