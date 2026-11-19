@@ -215,6 +215,31 @@ def pyrogram_json_to_telethon(data: dict) -> str | None:
     except Exception:
         return None
 
+def pyrogram_string_to_telethon(raw: str) -> str | None:
+    """يحوّل Pyrogram String Session (الصيغتين الجديدة والقديمة) إلى Telethon StringSession.
+
+    الجديدة: >BI?256sQ?  (dc_id, api_id, test_mode, auth_key, user_id, is_bot) = 271 بايت
+    القديمة: >B?256sI?   (dc_id, test_mode, auth_key, user_id, is_bot)        = 263 بايت
+    يُرجع None إن لم تكن الصيغة Pyrogram أو كانت من خوادم الاختبار.
+    """
+    try:
+        text = (raw or "").strip()
+        if not text or text.startswith("{") or len(text) < 300 or len(text) > 400:
+            return None
+        data = base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+        if len(data) == 271:
+            dc_id, _api_id, test_mode, auth_key, _uid, _bot = struct.unpack(">BI?256sQ?", data)
+        elif len(data) == 263:
+            dc_id, test_mode, auth_key, _uid, _bot = struct.unpack(">B?256sI?", data)
+        else:
+            return None
+        if test_mode or dc_id not in _TG_DC:
+            return None
+        return pyrogram_json_to_telethon({"dc_id": dc_id, "auth_key": auth_key.hex()})
+    except Exception:
+        return None
+
+
 def _maybe_convert_session(raw: str) -> str:
     """
     إذا كانت raw عبارة عن JSON يحتوي dc_id + auth_key (صيغة Pyrogram)
@@ -230,6 +255,12 @@ def _maybe_convert_session(raw: str) -> str:
                 return converted
         except Exception:
             pass
+        return s
+    # Telethon StringSession يبدأ بـ "1" وطوله 353 (IPv4) أو 369 (IPv6)؛ غير ذلك قد يكون Pyrogram
+    if not (s.startswith("1") and len(s) in (353, 369)):
+        converted = pyrogram_string_to_telethon(s)
+        if converted:
+            return converted
     return s
 
 def _parse_hex_session_text(raw_text: str) -> tuple[list[str], list[str], bool]:
