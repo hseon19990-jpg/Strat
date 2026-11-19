@@ -990,7 +990,7 @@ OWNER_SETTINGS_GROUPS = [
         "os:edit_points_to_jewel_rate", "os:manage_star_packages", "os:manage_points",
     ), ()),
     ("rewards", "🎁 الإحالات والهدايا", (
-        "os:edit_new_users_group", "os:edit_referral", "os:referral_levels", "os:ref_type_toggle", "os:ref_fraud_toggle", "os:ref_l1_jewels",
+        "os:edit_referral", "os:referral_levels", "os:ref_type_toggle", "os:ref_fraud_toggle", "os:ref_l1_jewels",
         "os:ref_level_add", "os:referral_rewards", "os:referral_daily_free",
         "os:top_referrers", "os:weekly_ref", "os:referral_contest", "os:edit_join_reward",
         "os:edit_daily_gift", "os:create_temporary_gift", "os:edit_leave_penalty",

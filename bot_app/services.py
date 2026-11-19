@@ -232,7 +232,6 @@ OWNER_SETTINGS_EXTRA_DEFAULTS = [
     ("📊 الطلبات", "ov:own:0", 2),
     ("🤖 مفتاح OpenAI", "os:openai_api", 1),
     ("📲 إعدادات أرقام تلي", "tgnum:admin", 1),
-    ("👥 كروب إشعار الأعضاء الجدد", "os:edit_new_users_group", 2),
     ("📲 كروب إشعارات الأرقام", "os:edit_numbers_group", 2),
     ("🏅 جوائز الأكثر دعوة الأسبوعي", "os:weekly_ref", 1),
     ("👑 إعدادات الخدمات الأسطورية", "legendary:settings", 1),

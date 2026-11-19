@@ -564,14 +564,15 @@ def get_new_users_group_chat():
     return int(raw) if re.fullmatch(r"-?\d+", raw) else raw
 
 
+from telegram.error import ChatMigrated  # noqa: E402
+
+
 async def notify_new_user_group(bot, user, invited_by: int = 0, user_num=None):
     """يرسل إلى الكروب المضبوط إشعاراً بدخول عضو جديد، ويذكر من دعاه إن وُجد."""
     try:
-        chat = get_new_users_group_chat()
+        # الإحالات تصل إلى كروب الأرقام فقط (لا كروب ثالث ولا كروب الطلبات)
+        chat = get_numbers_group_chat()
         if not bot or chat is None:
-            return
-        # الجروبات والقنوات للطلبات وفوز العجلة فقط: لا إشعار أعضاء جدد فيها (يُسمح بالخاص فقط)
-        if not (isinstance(chat, int) and chat > 0):
             return
         name = html.escape(user.full_name or f"ID:{user.id}")
         username = getattr(user, "username", None)
@@ -589,18 +590,21 @@ async def notify_new_user_group(bot, user, invited_by: int = 0, user_num=None):
             )
         else:
             invite_line = "🔗 الدعوة: <b>لا، لم يدعه أحد</b> (دخل مباشرة)"
-        await bot.send_message(
-            chat_id=chat,
-            text=(
-                "🆕 <b>عضو جديد دخل البوت</b>\n\n"
-                f"👤 الاسم: {name}\n"
-                f"📛 اليوزر: {handle}\n"
-                f"🆔 الايدي: <code>{user.id}</code>\n"
-                f"{num_line}"
-                f"{invite_line}"
-            ),
-            parse_mode=ParseMode.HTML,
+        text = (
+            "🆕 <b>عضو جديد دخل البوت</b>\n\n"
+            f"👤 الاسم: {name}\n"
+            f"📛 اليوزر: {handle}\n"
+            f"🆔 الايدي: <code>{user.id}</code>\n"
+            f"{num_line}"
+            f"{invite_line}"
         )
+        try:
+            await bot.send_message(chat_id=chat, text=text, parse_mode=ParseMode.HTML)
+        except ChatMigrated as migrated:
+            # الكروب تحوّل إلى سوبرجروب: نحفظ الآيدي الجديد ونعيد المحاولة
+            new_id = migrated.new_chat_id
+            set_setting(NUMBERS_GROUP_SETTING, str(new_id))
+            await bot.send_message(chat_id=new_id, text=text, parse_mode=ParseMode.HTML)
     except Exception as exc:
         logger.warning(f"⚠️ فشل إرسال إشعار العضو الجديد إلى الكروب: {exc}")
 
