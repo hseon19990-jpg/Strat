@@ -1007,7 +1007,8 @@ OWNER_SETTINGS_GROUPS = [
     ), ("os:edit_gmail", "os:edit_reject")),
     ("accounts", "🛡 الحسابات والمشرفون", (
         "os:toggle_buyback_visible", "buyback:owner:list", "os:edit_buyback_price",
-        "os:edit_buyback_restricted_price", "os:add_supervisor", "os:list_supervisors",
+        "os:edit_buyback_restricted_price", "os:edit_buyback_stage1", "os:edit_buyback_stage2",
+        "os:add_supervisor", "os:list_supervisors",
         "os:sv_accounts", "os:account_info", "os:ma:menu",
     ), ()),
     ("general", "⚙️ عام وإدارة", (
@@ -1123,6 +1124,16 @@ def _build_owner_settings_kb(group_key=None):
             elif btn.callback_data == "os:edit_buyback_restricted_price":
                 row[i] = InlineKeyboardButton(
                     f"{btn.text}: {_buyback_restricted_price_label}",
+                    callback_data=btn.callback_data,
+                )
+            elif btn.callback_data == "os:edit_buyback_stage1":
+                row[i] = InlineKeyboardButton(
+                    f"{btn.text}: {format_buyback_hours(_buyback_stage_hours(1))}",
+                    callback_data=btn.callback_data,
+                )
+            elif btn.callback_data == "os:edit_buyback_stage2":
+                row[i] = InlineKeyboardButton(
+                    f"{btn.text}: {format_buyback_hours(_buyback_stage_hours(2))}",
                     callback_data=btn.callback_data,
                 )
     rows.append([InlineKeyboardButton("🔙 إعدادات المالك", callback_data="owner_settings")])

@@ -239,6 +239,8 @@ OWNER_SETTINGS_EXTRA_DEFAULTS = [
     ("📋 طلبات البيع", "buyback:owner:list", 2),
     ("💵 سعر الحساب السليم", "os:edit_buyback_price", 1),
     ("💵 سعر الحساب المقيّد", "os:edit_buyback_restricted_price", 1),
+    ("⏱ مدة الفحص الأول", "os:edit_buyback_stage1", 1),
+    ("⏱ مدة الفحص النهائي", "os:edit_buyback_stage2", 1),
     ("🛡 إضافة مشرف", "os:add_supervisor", 2),
     ("📋 إدارة المشرفين", "os:list_supervisors", 2),
     ("👁 حسابات المشرفين", "os:sv_accounts", 1),

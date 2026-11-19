@@ -11,7 +11,10 @@ keep working unchanged from every other place that links to them.
 
 from . import shared as _shared
 globals().update({key: value for key, value in vars(_shared).items() if not key.startswith("__")})
-from .buyback import is_buyback_visible, _buyback_price, format_buyback_price, user_has_buyback_offers
+from .buyback import (
+    is_buyback_visible, _buyback_price, format_buyback_price, user_has_buyback_offers,
+    buyback_total_label, format_buyback_hours, _buyback_stage_hours,
+)
 
 SELL_RENT_MENU_ACTION = "sell_rent:menu"
 SELL_RENT_INFO_ACTION = "sell_rent:info"
@@ -57,7 +60,9 @@ def sell_rent_info_text(is_owner: bool = False) -> str:
         "💰 *بيع الحساب*",
         "• تُنقل ملكية الحساب بالكامل: بعد موافقتك النهائية تُلغى الجلسات الأخرى "
         "ويُغيَّر الـ2FA ويُحذف بريد الاسترداد.",
-        "• يُحجز الحساب 48 ساعة ويُفحص على مرحلتين (24 و48 ساعة)، ثم تستلم المبلغ دفعة واحدة.",
+        f"• يُحجز الحساب {buyback_total_label()} ويُفحص على مرحلتين "
+        f"({format_buyback_hours(_buyback_stage_hours(1))} ثم {format_buyback_hours(_buyback_stage_hours(2))})، "
+        "ثم تستلم المبلغ دفعة واحدة.",
         f"• السعر: *{sell_price}* للحساب السليم، و*{restricted_price}* للحساب المقيّد بالإرسال.",
         "• لا يعود الحساب إليك بعد البيع.",
         "✅ مناسب لمن لا يحتاج الحساب ويريد نقاطاً دفعة واحدة.",

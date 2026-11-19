@@ -551,6 +551,33 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if state in ("os_await_buyback_stage1", "os_await_buyback_stage2") and is_own:
+        stage = 1 if state.endswith("stage1") else 2
+        try:
+            new_hours = int((text or "").strip().replace(",", ""))
+            if new_hours < BUYBACK_STAGE_MIN_HOURS or new_hours > BUYBACK_STAGE_MAX_HOURS:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text(
+                f"⚠️ أرسل رقماً صحيحاً بالساعات بين {BUYBACK_STAGE_MIN_HOURS} و{BUYBACK_STAGE_MAX_HOURS}، مثال: 12",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 إلغاء", callback_data="owner_settings"),
+                ]]),
+            )
+            return
+        set_buyback_stage_hours(stage, new_hours)
+        context.user_data["state"] = "main_menu"
+        title = "الفحص الأول" if stage == 1 else "الفحص النهائي"
+        await update.message.reply_text(
+            f"✅ تم تحديث مدة {title} إلى *{format_buyback_hours(new_hours)}*.\n"
+            f"إجمالي مدة الحجز الآن: *{buyback_total_label()}*.\n"
+            "تُطبَّق على الطلبات الجديدة، وعلى المرحلة التالية للطلبات الجارية. "
+            "الطلب الذي بدأت مرحلته الحالية يحتفظ بموعده المحدد.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=owner_settings_kb(),
+        )
+        return
+
     if state == "os_await_buyback_restricted_price" and is_own:
         raw_price = (text or "").strip().replace(",", "").replace(".", "")
         try:

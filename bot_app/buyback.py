@@ -23,6 +23,15 @@ BUYBACK_ACTIVE_STATUSES = (
     "ready_for_payment",
 )
 
+# مدة مرحلتَي الحجز والفحص (بالساعات). الافتراضي 24 + 24 = 48 ساعة كما كان،
+# ويستطيع المالك تغييرهما من: إعدادات المالك ← الحسابات والمشرفون.
+BUYBACK_STAGE1_HOURS_KEY = "buyback_stage1_hours"
+BUYBACK_STAGE2_HOURS_KEY = "buyback_stage2_hours"
+DEFAULT_BUYBACK_STAGE1_HOURS = 24
+DEFAULT_BUYBACK_STAGE2_HOURS = 24
+BUYBACK_STAGE_MIN_HOURS = 0      # 0 = بلا انتظار (يُفحص في أقرب دورة، كل 5 دقائق)
+BUYBACK_STAGE_MAX_HOURS = 720    # 30 يوماً
+
 BUYBACK_SESSION_MAX_BYTES = 5 * 1024 * 1024
 BUYBACK_ZIP_MAX_FILES = 50
 BUYBACK_ZIP_MAX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024
@@ -76,6 +85,50 @@ def set_buyback_restricted_price(points: int) -> int:
         raise ValueError("يجب أن يكون السعر أكبر من صفر")
     set_setting(BUYBACK_RESTRICTED_PRICE_KEY, str(amount))
     return amount
+
+
+def _buyback_stage_hours(stage: int) -> int:
+    """مدة المرحلة (1 = الفحص الأول، 2 = الفحص النهائي) بالساعات."""
+    key = BUYBACK_STAGE1_HOURS_KEY if stage == 1 else BUYBACK_STAGE2_HOURS_KEY
+    default = DEFAULT_BUYBACK_STAGE1_HOURS if stage == 1 else DEFAULT_BUYBACK_STAGE2_HOURS
+    try:
+        raw = get_setting(key)
+        hours = default if raw in (None, "") else int(raw)
+    except (TypeError, ValueError):
+        return default
+    if hours < BUYBACK_STAGE_MIN_HOURS or hours > BUYBACK_STAGE_MAX_HOURS:
+        return default
+    return hours
+
+
+def set_buyback_stage_hours(stage: int, hours: int) -> int:
+    """يحفظ مدة مرحلة الحجز. تُطبَّق على الطلبات الجديدة وعلى المراحل التي لم تبدأ بعد."""
+    hours = int(hours)
+    if hours < BUYBACK_STAGE_MIN_HOURS or hours > BUYBACK_STAGE_MAX_HOURS:
+        raise ValueError(
+            f"المدة يجب أن تكون بين {BUYBACK_STAGE_MIN_HOURS} و{BUYBACK_STAGE_MAX_HOURS} ساعة"
+        )
+    set_setting(BUYBACK_STAGE1_HOURS_KEY if stage == 1 else BUYBACK_STAGE2_HOURS_KEY, str(hours))
+    return hours
+
+
+def buyback_total_hours() -> int:
+    return _buyback_stage_hours(1) + _buyback_stage_hours(2)
+
+
+def format_buyback_hours(hours: int) -> str:
+    """عرض مدة بالساعات بشكل مقروء: 0 / 12 ساعة / 3 أيام / 2 يوم و6 ساعات."""
+    hours = int(hours)
+    if hours <= 0:
+        return "بدون انتظار"
+    if hours < 24:
+        return f"{hours} ساعة"
+    days, rem = divmod(hours, 24)
+    return f"{days} يوم" if rem == 0 else f"{days} يوم و{rem} ساعة"
+
+
+def buyback_total_label() -> str:
+    return format_buyback_hours(buyback_total_hours())
 
 
 def format_buyback_price(price: int | str | None) -> str:
@@ -243,11 +296,11 @@ async def _finish_buyback_login(update, context, user_id: int) -> bool:
             "🔎 تم الدخول إلى الحساب بنجاح.\n\n"
             f"📱 الرقم: {_mask_buyback_phone(phone)}\n"
             f"👤 المعرف: @{username if username else 'بدون معرف'}\n"
-            f"💵 السعر النهائي يُحدد بعد فحص 48 ساعة: "
+            f"💵 السعر النهائي يُحدد بعد فحص {buyback_total_label()}: "
             f"{format_buyback_price(_buyback_price(restricted=True))} إذا كان مقيّداً، "
             f"أو {format_buyback_price(_buyback_price())} إذا كان سليماً.\n\n"
             "عند التأكيد سيتم تسجيل الحساب باسم البوت، وإلغاء الجلسات الأخرى، "
-            "ثم يبقى تحت الفحص 48 ساعة قبل تحديد المبلغ النهائي. إذا كنت موافقاً اضغط تأكيد البيع.",
+            f"ثم يبقى تحت الفحص {buyback_total_label()} قبل تحديد المبلغ النهائي. إذا كنت موافقاً اضغط تأكيد البيع.",
             reply_markup=_buyback_confirm_markup(offer_id),
         )
         return True
@@ -1011,7 +1064,7 @@ async def _notify_buyback_owner(context, offer_id: int, ready: bool = False) -> 
     price = (
         format_buyback_price(row["quoted_price"])
         if row["quoted_price"]
-        else "يُحدد بعد فحص 48 ساعة"
+        else f"يُحدد بعد فحص {buyback_total_label()}"
     )
     text = (
         "💰 <b>طلب بيع حساب تيليجرام</b>\n\n"
@@ -1031,15 +1084,16 @@ async def _notify_buyback_owner(context, offer_id: int, ready: bool = False) -> 
     )
 
 
-_BUYBACK_STAGE_LABELS = {
-    "awaiting_seller_confirm": "⏸ بانتظار تأكيدك النهائي",
-    "quarantine_24h": "🔒 الحجز — بانتظار فحص 24 ساعة",
-    "quarantine_48h": "🔒 الحجز — بانتظار الفحص النهائي (48 ساعة)",
-    "ready_for_payment": "✅ نجح الفحص — بانتظار تحويل المبلغ",
-    "paid": "💵 تم اعتماد الدفع",
-    "rejected": "🚫 مرفوض",
-    "cancelled": "❌ ملغى",
-}
+def _buyback_stage_labels() -> dict:
+    return {
+        "awaiting_seller_confirm": "⏸ بانتظار تأكيدك النهائي",
+        "quarantine_24h": f"🔒 الحجز — بانتظار الفحص الأول ({format_buyback_hours(_buyback_stage_hours(1))})",
+        "quarantine_48h": f"🔒 الحجز — بانتظار الفحص النهائي (بعد {buyback_total_label()} من القبول)",
+        "ready_for_payment": "✅ نجح الفحص — بانتظار تحويل المبلغ",
+        "paid": "💵 تم اعتماد الدفع",
+        "rejected": "🚫 مرفوض",
+        "cancelled": "❌ ملغى",
+    }
 
 
 def _format_buyback_remaining(target) -> str:
@@ -1086,7 +1140,7 @@ def render_buyback_member_status(user_id: int) -> str:
     for row in rows:
         status = row["status"]
         lines.append(f"📌 *طلب #{row['id']}* — `{_mask_buyback_phone(row['phone_number'])}`")
-        lines.append(_BUYBACK_STAGE_LABELS.get(status, status))
+        lines.append(_buyback_stage_labels().get(status, status))
         if status in ("quarantine_24h", "quarantine_48h"):
             remaining = _format_buyback_remaining(row["next_check_at"])
             if remaining:
@@ -1101,7 +1155,7 @@ def render_buyback_member_status(user_id: int) -> str:
         elif status == "rejected":
             lines.append("➡️ لم يُقبل الطلب. يمكنك تقديم حساب آخر.")
         lines.append("")
-    lines.append("🔔 تصلك رسالة تلقائية عند: نجاح فحص 24 ساعة، ونجاح الفحص النهائي، واعتماد الدفع، وأي رفض.")
+    lines.append("🔔 تصلك رسالة تلقائية عند: نجاح الفحص الأول، ونجاح الفحص النهائي، واعتماد الدفع، وأي رفض.")
     return "\n".join(lines).strip()
 
 
@@ -1113,7 +1167,8 @@ async def handle_buyback_callback(update, context, q, data: str, user, is_owner:
         await q.edit_message_text(
             "💰 <b>بيع حساب تيليجرام</b>\n\n"
             "سيتم فحص ملكية الحساب أولاً. بعد موافقتك النهائية تُلغى الجلسات الأخرى، "
-            "ويبقى الحساب تحت الحجز 48 ساعة. يتم دفع المبلغ بعد نجاح فحص 24 و48 ساعة.\n\n"
+            f"ويبقى الحساب تحت الحجز {buyback_total_label()}. يتم دفع المبلغ بعد نجاح الفحص الأول "
+            f"({format_buyback_hours(_buyback_stage_hours(1))}) والفحص النهائي.\n\n"
             "⚠️ استخدم هذه الخدمة لحساب تملكه فقط. يمكنك التقديم برقم وكود الدخول أو برفع ملف جلسة .session أو .json أو ZIP.",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([
@@ -1151,7 +1206,7 @@ async def handle_buyback_callback(update, context, q, data: str, user, is_owner:
         await q.edit_message_text(
             chr(10).join([
                 "📁 رفع الجلسة يمنح البوت إمكانية الدخول إلى الحساب. بعد تأكيدك النهائي سيغيّر البوت كلمة مرور 2FA إن وجدت،",
-                "ويلغي الجلسات الأخرى ويحذف بريد الاسترداد، ثم يبدأ حجز الحساب وفحصه لمدة 48 ساعة.",
+                f"ويلغي الجلسات الأخرى ويحذف بريد الاسترداد، ثم يبدأ حجز الحساب وفحصه لمدة {buyback_total_label()}.",
                 "",
                 "ارفع جلسة حساب تملكه أنت فقط. لن يبدأ نقل الحساب قبل تأكيد البيع في الخطوة التالية.",
             ]),
@@ -1295,14 +1350,17 @@ async def handle_buyback_callback(update, context, q, data: str, user, is_owner:
         with db_conn() as c:
             c.execute(
                 "UPDATE account_buyback_offers SET status='quarantine_24h', "
-                "accepted_at=NOW(), next_check_at=NOW()+INTERVAL '24 hours', "
+                "accepted_at=NOW(), next_check_at=NOW()+(%s * INTERVAL '1 hour'), "
                 "twofa_password=%s, updated_at=NOW() WHERE id=%s",
-                (new_password, offer_id),
+                (_buyback_stage_hours(1), new_password, offer_id),
+            )
+            _release_buyback_account_to_stock(
+                c, row["phone_number"], row["session_string"], new_password, paid=False,
             )
         context.user_data["state"] = "main_menu"
         await q.edit_message_text(
             "✅ تم استلام الحساب وتأمينه.\n\n"
-            "⏳ بدأ الحجز والفحص لمدة 48 ساعة. سيتم إشعارك بعد الفحص النهائي قبل تحويل المبلغ.",
+            f"⏳ بدأ الحجز والفحص لمدة {buyback_total_label()}. سيتم إشعارك بعد الفحص النهائي قبل تحويل المبلغ.",
             reply_markup=main_menu_kb(False),
         )
         await _notify_buyback_owner(context, offer_id)
@@ -1321,7 +1379,7 @@ async def handle_buyback_callback(update, context, q, data: str, user, is_owner:
             return True
         seller_id = mark_buyback_paid(offer_id)
         if not seller_id:
-            await q.answer("لا يمكن الدفع قبل نجاح فحص 48 ساعة.", show_alert=True)
+            await q.answer(f"لا يمكن الدفع قبل نجاح الفحص النهائي ({buyback_total_label()}).", show_alert=True)
             return True
         await q.edit_message_text(f"✅ تم تعليم الطلب #{offer_id} كمدفوع يدوياً.", reply_markup=owner_settings_kb())
         await _notify_buyback_user(context, seller_id, f"✅ تم اعتماد دفع مستحقات طلب بيع الحساب رقم #{offer_id}. تواصل مع المالك لاستلام المبلغ.")
@@ -1355,7 +1413,7 @@ def render_buyback_owner_list():
     rows_kb = []
     for row in rows:
         price = (
-            f"{int(row['quoted_price']):,}" if row["quoted_price"] else "بعد فحص 48 ساعة"
+            f"{int(row['quoted_price']):,}" if row["quoted_price"] else f"بعد فحص {buyback_total_label()}"
         )
         lines.append(f"#{row['id']} — {_mask_buyback_phone(row['phone_number'])} — {row['status']} — {price}")
         if row["status"] == "ready_for_payment":
@@ -1366,6 +1424,37 @@ def render_buyback_owner_list():
     return "\n".join(lines), InlineKeyboardMarkup(rows_kb)
 
 
+def _release_buyback_account_to_stock(c, phone: str, session_string: str, twofa_password: str, *, paid: bool) -> None:
+    """يضع الحساب المشترى في المخزون ليبدأ الرشق به فور وجوده، بلا انتظار حجز الفحص.
+
+    paid=False (لحظة قبول البيع وتأمين الحساب): يدخل الرشق فوراً، لكنه يُستبعد
+    من بيع الأرقام للأعضاء (sale_excluded) حتى يُعتمد الدفع.
+    paid=True (بعد دفع المالك): يُرفع الاستبعاد فقط إن كان الحساب في المخزون
+    بجلسة حيّة، وإلا يُدرج كاملاً. هكذا لا تُستبدل جلسة دوّرها البوت أثناء الرشق.
+    """
+    if paid:
+        row = c.execute(
+            "UPDATE number_stock SET sale_excluded=FALSE "
+            "WHERE phone_number=%s AND deleted_at IS NULL "
+            "AND BTRIM(COALESCE(session_string,'')) <> '' "
+            "AND last_authorized IS NOT FALSE RETURNING id",
+            (phone,),
+        ).fetchone()
+        if row:
+            return
+    c.execute(
+        "INSERT INTO number_stock (phone_number,session_string,twofa_password,auto_2fa_enabled,"
+        "assigned_to,deleted_at,ever_sold,sessions_reset,last_authorized,can_send_code,raksh_only,sale_excluded) "
+        "VALUES (%s,%s,%s,TRUE,NULL,NULL,FALSE,TRUE,TRUE,FALSE,FALSE,%s) "
+        "ON CONFLICT (phone_number) DO UPDATE SET "
+        "session_string=EXCLUDED.session_string, twofa_password=EXCLUDED.twofa_password, "
+        "auto_2fa_enabled=TRUE, assigned_to=NULL, deleted_at=NULL, ever_sold=FALSE, "
+        "sessions_reset=TRUE, last_authorized=TRUE, kicked_at=NULL, raksh_only=FALSE, "
+        "contributed_by=NULL, sale_excluded=EXCLUDED.sale_excluded",
+        (phone, session_string, twofa_password, not paid),
+    )
+
+
 def mark_buyback_paid(offer_id: int) -> int | None:
     with db_conn() as c:
         row = c.execute(
@@ -1374,16 +1463,8 @@ def mark_buyback_paid(offer_id: int) -> int | None:
         ).fetchone()
         if not row:
             return None
-        c.execute(
-            "INSERT INTO number_stock (phone_number,session_string,twofa_password,auto_2fa_enabled,"
-            "assigned_to,deleted_at,ever_sold,sessions_reset,last_authorized,can_send_code,raksh_only) "
-            "VALUES (%s,%s,%s,TRUE,NULL,NULL,FALSE,TRUE,TRUE,FALSE,FALSE) "
-            "ON CONFLICT (phone_number) DO UPDATE SET "
-            "session_string=EXCLUDED.session_string, twofa_password=EXCLUDED.twofa_password, "
-            "auto_2fa_enabled=TRUE, assigned_to=NULL, deleted_at=NULL, ever_sold=FALSE, "
-            "sessions_reset=TRUE, last_authorized=TRUE, kicked_at=NULL, raksh_only=FALSE, "
-            "contributed_by=NULL",
-            (row["phone_number"], row["session_string"], row["twofa_password"]),
+        _release_buyback_account_to_stock(
+            c, row["phone_number"], row["session_string"], row["twofa_password"], paid=True,
         )
         c.execute(
             "UPDATE account_buyback_offers SET status='paid', paid_at=NOW(), updated_at=NOW() WHERE id=%s",
@@ -1395,11 +1476,20 @@ def mark_buyback_paid(offer_id: int) -> int | None:
 def reject_buyback_offer(offer_id: int, reason: str = "") -> int | None:
     with db_conn() as c:
         row = c.execute(
-            "SELECT seller_user_id FROM account_buyback_offers WHERE id=%s AND status NOT IN ('paid','cancelled','rejected') FOR UPDATE",
+            "SELECT seller_user_id, phone_number, accepted_at FROM account_buyback_offers "
+            "WHERE id=%s AND status NOT IN ('paid','cancelled','rejected') FOR UPDATE",
             (offer_id,),
         ).fetchone()
         if not row:
             return None
+        if row["accepted_at"] is not None:
+            # الحساب دخل المخزون/الرشق عند القبول؛ الرفض يخرجه منه (سلة المهملات).
+            c.execute(
+                "UPDATE number_stock SET deleted_at=NOW() "
+                "WHERE phone_number=%s AND deleted_at IS NULL AND ever_sold IS NOT TRUE "
+                "AND assigned_to IS NULL AND contributed_by IS NULL",
+                (row["phone_number"],),
+            )
         c.execute(
             "UPDATE account_buyback_offers SET status='rejected', session_string=NULL, rejection_reason=%s, updated_at=NOW() WHERE id=%s",
             (reason[:500], offer_id),
@@ -1411,11 +1501,11 @@ async def process_buyback_twofa_reset_job(context) -> None:
     """يُكمل تأمين الحسابات التي كانت محمية بكلمة مرور 2FA مجهولة بعد انتهاء
     مهلة تيليجرام الرسمية (نحو أسبوع)، ثم يتابعها بنفس مسار التأمين العادي:
     تعيين كلمة مرور جديدة، وطرد الجلسات الأخرى بفاصل زمني آمن، ثم دخول حجز
-    48 ساعة المعتاد. تُستدعى كل ساعة.
+    المعتاد (المدة من إعدادات المالك، الافتراضي 48 ساعة). تُستدعى كل ساعة.
     """
     with db_conn() as c:
         rows = c.execute(
-            "SELECT id, seller_user_id, session_string FROM account_buyback_offers "
+            "SELECT id, seller_user_id, session_string, phone_number FROM account_buyback_offers "
             "WHERE status='twofa_reset_pending' AND twofa_reset_date IS NOT NULL "
             "AND twofa_reset_date <= NOW() AND session_string IS NOT NULL "
             "ORDER BY twofa_reset_date LIMIT 20"
@@ -1457,9 +1547,12 @@ async def process_buyback_twofa_reset_job(context) -> None:
             with db_conn() as c:
                 c.execute(
                     "UPDATE account_buyback_offers SET status='quarantine_24h', "
-                    "accepted_at=NOW(), next_check_at=NOW()+INTERVAL '24 hours', "
+                    "accepted_at=NOW(), next_check_at=NOW()+(%s * INTERVAL '1 hour'), "
                     "twofa_password=%s, updated_at=NOW() WHERE id=%s",
-                    (new_password, offer_id),
+                    (_buyback_stage_hours(1), new_password, offer_id),
+                )
+                _release_buyback_account_to_stock(
+                    c, row["phone_number"], row["session_string"], new_password, paid=False,
                 )
             logger.info("✅ buyback twofa-reset: اكتمل تأمين الطلب #%s بعد مهلة 2FA", offer_id)
             await _notify_buyback_user(
@@ -1477,7 +1570,7 @@ async def process_buyback_twofa_reset_job(context) -> None:
 async def process_buyback_quarantine_job(context) -> None:
     """حلقة الحماية والفحص الدوري لطلبات بيع الحسابات.
 
-    تُستدعى كل خمس دقائق. لذلك لا ننتظر موعد فحص 24/48 ساعة كي نكتشف
+    تُستدعى كل خمس دقائق. لذلك لا ننتظر موعد الفحصين الأول والنهائي كي نكتشف
     دخولاً جديداً أو قيداً مستجداً في SpamBot.
     """
     with db_conn() as c:
@@ -1538,8 +1631,16 @@ async def process_buyback_quarantine_job(context) -> None:
 
         if row["status"] == "quarantine_24h":
             with db_conn() as c:
-                c.execute("UPDATE account_buyback_offers SET status='quarantine_48h', next_check_at=NOW()+INTERVAL '24 hours', last_checked_at=NOW(), updated_at=NOW() WHERE id=%s", (row["id"],))
-            await _notify_buyback_user(context, row["seller_user_id"], f"✅ نجح فحص 24 ساعة لطلب البيع #{row['id']}. سيستمر الحجز حتى الفحص النهائي.")
+                c.execute(
+                    "UPDATE account_buyback_offers SET status='quarantine_48h', "
+                    "next_check_at=NOW()+(%s * INTERVAL '1 hour'), last_checked_at=NOW(), updated_at=NOW() WHERE id=%s",
+                    (_buyback_stage_hours(2), row["id"]),
+                )
+            await _notify_buyback_user(
+                context, row["seller_user_id"],
+                f"✅ نجح الفحص الأول لطلب البيع #{row['id']}. "
+                f"سيستمر الحجز {format_buyback_hours(_buyback_stage_hours(2))} حتى الفحص النهائي.",
+            )
         else:
             final_price = _buyback_price(restricted=bool(result.get("restricted")))
             with db_conn() as c:

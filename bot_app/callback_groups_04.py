@@ -474,6 +474,23 @@ async def _handle_callback_group_04(update, context, q, data, user, is_own, is_s
                 ]]),
             )
             return
+        if data in ("os:edit_buyback_stage1", "os:edit_buyback_stage2") and is_own:
+            stage = 1 if data.endswith("stage1") else 2
+            context.user_data["state"] = f"os_await_buyback_stage{stage}"
+            title = "الفحص الأول" if stage == 1 else "الفحص النهائي"
+            await q.edit_message_text(
+                f"⏱ *تغيير مدة {title} لشراء الحسابات*\n\n"
+                f"المدة الحالية: *{format_buyback_hours(_buyback_stage_hours(stage))}*\n"
+                f"إجمالي مدة الحجز الآن: *{buyback_total_label()}*\n\n"
+                f"أرسل المدة الجديدة بالساعات ({BUYBACK_STAGE_MIN_HOURS} إلى {BUYBACK_STAGE_MAX_HOURS})، "
+                "مثال: `12` أو `72`.\n"
+                "• `0` = بدون انتظار (يُفحص في أقرب دورة، كل 5 دقائق).",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 إلغاء", callback_data="owner_settings"),
+                ]]),
+            )
+            return
         if data == "os:toggle_maintenance" and is_own:
             current = int(get_setting("maintenance_mode") or "0")
             new_val = "0" if current else "1"
