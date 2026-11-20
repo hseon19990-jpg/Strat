@@ -9,6 +9,9 @@ PREMIUM_REACTION_LOOKUP_MAX_BATCHES = 3
 PREMIUM_REACTION_LOOKUP_TIMEOUT_SECONDS = 30
 PREMIUM_REACTION_STEP_TIMEOUT_SECONDS = 8
 PREMIUM_REACTION_POOL_LIMIT = 50
+# مهلة احتياطية لمغادرة حساب الفحص/الحسابات إن فشلت المغادرة الفورية.
+PREMIUM_REACTION_PROBE_LEAVE_SECONDS = 1800
+PREMIUM_REACTION_EXEC_LEAVE_SECONDS = 300
 
 
 def _custom_premium_reactions(reactions):
@@ -52,6 +55,41 @@ def _premium_reaction_keyboard(reactions):
     return InlineKeyboardMarkup(buttons)
 
 
+async def _resolve_post_entity(client, channel_ref: str, phone_number=None):
+    """حل كيان القناة، بما فيها القنوات الخاصة (-100...) بعد الانضمام."""
+    if isinstance(channel_ref, str) and channel_ref.startswith("-100") and channel_ref[4:].isdigit():
+        from telethon.tl.types import PeerChannel
+        channel_id = int(channel_ref[4:])
+        try:
+            return await client.get_entity(PeerChannel(channel_id))
+        except Exception:
+            # الجلسة الجديدة لا تملك access_hash؛ تحميل المحادثات يملأ الكاش.
+            await client.get_dialogs()
+            return await client.get_entity(PeerChannel(channel_id))
+    return await _resolve_raksh_entity(client, channel_ref, phone_number)
+
+
+def _is_private_post_ref(channel_ref) -> bool:
+    return isinstance(channel_ref, str) and channel_ref.startswith("-100")
+
+
+def _premium_private_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "✅ لقد قبلت طلب الانضمام",
+                callback_data="raksh_premium_reaction:join_accepted",
+            )
+        ],
+        [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")],
+    ])
+
+
+def _mask_phone(phone) -> str:
+    digits = str(phone or "").strip()
+    return f"***{digits[-4:]}" if len(digits) > 4 else "***"
+
+
 def _premium_reaction_retry_keyboard():
     return InlineKeyboardMarkup([
         [
@@ -67,6 +105,8 @@ class PremiumReactionService(RakshService):
     """خدمة رشق تفاعل مميز - كل شيء في مكان واحد"""
     
     service_type = "premium_reaction"
+    # مهلة أقصر لكل حساب حتى لا يعلق حساب بطيء ويؤخر النتائج (الافتراضي 180).
+    account_timeout_seconds = 75
     label = "✨ رشق تفاعل مميز"
     config = ServiceConfig(
         name=label,
@@ -82,6 +122,51 @@ class PremiumReactionService(RakshService):
         max_delay=3
     )
     
+    def get_execution_params(self, context) -> Dict:
+        params = super().get_execution_params(context)
+        invite = context.user_data.get("raksh_private_invite")
+        channels = list(params.get("channel_ref") or [])
+        if invite and invite not in channels:
+            # كل حساب ينضم لقناة المنشور الخاصة قبل التفاعل (بدون احتسابها في السعر).
+            channels.append(invite)
+        params["channel_ref"] = channels
+        return params
+
+    async def _register_probe_membership(self, context) -> None:
+        """سجّل عضوية حساب الفحص ليغادر لاحقاً حتى لو لم يُكمل الطلب."""
+        invite = context.user_data.get("raksh_private_invite")
+        phone = context.user_data.get("raksh_private_session_phone")
+        if not invite or not phone:
+            return
+        session = next(
+            (item for item in (self.get_sessions() or [])
+             if str(item.get("phone_number")) == str(phone)),
+            None,
+        )
+        if not session:
+            return
+        client = TelegramClient(
+            StringSession(session["session_string"]),
+            int(TELEGRAM_API_ID),
+            TELEGRAM_API_HASH,
+        )
+        try:
+            await asyncio.wait_for(client.connect(), timeout=15)
+            await asyncio.wait_for(
+                _join_channel_and_schedule_leave(
+                    client, invite, phone,
+                    leave_after_seconds=PREMIUM_REACTION_PROBE_LEAVE_SECONDS,
+                ),
+                timeout=40,
+            )
+        except Exception as e:
+            logger.debug("تعذر تسجيل عضوية حساب الفحص: %s", e)
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+
     def get_initial_state(self) -> str:
         """البدء بطلب القنوات الإجبارية"""
         return "channel"
@@ -119,13 +204,41 @@ class PremiumReactionService(RakshService):
         ])
 
     async def _show_reaction_options(self, target, context, *, edit=False):
+        link = context.user_data.get("raksh_link", "")
+        preferred_phone = context.user_data.get("raksh_private_session_phone")
         reactions = _custom_premium_reactions(
-            await self._fetch_reactions_from_post(
-                context.user_data.get("raksh_link", "")
-            )
+            await self._fetch_reactions_from_post(link, preferred_phone)
         )
         context.user_data["raksh_available_reactions"] = reactions
         send = target.edit_message_text if edit else target.reply_text
+
+        if not reactions and _is_private_post_ref(_parse_post_link(link)[0]):
+            # القناة خاصة ولا يوجد حساب عضو: نطلب رابط الدعوة لإرسال طلب انضمام.
+            if preferred_phone:
+                context.user_data["raksh_step"] = "private_wait"
+                await send(
+                    "⏳ لم يتم قبول طلب انضمام الحساب بعد، أو لا توجد تفاعلات مميزة متاحة.\n"
+                    "اقبل طلب الانضمام في القناة ثم اضغط الزر مرة أخرى.",
+                    reply_markup=_premium_private_keyboard(),
+                )
+            else:
+                context.user_data["raksh_step"] = "private_invite"
+                await send(
+                    "🔒 هذه القناة خاصة ولا يمكن لحساباتنا الوصول للمنشور.\n\n"
+                    "🔗 أرسل *رابط دعوة القناة* (مثل https://t.me/+xxxx) "
+                    "💡 أنشئ الرابط من إعدادات القناة ← روابط الدعوة، واترك خيار "
+                    "«طلب موافقة المشرفين» *مطفأً* وبدون حد للاستخدام، حتى تنضم "
+                    "الحسابات تلقائياً بلا حاجة لقبول طلباتها.\n"
+                    "وإن كان الرابط بموافقة فسيُرسل طلب انضمام وعليك قبوله.",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                    ]),
+                )
+            return False
+
+        if reactions and context.user_data.get("raksh_private_invite"):
+            await self._register_probe_membership(context)
 
         if not reactions:
             context.user_data["raksh_step"] = "quantity"
@@ -152,8 +265,94 @@ class PremiumReactionService(RakshService):
         )
         return True
     
+    async def _request_private_join(self, invite_ref: str):
+        """يرسل طلب انضمام بحساب واحد. يعيد (الحالة, الجلسة, وصف الحساب)."""
+        sessions = list(self.get_sessions() or [])
+        random.shuffle(sessions)
+        last_error = "لا توجد حسابات متاحة"
+        for session in sessions[:PREMIUM_REACTION_LOOKUP_BATCH_SIZE]:
+            client = TelegramClient(
+                StringSession(session["session_string"]),
+                int(TELEGRAM_API_ID),
+                TELEGRAM_API_HASH,
+            )
+            try:
+                await asyncio.wait_for(client.connect(), timeout=15)
+                if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
+                    continue
+                me = await asyncio.wait_for(client.get_me(), timeout=8)
+                name = " ".join(
+                    part for part in (getattr(me, "first_name", ""), getattr(me, "last_name", "")) if part
+                ) or "—"
+                username = getattr(me, "username", None)
+                desc = f"👤 الاسم: {name}\n"
+                if username:
+                    desc += f"🔖 المعرف: @{username}\n"
+                desc += f"📱 الرقم: {_mask_phone(session.get('phone_number'))}"
+
+                try:
+                    await asyncio.wait_for(
+                        client(functions.messages.ImportChatInviteRequest(invite_ref[7:])),
+                        timeout=20,
+                    )
+                    return "joined", session, desc
+                except Exception as join_error:
+                    if _is_join_request_pending_error(join_error):
+                        return "pending", session, desc
+                    if _is_already_joined_error(join_error):
+                        return "joined", session, desc
+                    last_error = str(join_error)[:100]
+                    logger.warning("فشل إرسال طلب الانضمام: %s", join_error)
+            except Exception as e:
+                last_error = str(e)[:100]
+                logger.warning("فشل تجهيز حساب طلب الانضمام: %s", e)
+            finally:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+        return "error", None, last_error
+
     async def handle_text(self, update, context, text, user, state, is_own) -> bool:
         """معالجة النص لخدمة رشق التفاعل المميز"""
+
+        # ═══ قناة خاصة: استقبال رابط الدعوة وإرسال طلب الانضمام ═══
+        if state == "private_invite":
+            refs = [ref for ref in _parse_channel_refs(text) if ref.startswith("invite:")]
+            if not refs:
+                await update.message.reply_text(
+                    "⚠️ أرسل رابط دعوة صحيح للقناة الخاصة، مثل: https://t.me/+xxxx",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                    ]),
+                )
+                return True
+            await update.message.reply_text("⏳ *جاري إرسال طلب الانضمام للقناة...*", parse_mode=ParseMode.MARKDOWN)
+            status, session, info = await self._request_private_join(refs[0])
+            if status == "error":
+                await update.message.reply_text(
+                    f"❌ تعذر إرسال طلب الانضمام: {info}\nتأكد من أن الرابط صالح وأعد إرساله.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
+                    ]),
+                )
+                return True
+            context.user_data["raksh_private_session_phone"] = session.get("phone_number")
+            context.user_data["raksh_private_invite"] = refs[0]
+            if status == "joined":
+                context.user_data["raksh_step"] = "fetch_reactions"
+                await update.message.reply_text("✅ انضم الحساب للقناة.\n⏳ *جاري جلب التفاعلات...*", parse_mode=ParseMode.MARKDOWN)
+                await self._show_reaction_options(update.message, context)
+                return True
+            context.user_data["raksh_step"] = "private_wait"
+            await update.message.reply_text(
+                "📨 تم إرسال طلب انضمام للقناة.\n\n"
+                "افتح قائمة طلبات الانضمام في قناتك واقبل طلب هذا الحساب:\n"
+                f"{info}\n\n"
+                "بعد القبول اضغط الزر أدناه لأعرض لك التفاعلات المتاحة.",
+                reply_markup=_premium_private_keyboard(),
+            )
+            return True
         
         # ═══ الخطوة 1: استقبال القنوات الإجبارية ═══
         if state == "channel":
@@ -199,6 +398,8 @@ class PremiumReactionService(RakshService):
                 return True
             
             context.user_data["raksh_link"] = text
+            context.user_data.pop("raksh_private_session_phone", None)
+            context.user_data.pop("raksh_private_invite", None)
             context.user_data["raksh_step"] = "quantity"
             
             max_qty = self.get_request_limit(user.id)
@@ -285,6 +486,18 @@ class PremiumReactionService(RakshService):
                     [InlineKeyboardButton("🔙 إلغاء", callback_data="raksh_cancel")]
                 ])
             )
+            return True
+
+        if data_parts[0] == "join_accepted":
+            if not context.user_data.get("raksh_link") or not context.user_data.get("raksh_private_session_phone"):
+                await query.answer("⚠️ انتهت صلاحية الطلب، ابدأ من جديد.", show_alert=True)
+                return True
+            context.user_data["raksh_step"] = "fetch_reactions"
+            await query.edit_message_text(
+                "⏳ *جاري التحقق من القبول وجلب التفاعلات...*",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            await self._show_reaction_options(query, context, edit=True)
             return True
 
         if data_parts[0] == "retry_reactions":
@@ -507,7 +720,7 @@ class PremiumReactionService(RakshService):
         
         return False
     
-    async def _fetch_reactions_from_post(self, link: str) -> List[str]:
+    async def _fetch_reactions_from_post(self, link: str, preferred_phone: Optional[str] = None) -> List[str]:
         """جلب التفاعلات المميزة المتاحة للمنشور باستخدام عدة جلسات.
 
         كان الجلب يعتمد على أول جلسة فقط وعلى قائمة التفاعلات المحددة في القناة،
@@ -522,6 +735,12 @@ class PremiumReactionService(RakshService):
                 return []
 
             sessions = list(self.get_sessions() or [])
+            if preferred_phone:
+                # قناة خاصة: فقط الحساب الذي أُرسل طلب انضمامه هو العضو.
+                sessions = [
+                    item for item in sessions
+                    if str(item.get("phone_number")) == str(preferred_phone)
+                ]
             if not sessions:
                 return []
             random.shuffle(sessions)
@@ -601,7 +820,7 @@ class PremiumReactionService(RakshService):
 
             # يحل الاسم العام، ويرجع لمحادثات الحساب عند فشل الحل.
             entity = await asyncio.wait_for(
-                _resolve_raksh_entity(client, channel_ref, session.get("phone_number")),
+                _resolve_post_entity(client, channel_ref, session.get("phone_number")),
                 timeout=step_timeout * 3,
             )
 
@@ -679,19 +898,38 @@ class PremiumReactionService(RakshService):
 
     async def execute(self, session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
         """تنفيذ رشق تفاعل مميز - فتح الرابط والتفاعل بالإيموجي المختار"""
-        client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
-        await asyncio.wait_for(client.connect(), timeout=15)
+        # flood_sleep_threshold صغير: لا ينام الحساب دقيقة كاملة داخل Telethon،
+        # وإعادة المحاولات أقل حتى لا يتأخر الحساب المعطوب.
+        client = TelegramClient(
+            StringSession(session["session_string"]),
+            int(TELEGRAM_API_ID),
+            TELEGRAM_API_HASH,
+            flood_sleep_threshold=10,
+            connection_retries=2,
+            retry_delay=1,
+            request_retries=2,
+        )
+        await asyncio.wait_for(client.connect(), timeout=12)
+        joined = []
         try:
             if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
                 _mark_raksh_session_unauthorized(session.get("phone_number"))
                 return False, "الجلسة غير مصرح بها"
             
-            # 1️⃣ الانضمام للقنوات الإجبارية
+            # 1️⃣ الانضمام للقنوات (يغادر الحساب بعد التفاعل مباشرة)
             if params.get("channel_ref"):
                 for channel_ref in params["channel_ref"]:
                     try:
-                        await _join_channel_and_schedule_leave(client, channel_ref, session.get("phone_number"))
-                        await asyncio.sleep(0.5)
+                        joined_entity = await _join_channel_and_schedule_leave(
+                            client,
+                            channel_ref,
+                            session.get("phone_number"),
+                            return_entity=True,
+                            leave_after_seconds=PREMIUM_REACTION_EXEC_LEAVE_SECONDS,
+                        )
+                        if joined_entity is not None and not isinstance(joined_entity, bool):
+                            joined.append((channel_ref, joined_entity))
+                        await asyncio.sleep(0.2)
                     except Exception as e:
                         logger.warning(f"فشل الانضمام للقناة {channel_ref}: {e}")
             
@@ -701,7 +939,7 @@ class PremiumReactionService(RakshService):
                 return False, "رابط المنشور غير صحيح"
             
             # 3️⃣ الوصول إلى القناة والمنشور
-            entity = await client.get_entity(channel_ref)
+            entity = await _resolve_post_entity(client, channel_ref, session.get("phone_number"))
             
             # 4️⃣ تحديد التفاعل المختار
             reaction_value = params.get("reaction", "random")
@@ -733,4 +971,24 @@ class PremiumReactionService(RakshService):
         except Exception as e:
             return False, f"❌ فشل: {str(e)}"
         finally:
+            await self._leave_joined_channels(client, session.get("phone_number"), joined)
             await client.disconnect()
+
+    async def _leave_joined_channels(self, client, phone_number, joined) -> None:
+        """يغادر الحساب القنوات التي انضم لها لهذا التفاعل ويحذف سجل مهلتها."""
+        from telethon.tl.functions.channels import LeaveChannelRequest
+        for channel_ref, entity in joined:
+            try:
+                await asyncio.wait_for(client(LeaveChannelRequest(entity)), timeout=15)
+            except Exception as e:
+                # تبقى مهلة المغادرة الاحتياطية في قاعدة البيانات لتنظفها المهمة الدورية.
+                logger.debug("تعذرت المغادرة الفورية من %s: %s", channel_ref, e)
+                continue
+            try:
+                with db_conn() as c:
+                    c.execute(
+                        "DELETE FROM raksh_channel_memberships WHERE phone_number=%s AND channel_ref=%s",
+                        (str(phone_number).strip(), _normalize_raksh_channel_ref(channel_ref)),
+                    )
+            except Exception as e:
+                logger.debug("تعذر حذف سجل العضوية: %s", e)

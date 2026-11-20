@@ -350,6 +350,8 @@ def _clear_raksh_state(context: ContextTypes.DEFAULT_TYPE) -> None:
         "raksh_link",
         "raksh_reaction",
         "raksh_available_reactions",
+        "raksh_private_session_phone",
+        "raksh_private_invite",
         "raksh_comment",
         "raksh_poll_option",
         "raksh_delay_seconds",
@@ -1045,6 +1047,20 @@ async def _is_raksh_entity_in_dialogs(client, entity) -> Optional[bool]:
     target_id = getattr(entity, "id", None)
     if target_id is None:
         return None
+    # فحص سريع بطلب واحد بدل تحميل كل محادثات الحساب (بطيء ويسبب FloodWait).
+    try:
+        from telethon.tl.functions.channels import GetParticipantRequest
+        await asyncio.wait_for(
+            client(GetParticipantRequest(channel=entity, participant="me")),
+            timeout=10,
+        )
+        return True
+    except Exception as quick_error:
+        quick_name = type(quick_error).__name__
+        if quick_name in {"UserNotParticipantError", "ChannelPrivateError"}:
+            return False
+        if is_raksh_frozen_account_error(quick_error):
+            raise
     try:
         dialogs = await asyncio.wait_for(client.get_dialogs(), timeout=25)
         return any(

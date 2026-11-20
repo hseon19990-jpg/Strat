@@ -1474,6 +1474,39 @@ async def _execute_raksh_parallel(
         )
         return True
 
+    # تحديث رسالة التقدم يتم في مهمة خلفية؛ انتظار Telegram هنا كان يؤخر
+    # بدء الحساب التالي ويكسر الفاصل الزمني الذي اختاره المستخدم.
+    progress_state = {"args": None, "task": None}
+
+    async def _progress_worker():
+        while progress_state["args"] is not None:
+            args, kwargs = progress_state["args"]
+            progress_state["args"] = None
+            try:
+                await progress_callback(*args, **kwargs)
+            except Exception:
+                pass
+
+    def schedule_progress(*args, **kwargs):
+        if not progress_callback:
+            return
+        progress_state["args"] = (args, kwargs)
+        task = progress_state["task"]
+        if task is None or task.done():
+            progress_state["task"] = asyncio.create_task(_progress_worker())
+
+    async def flush_progress():
+        task = progress_state["task"]
+        if task is not None:
+            try:
+                await asyncio.wait_for(task, timeout=10)
+            except Exception:
+                pass
+
+    account_timeout = getattr(
+        svc, "account_timeout_seconds", RAKSH_ACCOUNT_EXECUTION_TIMEOUT_SECONDS
+    )
+
     async def execute_one(session, index, is_first=False):
         phone = session["phone_number"]
         if order_id and _is_raksh_order_cancelled(order_id):
@@ -1507,8 +1540,10 @@ async def _execute_raksh_parallel(
                     return await execution
                 return await asyncio.wait_for(
                     execution,
-                    timeout=RAKSH_ACCOUNT_EXECUTION_TIMEOUT_SECONDS,
+                    timeout=account_timeout,
                 )
+            except asyncio.TimeoutError:
+                return False, "انتهت مهلة تنفيذ الحساب (timeout)"
             except Exception as e:
                 if is_raksh_frozen_account_error(e):
                     _mark_raksh_session_frozen(phone)
@@ -1590,13 +1625,14 @@ async def _execute_raksh_parallel(
             if order_id:
                 _mark_raksh_order_item_result(order_id, phone, ok, msg)
 
-        if progress_callback:
-            await progress_callback(
-                completed_count,
-                quantity,
-                success_count,
-                len(failed_details),
-            )
+        schedule_progress(
+            completed_count,
+            quantity,
+            success_count,
+            len(failed_details),
+            started=account_index,
+            active=len(active),
+        )
 
     # الجدولة المستمرة تمنع تعليق تحديث التقدم بانتظار أبطأ حساب في الدفعة.
     # أول حساب يبدأ فوراً؛ الفاصل يطبّق فقط على بدايات الحسابات التالية.
@@ -1676,6 +1712,14 @@ async def _execute_raksh_parallel(
                 active[task] = (session, account_index)
                 account_index += 1
                 next_start_at = started_at + max(0.0, batch_delay_seconds)
+                schedule_progress(
+                    completed_count,
+                    quantity,
+                    success_count,
+                    len(failed_details),
+                    started=account_index,
+                    active=len(active),
+                )
                 continue
 
         if active:
@@ -1689,6 +1733,7 @@ async def _execute_raksh_parallel(
         # انتهت الحسابات المتاحة أو تحقق عدد النجاح المطلوب.
         break
 
+    await flush_progress()
     await _remove_invalid_raksh_sessions(failed_phones)
     return success_count, success_phones, success_details, failed_phones, failed_details
 
@@ -4014,11 +4059,11 @@ async def _run_raksh_order(
     last_progress_update_at = 0.0
     last_progress_state = None
 
-    async def update_progress(current, total, success, failed):
+    async def update_progress(current, total, success, failed, started=None, active=None):
         nonlocal last_progress_update_at, last_progress_state
         if not progress_msg:
             return
-        progress_state = (current, total, success, failed)
+        progress_state = (current, total, success, failed, started, active)
         if progress_state == last_progress_state:
             return
         if last_progress_state and last_progress_state[2] >= total:
@@ -4033,7 +4078,12 @@ async def _run_raksh_order(
                 f"⏳ *جاري التنفيذ...*\n\n"
                 f"📊 {current}/{total}\n"
                 f"✅ نجح: {success}\n"
-                f"❌ فشل: {failed}",
+                f"❌ فشل: {failed}"
+                + (
+                    f"\n🚀 بدأ: {started} حساب | 🔄 قيد التنفيذ: {active}"
+                    if started is not None and active is not None
+                    else ""
+                ),
                 parse_mode=ParseMode.MARKDOWN,
             )
         except Exception:
