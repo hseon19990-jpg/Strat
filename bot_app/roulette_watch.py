@@ -80,6 +80,7 @@ CAPTCHA_MARKERS = (
     "كابتشا", "captcha", "تحقق", "verify", "robot", "روبوت", "بشر", "human",
     "أدخل", "ادخل", "اكتب", "أجب", "retype", "send the text", "type the text",
 )
+VOTE_POST_SKIP_WORDS = ("نسخ", "copy", "احصائيات", "إحصائيات", "statistics", "stats", "إعادة النشر")
 VOTE_MAX_ATTEMPTS = 8      # أقصى عدد مرات إعادة التصويت (كل مرة بعد انضمام جديد)
 VOTE_MAX_CAPTCHA_TRIES = 2
 VOTE_SOLVE_TIMEOUT = 240  # أقصى مدة لحل الكابتشا لكل محاولة (ثانية)
@@ -233,6 +234,15 @@ def _extract_conditions(message) -> List[Dict]:
                 seen.add(url)
                 result.append({"url": url, "label": label, "kind": "vote"})
             continue
+        # رابط منشور في سطر التصويت: المنشور فيه زر التصويت (أو زر يفتح بوت التصويت)
+        post_ref, post_id = _parse_post_link(url)
+        if post_ref and post_id:
+            line_start = text.rfind("\n", 0, start) + 1
+            line = re.sub("[\u0640\u064B-\u0652]", "", text[line_start:start] + " " + label).lower()
+            if any(word in line for word in VOTE_WORDS):
+                seen.add(url)
+                result.append({"url": url, "label": label, "kind": "vote_post"})
+                continue
         seen.add(url)
         result.append({"url": url, "label": label, "kind": "channel"})
     return result
@@ -458,6 +468,100 @@ async def _do_vote(client, phone: str, cond: Dict) -> Tuple[bool, str]:
     return False, f"لم يكتمل التصويت: {last}"
 
 
+def _label_number(label: str) -> Optional[int]:
+    digits = re.sub(r"\D+", "", label or "")
+    return int(digits) if digits else None
+
+
+def _requested_channels(text: str) -> List[str]:
+    """قنوات/مجموعات مذكورة في نص رد الزر (@username أو رابط t.me)."""
+    found: List[str] = []
+    for match in re.findall(r"(?:https?://)?t\.me/[A-Za-z0-9_+/]+|@[A-Za-z0-9_]{4,}", text or ""):
+        found.append(match if not match.startswith("@") else f"https://t.me/{match[1:]}")
+    return list(dict.fromkeys(found))
+
+
+async def _do_vote_post(client, phone: str, cond: Dict) -> Tuple[bool, str]:
+    """الرابط يؤدي إلى منشور في قناة: فيه زر تصويت مباشر (Callback) أو زر يفتح بوت التصويت."""
+    ref, msg_id = _parse_post_link(cond["url"])
+    if not ref or not msg_id:
+        return False, "رابط منشور التصويت غير مفهوم"
+    joined = await _join_channel_and_schedule_leave(client, ref, phone)
+    if joined is False or joined is None:
+        return False, f"تعذر الانضمام لقناة منشور التصويت {ref}"
+    entity = await _entity_for(client, ref)
+    message = await client.get_messages(entity, ids=msg_id)
+    if not message:
+        return False, "منشور التصويت غير موجود"
+    buttons = _flatten_buttons(message)
+
+    # 1) زر رابط يفتح بوت التصويت
+    for _i, _j, btn in buttons:
+        url = getattr(btn, "url", None)
+        if url and _parse_bot_link(url)[0]:
+            return await _do_vote(client, phone, {"url": url, "label": _btn_text(btn)})
+
+    # 2) زر تصويت مباشر (Callback): الضغط، وإن طلب الرد قناة ينضم لها ويعيد الضغط
+    target = None
+    for i, j, btn in buttons:
+        label = _btn_text(btn)
+        if getattr(btn, "url", None) or not getattr(btn, "data", None):
+            continue
+        if any(word in label.lower() for word in VOTE_POST_SKIP_WORDS):
+            continue
+        target = (i, j, label)
+        break
+    if not target:
+        labels = " / ".join(_btn_text(b) for _i, _j, b in buttons)
+        return False, "لم أجد زر تصويت في المنشور: " + labels[:70]
+
+    before = _label_number(target[2])
+    joined_urls: set = set()
+    total_joined = 0
+    last = "بدون رد ظاهر"
+    for _attempt in range(VOTE_MAX_ATTEMPTS):
+        try:
+            answer = await asyncio.wait_for(message.click(target[0], target[1]), timeout=20)
+        except asyncio.TimeoutError:
+            answer = None
+        text = (getattr(answer, "message", "") or "").strip()
+        if text:
+            last = text.replace("\n", " ")[:70]
+        if any(word in text.lower() for word in VOTE_SUCCESS_WORDS):
+            return True, f"صوّت من المنشور (انضم لـ {total_joined})"
+        # رد يطلب قناة/مجموعة: انضم ثم أعد الضغط
+        new_urls = [u for u in _requested_channels(text) if u not in joined_urls]
+        if not new_urls:
+            break
+        for url in new_urls:
+            joined_urls.add(url)
+            try:
+                done, note = await _handle_url(client, url, "", phone)
+            except Exception as exc:
+                return False, f"فشل انضمام شرط التصويت: {str(exc)[:70]}"
+            if done:
+                total_joined += 1
+            elif note not in IGNORABLE_URL_NOTES:
+                return False, f"تعذر شرط التصويت: {note}"
+            await asyncio.sleep(1)
+        await asyncio.sleep(1)
+
+    # لا رد نصي: تحقق من زيادة العداد على الزر
+    try:
+        fresh = await client.get_messages(entity, ids=msg_id)
+        after = None
+        for i, j, btn in _flatten_buttons(fresh):
+            if (i, j) == (target[0], target[1]):
+                after = _label_number(_btn_text(btn))
+        if before is not None and after is not None and after > before:
+            return True, f"صوّت من المنشور (العداد {before}→{after})"
+    except Exception:
+        pass
+    if last == "بدون رد ظاهر":
+        return True, "ضغط زر التصويت (بدون رد ظاهر)"
+    return False, f"لم يكتمل التصويت: {last}"
+
+
 async def _press_channel_button(client, trig: Dict) -> Tuple[bool, str]:
     """بعد أن يقول البوت «يمكنك مشاركة السحب الآن»: يرجع الحساب لمنشور القناة
     ويضغط زر «المشاركة في السحب [N]» (زر Callback) لتسجيل المشاركة فعلياً."""
@@ -507,8 +611,8 @@ async def _participate(session: Dict, trig: Dict, semaphore: asyncio.Semaphore) 
 
             # شرط الاشتراك الموجود داخل نص المنشور: يجب الانضمام لكل قناة مشروطة
             cond_done = 0
-            vote_conds = [c for c in (trig.get("conditions") or []) if c.get("kind") == "vote"]
-            for cond in [c for c in (trig.get("conditions") or []) if c.get("kind") != "vote"]:
+            vote_conds = [c for c in (trig.get("conditions") or []) if c.get("kind") in ("vote", "vote_post")]
+            for cond in [c for c in (trig.get("conditions") or []) if c.get("kind") not in ("vote", "vote_post")]:
                 try:
                     done, note = await _handle_url(client, cond["url"], cond["label"], phone)
                 except Exception as exc:
@@ -521,7 +625,10 @@ async def _participate(session: Dict, trig: Dict, semaphore: asyncio.Semaphore) 
             vote_note = ""
             for cond in vote_conds:
                 try:
-                    voted, vnote = await _do_vote(client, phone, cond)
+                    if cond.get("kind") == "vote_post":
+                        voted, vnote = await _do_vote_post(client, phone, cond)
+                    else:
+                        voted, vnote = await _do_vote(client, phone, cond)
                 except Exception as exc:
                     return False, f"فشل شرط التصويت: {str(exc)[:80]}"
                 if not voted:
