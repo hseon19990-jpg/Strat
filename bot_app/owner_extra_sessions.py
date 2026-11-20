@@ -125,6 +125,47 @@ async def scan_owner_extra_sessions(
     }
 
 
+async def _kick_one(account: Dict[str, Any], client_factory) -> Dict[str, Any]:
+    """يطرد كل الجلسات الأخرى غير جلسة البوت على هذا الحساب (بلا إنشاء أي جلسة جديدة)."""
+    from telethon.tl.functions.auth import ResetAuthorizationsRequest
+
+    result = {"phone": account["phone_number"], "id": account["id"], "error": None}
+    client = None
+    try:
+        client = client_factory(account["session_string"])
+        await asyncio.wait_for(client.connect(), timeout=15)
+        await asyncio.wait_for(client(ResetAuthorizationsRequest()), timeout=20)
+        _save_device_count(account["id"], 1)
+    except Exception as exc:
+        result["error"] = type(exc).__name__
+    finally:
+        if client is not None:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+    return result
+
+
+async def kick_extra_sessions(
+    client_factory: Callable[[str], Any],
+    accounts: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """يطرد الجلسات الإضافية لكل حساب في القائمة المعطاة فقط (نتيجة الفحص)."""
+    semaphore = asyncio.Semaphore(_CONCURRENCY)
+
+    async def run(account):
+        async with semaphore:
+            return await _kick_one(account, client_factory)
+
+    results = await asyncio.gather(*(run(a) for a in accounts))
+    return {
+        "attempted": len(accounts),
+        "succeeded": [r["phone"] for r in results if not r["error"]],
+        "failed": [(r["phone"], r["error"]) for r in results if r["error"]],
+    }
+
+
 def format_report(report: Dict[str, Any]) -> List[str]:
     """نصوص جاهزة للإرسال، مقسمة بحيث لا تتجاوز حد تيليجرام."""
     matches = report["matches"]

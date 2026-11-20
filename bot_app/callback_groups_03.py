@@ -450,8 +450,20 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                         lambda sess: TelegramClient(StringSession(sess), int(TELEGRAM_API_ID), TELEGRAM_API_HASH),
                         progress=_progress,
                     )
+                    # نحفظ نتيجة آخر فحص لاستخدامها عند الطرد الجماعي، بلا حاجة
+                    # لإعادة الفحص أو تخمين من الذي ظهر في القائمة.
+                    context.application.bot_data["_extra_sessions_last_matches"] = report["matches"]
                     for chunk in _oes.format_report(report):
                         await context.bot.send_message(OWNER_ID, chunk)
+                    if report["matches"]:
+                        await context.bot.send_message(
+                            OWNER_ID,
+                            f"هل تريد طرد كل الجلسات الإضافية على {len(report['matches'])} حساب؟\n"
+                            "هذا يطرد فقط — لا يُنشئ أي جلسة جديدة.",
+                            reply_markup=InlineKeyboardMarkup([[
+                                InlineKeyboardButton("🚫 اطرد الجميع", callback_data="os:extra_sessions_kick_all"),
+                            ]]),
+                        )
                 except Exception as _exc:
                     logger.exception("فشل فحص الجلسات الإضافية")
                     await context.bot.send_message(OWNER_ID, f"❌ فشل الفحص: {type(_exc).__name__}")
@@ -459,6 +471,54 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                     context.application.bot_data["_extra_sessions_scan_running"] = False
 
             asyncio.create_task(_run_extra_sessions_scan())
+            return
+
+        if data == "os:extra_sessions_kick_all" and is_own:
+            await q.answer()
+            from . import owner_extra_sessions as _oes
+            matches = context.application.bot_data.get("_extra_sessions_last_matches") or []
+            if not matches:
+                await context.bot.send_message(
+                    OWNER_ID,
+                    "لا توجد نتيجة فحص محفوظة. افتح «🔎 حساباتي بأكثر من جلسة غير البوت» أولاً.",
+                )
+                return
+            if context.application.bot_data.get("_extra_sessions_kick_running"):
+                await context.bot.send_message(OWNER_ID, "⏳ عملية الطرد قيد التنفيذ بالفعل.")
+                return
+
+            async def _run_kick_all():
+                context.application.bot_data["_extra_sessions_kick_running"] = True
+                try:
+                    accounts = [{"id": m["id"], "phone_number": m["phone"],
+                                 "session_string": None} for m in matches]
+                    with db_conn() as _c:
+                        rows = _c.execute(
+                            "SELECT id, phone_number, session_string FROM number_stock "
+                            "WHERE id = ANY(%s)",
+                            ([a["id"] for a in accounts],),
+                        ).fetchall()
+                    accounts = [dict(r) for r in rows if r["session_string"]]
+                    result = await _oes.kick_extra_sessions(
+                        lambda sess: TelegramClient(StringSession(sess), int(TELEGRAM_API_ID), TELEGRAM_API_HASH),
+                        accounts,
+                    )
+                    lines = [
+                        f"🚫 تم طرد الجلسات الإضافية على {len(result['succeeded'])} "
+                        f"من أصل {result['attempted']} حساب."
+                    ]
+                    if result["failed"]:
+                        lines.append("فشل الطرد في:")
+                        lines.extend(f"• {phone} ({err})" for phone, err in result["failed"][:20])
+                    await context.bot.send_message(OWNER_ID, "\n".join(lines))
+                    context.application.bot_data["_extra_sessions_last_matches"] = []
+                except Exception as _exc:
+                    logger.exception("فشل الطرد الجماعي للجلسات الإضافية")
+                    await context.bot.send_message(OWNER_ID, f"❌ فشل الطرد: {type(_exc).__name__}")
+                finally:
+                    context.application.bot_data["_extra_sessions_kick_running"] = False
+
+            asyncio.create_task(_run_kick_all())
             return
 
         if data == "os:kick_all_devices" and is_own:
