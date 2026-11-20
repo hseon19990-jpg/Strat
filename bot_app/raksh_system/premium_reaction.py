@@ -3,6 +3,13 @@ from .common import *
 from telethon.tl.functions.messages import SendReactionRequest
 from telethon.tl.types import ReactionCustomEmoji
 
+# إعدادات جلب التفاعلات المميزة: عدة جلسات على دفعات بدل جلسة واحدة.
+PREMIUM_REACTION_LOOKUP_BATCH_SIZE = 3
+PREMIUM_REACTION_LOOKUP_MAX_BATCHES = 3
+PREMIUM_REACTION_LOOKUP_TIMEOUT_SECONDS = 30
+PREMIUM_REACTION_STEP_TIMEOUT_SECONDS = 8
+PREMIUM_REACTION_POOL_LIMIT = 50
+
 
 def _custom_premium_reactions(reactions):
     """Keep only unique custom emoji reactions; exclude regular and paid ones."""
@@ -501,78 +508,175 @@ class PremiumReactionService(RakshService):
         return False
     
     async def _fetch_reactions_from_post(self, link: str) -> List[str]:
-        """جلب التفاعلات المتاحة من المنشور"""
+        """جلب التفاعلات المميزة المتاحة للمنشور باستخدام عدة جلسات.
+
+        كان الجلب يعتمد على أول جلسة فقط وعلى قائمة التفاعلات المحددة في القناة،
+        فيفشل عندما تكون هذه الجلسة معطلة/محظورة مؤقتاً/غير قادرة على الوصول
+        للمنشور، أو عندما تسمح القناة بكل التفاعلات (ChatReactionsAll) فلا تحمل
+        قائمة صريحة. الآن نجرب عدة جلسات على دفعات، ونكمل القائمة من التفاعلات
+        الشائعة/الأخيرة عندما تسمح القناة بالإيموجي المخصص.
+        """
         try:
-            # تحليل الرابط
             channel_ref, msg_id = _parse_post_link(link)
-            if not channel_ref:
+            if not channel_ref or not msg_id:
                 return []
-            
-            # جلب جلسة مؤقتة للفحص
-            sessions = self.get_sessions()
+
+            sessions = list(self.get_sessions() or [])
             if not sessions:
                 return []
-            
-            # استخدام أول جلسة متاحة للفحص
-            session = sessions[0]
-            client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
-            
-            try:
-                await asyncio.wait_for(client.connect(), timeout=10)
-                if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
-                    return []
-                
-                entity = await client.get_entity(channel_ref)
-                message = await client.get_messages(entity, ids=msg_id)
-                
-                if not message:
-                    return []
-                
-                # جلب التفاعلات المتاحة من الرسالة
-                reactions = []
-                
-                # 1. التفاعلات الموجودة في الرسالة
-                message_reactions = getattr(getattr(message, "reactions", None), "results", None)
-                if message_reactions:
-                    for reaction in message_reactions:
-                        reaction_type = getattr(reaction, "reaction", None)
-                        if reaction_type:
-                            reaction_class = reaction_type.__class__.__name__
-                            if reaction_class == "ReactionCustomEmoji":
-                                doc_id = getattr(reaction_type, "document_id", None)
-                                if doc_id:
-                                    reactions.append(f"{RAKSH_CUSTOM_REACTION_PREFIX}{doc_id}")
-                
-                # 2. التفاعلات المتاحة من القناة
-                if not reactions:
-                    full_channel = await client(functions.channels.GetFullChannelRequest(channel=entity))
-                    full_chat = getattr(full_channel, "full_chat", None)
+            random.shuffle(sessions)
 
-                    # هذه الخدمة تعرض فقط التفاعلات المميزة المخصصة، لا العادية أو المدفوعة.
-                    available = getattr(full_chat, "available_reactions", None)
-                    configured = getattr(available, "reactions", None)
-                    if configured:
-                        for reaction in configured:
-                            reaction_type = getattr(reaction, "reaction", None)
-                            if (
-                                reaction_type
-                                and reaction_type.__class__.__name__ == "ReactionCustomEmoji"
-                            ):
-                                doc_id = getattr(reaction_type, "document_id", None)
-                                if doc_id:
-                                    reactions.append(
-                                        f"{RAKSH_CUSTOM_REACTION_PREFIX}{doc_id}"
-                                    )
-
-                return _custom_premium_reactions(reactions)
-                
-            finally:
-                await client.disconnect()
-                
+            batch_size = PREMIUM_REACTION_LOOKUP_BATCH_SIZE
+            candidates = sessions[: batch_size * PREMIUM_REACTION_LOOKUP_MAX_BATCHES]
+            for offset in range(0, len(candidates), batch_size):
+                batch = candidates[offset: offset + batch_size]
+                tasks = [
+                    asyncio.create_task(
+                        self._lookup_reactions_with_session(session, channel_ref, msg_id)
+                    )
+                    for session in batch
+                ]
+                try:
+                    for completed in asyncio.as_completed(tasks):
+                        try:
+                            reactions = await completed
+                        except Exception:
+                            continue
+                        if reactions:
+                            return reactions
+                finally:
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+            return []
         except Exception as e:
             logger.warning(f"فشل جلب التفاعلات: {e}")
             return []
-    
+
+    async def _lookup_reactions_with_session(
+        self, session: Dict, channel_ref: str, msg_id: int
+    ) -> List[str]:
+        try:
+            return await asyncio.wait_for(
+                self._fetch_reactions_with_session(session, channel_ref, msg_id),
+                timeout=PREMIUM_REACTION_LOOKUP_TIMEOUT_SECONDS,
+            )
+        except Exception as e:
+            logger.warning(
+                "تعذر جلب التفاعلات المميزة بالجلسة %s: %s",
+                session.get("phone_number"),
+                e,
+            )
+            return []
+
+    @staticmethod
+    def _custom_keys(reactions) -> List[str]:
+        """حوّل كائنات Reaction إلى مفاتيح مخصصة (إيموجي مخصص فقط)."""
+        keys = []
+        for reaction in reactions or []:
+            reaction = getattr(reaction, "reaction", None) or reaction
+            if reaction.__class__.__name__ != "ReactionCustomEmoji":
+                continue
+            doc_id = getattr(reaction, "document_id", None)
+            if doc_id:
+                key = f"{RAKSH_CUSTOM_REACTION_PREFIX}{doc_id}"
+                if key not in keys:
+                    keys.append(key)
+        return keys
+
+    async def _fetch_reactions_with_session(
+        self, session: Dict, channel_ref: str, msg_id: int
+    ) -> List[str]:
+        client = TelegramClient(
+            StringSession(session["session_string"]),
+            int(TELEGRAM_API_ID),
+            TELEGRAM_API_HASH,
+        )
+        step_timeout = PREMIUM_REACTION_STEP_TIMEOUT_SECONDS
+        try:
+            await asyncio.wait_for(client.connect(), timeout=step_timeout)
+            if not await asyncio.wait_for(client.is_user_authorized(), timeout=step_timeout):
+                return []
+
+            # يحل الاسم العام، ويرجع لمحادثات الحساب عند فشل الحل.
+            entity = await asyncio.wait_for(
+                _resolve_raksh_entity(client, channel_ref, session.get("phone_number")),
+                timeout=step_timeout * 3,
+            )
+
+            message = await asyncio.wait_for(
+                client.get_messages(entity, ids=msg_id), timeout=step_timeout
+            )
+            if isinstance(message, (list, tuple)):
+                message = message[0] if message else None
+            if not message:
+                return []
+
+            # (أ) التفاعلات المستخدمة فعلاً في المنشور.
+            message_reactions = getattr(message, "reactions", None)
+            from_message = self._custom_keys(
+                getattr(item, "reaction", None)
+                for item in (getattr(message_reactions, "results", None) or [])
+            )
+            from_message += [
+                key
+                for key in self._custom_keys(
+                    getattr(item, "reaction", None)
+                    for item in (getattr(message_reactions, "recent_reactions", None) or [])
+                )
+                if key not in from_message
+            ]
+
+            # (ب) إعدادات القناة/المجموعة.
+            available = None
+            try:
+                if entity.__class__.__name__ == "Chat":
+                    full = await asyncio.wait_for(
+                        client(functions.messages.GetFullChatRequest(chat_id=entity.id)),
+                        timeout=step_timeout,
+                    )
+                else:
+                    full = await asyncio.wait_for(
+                        client(functions.channels.GetFullChannelRequest(channel=entity)),
+                        timeout=step_timeout,
+                    )
+                available = getattr(getattr(full, "full_chat", None), "available_reactions", None)
+            except Exception as e:
+                logger.debug("تعذر جلب إعدادات تفاعلات القناة: %s", e)
+                return from_message
+
+            kind = available.__class__.__name__ if available is not None else ""
+            if kind == "ChatReactionsNone":
+                return []
+            if kind == "ChatReactionsSome":
+                # القائمة المحددة في القناة هي المرجع الوحيد لما هو مسموح.
+                return self._custom_keys(getattr(available, "reactions", None))
+
+            # ChatReactionsAll أو لا إعداد: الإيموجي المخصص مسموح إن لم يُمنع صراحة.
+            if kind == "ChatReactionsAll" and getattr(available, "allow_custom", True) is False:
+                return []
+
+            result = list(from_message)
+            for request_name in ("GetTopReactionsRequest", "GetRecentReactionsRequest"):
+                try:
+                    request_cls = getattr(functions.messages, request_name)
+                    response = await asyncio.wait_for(
+                        client(request_cls(limit=PREMIUM_REACTION_POOL_LIMIT, hash=0)),
+                        timeout=step_timeout,
+                    )
+                    for key in self._custom_keys(getattr(response, "reactions", None)):
+                        if key not in result:
+                            result.append(key)
+                except Exception as e:
+                    logger.debug("تعذر جلب %s: %s", request_name, e)
+            return result
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+
     async def execute(self, session: Dict, params: Dict, is_first: bool) -> Tuple[bool, str]:
         """تنفيذ رشق تفاعل مميز - فتح الرابط والتفاعل بالإيموجي المختار"""
         client = TelegramClient(StringSession(session["session_string"]), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
