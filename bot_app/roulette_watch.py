@@ -68,6 +68,14 @@ FAIL_ANSWER_WORDS = ("خطأ", "فشل", "غير مسموح", "لا يمكن", "
 # شرط الاشتراك داخل نص المنشور: روابط مخفية تحت كلمة «الشرط»
 CONDITION_MARKERS = ("الشرط", "الشروط", "condition")
 IGNORE_ANCHOR_WORDS = ("جميع السحوبات", "السحوبات", "روليت سراب")
+VOTE_WORDS = ("تصويت", "التصويت", "صوت", "vote")
+VOTE_SUCCESS_WORDS = (
+    "تم التصويت", "تم تسجيل صوتك", "تم احتساب صوتك", "شكرا لتصويتك", "شكراً لتصويتك",
+    "صوتك", "سبق وصوت", "صوّتت", "صوتّ", "voted", "vote counted", "thank you for voting",
+)
+VOTE_VERIFY_ROUNDS = 3
+VOTE_SOLVE_TIMEOUT = 240  # أقصى مدة لحل الكابتشا لكل حساب (ثانية)
+IGNORABLE_URL_NOTES = {"رابط بوت", "رابط خارجي", "رابط فارغ"}
 DEFAULT_COMMENTS = ["👍", "🔥", "❤️", "👏", "شكراً", "موفقين", "تمام"]
 
 _job_lock = asyncio.Lock()
@@ -207,10 +215,18 @@ def _extract_conditions(message) -> List[Dict]:
         if parsed.netloc.lower().removeprefix("www.") not in {"t.me", "telegram.me"}:
             continue
         parts = [p for p in parsed.path.strip("/").split("/") if p]
-        if not parts or (len(parts) == 1 and parts[0].lower().endswith("bot")):
+        if not parts:
+            continue
+        if len(parts) == 1 and parts[0].lower().endswith("bot"):
+            # رابط بوت: شرط تصويت فقط إذا كان السطر يتكلم عن التصويت
+            line_start = text.rfind("\n", 0, start) + 1
+            line = re.sub("[\u0640\u064B-\u0652]", "", text[line_start:start] + " " + label).lower()
+            if any(word in line for word in VOTE_WORDS):
+                seen.add(url)
+                result.append({"url": url, "label": label, "kind": "vote"})
             continue
         seen.add(url)
-        result.append({"url": url, "label": label})
+        result.append({"url": url, "label": label, "kind": "channel"})
     return result
 
 
@@ -303,6 +319,99 @@ async def _handle_url(client, url: str, label: str, phone: str) -> Tuple[bool, s
     return True, "فتح المنشور"
 
 
+def _latest_incoming(messages, base_id: int):
+    return [m for m in messages if not getattr(m, "out", False) and (getattr(m, "id", 0) or 0) > base_id]
+
+
+async def _join_bot_buttons(client, bot_entity, base_id: int, phone: str, joined_urls: set, rounds: int) -> Tuple[int, str]:
+    """ينضم لكل القنوات/المجموعات التي يطلبها بوت التصويت (أزرار روابط) ثم يضغط زر التحقق.
+    يعيد (عدد ما انضم له، رسالة خطأ إن وُجد)."""
+    joined = 0
+    for round_no in range(rounds):
+        await asyncio.sleep(3 if round_no == 0 else 2.5)
+        incoming = _latest_incoming(await client.get_messages(bot_entity, limit=5), base_id)
+        if not incoming:
+            continue
+        progressed = False
+        for message in incoming[:2]:
+            for _i, _j, btn in _flatten_buttons(message):
+                url = getattr(btn, "url", None)
+                if not url or url in joined_urls:
+                    continue
+                joined_urls.add(url)
+                try:
+                    done, note = await _handle_url(client, url, _btn_text(btn), phone)
+                except Exception as exc:
+                    return joined, f"فشل انضمام شرط التصويت: {str(exc)[:70]}"
+                if done:
+                    joined += 1
+                    progressed = True
+                elif note not in IGNORABLE_URL_NOTES:
+                    return joined, f"تعذر شرط التصويت: {note}"
+                await asyncio.sleep(1)
+        # زر «تحقق/تم الاشتراك» في أحدث رسالة
+        newest = incoming[0]
+        for i, j, btn in _flatten_buttons(newest):
+            label = _btn_text(btn).lower()
+            if getattr(btn, "url", None) or not label or any(w in label for w in BACK_WORDS):
+                continue
+            if any(w in label for w in VERIFY_WORDS):
+                try:
+                    await newest.click(i, j)
+                except Exception as exc:
+                    logger.debug("[%s] ضغط زر تحقق التصويت: %s", phone, exc)
+                progressed = True
+                break
+        if not progressed:
+            break
+    return joined, ""
+
+
+async def _do_vote(client, phone: str, cond: Dict) -> Tuple[bool, str]:
+    """شرط تصويت عبر بوت: ينضم للقنوات/المجموعات الإجبارية ثم يحل الكابتشا ويصوت."""
+    from .raksh_system.forced_ref_ai import ForcedRefAIService  # استيراد متأخر لتفادي الدوران
+
+    bot_username, start_param = _parse_bot_link(cond["url"])
+    if not bot_username:
+        return False, "رابط التصويت غير مفهوم"
+    bot_entity = await client.get_entity(f"@{bot_username}")
+    latest = await client.get_messages(bot_entity, limit=1)
+    base_id = (latest[0].id if latest else 0) or 0
+    await client(functions.messages.StartBotRequest(bot=bot_entity, peer=bot_entity, start_param=start_param or ""))
+
+    joined_urls: set = set()
+    joined, error = await _join_bot_buttons(client, bot_entity, base_id, phone, joined_urls, VOTE_VERIFY_ROUNDS)
+    if error:
+        return False, error
+
+    # حل الكابتشا بنفس محرك خدمة التصويت/الإحالة الموجود (ddddocr، رياضيات، أزرار إيموجي)
+    solved = False
+    try:
+        solved = bool(await asyncio.wait_for(
+            ForcedRefAIService()._solve_verification(client, bot_entity, phone, base_id=base_id, params={}),
+            timeout=VOTE_SOLVE_TIMEOUT,
+        ))
+    except asyncio.TimeoutError:
+        logger.info("[%s] انتهت مهلة كابتشا التصويت", phone)
+    except Exception as exc:
+        logger.warning("[%s] كابتشا التصويت: %s", phone, exc)
+
+    # قد تظهر قنوات جديدة بعد الكابتشا
+    more, error = await _join_bot_buttons(client, bot_entity, base_id, phone, joined_urls, 1)
+    if error:
+        return False, error
+    joined += more
+
+    await asyncio.sleep(2)
+    incoming = _latest_incoming(await client.get_messages(bot_entity, limit=5), base_id)
+    texts = " ".join((m.message or "") for m in incoming[:3]).lower()
+    voted = any(word in texts for word in VOTE_SUCCESS_WORDS)
+    if solved or voted:
+        return True, f"صوّت (انضم لـ {joined} قناة/مجموعة" + ("، حلّ الكابتشا" if solved else "") + ")"
+    last = (incoming[0].message if incoming else "") or "لا رد من بوت التصويت"
+    return False, f"لم يكتمل التصويت: {last.replace(chr(10), ' ')[:70]}"
+
+
 async def _press_channel_button(client, trig: Dict) -> Tuple[bool, str]:
     """بعد أن يقول البوت «يمكنك مشاركة السحب الآن»: يرجع الحساب لمنشور القناة
     ويضغط زر «المشاركة في السحب [N]» (زر Callback) لتسجيل المشاركة فعلياً."""
@@ -352,7 +461,8 @@ async def _participate(session: Dict, trig: Dict, semaphore: asyncio.Semaphore) 
 
             # شرط الاشتراك الموجود داخل نص المنشور: يجب الانضمام لكل قناة مشروطة
             cond_done = 0
-            for cond in trig.get("conditions") or []:
+            vote_conds = [c for c in (trig.get("conditions") or []) if c.get("kind") == "vote"]
+            for cond in [c for c in (trig.get("conditions") or []) if c.get("kind") != "vote"]:
                 try:
                     done, note = await _handle_url(client, cond["url"], cond["label"], phone)
                 except Exception as exc:
@@ -361,6 +471,16 @@ async def _participate(session: Dict, trig: Dict, semaphore: asyncio.Semaphore) 
                     return False, f"تعذر شرط الاشتراك: {note}"
                 cond_done += 1
                 await asyncio.sleep(1)
+
+            vote_note = ""
+            for cond in vote_conds:
+                try:
+                    voted, vnote = await _do_vote(client, phone, cond)
+                except Exception as exc:
+                    return False, f"فشل شرط التصويت: {str(exc)[:80]}"
+                if not voted:
+                    return False, vnote
+                vote_note = vnote
 
             bot = await client.get_entity(f"@{trig['bot']}")
             await client(functions.messages.StartBotRequest(bot=bot, peer=bot, start_param=trig["param"]))
@@ -382,7 +502,9 @@ async def _participate(session: Dict, trig: Dict, semaphore: asyncio.Semaphore) 
                     # البوت جهّز الحساب؛ المشاركة الفعلية بزر تحت منشور القناة
                     try:
                         pressed, pnote = await _press_channel_button(client, trig)
-                        if pressed and cond_done:
+                        if pressed and vote_note:
+                            pnote = vote_note + " + " + pnote
+                        elif pressed and cond_done:
                             pnote = f"انضم لـ {cond_done} قناة شرط + " + pnote
                         return pressed, pnote
                     except Exception as exc:
