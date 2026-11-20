@@ -282,6 +282,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+    # ─── خطوات لوحة مراقبة الروليت (للمالك) ───
+    if context.user_data.get("roulette_step"):
+        from .roulette_watch import handle_roulette_text
+        try:
+            if await handle_roulette_text(update, context):
+                return
+        except Exception:
+            logger.exception("فشل معالجة خطوة الروليت")
+            context.user_data.pop("roulette_step", None)
+
     # ─── نظام الرشق يستخدم نفس مسار استقبال الرسائل لكل خطوات الطلب ───
     if context.user_data.get("raksh_step"):
         from .raksh_system import handle_raksh_text

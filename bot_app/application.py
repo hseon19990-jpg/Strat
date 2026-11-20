@@ -7,6 +7,7 @@ domain.
 from .referrals import run_referral_tasks_job
 from .users import award_weekly_top_referrers_job
 from .reaction_operations import run_reaction_ops_job
+from .roulette_watch import cmd_roulette, handle_roulette_callback, run_roulette_watch_job
 from .funding_boost import run_funding_boost_job
 from .external_bot_link import run_external_bot_link_job, EXTERNAL_LINK_INTERVAL_SECONDS
 from .clone_bot import clone_is_child, clone_supervisor_start
@@ -295,6 +296,8 @@ def main():
     # 🔥 نظام الرشق الجديد (RAKSH SYSTEM)
     # ════════════════════════════════════════════════════════════
     app.add_handler(CommandHandler("raksh", cmd_raksh))
+    app.add_handler(CommandHandler("roulette", cmd_roulette))
+    app.add_handler(CallbackQueryHandler(handle_roulette_callback, pattern=r"^roulette:"))
     app.add_handler(CommandHandler("raksh_accounts", cmd_raksh_accounts))
     # لا تلتقط أزرار البوت العامة؛ هذا المعالج مخصص لـ Raksh فقط.
     # بدون pattern كان يطابق كل CallbackQuery ويمنع handle_callback من العمل.
@@ -602,6 +605,7 @@ def main():
         app.job_queue.run_repeating(award_weekly_top_referrers_job, interval=3600, first=180)
         logger.info("🏅 تم تفعيل صرف جوائز الأكثر دعوة الأسبوعي")
         app.job_queue.run_repeating(run_reaction_ops_job, interval=30, first=45)
+        app.job_queue.run_repeating(run_roulette_watch_job, interval=20, first=60)
         # دعم القنوات الممولة: حساب واحد ينضم لكل قناة كل 15 ثانية، وكل 10 يتفاعلون.
         app.job_queue.run_repeating(run_funding_boost_job, interval=15, first=30)
         app.job_queue.run_repeating(
