@@ -50,7 +50,10 @@ MONITOR_LEAVE_SECONDS = 60 * 60 * 24 * 365
 LOCK_WAIT_SECONDS = 25
 ACCOUNT_GAP_SECONDS = 10  # فاصل بدء كل حساب عن الذي قبله
 
-PARTICIPATE_WORDS = ("المشاركة في السحب", "مشاركة السحب", "شارك في السحب", "participate", "giveaway")
+PARTICIPATE_WORDS = (
+    "المشاركة في السحب", "مشاركة السحب", "شارك في السحب",
+    "المشاركة في المسابقة", "مشاركة المسابقة", "شارك في المسابقة", "participate", "giveaway",
+)
 VERIFY_WORDS = ("تحقق", "تأكيد", "check", "verify", "confirm", "تم", "انتهيت", "done", "شارك", "مشاركة")
 BACK_WORDS = ("رجوع", "back", "استبعاد", "إلغاء", "الغاء", "cancel", "تخطي", "skip")
 SUCCESS_WORDS = (
@@ -71,10 +74,15 @@ IGNORE_ANCHOR_WORDS = ("جميع السحوبات", "السحوبات", "رول�
 VOTE_WORDS = ("تصويت", "التصويت", "صوت", "vote")
 VOTE_SUCCESS_WORDS = (
     "تم التصويت", "تم تسجيل صوتك", "تم احتساب صوتك", "شكرا لتصويتك", "شكراً لتصويتك",
-    "صوتك", "سبق وصوت", "صوّتت", "صوتّ", "voted", "vote counted", "thank you for voting",
+    "صوّتت لهذا الشخص", "سبق وصوت", "already voted", "vote counted", "thank you for voting",
 )
-VOTE_VERIFY_ROUNDS = 3
-VOTE_SOLVE_TIMEOUT = 240  # أقصى مدة لحل الكابتشا لكل حساب (ثانية)
+CAPTCHA_MARKERS = (
+    "كابتشا", "captcha", "تحقق", "verify", "robot", "روبوت", "بشر", "human",
+    "أدخل", "ادخل", "اكتب", "أجب", "retype", "send the text", "type the text",
+)
+VOTE_MAX_ATTEMPTS = 8      # أقصى عدد مرات إعادة التصويت (كل مرة بعد انضمام جديد)
+VOTE_MAX_CAPTCHA_TRIES = 2
+VOTE_SOLVE_TIMEOUT = 240  # أقصى مدة لحل الكابتشا لكل محاولة (ثانية)
 IGNORABLE_URL_NOTES = {"رابط بوت", "رابط خارجي", "رابط فارغ"}
 DEFAULT_COMMENTS = ["👍", "🔥", "❤️", "👏", "شكراً", "موفقين", "تمام"]
 
@@ -323,93 +331,131 @@ def _latest_incoming(messages, base_id: int):
     return [m for m in messages if not getattr(m, "out", False) and (getattr(m, "id", 0) or 0) > base_id]
 
 
-async def _join_bot_buttons(client, bot_entity, base_id: int, phone: str, joined_urls: set, rounds: int) -> Tuple[int, str]:
-    """ينضم لكل القنوات/المجموعات التي يطلبها بوت التصويت (أزرار روابط) ثم يضغط زر التحقق.
-    يعيد (عدد ما انضم له، رسالة خطأ إن وُجد)."""
+def _looks_like_captcha(message) -> bool:
+    """كابتشا محتملة: صورة، أو كلمات تحقق، أو سؤال حسابي (لا نستدعي الحل بدونها)."""
+    from .raksh_system.forced_ref_ai import ForcedRefAIService as _S  # استيراد متأخر
+
+    text = (getattr(message, "message", "") or "").lower()
+    if _S._has_image_media(message):
+        return True
+    if any(word in text for word in CAPTCHA_MARKERS):
+        return True
+    return _S._extract_math_answer(text) is not None
+
+
+async def _wait_incoming(client, bot_entity, base_id: int, seconds: float = 9.0):
+    """ينتظر رد البوت الجديد (وما يتبعه من رسائل) بعد Start."""
+    waited = 0.0
+    while waited < seconds:
+        await asyncio.sleep(1.5)
+        waited += 1.5
+        if _latest_incoming(await client.get_messages(bot_entity, limit=6), base_id):
+            await asyncio.sleep(1.5)
+            return _latest_incoming(await client.get_messages(bot_entity, limit=6), base_id)
+    return []
+
+
+async def _join_requested(client, messages, phone: str, joined_urls: set) -> Tuple[int, str]:
+    """ينضم لكل قناة/مجموعة جديدة يطلبها بوت التصويت (أزرار روابط). يعيد (عدد ما انضم له، خطأ)."""
     joined = 0
-    for round_no in range(rounds):
-        await asyncio.sleep(3 if round_no == 0 else 2.5)
-        incoming = _latest_incoming(await client.get_messages(bot_entity, limit=5), base_id)
-        if not incoming:
-            continue
-        progressed = False
-        for message in incoming[:2]:
-            for _i, _j, btn in _flatten_buttons(message):
-                url = getattr(btn, "url", None)
-                if not url or url in joined_urls:
-                    continue
-                joined_urls.add(url)
-                try:
-                    done, note = await _handle_url(client, url, _btn_text(btn), phone)
-                except Exception as exc:
-                    return joined, f"فشل انضمام شرط التصويت: {str(exc)[:70]}"
-                if done:
-                    joined += 1
-                    progressed = True
-                elif note not in IGNORABLE_URL_NOTES:
-                    return joined, f"تعذر شرط التصويت: {note}"
-                await asyncio.sleep(1)
-        # زر «تحقق/تم الاشتراك» في أحدث رسالة
-        newest = incoming[0]
-        for i, j, btn in _flatten_buttons(newest):
-            label = _btn_text(btn).lower()
-            if getattr(btn, "url", None) or not label or any(w in label for w in BACK_WORDS):
+    for message in messages[:3]:
+        for _i, _j, btn in _flatten_buttons(message):
+            url = getattr(btn, "url", None)
+            if not url or url in joined_urls:
                 continue
-            if any(w in label for w in VERIFY_WORDS):
-                try:
-                    await newest.click(i, j)
-                except Exception as exc:
-                    logger.debug("[%s] ضغط زر تحقق التصويت: %s", phone, exc)
-                progressed = True
-                break
-        if not progressed:
-            break
+            joined_urls.add(url)
+            try:
+                done, note = await _handle_url(client, url, _btn_text(btn), phone)
+            except Exception as exc:
+                return joined, f"فشل انضمام شرط التصويت: {str(exc)[:70]}"
+            if done:
+                joined += 1
+            elif note not in IGNORABLE_URL_NOTES:
+                return joined, f"تعذر شرط التصويت: {note}"
+            await asyncio.sleep(1)
     return joined, ""
 
 
+async def _click_verify(message, phone: str) -> None:
+    """زر «تحقق/تم الاشتراك» إن وُجد (Callback)."""
+    for i, j, btn in _flatten_buttons(message):
+        label = _btn_text(btn).lower()
+        if getattr(btn, "url", None) or not label or any(w in label for w in BACK_WORDS):
+            continue
+        if any(w in label for w in VERIFY_WORDS):
+            try:
+                await message.click(i, j)
+            except Exception as exc:
+                logger.debug("[%s] ضغط زر تحقق التصويت: %s", phone, exc)
+            return
+
+
 async def _do_vote(client, phone: str, cond: Dict) -> Tuple[bool, str]:
-    """شرط تصويت عبر بوت: ينضم للقنوات/المجموعات الإجبارية ثم يحل الكابتشا ويصوت."""
+    """شرط تصويت عبر بوت.
+
+    كل محاولة = ضغط رابط التصويت (Start). إن طلب البوت قناة/مجموعة ينضم لها الحساب
+    ثم يعيد التصويت من جديد؛ يتكرر هذا حتى تنتهي كل القنوات الإجبارية. بعدها إما
+    يظهر كابتشا فيُحَل، أو لا يطلب البوت كابتشا ويُحتسب الصوت.
+    """
     from .raksh_system.forced_ref_ai import ForcedRefAIService  # استيراد متأخر لتفادي الدوران
 
     bot_username, start_param = _parse_bot_link(cond["url"])
     if not bot_username:
         return False, "رابط التصويت غير مفهوم"
     bot_entity = await client.get_entity(f"@{bot_username}")
-    latest = await client.get_messages(bot_entity, limit=1)
-    base_id = (latest[0].id if latest else 0) or 0
-    await client(functions.messages.StartBotRequest(bot=bot_entity, peer=bot_entity, start_param=start_param or ""))
+    solver = ForcedRefAIService()
 
     joined_urls: set = set()
-    joined, error = await _join_bot_buttons(client, bot_entity, base_id, phone, joined_urls, VOTE_VERIFY_ROUNDS)
-    if error:
-        return False, error
-
-    # حل الكابتشا بنفس محرك خدمة التصويت/الإحالة الموجود (ddddocr، رياضيات، أزرار إيموجي)
+    total_joined = 0
+    captcha_tries = 0
     solved = False
-    try:
-        solved = bool(await asyncio.wait_for(
-            ForcedRefAIService()._solve_verification(client, bot_entity, phone, base_id=base_id, params={}),
-            timeout=VOTE_SOLVE_TIMEOUT,
-        ))
-    except asyncio.TimeoutError:
-        logger.info("[%s] انتهت مهلة كابتشا التصويت", phone)
-    except Exception as exc:
-        logger.warning("[%s] كابتشا التصويت: %s", phone, exc)
+    last = "لا رد من بوت التصويت"
+    for _attempt in range(VOTE_MAX_ATTEMPTS):
+        latest = await client.get_messages(bot_entity, limit=1)
+        base_id = (latest[0].id if latest else 0) or 0
+        await client(functions.messages.StartBotRequest(bot=bot_entity, peer=bot_entity, start_param=start_param or ""))
+        incoming = await _wait_incoming(client, bot_entity, base_id)
+        if not incoming:
+            continue
+        texts = " ".join((m.message or "") for m in incoming[:3]).lower()
+        last = ((incoming[0].message or "").replace("\n", " ")[:70]) or last
+        if any(word in texts for word in VOTE_SUCCESS_WORDS):
+            return True, f"صوّت (انضم لـ {total_joined} قناة/مجموعة)"
 
-    # قد تظهر قنوات جديدة بعد الكابتشا
-    more, error = await _join_bot_buttons(client, bot_entity, base_id, phone, joined_urls, 1)
-    if error:
-        return False, error
-    joined += more
+        # 1) قنوات/مجموعات إجبارية جديدة: انضم ثم أعد التصويت
+        joined, error = await _join_requested(client, incoming, phone, joined_urls)
+        if error:
+            return False, error
+        if joined:
+            total_joined += joined
+            await _click_verify(incoming[0], phone)
+            continue
 
-    await asyncio.sleep(2)
-    incoming = _latest_incoming(await client.get_messages(bot_entity, limit=5), base_id)
-    texts = " ".join((m.message or "") for m in incoming[:3]).lower()
-    voted = any(word in texts for word in VOTE_SUCCESS_WORDS)
-    if solved or voted:
-        return True, f"صوّت (انضم لـ {joined} قناة/مجموعة" + ("، حلّ الكابتشا" if solved else "") + ")"
-    last = (incoming[0].message if incoming else "") or "لا رد من بوت التصويت"
-    return False, f"لم يكتمل التصويت: {last.replace(chr(10), ' ')[:70]}"
+        # 2) لا قنوات جديدة: كابتشا؟
+        if any(_looks_like_captcha(m) for m in incoming):
+            if captcha_tries >= VOTE_MAX_CAPTCHA_TRIES:
+                break
+            captcha_tries += 1
+            try:
+                solved = bool(await asyncio.wait_for(
+                    solver._solve_verification(client, bot_entity, phone, base_id=base_id, params={}),
+                    timeout=VOTE_SOLVE_TIMEOUT,
+                ))
+            except asyncio.TimeoutError:
+                logger.info("[%s] انتهت مهلة كابتشا التصويت", phone)
+            except Exception as exc:
+                logger.warning("[%s] كابتشا التصويت: %s", phone, exc)
+            await asyncio.sleep(2)
+            after = _latest_incoming(await client.get_messages(bot_entity, limit=6), base_id)
+            after_texts = " ".join((m.message or "") for m in after[:3]).lower()
+            if after:
+                last = ((after[0].message or "").replace("\n", " ")[:70]) or last
+            if solved or any(word in after_texts for word in VOTE_SUCCESS_WORDS):
+                return True, f"صوّت (انضم لـ {total_joined}، حلّ الكابتشا)"
+            continue  # قد تظهر قناة جديدة بعد الكابتشا
+
+        break  # لا قنوات ولا كابتشا ولا رسالة نجاح معروفة
+    return False, f"لم يكتمل التصويت: {last}"
 
 
 async def _press_channel_button(client, trig: Dict) -> Tuple[bool, str]:
