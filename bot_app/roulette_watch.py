@@ -65,6 +65,9 @@ READY_WORDS = (
 # زر المشاركة الفعلي تحت منشور القناة (زر Callback وليس رابطاً)
 CHANNEL_JOIN_WORDS = ("المشاركة في السحب", "المشاركة بالسحب", "شارك في السحب", "participate", "join giveaway")
 FAIL_ANSWER_WORDS = ("خطأ", "فشل", "غير مسموح", "لا يمكن", "error", "failed", "not allowed")
+# شرط الاشتراك داخل نص المنشور: روابط مخفية تحت كلمة «الشرط»
+CONDITION_MARKERS = ("الشرط", "الشروط", "condition")
+IGNORE_ANCHOR_WORDS = ("جميع السحوبات", "السحوبات", "روليت سراب")
 DEFAULT_COMMENTS = ["👍", "🔥", "❤️", "👏", "شكراً", "موفقين", "تمام"]
 
 _job_lock = asyncio.Lock()
@@ -154,7 +157,7 @@ def _flatten_buttons(message) -> List[Tuple[int, int, object]]:
     return result
 
 
-def _extract_trigger(message) -> Optional[Dict]:
+def _extract_trigger_base(message) -> Optional[Dict]:
     """يلتقط زر المشاركة في منشور سحب: زر رابط بوت مع start."""
     text = (getattr(message, "message", "") or "")
     fallback = None
@@ -172,6 +175,50 @@ def _extract_trigger(message) -> Optional[Dict]:
     if fallback and ("سحب" in text or "روليت" in text or "giveaway" in text.lower()):
         return fallback
     return None
+
+
+def _extract_conditions(message) -> List[Dict]:
+    """روابط قنوات الاشتراك الموجودة داخل نص المنشور نفسه (روابط مخفية تحت «الشرط»)."""
+    text = getattr(message, "message", "") or ""
+    try:
+        pairs = message.get_entities_text() or []
+    except Exception:
+        pairs = []
+    utf16 = text.encode("utf-16-le")
+    marker_at = None
+    for word in CONDITION_MARKERS:
+        idx = text.lower().find(word)
+        if idx != -1 and (marker_at is None or idx < marker_at):
+            marker_at = idx
+    result: List[Dict] = []
+    seen = set()
+    for ent, label in pairs:
+        url = getattr(ent, "url", None)
+        if not url and label.lower().startswith(("http", "t.me")):
+            url = label
+        if not url or url in seen:
+            continue
+        start = len(utf16[: ent.offset * 2].decode("utf-16-le", errors="ignore"))
+        if marker_at is not None and start < marker_at:
+            continue
+        if any(word in label for word in IGNORE_ANCHOR_WORDS):
+            continue
+        parsed = urlparse(url if "://" in url else f"https://{url}")
+        if parsed.netloc.lower().removeprefix("www.") not in {"t.me", "telegram.me"}:
+            continue
+        parts = [p for p in parsed.path.strip("/").split("/") if p]
+        if not parts or (len(parts) == 1 and parts[0].lower().endswith("bot")):
+            continue
+        seen.add(url)
+        result.append({"url": url, "label": label})
+    return result
+
+
+def _extract_trigger(message) -> Optional[Dict]:
+    trig = _extract_trigger_base(message)
+    if trig is not None:
+        trig["conditions"] = _extract_conditions(message)
+    return trig
 
 
 def _is_success(text: str) -> bool:
@@ -224,7 +271,9 @@ async def _handle_url(client, url: str, label: str, phone: str) -> Tuple[bool, s
     # قناة بدعوة
     if parts[0].startswith("+") or parts[0] == "joinchat":
         invite = parts[-1].lstrip("+")
-        await _join_channel_and_schedule_leave(client, f"invite:{invite}", phone)
+        joined = await _join_channel_and_schedule_leave(client, f"invite:{invite}", phone)
+        if joined is False or joined is None:
+            return False, "تعذر الانضمام بالدعوة"
         return True, "انضمام بدعوة"
 
     # بوت: ليس شرطاً ننفذه
@@ -233,7 +282,9 @@ async def _handle_url(client, url: str, label: str, phone: str) -> Tuple[bool, s
 
     # قناة عامة
     if len(parts) == 1:
-        await _join_channel_and_schedule_leave(client, f"@{parts[0]}", phone)
+        joined = await _join_channel_and_schedule_leave(client, f"@{parts[0]}", phone)
+        if joined is False or joined is None:
+            return False, f"تعذر الانضمام لـ @{parts[0]}"
         return True, "انضمام لقناة"
 
     # رابط منشور
@@ -242,7 +293,9 @@ async def _handle_url(client, url: str, label: str, phone: str) -> Tuple[bool, s
         return False, "رابط منشور غير مفهوم"
     if "تصويت" in lowered_label or "vote" in lowered_label or "متسابق" in lowered_label:
         return False, "شرط تصويت غير مدعوم بعد"
-    await _join_channel_and_schedule_leave(client, ref, phone)
+    joined = await _join_channel_and_schedule_leave(client, ref, phone)
+    if joined is False or joined is None:
+        return False, f"تعذر الانضمام لـ {ref}"
     entity = await _entity_for(client, ref)
     if "comment" in query or "تعليق" in lowered_label or "comment" in lowered_label:
         await _join_discussion_and_comment(client, entity, msg_id, random.choice(_comment_texts()))
@@ -297,6 +350,18 @@ async def _participate(session: Dict, trig: Dict, semaphore: asyncio.Semaphore) 
             if joined is False or joined is None:
                 return False, "تعذر الانضمام لقناة السحب"
 
+            # شرط الاشتراك الموجود داخل نص المنشور: يجب الانضمام لكل قناة مشروطة
+            cond_done = 0
+            for cond in trig.get("conditions") or []:
+                try:
+                    done, note = await _handle_url(client, cond["url"], cond["label"], phone)
+                except Exception as exc:
+                    return False, f"فشل شرط الاشتراك: {str(exc)[:80]}"
+                if not done:
+                    return False, f"تعذر شرط الاشتراك: {note}"
+                cond_done += 1
+                await asyncio.sleep(1)
+
             bot = await client.get_entity(f"@{trig['bot']}")
             await client(functions.messages.StartBotRequest(bot=bot, peer=bot, start_param=trig["param"]))
 
@@ -316,7 +381,10 @@ async def _participate(session: Dict, trig: Dict, semaphore: asyncio.Semaphore) 
                 if any(word in last_text.lower() for word in READY_WORDS):
                     # البوت جهّز الحساب؛ المشاركة الفعلية بزر تحت منشور القناة
                     try:
-                        return await _press_channel_button(client, trig)
+                        pressed, pnote = await _press_channel_button(client, trig)
+                        if pressed and cond_done:
+                            pnote = f"انضم لـ {cond_done} قناة شرط + " + pnote
+                        return pressed, pnote
                     except Exception as exc:
                         return False, f"فشل ضغط زر القناة: {str(exc)[:80]}"
 
