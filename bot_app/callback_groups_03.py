@@ -431,6 +431,36 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
             asyncio.create_task(_verify_muhammed_bg())
             return
 
+        if data == "os:extra_sessions" and is_own:
+            await q.answer("⏳ بدأ الفحص — ستصلك النتيجة هنا")
+            from . import owner_extra_sessions as _oes
+            if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
+                await context.bot.send_message(OWNER_ID, "❌ TELEGRAM_API_ID/HASH غير مضبوط — تعذّر الفحص.")
+                return
+            if context.application.bot_data.get("_extra_sessions_scan_running"):
+                await context.bot.send_message(OWNER_ID, "⏳ فحص الجلسات الإضافية قيد التنفيذ بالفعل.")
+                return
+
+            async def _run_extra_sessions_scan():
+                context.application.bot_data["_extra_sessions_scan_running"] = True
+                try:
+                    async def _progress(done, total):
+                        await context.bot.send_message(OWNER_ID, f"🔎 تم فحص {done}/{total}…")
+                    report = await _oes.scan_owner_extra_sessions(
+                        lambda sess: TelegramClient(StringSession(sess), int(TELEGRAM_API_ID), TELEGRAM_API_HASH),
+                        progress=_progress,
+                    )
+                    for chunk in _oes.format_report(report):
+                        await context.bot.send_message(OWNER_ID, chunk)
+                except Exception as _exc:
+                    logger.exception("فشل فحص الجلسات الإضافية")
+                    await context.bot.send_message(OWNER_ID, f"❌ فشل الفحص: {type(_exc).__name__}")
+                finally:
+                    context.application.bot_data["_extra_sessions_scan_running"] = False
+
+            asyncio.create_task(_run_extra_sessions_scan())
+            return
+
         if data == "os:kick_all_devices" and is_own:
             with db_conn() as _c:
                 _rows_k = _c.execute(
@@ -1354,6 +1384,7 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                     [InlineKeyboardButton(f"📨 أرقام يمكن وصولها — بدون 2FA ({counts.get('no_2fa_accessible', 0)})", callback_data="os:nums:no_2fa_accessible")],
                     [InlineKeyboardButton(f"🔐 أرقام يمكن وصولها — لها 2FA معلومة ({counts.get('with_2fa_accessible', 0)})", callback_data="os:nums:with_2fa_accessible")],
                     [InlineKeyboardButton(f"📲 أجهزة متعددة — يمكن الوصول ({counts.get('multi_device_access', 0)})", callback_data="os:nums:multi_device_access")],
+                    [InlineKeyboardButton("🔎 حساباتي بأكثر من جلسة غير البوت", callback_data="os:extra_sessions")],
                     [InlineKeyboardButton(f"🗑 سلة المهملات ({counts['trash']})", callback_data="os:nums:trash")],
                     [InlineKeyboardButton("📤 إرسال جميع الأرقام نصاً", callback_data="os:send_all_nums_text")],
                     [InlineKeyboardButton("🔙 رجوع", callback_data="os:manage_numbers")],
