@@ -18,7 +18,9 @@ import asyncio
 import base64
 import json
 import random
+import os
 import re
+import time
 from io import BytesIO
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
@@ -46,12 +48,13 @@ KEY_ENABLED = "roulette_enabled"
 KEY_COMMENTS = "roulette_comment_texts"
 
 POLL_MESSAGES_LIMIT = 6
-MAX_CONCURRENCY = 40
+MAX_CONCURRENCY = int(os.environ.get("ROULETTE_MAX_CONCURRENCY", "150") or 150)  # حسابات تعمل معاً (تحتاج ذاكرة كافية)
+START_RATE_PER_SEC = float(os.environ.get("ROULETTE_START_RATE_PER_SEC", "15") or 15)  # حسابات تبدأ كل ثانية في المشاركة
 MAX_ROUNDS = 6
 MONITOR_LEAVE_SECONDS = 60 * 60 * 24 * 365
 LOCK_WAIT_SECONDS = 25
 ROULETTE_LEAVE_SECONDS = 60 * 60 * 24 * 7  # لا يغادر الحساب قنوات السحب/الشروط قبل نهاية السحب
-ACCOUNT_GAP_SECONDS = 10  # فاصل بدء كل حساب عن الذي قبله
+ACCOUNT_GAP_SECONDS = 10  # فاصل انضمام الحسابات للقنوات الجديدة (حماية من الحظر)
 
 PARTICIPATE_WORDS = (
     "المشاركة في السحب", "مشاركة السحب", "شارك في السحب",
@@ -86,7 +89,8 @@ CAPTCHA_MARKERS = (
 VOTE_POST_SKIP_WORDS = ("نسخ", "copy", "احصائيات", "إحصائيات", "statistics", "stats", "إعادة النشر")
 VOTE_MAX_ATTEMPTS = 8      # أقصى عدد مرات إعادة التصويت (كل مرة بعد انضمام جديد)
 VOTE_MAX_CAPTCHA_TRIES = 2
-AI_CAPTCHA_MAX_CLICKS = 2   # أقصى ضغطات بالذكاء لكل حساب قبل التحويل لك يدوياً
+AI_CAPTCHA_MAX_CLICKS = 1   # ضغطة واحدة بالذكاء لكل حساب؛ أي فشل بعدها يُحوَّل لك يدوياً
+_AI_STATE = {"quota_hit": 0.0, "notified": 0.0}
 VOTE_SOLVE_TIMEOUT = 900  # أقصى مدة لحل الكابتشا لكل محاولة (ثانية)، تتسع لحل المالك اليدوي
 IGNORABLE_URL_NOTES = {"رابط بوت", "رابط خارجي", "رابط فارغ"}
 DEFAULT_COMMENTS = ["👍", "🔥", "❤️", "👏", "شكراً", "موفقين", "تمام"]
@@ -367,10 +371,10 @@ async def _wait_incoming(client, bot_entity, base_id: int, seconds: float = 9.0)
     """ينتظر رد البوت الجديد (وما يتبعه من رسائل) بعد Start."""
     waited = 0.0
     while waited < seconds:
-        await asyncio.sleep(1.5)
-        waited += 1.5
+        await asyncio.sleep(0.6)
+        waited += 0.6
         if _latest_incoming(await client.get_messages(bot_entity, limit=6), base_id):
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(0.6)
             return _latest_incoming(await client.get_messages(bot_entity, limit=6), base_id)
     return []
 
@@ -392,7 +396,7 @@ async def _join_requested(client, messages, phone: str, joined_urls: set) -> Tup
                 joined += 1
             elif note not in IGNORABLE_URL_NOTES:
                 return joined, f"تعذر شرط التصويت: {note}"
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.3)
     return joined, ""
 
 
@@ -464,6 +468,7 @@ def _ai_ask_once(keys: List[str], image_b64: str, mime: str, labels: List[str], 
                     return None
                 return order[choice - 1]
             if code in (401, 403, 429):
+                _AI_STATE["quota_hit"] = time.time()
                 break  # مفتاح مرفوض أو حصته انتهت: جرّب المفتاح التالي
     return None
 
@@ -505,7 +510,7 @@ def _ai_pick_sync(image_bytes: bytes, labels: List[str]) -> Optional[int]:
     return None
 
 
-async def _try_ai_emoji_captcha(client, incoming, phone: str) -> bool:
+async def _try_ai_emoji_captcha(client, incoming, phone: str, bot=None) -> bool:
     """كابتشا صورة + أزرار إيموجي: يختار Gemini الزر ويضغطه. يعيد True إن ضغط زراً."""
     from .raksh_system.forced_ref_ai import ForcedRefAIService as _S  # استيراد متأخر
 
@@ -527,6 +532,17 @@ async def _try_ai_emoji_captcha(client, incoming, phone: str) -> bool:
             return False
         if index is None:
             logger.info("[%s] الذكاء غير متأكد من كابتشا الإيموجي؛ تُرحَّل للمالك", phone)
+            now = time.time()
+            if bot is not None and now - _AI_STATE["quota_hit"] < 120 and now - _AI_STATE["notified"] > 600:
+                _AI_STATE["notified"] = now
+                try:
+                    await bot.send_message(
+                        int(OWNER_ID),
+                        "⚠️ مفتاح Gemini انتهت حصته أو رُفض. كابتشا الإيموجي ستصلك هنا لتحلها بنفسك "
+                        "حتى يتوفر مفتاح جديد.",
+                    )
+                except Exception:
+                    pass
             return False
         i, j, _btn = flat[index]
         try:
@@ -587,9 +603,9 @@ async def _do_vote(client, phone: str, cond: Dict, bot=None) -> Tuple[bool, str]
         # 2) لا قنوات جديدة: كابتشا؟
         if any(_looks_like_captcha(m) for m in incoming):
             # كابتشا صورة + أزرار إيموجي: نجرب الذكاء أولاً، وإن لم ينجح تصلك أنت
-            if ai_clicks < AI_CAPTCHA_MAX_CLICKS and await _try_ai_emoji_captcha(client, incoming, phone):
+            if ai_clicks < AI_CAPTCHA_MAX_CLICKS and await _try_ai_emoji_captcha(client, incoming, phone, bot=bot):
                 ai_clicks += 1
-                await asyncio.sleep(2)
+                await asyncio.sleep(1)
                 after = _latest_incoming(await client.get_messages(bot_entity, limit=6), base_id)
                 after_texts = " ".join((m.message or "") for m in after[:3]).lower()
                 if any(word in after_texts for word in VOTE_SUCCESS_WORDS):
@@ -612,7 +628,7 @@ async def _do_vote(client, phone: str, cond: Dict, bot=None) -> Tuple[bool, str]
                 logger.info("[%s] انتهت مهلة كابتشا التصويت", phone)
             except Exception as exc:
                 logger.warning("[%s] كابتشا التصويت: %s", phone, exc)
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
             after = _latest_incoming(await client.get_messages(bot_entity, limit=6), base_id)
             after_texts = " ".join((m.message or "") for m in after[:3]).lower()
             if after:
@@ -702,8 +718,8 @@ async def _do_vote_post(client, phone: str, cond: Dict, bot=None) -> Tuple[bool,
                 total_joined += 1
             elif note not in IGNORABLE_URL_NOTES:
                 return False, f"تعذر شرط التصويت: {note}"
-            await asyncio.sleep(1)
-        await asyncio.sleep(1)
+            await asyncio.sleep(0.3)
+        await asyncio.sleep(0.5)
 
     # لا رد نصي: تحقق من زيادة العداد على الزر
     try:
@@ -781,7 +797,7 @@ async def _participate(session: Dict, trig: Dict, semaphore: asyncio.Semaphore, 
                 if not done:
                     return False, f"تعذر شرط الاشتراك: {note}"
                 cond_done += 1
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.3)
 
             vote_note = ""
             for cond in vote_conds:
@@ -803,7 +819,7 @@ async def _participate(session: Dict, trig: Dict, semaphore: asyncio.Semaphore, 
             notes: List[str] = []
             last_text = ""
             for round_no in range(MAX_ROUNDS):
-                await asyncio.sleep(3 if round_no == 0 else 2)
+                await asyncio.sleep(1.5 if round_no == 0 else 1)
                 messages = await client.get_messages(bot, limit=3)
                 message = next((m for m in messages if not getattr(m, "out", False)), None)
                 if not message:
@@ -838,7 +854,7 @@ async def _participate(session: Dict, trig: Dict, semaphore: asyncio.Semaphore, 
                     notes.append(note)
                     acted = acted or done
 
-                await asyncio.sleep(1.5)
+                await asyncio.sleep(0.5)
                 for i, j, btn in buttons:
                     label = _btn_text(btn).lower()
                     if getattr(btn, "url", None) or not label:
@@ -876,18 +892,18 @@ async def _run_roulette(bot, trig: Dict, sessions: List[Dict]) -> None:
     semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
 
     async def _staggered(index: int, session: Dict):
-        # حساب واحد كل ACCOUNT_GAP_SECONDS ثوانٍ: الأول فوراً، الثاني بعد 10ث، وهكذا
+        # START_RATE_PER_SEC حساباً كل ثانية (افتراضياً 15): توزيع خفيف بدل الانفجار الواحد
         if index:
-            await asyncio.sleep(index * ACCOUNT_GAP_SECONDS)
+            await asyncio.sleep(index / max(START_RATE_PER_SEC, 0.1))
         return await _participate(session, trig, semaphore, runtime_bot=bot)
 
     if sessions:
-        minutes = max(1, round((len(sessions) - 1) * ACCOUNT_GAP_SECONDS / 60))
+        seconds = max(1, round((len(sessions) - 1) / max(START_RATE_PER_SEC, 0.1)))
         try:
             await bot.send_message(
                 OWNER_ID,
                 f"🚀 بدأ الروليت على {trig['ref']}: {len(sessions)} حساب، "
-                f"فاصل {ACCOUNT_GAP_SECONDS} ثوانٍ بين كل حساب (≈ {minutes} دقيقة). سيصلك الملخص عند الانتهاء.",
+                f"بمعدل {START_RATE_PER_SEC:g} حساب/ثانية (≈ {seconds} ث للبدء). سيصلك الملخص عند الانتهاء.",
             )
         except Exception:
             pass
