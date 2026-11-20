@@ -78,6 +78,8 @@ FAIL_ANSWER_WORDS = ("خطأ", "فشل", "غير مسموح", "لا يمكن", "
 CONDITION_MARKERS = ("الشرط", "الشروط", "condition")
 IGNORE_ANCHOR_WORDS = ("جميع السحوبات", "السحوبات", "روليت سراب")
 VOTE_WORDS = ("تصويت", "التصويت", "صوت", "vote")
+COMMENT_WORDS = ("تعليق", "التعليق", "علق", "comment")
+CONDITION_COMMENT_TEXT = "يستحق"  # نص ثابت لشرط «التعليق >> هنا»
 VOTE_SUCCESS_WORDS = (
     "تم التصويت", "تم تسجيل صوتك", "تم احتساب صوتك", "شكرا لتصويتك", "شكراً لتصويتك",
     "صوّتت لهذا الشخص", "سبق وصوت", "already voted", "vote counted", "thank you for voting",
@@ -250,6 +252,10 @@ def _extract_conditions(message) -> List[Dict]:
             if any(word in line for word in VOTE_WORDS):
                 seen.add(url)
                 result.append({"url": url, "label": label, "kind": "vote_post"})
+                continue
+            if any(word in line for word in COMMENT_WORDS):
+                seen.add(url)
+                result.append({"url": url, "label": label, "kind": "comment"})
                 continue
         seen.add(url)
         result.append({"url": url, "label": label, "kind": "channel"})
@@ -571,6 +577,46 @@ async def _try_ai_emoji_captcha(client, incoming, phone: str, bot=None) -> bool:
     return False
 
 
+async def _do_comment(client, phone: str, cond: Dict) -> Tuple[bool, str]:
+    """شرط «التعليق >> هنا»: ينضم لقناة المنشور، ثم لمجموعة النقاش، ثم يعلّق «يستحق»."""
+    ref, msg_id = _parse_post_link(cond["url"])
+    if not ref or not msg_id:
+        return False, "رابط منشور التعليق غير مفهوم"
+
+    # 1) الانضمام لقناة المنشور الذي فيه التعليق
+    joined = await _join_channel_and_schedule_leave(
+        client, ref, phone, leave_after_seconds=ROULETTE_LEAVE_SECONDS
+    )
+    if joined is False or joined is None:
+        return False, f"تعذر الانضمام لقناة التعليق {ref}"
+    entity = await _entity_for(client, ref)
+
+    # 2) الانضمام لمجموعة النقاش (الجروب) المرتبطة بالقناة
+    try:
+        discussion = await client(functions.messages.GetDiscussionMessageRequest(peer=entity, msg_id=msg_id))
+        for chat in getattr(discussion, "chats", None) or []:
+            if getattr(chat, "id", None) == getattr(entity, "id", None):
+                continue
+            username = getattr(chat, "username", None)
+            try:
+                if username:
+                    await _join_channel_and_schedule_leave(
+                        client, f"@{username}", phone, leave_after_seconds=ROULETTE_LEAVE_SECONDS
+                    )
+                else:
+                    await client(functions.channels.JoinChannelRequest(chat))
+            except Exception as exc:
+                if "already" not in str(exc).lower():
+                    logger.debug("[%s] انضمام لمجموعة النقاش: %s", phone, exc)
+    except Exception as exc:
+        logger.debug("[%s] قراءة مجموعة النقاش: %s", phone, exc)
+    await asyncio.sleep(1)
+
+    # 3) التعليق بالنص الثابت
+    await client.send_message(entity, CONDITION_COMMENT_TEXT, comment_to=msg_id)
+    return True, f"تعليق «{CONDITION_COMMENT_TEXT}»"
+
+
 async def _do_vote(client, phone: str, cond: Dict, bot=None) -> Tuple[bool, str]:
     """شرط تصويت عبر بوت.
 
@@ -793,6 +839,22 @@ async def _participate(session: Dict, trig: Dict, semaphore: asyncio.Semaphore, 
             if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
                 return False, "الجلسة غير مصرح بها"
 
+            # شرط التعليق أولاً: قناة المنشور ← مجموعة النقاش ← تعليق، ثم العودة لقناة السحب
+            conditions = trig.get("conditions") or []
+            comment_note = ""
+            comment_prefix = ""
+            for cond in [c for c in conditions if c.get("kind") == "comment"]:
+                try:
+                    done, cnote = await _do_comment(client, phone, cond)
+                except Exception as exc:
+                    done, cnote = False, f"فشل شرط التعليق: {str(exc)[:60]}"
+                if done:
+                    comment_note = cnote
+                else:
+                    # نكمل ونترك بوت السحب يحكم هل الشرط تحقق
+                    comment_prefix = "تعليق غير مؤكد (" + cnote[:50] + ") | "
+                await asyncio.sleep(0.3)
+
             # كل قناة تراقب يجب أن ينضم لها الحساب أولاً
             joined = await _join_channel_and_schedule_leave(
                 client, trig["ref"], phone, leave_after_seconds=ROULETTE_LEAVE_SECONDS
@@ -802,8 +864,8 @@ async def _participate(session: Dict, trig: Dict, semaphore: asyncio.Semaphore, 
 
             # شرط الاشتراك الموجود داخل نص المنشور: يجب الانضمام لكل قناة مشروطة
             cond_done = 0
-            vote_conds = [c for c in (trig.get("conditions") or []) if c.get("kind") in ("vote", "vote_post")]
-            for cond in [c for c in (trig.get("conditions") or []) if c.get("kind") not in ("vote", "vote_post")]:
+            vote_conds = [c for c in conditions if c.get("kind") in ("vote", "vote_post")]
+            for cond in [c for c in conditions if c.get("kind") not in ("vote", "vote_post", "comment")]:
                 try:
                     done, note = await _handle_url(client, cond["url"], cond["label"], phone)
                 except Exception as exc:
@@ -829,7 +891,7 @@ async def _participate(session: Dict, trig: Dict, semaphore: asyncio.Semaphore, 
                     vote_unconfirmed.append(vnote)
                     continue
                 vote_note = vnote
-            vote_prefix = ("تصويت غير مؤكد (" + vote_unconfirmed[0][:50] + ") | ") if vote_unconfirmed else ""
+            vote_prefix = comment_prefix + (("تصويت غير مؤكد (" + vote_unconfirmed[0][:50] + ") | ") if vote_unconfirmed else "")
 
             # ترحيل الكابتشا للمالك يفصل الاتصال أثناء الانتظار؛ نتأكد أنه متصل قبل العودة للسحب
             if not client.is_connected():
@@ -855,6 +917,8 @@ async def _participate(session: Dict, trig: Dict, semaphore: asyncio.Semaphore, 
                     # البوت جهّز الحساب؛ المشاركة الفعلية بزر تحت منشور القناة
                     try:
                         pressed, pnote = await _press_channel_button(client, trig)
+                        if pressed and comment_note:
+                            pnote = comment_note + " + " + pnote
                         if pressed and vote_note:
                             pnote = vote_note + " + " + pnote
                         elif pressed and cond_done:
