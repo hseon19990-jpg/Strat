@@ -8,7 +8,7 @@
    الشروط الظاهرة (انضمام لقناة، تعليق على منشور) وتضغط زر التحقق.
 4. يصل المالك ملخص بالنتيجة مع آخر رسالة من البوت لكل فشل، لتسهيل الضبط.
 
-الحسابات المستخدمة: الحسابات المضافة بواسطة المالك فقط (contributed_by=OWNER_ID).
+الحسابات المستخدمة: كل حسابات الرشق التي أضافها المالك بأي طريقة (contributed_by فارغ أو OWNER_ID)، دون حسابات الأعضاء.
 شروط التصويت لمتسابق غير مدعومة بعد؛ تُسجَّل وتُبلَّغ للمالك.
 """
 
@@ -99,9 +99,21 @@ def _comment_texts() -> List[str]:
 
 
 def _owner_sessions() -> List[Dict]:
-    """حسابات المالك حصراً: المضافة بواسطته."""
-    sessions = _get_sessions_for_service("roulette", is_owner=True, contributor_id=int(OWNER_ID))
-    return [s for s in sessions if str(s.get("session_string") or "").strip()]
+    """حسابات المالك حصراً: كل حساب أضافه المالك لمخزون الرشق بأي طريقة
+    (أزرار، ملف، جلسة، تسجيل دخول...). هذه الحسابات تُحفظ بدون contributed_by،
+    أو بـ contributed_by=OWNER_ID إن أُضيفت عبر مسار المساهم. أما حسابات
+    الأعضاء (contributed_by لمستخدم آخر) فمستثناة.
+    """
+    sessions = _get_sessions_for_service("roulette", is_owner=True)
+    owner_id = int(OWNER_ID)
+    result = []
+    for s in sessions:
+        if not str(s.get("session_string") or "").strip():
+            continue
+        contributor = s.get("contributed_by")
+        if contributor is None or int(contributor) == owner_id:
+            result.append(s)
+    return result
 
 
 def _new_client(session: Dict) -> TelegramClient:
