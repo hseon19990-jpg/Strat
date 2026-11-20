@@ -15,9 +15,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import random
 import re
+from io import BytesIO
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
@@ -48,6 +50,7 @@ MAX_CONCURRENCY = 40
 MAX_ROUNDS = 6
 MONITOR_LEAVE_SECONDS = 60 * 60 * 24 * 365
 LOCK_WAIT_SECONDS = 25
+ROULETTE_LEAVE_SECONDS = 60 * 60 * 24 * 7  # لا يغادر الحساب قنوات السحب/الشروط قبل نهاية السحب
 ACCOUNT_GAP_SECONDS = 10  # فاصل بدء كل حساب عن الذي قبله
 
 PARTICIPATE_WORDS = (
@@ -83,7 +86,8 @@ CAPTCHA_MARKERS = (
 VOTE_POST_SKIP_WORDS = ("نسخ", "copy", "احصائيات", "إحصائيات", "statistics", "stats", "إعادة النشر")
 VOTE_MAX_ATTEMPTS = 8      # أقصى عدد مرات إعادة التصويت (كل مرة بعد انضمام جديد)
 VOTE_MAX_CAPTCHA_TRIES = 2
-VOTE_SOLVE_TIMEOUT = 240  # أقصى مدة لحل الكابتشا لكل محاولة (ثانية)
+AI_CAPTCHA_MAX_CLICKS = 2   # أقصى ضغطات بالذكاء لكل حساب قبل التحويل لك يدوياً
+VOTE_SOLVE_TIMEOUT = 900  # أقصى مدة لحل الكابتشا لكل محاولة (ثانية)، تتسع لحل المالك اليدوي
 IGNORABLE_URL_NOTES = {"رابط بوت", "رابط خارجي", "رابط فارغ"}
 DEFAULT_COMMENTS = ["👍", "🔥", "❤️", "👏", "شكراً", "موفقين", "تمام"]
 
@@ -305,7 +309,9 @@ async def _handle_url(client, url: str, label: str, phone: str) -> Tuple[bool, s
     # قناة بدعوة
     if parts[0].startswith("+") or parts[0] == "joinchat":
         invite = parts[-1].lstrip("+")
-        joined = await _join_channel_and_schedule_leave(client, f"invite:{invite}", phone)
+        joined = await _join_channel_and_schedule_leave(
+            client, f"invite:{invite}", phone, leave_after_seconds=ROULETTE_LEAVE_SECONDS
+        )
         if joined is False or joined is None:
             return False, "تعذر الانضمام بالدعوة"
         return True, "انضمام بدعوة"
@@ -316,7 +322,9 @@ async def _handle_url(client, url: str, label: str, phone: str) -> Tuple[bool, s
 
     # قناة عامة
     if len(parts) == 1:
-        joined = await _join_channel_and_schedule_leave(client, f"@{parts[0]}", phone)
+        joined = await _join_channel_and_schedule_leave(
+            client, f"@{parts[0]}", phone, leave_after_seconds=ROULETTE_LEAVE_SECONDS
+        )
         if joined is False or joined is None:
             return False, f"تعذر الانضمام لـ @{parts[0]}"
         return True, "انضمام لقناة"
@@ -327,7 +335,9 @@ async def _handle_url(client, url: str, label: str, phone: str) -> Tuple[bool, s
         return False, "رابط منشور غير مفهوم"
     if "تصويت" in lowered_label or "vote" in lowered_label or "متسابق" in lowered_label:
         return False, "شرط تصويت غير مدعوم بعد"
-    joined = await _join_channel_and_schedule_leave(client, ref, phone)
+    joined = await _join_channel_and_schedule_leave(
+        client, ref, phone, leave_after_seconds=ROULETTE_LEAVE_SECONDS
+    )
     if joined is False or joined is None:
         return False, f"تعذر الانضمام لـ {ref}"
     entity = await _entity_for(client, ref)
@@ -400,7 +410,138 @@ async def _click_verify(message, phone: str) -> None:
             return
 
 
-async def _do_vote(client, phone: str, cond: Dict) -> Tuple[bool, str]:
+# ─────────────────────── حل كابتشا الإيموجي بالذكاء ───────────────────────
+
+def _image_mime(data: bytes) -> str:
+    if data[:4] == b"\x89PNG":
+        return "image/png"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/jpeg"
+
+
+def _ai_ask_once(keys: List[str], image_b64: str, mime: str, labels: List[str], order: List[int], key_offset: int, models: Optional[List[str]] = None) -> Optional[int]:
+    """سؤال واحد لـ Gemini: أي زر يطابق الصورة؟ الأزرار تُعرض بالترتيب order.
+    يعيد فهرس الزر الأصلي (من 0) أو None إن لم يكن متأكداً أو فشل الطلب."""
+    from . import ai_help as _ai  # استيراد متأخر
+
+    numbered = "\n".join(f"{n + 1}: {labels[idx]}" for n, idx in enumerate(order))
+    prompt = (
+        "الصورة المرفقة فيها رمز إيموجي واحد (قد تكون مشوشة بخطوط ونقاط). "
+        "اختر الخيار الذي يطابق الإيموجي في الصورة تماماً من القائمة التالية:\n"
+        f"{numbered}\n"
+        'أجب JSON فقط بهذا الشكل: {"choice": رقم_الخيار, "sure": true أو false}. '
+        "اجعل sure=false إن لم تكن متأكداً تماماً أو إن تشابه خياران."
+    )
+    body = {
+        "contents": [{"role": "user", "parts": [
+            {"inlineData": {"mimeType": mime, "data": image_b64}},
+            {"text": prompt},
+        ]}],
+        "generationConfig": {"temperature": 0, "maxOutputTokens": 700, "responseMimeType": "application/json"},
+    }
+    models = list(models or _ai._aih_order_models(_ai._aih_model_list()))
+    for step in range(len(keys)):
+        key = keys[(key_offset + step) % len(keys)]
+        for model in models:
+            try:
+                response = _ai._aih_gemini_post(_ai.AIH_GEMINI_URL, model, key, body)
+            except Exception:
+                continue
+            code = response.status_code
+            if code == 200:
+                try:
+                    data = response.json()
+                    parts = ((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or []
+                    text = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
+                    text = re.sub(r"```(?:json)?", "", text).strip()
+                    result = json.loads(text)
+                    choice = int(result.get("choice"))
+                    sure = result.get("sure") is True
+                except Exception:
+                    continue
+                if not sure or not 1 <= choice <= len(order):
+                    return None
+                return order[choice - 1]
+            if code in (401, 403, 429):
+                break  # مفتاح مرفوض أو حصته انتهت: جرّب المفتاح التالي
+    return None
+
+
+def _captcha_model_tiers() -> Tuple[List[str], List[str]]:
+    """(نماذج سريعة رخيصة، نماذج أقوى كحَكَم). تُضبط من متغيرات البيئة بدون تعديل الكود:
+    ROULETTE_CAPTCHA_MODEL_FAST و ROULETTE_CAPTCHA_MODEL_STRONG (يقبل كل منهما عدة نماذج بفواصل)."""
+    import os
+    from . import ai_help as _ai  # استيراد متأخر
+
+    def _split(raw: str) -> List[str]:
+        return [m.strip() for m in (raw or "").split(",") if m.strip()]
+
+    fast = _split(os.environ.get("ROULETTE_CAPTCHA_MODEL_FAST", "")) or ["gemini-3.5-flash-lite"]
+    strong = _split(os.environ.get("ROULETTE_CAPTCHA_MODEL_STRONG", "")) or ["gemini-3.8-flash"]
+    # احتياط: نماذج المساعد الحالية بعد الأقوى إن لم يتوفر النموذج المضبوط
+    strong = list(dict.fromkeys(strong + list(_ai._aih_order_models(_ai._aih_model_list()))))
+    return list(dict.fromkeys(fast)), strong
+
+
+def _ai_pick_sync(image_bytes: bytes, labels: List[str]) -> Optional[int]:
+    """مرحلتان: النموذج السريع أولاً، وإن لم يتفق جوابا ترتيبين مختلفين للأزرار ينتقل للأقوى.
+    لا نضغط إلا إذا اتفق جوابان على نفس الزر في مرحلة واحدة، وإلا تُرحَّل الكابتشا للمالك."""
+    keys = [k for k in (_shared.get_ai_api_keys() or []) if k]
+    if not keys or len(set(labels)) != len(labels) or any(not l for l in labels):
+        return None
+    image_b64 = base64.b64encode(image_bytes).decode()
+    mime = _image_mime(image_bytes)
+    straight = list(range(len(labels)))
+    fast, strong = _captcha_model_tiers()
+    for tier, models in (("fast", fast), ("strong", strong)):
+        first = _ai_ask_once(keys, image_b64, mime, labels, straight, 0, models)
+        if first is None:
+            continue
+        second = _ai_ask_once(keys, image_b64, mime, labels, list(reversed(straight)), 1, models)
+        if second == first:
+            logger.info("🤖 اتفق جوابا النموذج (%s) على الزر %s", tier, first + 1)
+            return first
+    return None
+
+
+async def _try_ai_emoji_captcha(client, incoming, phone: str) -> bool:
+    """كابتشا صورة + أزرار إيموجي: يختار Gemini الزر ويضغطه. يعيد True إن ضغط زراً."""
+    from .raksh_system.forced_ref_ai import ForcedRefAIService as _S  # استيراد متأخر
+
+    for message in incoming:
+        flat = [(i, j, b) for i, j, b in _flatten_buttons(message) if not _S._is_invitation_link_button(b)]
+        buttons = [b for _i, _j, b in flat]
+        if not _S._is_manual_image_captcha(message, getattr(message, "message", "") or "", buttons):
+            continue
+        labels = [(_S._button_label(b) or "").strip() for b in buttons]
+        try:
+            buffer = BytesIO()
+            await client.download_media(message, file=buffer)
+            image_bytes = buffer.getvalue()
+            if not image_bytes:
+                return False
+            index = await asyncio.wait_for(asyncio.to_thread(_ai_pick_sync, image_bytes, labels), timeout=60)
+        except Exception as exc:
+            logger.info("[%s] تعذر حل كابتشا الإيموجي بالذكاء: %s", phone, exc)
+            return False
+        if index is None:
+            logger.info("[%s] الذكاء غير متأكد من كابتشا الإيموجي؛ تُرحَّل للمالك", phone)
+            return False
+        i, j, _btn = flat[index]
+        try:
+            await asyncio.wait_for(message.click(i, j), timeout=20)
+        except asyncio.TimeoutError:
+            pass
+        except Exception as exc:
+            logger.info("[%s] ضغط زر الكابتشا بالذكاء: %s", phone, exc)
+            return False
+        logger.info("🤖 [%s] اختار الذكاء الزر %s (%s) للكابتشا", phone, index + 1, labels[index])
+        return True
+    return False
+
+
+async def _do_vote(client, phone: str, cond: Dict, bot=None) -> Tuple[bool, str]:
     """شرط تصويت عبر بوت.
 
     كل محاولة = ضغط رابط التصويت (Start). إن طلب البوت قناة/مجموعة ينضم لها الحساب
@@ -418,6 +559,8 @@ async def _do_vote(client, phone: str, cond: Dict) -> Tuple[bool, str]:
     joined_urls: set = set()
     total_joined = 0
     captcha_tries = 0
+    ai_clicks = 0
+    ai_solved = 0
     solved = False
     last = "لا رد من بوت التصويت"
     for _attempt in range(VOTE_MAX_ATTEMPTS):
@@ -443,12 +586,26 @@ async def _do_vote(client, phone: str, cond: Dict) -> Tuple[bool, str]:
 
         # 2) لا قنوات جديدة: كابتشا؟
         if any(_looks_like_captcha(m) for m in incoming):
+            # كابتشا صورة + أزرار إيموجي: نجرب الذكاء أولاً، وإن لم ينجح تصلك أنت
+            if ai_clicks < AI_CAPTCHA_MAX_CLICKS and await _try_ai_emoji_captcha(client, incoming, phone):
+                ai_clicks += 1
+                await asyncio.sleep(2)
+                after = _latest_incoming(await client.get_messages(bot_entity, limit=6), base_id)
+                after_texts = " ".join((m.message or "") for m in after[:3]).lower()
+                if any(word in after_texts for word in VOTE_SUCCESS_WORDS):
+                    return True, f"صوّت (انضم لـ {total_joined}، حلّ الكابتشا بالذكاء)"
+                ai_solved += 1
+                continue  # يعيد Start: إما يكتمل التصويت أو تظهر كابتشا جديدة
             if captcha_tries >= VOTE_MAX_CAPTCHA_TRIES:
                 break
             captcha_tries += 1
             try:
                 solved = bool(await asyncio.wait_for(
-                    solver._solve_verification(client, bot_entity, phone, base_id=base_id, params={}),
+                    solver._solve_verification(
+                        client, bot_entity, phone, base_id=base_id,
+                        # كابتشا الصورة والإيموجي تُرحَّل للمالك ليحلها بنفسه
+                        params={"_runtime_bot": bot, "requester_id": int(OWNER_ID)},
+                    ),
                     timeout=VOTE_SOLVE_TIMEOUT,
                 ))
             except asyncio.TimeoutError:
@@ -481,12 +638,14 @@ def _requested_channels(text: str) -> List[str]:
     return list(dict.fromkeys(found))
 
 
-async def _do_vote_post(client, phone: str, cond: Dict) -> Tuple[bool, str]:
+async def _do_vote_post(client, phone: str, cond: Dict, bot=None) -> Tuple[bool, str]:
     """الرابط يؤدي إلى منشور في قناة: فيه زر تصويت مباشر (Callback) أو زر يفتح بوت التصويت."""
     ref, msg_id = _parse_post_link(cond["url"])
     if not ref or not msg_id:
         return False, "رابط منشور التصويت غير مفهوم"
-    joined = await _join_channel_and_schedule_leave(client, ref, phone)
+    joined = await _join_channel_and_schedule_leave(
+        client, ref, phone, leave_after_seconds=ROULETTE_LEAVE_SECONDS
+    )
     if joined is False or joined is None:
         return False, f"تعذر الانضمام لقناة منشور التصويت {ref}"
     entity = await _entity_for(client, ref)
@@ -499,7 +658,7 @@ async def _do_vote_post(client, phone: str, cond: Dict) -> Tuple[bool, str]:
     for _i, _j, btn in buttons:
         url = getattr(btn, "url", None)
         if url and _parse_bot_link(url)[0]:
-            return await _do_vote(client, phone, {"url": url, "label": _btn_text(btn)})
+            return await _do_vote(client, phone, {"url": url, "label": _btn_text(btn)}, bot=bot)
 
     # 2) زر تصويت مباشر (Callback): الضغط، وإن طلب الرد قناة ينضم لها ويعيد الضغط
     target = None
@@ -590,7 +749,7 @@ async def _press_channel_button(client, trig: Dict) -> Tuple[bool, str]:
     return True, f"ضغط زر المشاركة" + (f" — رد: {text[:60]}" if text else " (بدون رد ظاهر)")
 
 
-async def _participate(session: Dict, trig: Dict, semaphore: asyncio.Semaphore) -> Tuple[bool, str]:
+async def _participate(session: Dict, trig: Dict, semaphore: asyncio.Semaphore, runtime_bot=None) -> Tuple[bool, str]:
     phone = session.get("phone_number")
     async with semaphore:
         lock = _get_raksh_session_lock(session)
@@ -605,7 +764,9 @@ async def _participate(session: Dict, trig: Dict, semaphore: asyncio.Semaphore) 
                 return False, "الجلسة غير مصرح بها"
 
             # كل قناة تراقب يجب أن ينضم لها الحساب أولاً
-            joined = await _join_channel_and_schedule_leave(client, trig["ref"], phone)
+            joined = await _join_channel_and_schedule_leave(
+                client, trig["ref"], phone, leave_after_seconds=ROULETTE_LEAVE_SECONDS
+            )
             if joined is False or joined is None:
                 return False, "تعذر الانضمام لقناة السحب"
 
@@ -626,9 +787,9 @@ async def _participate(session: Dict, trig: Dict, semaphore: asyncio.Semaphore) 
             for cond in vote_conds:
                 try:
                     if cond.get("kind") == "vote_post":
-                        voted, vnote = await _do_vote_post(client, phone, cond)
+                        voted, vnote = await _do_vote_post(client, phone, cond, bot=runtime_bot)
                     else:
-                        voted, vnote = await _do_vote(client, phone, cond)
+                        voted, vnote = await _do_vote(client, phone, cond, bot=runtime_bot)
                 except Exception as exc:
                     return False, f"فشل شرط التصويت: {str(exc)[:80]}"
                 if not voted:
@@ -718,7 +879,7 @@ async def _run_roulette(bot, trig: Dict, sessions: List[Dict]) -> None:
         # حساب واحد كل ACCOUNT_GAP_SECONDS ثوانٍ: الأول فوراً، الثاني بعد 10ث، وهكذا
         if index:
             await asyncio.sleep(index * ACCOUNT_GAP_SECONDS)
-        return await _participate(session, trig, semaphore)
+        return await _participate(session, trig, semaphore, runtime_bot=bot)
 
     if sessions:
         minutes = max(1, round((len(sessions) - 1) * ACCOUNT_GAP_SECONDS / 60))
@@ -819,20 +980,26 @@ async def _poll_channels(bot, channels: List[str], sessions: List[Dict]) -> None
                             continue
                         newest = max(m.id for m in messages)
                         info = state.setdefault(ref, {})
-                        last = info.get("last")
+                        if info.get("baseline") is None:
+                            # أول مرة: لا نعالج المنشورات القديمة
+                            info["baseline"] = info.get("last") or newest
+                            info["last"] = newest
+                            continue
                         info["last"] = newest
-                        if last is None:
-                            continue  # أول مرة: لا نعالج المنشورات القديمة
-                        for message in sorted((m for m in messages if m.id > last), key=lambda m: m.id):
+                        done_ids = set(info.get("handled") or [])
+                        # نفحص كل المنشورات الحديثة (حتى التي أُضيف زرها بالتعديل بعد النشر)
+                        for message in sorted((m for m in messages if m.id > info["baseline"]), key=lambda m: m.id):
                             key = (ref, message.id)
-                            if key in _handled:
+                            if key in _handled or message.id in done_ids:
                                 continue
                             trig = _extract_trigger(message)
                             if trig:
                                 _handled.add(key)
+                                done_ids.add(message.id)
                                 trig["ref"] = ref
                                 trig["msg_id"] = message.id
                                 triggers.append(trig)
+                        info["handled"] = sorted(done_ids)[-50:]
                     except Exception as exc:
                         logger.warning("تعذرت مراقبة القناة %s: %s", ref, exc)
                 _save_state(state)
