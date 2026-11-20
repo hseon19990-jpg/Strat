@@ -89,6 +89,7 @@ async def sync_raksh_bot_commands(bot) -> None:
                 BotCommand("testai", "🧪 اختبار مفاتيح AI"),
                 BotCommand("raksh", f"🔥 {label}"),
                 BotCommand("raksh_accounts", "📊 تشخيص حسابات الرشق"),
+                BotCommand("roulette", "🎰 لوحة الروليت"),
             ],
             scope=BotCommandScopeChat(chat_id=OWNER_ID),
         )
@@ -480,6 +481,7 @@ def main():
                                 BotCommand("refund_mandatory", "🔁 استرجاع تمويلات الاشتراك الإجباري"),
                                 BotCommand("testai",             "🧪 اختبار مفاتيح AI"),
                                 BotCommand("raksh",              f"🔥 {get_raksh_accounts_label()}"),
+                                BotCommand("roulette",           "🎰 لوحة الروليت"),
                             ],
                             scope=BotCommandScopeChat(chat_id=OWNER_ID)
                         )
