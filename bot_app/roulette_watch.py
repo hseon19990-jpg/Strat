@@ -445,12 +445,16 @@ def _ai_ask_once(keys: List[str], image_b64: str, mime: str, labels: List[str], 
         "generationConfig": {"temperature": 0, "maxOutputTokens": 700, "responseMimeType": "application/json"},
     }
     models = list(models or _ai._aih_order_models(_ai._aih_model_list()))
+    rejected = 0
     for step in range(len(keys)):
         key = keys[(key_offset + step) % len(keys)]
+        key_tag = f"key#{(key_offset + step) % len(keys) + 1}"
+        key_rejected = False
         for model in models:
             try:
                 response = _ai._aih_gemini_post(_ai.AIH_GEMINI_URL, model, key, body)
-            except Exception:
+            except Exception as exc:
+                logger.info("Gemini %s/%s: خطأ اتصال %s", key_tag, model, type(exc).__name__)
                 continue
             code = response.status_code
             if code == 200:
@@ -463,13 +467,20 @@ def _ai_ask_once(keys: List[str], image_b64: str, mime: str, labels: List[str], 
                     choice = int(result.get("choice"))
                     sure = result.get("sure") is True
                 except Exception:
+                    logger.info("Gemini %s/%s: رد غير مفهوم", key_tag, model)
                     continue
                 if not sure or not 1 <= choice <= len(order):
+                    logger.info("Gemini %s/%s: غير متأكد (choice=%s, sure=%s)", key_tag, model, choice, sure)
                     return None
                 return order[choice - 1]
+            logger.info("Gemini %s/%s: رفض الطلب بالرمز %s", key_tag, model, code)
             if code in (401, 403, 429):
-                _AI_STATE["quota_hit"] = time.time()
+                key_rejected = True
                 break  # مفتاح مرفوض أو حصته انتهت: جرّب المفتاح التالي
+        if key_rejected:
+            rejected += 1
+    if rejected >= len(keys):
+        _AI_STATE["quota_hit"] = time.time()  # كل المفاتيح رُفضت أو انتهت حصتها
     return None
 
 
@@ -494,6 +505,9 @@ def _ai_pick_sync(image_bytes: bytes, labels: List[str]) -> Optional[int]:
     لا نضغط إلا إذا اتفق جوابان على نفس الزر في مرحلة واحدة، وإلا تُرحَّل الكابتشا للمالك."""
     keys = [k for k in (_shared.get_ai_api_keys() or []) if k]
     if not keys or len(set(labels)) != len(labels) or any(not l for l in labels):
+        return None
+    if time.time() - _AI_STATE["quota_hit"] < 20:
+        logger.info("تخطي الذكاء مؤقتاً: كل مفاتيح Gemini منتهية الحصة قبل لحظات")
         return None
     image_b64 = base64.b64encode(image_bytes).decode()
     mime = _image_mime(image_bytes)
@@ -800,6 +814,7 @@ async def _participate(session: Dict, trig: Dict, semaphore: asyncio.Semaphore, 
                 await asyncio.sleep(0.3)
 
             vote_note = ""
+            vote_unconfirmed: List[str] = []
             for cond in vote_conds:
                 try:
                     if cond.get("kind") == "vote_post":
@@ -807,10 +822,18 @@ async def _participate(session: Dict, trig: Dict, semaphore: asyncio.Semaphore, 
                     else:
                         voted, vnote = await _do_vote(client, phone, cond, bot=runtime_bot)
                 except Exception as exc:
-                    return False, f"فشل شرط التصويت: {str(exc)[:80]}"
+                    voted, vnote = False, f"فشل شرط التصويت: {str(exc)[:60]}"
                 if not voted:
-                    return False, vnote
+                    # قد يكون الصوت احتُسب فعلاً دون أن نتعرف على رد البوت؛ لا نتوقف هنا.
+                    # نكمل إلى بوت السحب ونتركه يحكم هل الشرط تحقق أم لا.
+                    vote_unconfirmed.append(vnote)
+                    continue
                 vote_note = vnote
+            vote_prefix = ("تصويت غير مؤكد (" + vote_unconfirmed[0][:50] + ") | ") if vote_unconfirmed else ""
+
+            # ترحيل الكابتشا للمالك يفصل الاتصال أثناء الانتظار؛ نتأكد أنه متصل قبل العودة للسحب
+            if not client.is_connected():
+                await asyncio.wait_for(client.connect(), timeout=20)
 
             bot = await client.get_entity(f"@{trig['bot']}")
             await client(functions.messages.StartBotRequest(bot=bot, peer=bot, start_param=trig["param"]))
@@ -836,7 +859,7 @@ async def _participate(session: Dict, trig: Dict, semaphore: asyncio.Semaphore, 
                             pnote = vote_note + " + " + pnote
                         elif pressed and cond_done:
                             pnote = f"انضم لـ {cond_done} قناة شرط + " + pnote
-                        return pressed, pnote
+                        return pressed, (pnote if pressed else vote_prefix + pnote)
                     except Exception as exc:
                         return False, f"فشل ضغط زر القناة: {str(exc)[:80]}"
 
@@ -876,7 +899,7 @@ async def _participate(session: Dict, trig: Dict, semaphore: asyncio.Semaphore, 
             last_text = ((message.message if message else "") or last_text)[:200]
             if _is_success(last_text):
                 return True, last_text[:80]
-            return False, ("؛ ".join(notes) + " | " if notes else "") + (last_text[:100] or "لا رد من البوت")
+            return False, vote_prefix + ("؛ ".join(notes) + " | " if notes else "") + (last_text[:100] or "لا رد من البوت")
         except Exception as exc:
             return False, f"خطأ: {str(exc)[:100]}"
         finally:
