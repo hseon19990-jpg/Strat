@@ -1018,7 +1018,9 @@ def _raksh_channel_leave_hours() -> int:
 def _normalize_raksh_channel_ref(channel_ref: str) -> str:
     value = str(channel_ref or "").strip()
     if value.startswith("invite:"):
-        return "invite:" + value[7:].strip().lower()
+        # رموز الدعوة حساسة لحالة الأحرف؛ تحويلها لأحرف صغيرة يجعل الرابط
+        # غير صالح (INVITE_HASH_INVALID) ولا ينضم أي حساب.
+        return "invite:" + value[7:].strip()
     if value.startswith("@"):
         return "@" + value[1:].strip().lower()
     return value.lower()

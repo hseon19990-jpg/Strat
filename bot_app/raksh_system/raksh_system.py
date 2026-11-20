@@ -1687,6 +1687,20 @@ async def _execute_raksh_parallel(
                 continue
 
             session = None
+            # فضّل حساباً غير مشغول بحملة مستمرة؛ انتظار قفل حساب مشغول كان
+            # يؤخر الطلب بدقائق (الانتظار يصل إلى 15 دقيقة).
+            free_index = next(
+                (
+                    index
+                    for index, candidate in enumerate(pool)
+                    if candidate.get("phone_number")
+                    and candidate.get("phone_number") not in attempted_phones
+                    and not _get_raksh_session_lock(candidate).locked()
+                ),
+                None,
+            )
+            if free_index:
+                pool.insert(0, pool.pop(free_index))
             while pool:
                 candidate = pool.pop(0)
                 phone = candidate.get("phone_number")

@@ -9,6 +9,7 @@ PREMIUM_REACTION_LOOKUP_MAX_BATCHES = 3
 PREMIUM_REACTION_LOOKUP_TIMEOUT_SECONDS = 30
 PREMIUM_REACTION_STEP_TIMEOUT_SECONDS = 8
 PREMIUM_REACTION_POOL_LIMIT = 50
+PREMIUM_REACTION_JOIN_MAX_ATTEMPTS = 15
 # مهلة احتياطية لمغادرة حساب الفحص/الحسابات إن فشلت المغادرة الفورية.
 PREMIUM_REACTION_PROBE_LEAVE_SECONDS = 1800
 PREMIUM_REACTION_EXEC_LEAVE_SECONDS = 300
@@ -67,6 +68,19 @@ async def _resolve_post_entity(client, channel_ref: str, phone_number=None):
             await client.get_dialogs()
             return await client.get_entity(PeerChannel(channel_id))
     return await _resolve_raksh_entity(client, channel_ref, phone_number)
+
+
+async def _acquire_session_lock(session, timeout: float = 4.0):
+    """اقفل الجلسة كي لا يفتح عاملان نفس auth key (يسبب AUTH_KEY_DUPLICATED).
+
+    يعيد القفل، أو None إن كانت الجلسة مشغولة (حملة مستمرة مثلاً).
+    """
+    lock = _get_raksh_session_lock(session)
+    try:
+        await asyncio.wait_for(lock.acquire(), timeout=timeout)
+        return lock
+    except asyncio.TimeoutError:
+        return None
 
 
 def _is_private_post_ref(channel_ref) -> bool:
@@ -145,6 +159,9 @@ class PremiumReactionService(RakshService):
         )
         if not session:
             return
+        lock = await _acquire_session_lock(session, timeout=5.0)
+        if lock is None:
+            return
         client = TelegramClient(
             StringSession(session["session_string"]),
             int(TELEGRAM_API_ID),
@@ -166,6 +183,7 @@ class PremiumReactionService(RakshService):
                 await client.disconnect()
             except Exception:
                 pass
+            lock.release()
 
     def get_initial_state(self) -> str:
         """البدء بطلب القنوات الإجبارية"""
@@ -270,7 +288,13 @@ class PremiumReactionService(RakshService):
         sessions = list(self.get_sessions() or [])
         random.shuffle(sessions)
         last_error = "لا توجد حسابات متاحة"
-        for session in sessions[:PREMIUM_REACTION_LOOKUP_BATCH_SIZE]:
+        # نجرب عدداً أكبر: كثير من الحسابات قد تكون ميتة أو مشغولة بحملات أخرى.
+        for session in sessions[:PREMIUM_REACTION_JOIN_MAX_ATTEMPTS]:
+            phone = session.get("phone_number")
+            lock = await _acquire_session_lock(session, timeout=2.0)
+            if lock is None:
+                logger.info("طلب الانضمام: تخطي %s (مشغول)", phone)
+                continue
             client = TelegramClient(
                 StringSession(session["session_string"]),
                 int(TELEGRAM_API_ID),
@@ -279,6 +303,12 @@ class PremiumReactionService(RakshService):
             try:
                 await asyncio.wait_for(client.connect(), timeout=15)
                 if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
+                    logger.info("طلب الانضمام: الجلسة %s غير مصرح بها", phone)
+                    try:
+                        _mark_raksh_session_unauthorized(phone)
+                    except Exception:
+                        pass
+                    last_error = "الحسابات المجرّبة غير صالحة"
                     continue
                 me = await asyncio.wait_for(client.get_me(), timeout=8)
                 name = " ".join(
@@ -295,22 +325,30 @@ class PremiumReactionService(RakshService):
                         client(functions.messages.ImportChatInviteRequest(invite_ref[7:])),
                         timeout=20,
                     )
+                    logger.info("📨 انضم الحساب %s للقناة الخاصة مباشرة", phone)
                     return "joined", session, desc
                 except Exception as join_error:
                     if _is_join_request_pending_error(join_error):
+                        logger.info("📨 أُرسل طلب انضمام من الحساب %s", phone)
                         return "pending", session, desc
                     if _is_already_joined_error(join_error):
                         return "joined", session, desc
                     last_error = str(join_error)[:100]
-                    logger.warning("فشل إرسال طلب الانضمام: %s", join_error)
+                    logger.warning("فشل إرسال طلب الانضمام من %s: %s", phone, join_error)
+                    # رابط غير صالح/منتهي: لا فائدة من تجربة حسابات أخرى.
+                    if type(join_error).__name__ in {
+                        "InviteHashExpiredError", "InviteHashInvalidError", "InviteHashEmptyError",
+                    }:
+                        return "error", None, "رابط الدعوة غير صالح أو منتهي"
             except Exception as e:
                 last_error = str(e)[:100]
-                logger.warning("فشل تجهيز حساب طلب الانضمام: %s", e)
+                logger.warning("فشل تجهيز حساب طلب الانضمام %s: %s", phone, e)
             finally:
                 try:
                     await client.disconnect()
                 except Exception:
                     pass
+                lock.release()
         return "error", None, last_error
 
     async def handle_text(self, update, context, text, user, state, is_own) -> bool:
@@ -776,6 +814,10 @@ class PremiumReactionService(RakshService):
     async def _lookup_reactions_with_session(
         self, session: Dict, channel_ref: str, msg_id: int
     ) -> List[str]:
+        lock = await _acquire_session_lock(session)
+        if lock is None:
+            logger.info("تخطي الجلسة %s: مشغولة بخدمة أخرى", session.get("phone_number"))
+            return []
         try:
             return await asyncio.wait_for(
                 self._fetch_reactions_with_session(session, channel_ref, msg_id),
@@ -788,6 +830,8 @@ class PremiumReactionService(RakshService):
                 e,
             )
             return []
+        finally:
+            lock.release()
 
     @staticmethod
     def _custom_keys(reactions) -> List[str]:
@@ -911,6 +955,7 @@ class PremiumReactionService(RakshService):
         )
         await asyncio.wait_for(client.connect(), timeout=12)
         joined = []
+        join_failed = []
         try:
             if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
                 _mark_raksh_session_unauthorized(session.get("phone_number"))
@@ -929,6 +974,8 @@ class PremiumReactionService(RakshService):
                         )
                         if joined_entity is not None and not isinstance(joined_entity, bool):
                             joined.append((channel_ref, joined_entity))
+                        elif joined_entity is False:
+                            join_failed.append(channel_ref)
                         await asyncio.sleep(0.2)
                     except Exception as e:
                         logger.warning(f"فشل الانضمام للقناة {channel_ref}: {e}")
@@ -966,10 +1013,12 @@ class PremiumReactionService(RakshService):
                 
             except Exception as e:
                 logger.warning(f"فشل التفاعل {reaction_value}: {e}")
-                return False, f"❌ فشل إرسال التفاعل المميز: {str(e)}"
+                note = " (تعذر الانضمام للقناة)" if join_failed else ""
+                return False, f"❌ فشل إرسال التفاعل المميز: {str(e)}{note}"
                 
         except Exception as e:
-            return False, f"❌ فشل: {str(e)}"
+            note = " (تعذر الانضمام للقناة)" if join_failed else ""
+            return False, f"❌ فشل: {str(e)}{note}"
         finally:
             await self._leave_joined_channels(client, session.get("phone_number"), joined)
             await client.disconnect()
