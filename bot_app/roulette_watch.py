@@ -57,6 +57,13 @@ SUCCESS_WORDS = (
     "أنت مشارك", "انت مشارك", "مشارك بالفعل", "you are participating", "successfully registered",
     "تم تسجيل مشاركتك",
 )
+READY_WORDS = (
+    "يمكنك مشاركة السحب", "يمكنك المشاركة في السحب", "you can now participate",
+    "you can participate", "can now join",
+)
+# زر المشاركة الفعلي تحت منشور القناة (زر Callback وليس رابطاً)
+CHANNEL_JOIN_WORDS = ("المشاركة في السحب", "المشاركة بالسحب", "شارك في السحب", "participate", "join giveaway")
+FAIL_ANSWER_WORDS = ("خطأ", "فشل", "غير مسموح", "لا يمكن", "error", "failed", "not allowed")
 DEFAULT_COMMENTS = ["👍", "🔥", "❤️", "👏", "شكراً", "موفقين", "تمام"]
 
 _job_lock = asyncio.Lock()
@@ -242,6 +249,34 @@ async def _handle_url(client, url: str, label: str, phone: str) -> Tuple[bool, s
     return True, "فتح المنشور"
 
 
+async def _press_channel_button(client, trig: Dict) -> Tuple[bool, str]:
+    """بعد أن يقول البوت «يمكنك مشاركة السحب الآن»: يرجع الحساب لمنشور القناة
+    ويضغط زر «المشاركة في السحب [N]» (زر Callback) لتسجيل المشاركة فعلياً."""
+    entity = await _entity_for(client, trig["ref"])
+    message = await client.get_messages(entity, ids=trig["msg_id"])
+    if not message:
+        return False, "منشور السحب غير موجود"
+    target = None
+    for i, j, btn in _flatten_buttons(message):
+        if getattr(btn, "url", None):
+            continue  # زر الرابط (مشاركة السحب ↗) ليس المقصود هنا
+        label = _btn_text(btn).lower()
+        if any(word in label for word in CHANNEL_JOIN_WORDS):
+            target = (i, j, _btn_text(btn))
+            break
+    if not target:
+        labels = [_btn_text(b) for _i, _j, b in _flatten_buttons(message)]
+        return False, "لم أجد زر المشاركة تحت المنشور: " + " / ".join(labels)[:80]
+    try:
+        answer = await asyncio.wait_for(message.click(target[0], target[1]), timeout=20)
+    except asyncio.TimeoutError:
+        return False, "ضغط زر المشاركة بلا رد من البوت"
+    text = (getattr(answer, "message", "") or "").strip()
+    if text and any(word in text.lower() for word in FAIL_ANSWER_WORDS):
+        return False, f"رد الزر: {text[:80]}"
+    return True, f"ضغط زر المشاركة" + (f" — رد: {text[:60]}" if text else " (بدون رد ظاهر)")
+
+
 async def _participate(session: Dict, trig: Dict, semaphore: asyncio.Semaphore) -> Tuple[bool, str]:
     phone = session.get("phone_number")
     async with semaphore:
@@ -275,6 +310,12 @@ async def _participate(session: Dict, trig: Dict, semaphore: asyncio.Semaphore) 
                 logger.info("🎰 [%s] رد البوت (جولة %s): %s", phone, round_no + 1, last_text.replace("\n", " "))
                 if _is_success(last_text):
                     return True, last_text[:80]
+                if any(word in last_text.lower() for word in READY_WORDS):
+                    # البوت جهّز الحساب؛ المشاركة الفعلية بزر تحت منشور القناة
+                    try:
+                        return await _press_channel_button(client, trig)
+                    except Exception as exc:
+                        return False, f"فشل ضغط زر القناة: {str(exc)[:80]}"
 
                 acted = False
                 buttons = _flatten_buttons(message)
@@ -332,6 +373,7 @@ async def _run_roulette(bot, trig: Dict, sessions: List[Dict]) -> None:
     )
     ok = 0
     failures: Dict[str, int] = {}
+    successes: Dict[str, int] = {}
     for result in results:
         if isinstance(result, BaseException):
             reason = f"خطأ: {str(result)[:80]}"
@@ -340,6 +382,7 @@ async def _run_roulette(bot, trig: Dict, sessions: List[Dict]) -> None:
         success, note = result
         if success:
             ok += 1
+            successes[note] = successes.get(note, 0) + 1
         else:
             failures[note] = failures.get(note, 0) + 1
     lines = [
@@ -350,6 +393,10 @@ async def _run_roulette(bot, trig: Dict, sessions: List[Dict]) -> None:
         f"✅ نجح: {ok}",
         f"❌ فشل: {len(sessions) - ok}",
     ]
+    if successes:
+        lines.append("\nتفاصيل النجاح:")
+        for reason, count in sorted(successes.items(), key=lambda kv: -kv[1])[:3]:
+            lines.append(f"• ({count}) {reason}")
     if failures:
         lines.append("\nأسباب الفشل:")
         for reason, count in sorted(failures.items(), key=lambda kv: -kv[1])[:6]:
