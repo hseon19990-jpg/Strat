@@ -8,6 +8,7 @@ from .referrals import run_referral_tasks_job
 from .users import award_weekly_top_referrers_job
 from .reaction_operations import run_reaction_ops_job
 from .roulette_watch import cmd_roulette, handle_roulette_callback, run_roulette_watch_job
+from .roulette_fast import run_roulette_fast_keeper
 from .funding_boost import run_funding_boost_job
 from .external_bot_link import run_external_bot_link_job, EXTERNAL_LINK_INTERVAL_SECONDS
 from .clone_bot import clone_is_child, clone_supervisor_start
@@ -606,6 +607,7 @@ def main():
         logger.info("🏅 تم تفعيل صرف جوائز الأكثر دعوة الأسبوعي")
         app.job_queue.run_repeating(run_reaction_ops_job, interval=30, first=45)
         app.job_queue.run_repeating(run_roulette_watch_job, interval=20, first=60)
+        app.job_queue.run_repeating(run_roulette_fast_keeper, interval=30, first=25)  # الروليت السريع: مجمّع اتصالات + مراقبة لحظية
         # دعم القنوات الممولة: حساب واحد ينضم لكل قناة كل 15 ثانية، وكل 10 يتفاعلون.
         app.job_queue.run_repeating(run_funding_boost_job, interval=15, first=30)
         app.job_queue.run_repeating(

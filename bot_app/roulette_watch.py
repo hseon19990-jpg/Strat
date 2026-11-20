@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import random
 import os
@@ -46,10 +47,18 @@ KEY_CHANNELS = "roulette_channels"
 KEY_STATE = "roulette_state"
 KEY_ENABLED = "roulette_enabled"
 KEY_COMMENTS = "roulette_comment_texts"
+KEY_SESSION_FAILS = "roulette_session_fails"
+KEY_FAST_ENABLED = "roulette_fast_enabled"
+SESSION_FAIL_LIMIT = 3  # عدد أخطاء الجلسة المتتالية قبل استبعاد الحساب من الروليت
+_LOST_SESSION_MARKERS = (
+    "AuthKeyUnregistered", "AUTH_KEY_UNREGISTERED", "SessionRevoked", "SESSION_REVOKED",
+    "SessionExpired", "SESSION_EXPIRED", "UserDeactivated", "USER_DEACTIVATED",
+    "AuthKeyDuplicated", "AUTH_KEY_DUPLICATED", "AuthKeyInvalid",
+)
 
 POLL_MESSAGES_LIMIT = 6
 MAX_CONCURRENCY = int(os.environ.get("ROULETTE_MAX_CONCURRENCY", "150") or 150)  # حسابات تعمل معاً (تحتاج ذاكرة كافية)
-START_RATE_PER_SEC = float(os.environ.get("ROULETTE_START_RATE_PER_SEC", "15") or 15)  # حسابات تبدأ كل ثانية في المشاركة
+PARTICIPATE_GAP_SECONDS = float(os.environ.get("ROULETTE_ACCOUNT_GAP_SECONDS", "10") or 10)  # فاصل بين بداية حساب والذي بعده في المشاركة
 MAX_ROUNDS = 6
 MONITOR_LEAVE_SECONDS = 60 * 60 * 24 * 365
 LOCK_WAIT_SECONDS = 25
@@ -136,6 +145,85 @@ def _comment_texts() -> List[str]:
     return lines or DEFAULT_COMMENTS
 
 
+# ─────────────────── استبعاد الحسابات فاقدة الجلسة ───────────────────
+# كل خطأ جلسة (غير مصرح بها / مسحوبة / محظورة) يُعدّ فشلاً. بعد SESSION_FAIL_LIMIT مرات متتالية
+# يُستبعد الحساب من الروليت فقط (يبقى في المخزون) حتى تُضاف جلسة جديدة له: الاستبعاد مرتبط
+# ببصمة نص الجلسة، فأي جلسة جديدة تعيده تلقائياً. أي نجاح يصفّر العدّاد.
+_newly_excluded: List[str] = []
+
+# ─────────────── مجمّع الاتصالات الجاهزة (الروليت السريع) ───────────────
+# roulette_fast.py يبقي اتصال كل حساب مفتوحاً (ومحجوزاً بقفل الجلسة) ليضغط الزر فور نشر السحب.
+# كل دالة هنا تستعمل العميل الجاهز إن وُجد بدل أن تنتظر القفل وتفتح اتصالاً جديداً.
+_POOL: Dict[str, Dict] = {}
+_FAST_LISTENING = False   # True عندما يستقبل حساب واحد على الأقل منشورات القنوات لحظياً
+_FAST_BOT = None          # بوت المالك لإرسال الملخصات (يضبطه roulette_fast)
+
+
+def _fast_enabled() -> bool:
+    return get_setting(KEY_FAST_ENABLED) == "1"
+
+
+def _pool_client(session: Dict):
+    entry = _POOL.get(_session_fp(session))
+    return entry["client"] if entry else None
+
+
+
+def _session_key(session: Dict) -> str:
+    return str(session.get("phone_number") or session.get("id") or "")
+
+
+def _session_fp(session: Dict) -> str:
+    return hashlib.sha256(str(session.get("session_string") or "").encode()).hexdigest()[:16]
+
+
+def _is_lost_session_error(exc) -> bool:
+    haystack = f"{type(exc).__name__} {exc}"
+    return any(marker in haystack for marker in _LOST_SESSION_MARKERS)
+
+
+def _is_session_excluded(session: Dict, fails: Dict) -> bool:
+    entry = fails.get(_session_key(session))
+    return bool(entry and entry.get("excluded") and entry.get("fp") == _session_fp(session))
+
+
+def _record_session_failure(session: Dict) -> bool:
+    """يسجّل خطأ جلسة. يعيد True إذا استُبعد الحساب الآن."""
+    key = _session_key(session)
+    if not key:
+        return False
+    fails = _load_json(KEY_SESSION_FAILS, {})
+    fp = _session_fp(session)
+    entry = fails.get(key)
+    if not entry or entry.get("fp") != fp:
+        entry = {"fp": fp, "fails": 0, "excluded": False}  # جلسة جديدة: نبدأ من الصفر
+    if entry.get("excluded"):
+        return False
+    entry["fails"] = int(entry.get("fails") or 0) + 1
+    newly = entry["fails"] >= SESSION_FAIL_LIMIT
+    if newly:
+        entry["excluded"] = True
+        _newly_excluded.append(key)
+        logger.warning("🎰 استُبعد %s من الروليت بعد %s أخطاء جلسة", key, entry["fails"])
+    fails[key] = entry
+    set_setting(KEY_SESSION_FAILS, json.dumps(fails, ensure_ascii=False))
+    return newly
+
+
+def _record_session_ok(session: Dict) -> None:
+    key = _session_key(session)
+    fails = _load_json(KEY_SESSION_FAILS, {})
+    entry = fails.get(key)
+    if entry and not entry.get("excluded") and int(entry.get("fails") or 0) > 0:
+        fails.pop(key, None)
+        set_setting(KEY_SESSION_FAILS, json.dumps(fails, ensure_ascii=False))
+
+
+def _excluded_count() -> int:
+    fails = _load_json(KEY_SESSION_FAILS, {})
+    return sum(1 for e in fails.values() if isinstance(e, dict) and e.get("excluded"))
+
+
 def _owner_sessions() -> List[Dict]:
     """حسابات المالك حصراً: كل حساب أضافه المالك لمخزون الرشق بأي طريقة
     (أزرار، ملف، جلسة، تسجيل دخول...). هذه الحسابات تُحفظ بدون contributed_by،
@@ -144,9 +232,12 @@ def _owner_sessions() -> List[Dict]:
     """
     sessions = _get_sessions_for_service("roulette", is_owner=True)
     owner_id = int(OWNER_ID)
+    fails = _load_json(KEY_SESSION_FAILS, {})
     result = []
     for s in sessions:
         if not str(s.get("session_string") or "").strip():
+            continue
+        if _is_session_excluded(s, fails):
             continue
         contributor = s.get("contributed_by")
         if contributor is None or int(contributor) == owner_id:
@@ -828,16 +919,23 @@ async def _press_channel_button(client, trig: Dict) -> Tuple[bool, str]:
 async def _participate(session: Dict, trig: Dict, semaphore: asyncio.Semaphore, runtime_bot=None) -> Tuple[bool, str]:
     phone = session.get("phone_number")
     async with semaphore:
-        lock = _get_raksh_session_lock(session)
+        client = _pool_client(session)  # اتصال جاهز من الروليت السريع (قفله محجوز للمجمّع)
+        pooled = client is not None
+        lock = None
+        if not pooled:
+            lock = _get_raksh_session_lock(session)
+            try:
+                await asyncio.wait_for(lock.acquire(), timeout=LOCK_WAIT_SECONDS)
+            except asyncio.TimeoutError:
+                return False, "الحساب مشغول بخدمة أخرى"
+            client = _new_client(session)
         try:
-            await asyncio.wait_for(lock.acquire(), timeout=LOCK_WAIT_SECONDS)
-        except asyncio.TimeoutError:
-            return False, "الحساب مشغول بخدمة أخرى"
-        client = _new_client(session)
-        try:
-            await asyncio.wait_for(client.connect(), timeout=15)
+            if not pooled or not client.is_connected():
+                await asyncio.wait_for(client.connect(), timeout=15)
             if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
+                _record_session_failure(session)
                 return False, "الجلسة غير مصرح بها"
+            _record_session_ok(session)
 
             # شرط التعليق أولاً: قناة المنشور ← مجموعة النقاش ← تعليق، ثم العودة لقناة السحب
             conditions = trig.get("conditions") or []
@@ -965,13 +1063,16 @@ async def _participate(session: Dict, trig: Dict, semaphore: asyncio.Semaphore, 
                 return True, last_text[:80]
             return False, vote_prefix + ("؛ ".join(notes) + " | " if notes else "") + (last_text[:100] or "لا رد من البوت")
         except Exception as exc:
+            if _is_lost_session_error(exc):
+                _record_session_failure(session)
             return False, f"خطأ: {str(exc)[:100]}"
         finally:
-            try:
-                await client.disconnect()
-            except Exception:
-                pass
-            lock.release()
+            if not pooled:  # العميل الجاهز يبقى متصلاً للمجمّع
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+                lock.release()
 
 
 async def _run_roulette(bot, trig: Dict, sessions: List[Dict]) -> None:
@@ -979,18 +1080,18 @@ async def _run_roulette(bot, trig: Dict, sessions: List[Dict]) -> None:
     semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
 
     async def _staggered(index: int, session: Dict):
-        # START_RATE_PER_SEC حساباً كل ثانية (افتراضياً 15): توزيع خفيف بدل الانفجار الواحد
+        # فاصل PARTICIPATE_GAP_SECONDS (افتراضياً 10 ثوانٍ) بين بداية كل حساب والذي بعده
         if index:
-            await asyncio.sleep(index / max(START_RATE_PER_SEC, 0.1))
+            await asyncio.sleep(index * PARTICIPATE_GAP_SECONDS)
         return await _participate(session, trig, semaphore, runtime_bot=bot)
 
     if sessions:
-        seconds = max(1, round((len(sessions) - 1) / max(START_RATE_PER_SEC, 0.1)))
+        minutes = max(1, round((len(sessions) - 1) * PARTICIPATE_GAP_SECONDS / 60))
         try:
             await bot.send_message(
                 OWNER_ID,
                 f"🚀 بدأ الروليت على {trig['ref']}: {len(sessions)} حساب، "
-                f"بمعدل {START_RATE_PER_SEC:g} حساب/ثانية (≈ {seconds} ث للبدء). سيصلك الملخص عند الانتهاء.",
+                f"بفاصل {PARTICIPATE_GAP_SECONDS:g} ثوانٍ بين كل حساب (≈ {minutes} دقيقة للبدء). سيصلك الملخص عند الانتهاء.",
             )
         except Exception:
             pass
@@ -1028,6 +1129,14 @@ async def _run_roulette(bot, trig: Dict, sessions: List[Dict]) -> None:
         lines.append("\nأسباب الفشل:")
         for reason, count in sorted(failures.items(), key=lambda kv: -kv[1])[:6]:
             lines.append(f"• ({count}) {reason}")
+    if _newly_excluded:
+        dropped = list(dict.fromkeys(_newly_excluded))
+        _newly_excluded.clear()
+        lines.append(
+            f"\n🚫 استُبعد من الروليت ({len(dropped)}) بعد {SESSION_FAIL_LIMIT} أخطاء جلسة؛ "
+            "يعود تلقائياً عند إضافته بجلسة جديدة:"
+        )
+        lines.extend(f"• {key[:4]}***{key[-3:]}" if len(key) > 8 else f"• {key}" for key in dropped[:10])
     try:
         await bot.send_message(OWNER_ID, "\n".join(lines))
     except Exception:
@@ -1069,7 +1178,9 @@ async def _poll_channels(bot, channels: List[str], sessions: List[Dict]) -> None
             try:
                 await asyncio.wait_for(client.connect(), timeout=15)
                 if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
+                    _record_session_failure(session)
                     continue
+                _record_session_ok(session)
                 phone = session.get("phone_number")
                 for ref in channels:
                     try:
@@ -1160,16 +1271,23 @@ async def _join_one_account(session: Dict, refs: List[str], delay: int, semaphor
         await asyncio.sleep(delay)
     phone = session.get("phone_number")
     async with semaphore:
-        lock = _get_raksh_session_lock(session)
+        client = _pool_client(session)
+        pooled = client is not None
+        lock = None
+        if not pooled:
+            lock = _get_raksh_session_lock(session)
+            try:
+                await asyncio.wait_for(lock.acquire(), timeout=LOCK_WAIT_SECONDS)
+            except asyncio.TimeoutError:
+                return 0, "الحساب مشغول بخدمة أخرى"
+            client = _new_client(session)
         try:
-            await asyncio.wait_for(lock.acquire(), timeout=LOCK_WAIT_SECONDS)
-        except asyncio.TimeoutError:
-            return 0, "الحساب مشغول بخدمة أخرى"
-        client = _new_client(session)
-        try:
-            await asyncio.wait_for(client.connect(), timeout=15)
+            if not pooled or not client.is_connected():
+                await asyncio.wait_for(client.connect(), timeout=15)
             if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
+                _record_session_failure(session)
                 return 0, "الجلسة غير مصرح بها"
+            _record_session_ok(session)
             done = 0
             for ref in refs:
                 result = await _join_channel_and_schedule_leave(
@@ -1179,13 +1297,16 @@ async def _join_one_account(session: Dict, refs: List[str], delay: int, semaphor
                     done += 1
             return done, "" if done == len(refs) else "تعذر الانضمام لبعض القنوات"
         except Exception as exc:
+            if _is_lost_session_error(exc):
+                _record_session_failure(session)
             return 0, f"خطأ: {str(exc)[:80]}"
         finally:
-            try:
-                await client.disconnect()
-            except Exception:
-                pass
-            lock.release()
+            if not pooled:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+                lock.release()
 
 
 async def _join_all_owner_accounts(bot, refs: List[str]) -> None:
@@ -1230,8 +1351,8 @@ async def _join_all_owner_accounts(bot, refs: List[str]) -> None:
 
 
 async def run_roulette_watch_job(context) -> None:
-    if _job_lock.locked() or not _is_enabled():
-        return
+    if _job_lock.locked() or not _is_enabled() or _FAST_LISTENING:
+        return  # عند عمل المراقبة اللحظية (roulette_fast) لا حاجة للفحص الدوري
     async with _job_lock:
         try:
             channels = _load_channels()
@@ -1251,6 +1372,9 @@ def _panel_text() -> str:
         f"الحالة: {'✅ مفعّلة' if _is_enabled() else '⛔ متوقفة'}\n"
         f"📢 القنوات المراقبة: {len(channels)}\n"
         f"👥 حسابات المالك: {len(_owner_sessions())}\n"
+        f"🚫 مستبعدة (جلسة مفقودة): {_excluded_count()}\n"
+        f"⚡ الروليت السريع: {'✅ مفعّل' if _fast_enabled() else '⛔ متوقف'}"
+        f" (حسابات جاهزة: {len(_POOL)}{' — مراقبة لحظية' if _FAST_LISTENING else ''})\n"
         f"💬 نصوص التعليق: {len(_comment_texts())}"
     )
 
@@ -1258,6 +1382,9 @@ def _panel_text() -> str:
 def _panel_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("⛔ إيقاف" if _is_enabled() else "✅ تشغيل", callback_data="roulette:toggle")],
+        [InlineKeyboardButton(
+            "⚡ إيقاف السريع" if _fast_enabled() else "⚡ تشغيل السريع", callback_data="roulette:fast"
+        )],
         [
             InlineKeyboardButton("➕ إضافة قنوات", callback_data="roulette:add"),
             InlineKeyboardButton("📋 القنوات", callback_data="roulette:list"),
@@ -1294,6 +1421,13 @@ async def handle_roulette_callback(update, context):
         await query.edit_message_text(_panel_text(), reply_markup=_panel_kb())
     elif action == "toggle":
         set_setting(KEY_ENABLED, "0" if _is_enabled() else "1")
+        await query.edit_message_text(_panel_text(), reply_markup=_panel_kb())
+    elif action == "fast":
+        turning_on = not _fast_enabled()
+        set_setting(KEY_FAST_ENABLED, "1" if turning_on else "0")
+        if not turning_on:
+            from . import roulette_fast
+            asyncio.create_task(roulette_fast.shutdown_pool())
         await query.edit_message_text(_panel_text(), reply_markup=_panel_kb())
     elif action == "add":
         context.user_data["roulette_step"] = "add_channels"
@@ -1393,6 +1527,18 @@ async def handle_roulette_text(update, context) -> bool:
         await update.message.reply_text("⏳ جاري قراءة المنشور...")
         trig = None
         for session in sessions[:3]:
+            pooled_client = _pool_client(session)
+            if pooled_client is not None:
+                try:
+                    entity = await _entity_for(pooled_client, ref)
+                    message = await pooled_client.get_messages(entity, ids=msg_id)
+                    if message:
+                        trig = _extract_trigger(message)
+                except Exception as exc:
+                    logger.warning("قراءة منشور الروليت اليدوي (اتصال جاهز): %s", exc)
+                if trig:
+                    break
+                continue
             lock = _get_raksh_session_lock(session)
             if lock.locked():
                 continue
