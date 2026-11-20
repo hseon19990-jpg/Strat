@@ -48,6 +48,7 @@ MAX_CONCURRENCY = 40
 MAX_ROUNDS = 6
 MONITOR_LEAVE_SECONDS = 60 * 60 * 24 * 365
 LOCK_WAIT_SECONDS = 25
+ACCOUNT_GAP_SECONDS = 10  # فاصل بدء كل حساب عن الذي قبله
 
 PARTICIPATE_WORDS = ("المشاركة في السحب", "مشاركة السحب", "شارك في السحب", "participate", "giveaway")
 VERIFY_WORDS = ("تحقق", "تأكيد", "check", "verify", "confirm", "تم", "انتهيت", "done", "شارك", "مشاركة")
@@ -292,7 +293,9 @@ async def _participate(session: Dict, trig: Dict, semaphore: asyncio.Semaphore) 
                 return False, "الجلسة غير مصرح بها"
 
             # كل قناة تراقب يجب أن ينضم لها الحساب أولاً
-            await _join_channel_and_schedule_leave(client, trig["ref"], phone)
+            joined = await _join_channel_and_schedule_leave(client, trig["ref"], phone)
+            if joined is False or joined is None:
+                return False, "تعذر الانضمام لقناة السحب"
 
             bot = await client.get_entity(f"@{trig['bot']}")
             await client(functions.messages.StartBotRequest(bot=bot, peer=bot, start_param=trig["param"]))
@@ -367,8 +370,25 @@ async def _participate(session: Dict, trig: Dict, semaphore: asyncio.Semaphore) 
 async def _run_roulette(bot, trig: Dict, sessions: List[Dict]) -> None:
     """يشغّل كل حسابات المالك معاً على سحب واحد ويرسل ملخصاً."""
     semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
+
+    async def _staggered(index: int, session: Dict):
+        # حساب واحد كل ACCOUNT_GAP_SECONDS ثوانٍ: الأول فوراً، الثاني بعد 10ث، وهكذا
+        if index:
+            await asyncio.sleep(index * ACCOUNT_GAP_SECONDS)
+        return await _participate(session, trig, semaphore)
+
+    if sessions:
+        minutes = max(1, round((len(sessions) - 1) * ACCOUNT_GAP_SECONDS / 60))
+        try:
+            await bot.send_message(
+                OWNER_ID,
+                f"🚀 بدأ الروليت على {trig['ref']}: {len(sessions)} حساب، "
+                f"فاصل {ACCOUNT_GAP_SECONDS} ثوانٍ بين كل حساب (≈ {minutes} دقيقة). سيصلك الملخص عند الانتهاء.",
+            )
+        except Exception:
+            pass
     results = await asyncio.gather(
-        *[_participate(session, trig, semaphore) for session in sessions],
+        *[_staggered(index, session) for index, session in enumerate(sessions)],
         return_exceptions=True,
     )
     ok = 0
@@ -484,6 +504,116 @@ async def _poll_channels(bot, channels: List[str], sessions: List[Dict]) -> None
     for trig in triggers:
         logger.info("🎰 سحب جديد في %s (منشور %s) عبر @%s", trig["ref"], trig["msg_id"], trig["bot"])
         asyncio.create_task(_run_roulette(bot, trig, _owner_sessions()))
+
+
+async def _join_monitor_channels(refs: List[str]) -> Tuple[List[str], List[str]]:
+    """ينضم حساب مالك فوراً لكل قناة مضافة. يعيد (انضم، لم ينضم)."""
+    state = _load_state()
+    for session in _owner_sessions()[:5]:
+        lock = _get_raksh_session_lock(session)
+        if lock.locked():
+            continue
+        async with lock:
+            client = _new_client(session)
+            try:
+                await asyncio.wait_for(client.connect(), timeout=15)
+                if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
+                    continue
+                phone = session.get("phone_number")
+                joined: List[str] = []
+                failed: List[str] = []
+                for ref in refs:
+                    try:
+                        entity = await asyncio.wait_for(_resolve_channel(client, ref, state, phone), timeout=40)
+                    except Exception as exc:
+                        logger.warning("انضمام قناة الروليت %s: %s", ref, exc)
+                        entity = None
+                    (joined if entity else failed).append(ref)
+                _save_state(state)
+                return joined, failed
+            except Exception as exc:
+                logger.warning("تعذر تشغيل حساب انضمام الروليت: %s", exc)
+            finally:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+    return [], list(refs)
+
+
+async def _join_one_account(session: Dict, refs: List[str], delay: int, semaphore: asyncio.Semaphore) -> Tuple[int, str]:
+    """ينضم حساب واحد لكل القنوات. يعيد (عدد القنوات التي انضم لها، سبب الفشل إن وُجد)."""
+    if delay:
+        await asyncio.sleep(delay)
+    phone = session.get("phone_number")
+    async with semaphore:
+        lock = _get_raksh_session_lock(session)
+        try:
+            await asyncio.wait_for(lock.acquire(), timeout=LOCK_WAIT_SECONDS)
+        except asyncio.TimeoutError:
+            return 0, "الحساب مشغول بخدمة أخرى"
+        client = _new_client(session)
+        try:
+            await asyncio.wait_for(client.connect(), timeout=15)
+            if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
+                return 0, "الجلسة غير مصرح بها"
+            done = 0
+            for ref in refs:
+                result = await _join_channel_and_schedule_leave(
+                    client, ref, phone, leave_after_seconds=MONITOR_LEAVE_SECONDS
+                )
+                if result is not False and result is not None:
+                    done += 1
+            return done, "" if done == len(refs) else "تعذر الانضمام لبعض القنوات"
+        except Exception as exc:
+            return 0, f"خطأ: {str(exc)[:80]}"
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+            lock.release()
+
+
+async def _join_all_owner_accounts(bot, refs: List[str]) -> None:
+    """كل حسابات المالك تنضم للقنوات الجديدة، حساب كل ACCOUNT_GAP_SECONDS ثوانٍ."""
+    sessions = _owner_sessions()
+    if not sessions or not refs:
+        return
+    semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
+    results = await asyncio.gather(
+        *[
+            _join_one_account(session, refs, index * ACCOUNT_GAP_SECONDS, semaphore)
+            for index, session in enumerate(sessions)
+        ],
+        return_exceptions=True,
+    )
+    ok = 0
+    failures: Dict[str, int] = {}
+    for result in results:
+        if isinstance(result, BaseException):
+            reason = f"خطأ: {str(result)[:80]}"
+        else:
+            done, reason = result
+            if done == len(refs):
+                ok += 1
+                continue
+        failures[reason] = failures.get(reason, 0) + 1
+    lines = [
+        "📥 انضمام حسابات المالك للقنوات الجديدة",
+        "📢 " + "، ".join(refs[:5]) + (f" (+{len(refs) - 5})" if len(refs) > 5 else ""),
+        f"👥 الحسابات: {len(sessions)}",
+        f"✅ انضم: {ok}",
+        f"❌ فشل: {len(sessions) - ok}",
+    ]
+    if failures:
+        lines.append("\nأسباب الفشل:")
+        for reason, count in sorted(failures.items(), key=lambda kv: -kv[1])[:6]:
+            lines.append(f"• ({count}) {reason}")
+    try:
+        await bot.send_message(OWNER_ID, "\n".join(lines))
+    except Exception:
+        logger.warning("تعذر إرسال ملخص انضمام الروليت للمالك")
 
 
 async def run_roulette_watch_job(context) -> None:
@@ -607,12 +737,31 @@ async def handle_roulette_text(update, context) -> bool:
         if not refs:
             await update.message.reply_text("⚠️ لم أتعرف على أي قناة. أعد الإرسال.", reply_markup=_back_kb())
             return True
-        _save_channels(_load_channels() + refs)
         context.user_data.pop("roulette_step", None)
-        await update.message.reply_text(
-            f"✅ أُضيفت {len(refs)} قناة. سينضم لها حساب المراقبة تلقائياً خلال لحظات.",
-            reply_markup=_panel_kb(),
-        )
+        wait_msg = await update.message.reply_text("⏳ جاري انضمام حساب المراقبة للقنوات...")
+        joined, failed = await _join_monitor_channels(refs)
+        # لا تُحفظ القناة إلا إذا انضم لها حساب فعلاً
+        if joined:
+            _save_channels(_load_channels() + joined)
+        lines = []
+        if joined:
+            total = len(_owner_sessions())
+            minutes = max(1, round((total - 1) * ACCOUNT_GAP_SECONDS / 60))
+            lines.append(
+                f"✅ أُضيفت {len(joined)} قناة. جميع حساباتك ({total}) ستنضم لها الآن، "
+                f"حساب كل {ACCOUNT_GAP_SECONDS} ثوانٍ (≈ {minutes} دقيقة)، وسيصلك ملخص."
+            )
+            asyncio.create_task(_join_all_owner_accounts(context.bot, joined))
+        if failed:
+            lines.append(
+                f"⚠️ تعذر الانضمام ولم تُضف ({len(failed)}):\n" + "\n".join(f"• {r}" for r in failed[:10])
+                + "\nتأكد أن القناة موجودة وأن لديك حسابات مالك سليمة."
+            )
+        try:
+            await wait_msg.delete()
+        except Exception:
+            pass
+        await update.message.reply_text("\n\n".join(lines), reply_markup=_panel_kb())
         return True
 
     if step == "comments":
