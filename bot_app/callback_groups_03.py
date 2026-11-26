@@ -348,6 +348,7 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                 _rows = _c.execute(
                     "SELECT id, phone_number, session_string, twofa_password "
                     "FROM number_stock WHERE session_string IS NOT NULL AND deleted_at IS NULL"
+                    " AND contributed_by IS NULL AND raksh_only IS NOT TRUE"
                 ).fetchall()
             if not _rows:
                 await q.answer("✅ لا توجد حسابات في المخزون.", show_alert=True)
@@ -858,6 +859,7 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                     rows = _c.execute(
                         "SELECT id, phone_number, session_string, twofa_password "
                         "FROM number_stock WHERE session_string IS NOT NULL AND deleted_at IS NULL"
+                        " AND contributed_by IS NULL AND raksh_only IS NOT TRUE"
                     ).fetchall()
                 if not rows:
                     await context.bot.send_message(OWNER_ID, "📭 لا توجد أرقام مضافة بجلسة للفحص.")
@@ -982,6 +984,7 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                     rows = _c.execute(
                         "SELECT id, phone_number, session_string, twofa_password, last_device_count "
                         "FROM number_stock WHERE session_string IS NOT NULL AND deleted_at IS NULL"
+                        " AND contributed_by IS NULL AND raksh_only IS NOT TRUE"
                     ).fetchall()
                 if not rows:
                     await context.bot.send_message(OWNER_ID, "📭 لا توجد أرقام مضافة بجلسة للفحص.")
@@ -1192,6 +1195,7 @@ async def _handle_callback_group_03(update, context, q, data, user, is_own, is_s
                     _rows = _c.execute(
                         "SELECT id, phone_number, session_string, twofa_password, is_solo, can_send_code, last_device_count "
                         "FROM number_stock WHERE session_string IS NOT NULL AND deleted_at IS NULL AND ever_sold IS NOT TRUE"
+                        " AND contributed_by IS NULL AND raksh_only IS NOT TRUE"
                     ).fetchall()
                 if not _rows:
                     await context.bot.send_message(OWNER_ID, "📭 لا توجد حسابات للفحص.")
