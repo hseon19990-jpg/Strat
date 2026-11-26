@@ -84,7 +84,7 @@ class PersonalFreeRakshRewardTests(unittest.TestCase):
             source,
         )
         self.assertIn(
-            'callback_data=f"raksh:contributor_free:{service_type}:{quantity}"',
+            'f"raksh:contributor_free:{service_type}:{free_quantity}"',
             SOURCE.read_text(encoding="utf-8"),
         )
 
