@@ -2013,15 +2013,25 @@ def raksh_confirm_kb(
                 callback_data=f"raksh:confirm:{service_type}:{quantity}:{total_cost}:{payment_method}"
             )
         ]]
-    if user_id is not None and _get_contributor_raksh_limit(
-        user_id, service_type
-    ) >= quantity:
-        rows.append([
-            InlineKeyboardButton(
-                "🎁 مجاني — حساباتي فقط",
-                callback_data=f"raksh:contributor_free:{service_type}:{quantity}",
+    if user_id is not None:
+        # صاحب حسابات المشاركة (0%) يحصل على المجاني بعدد حساباته المتاحة
+        # حتى لو طلب كمية أكبر منها؛ ينفَّذ المجاني بهذا العدد فقط.
+        free_limit = _get_contributor_raksh_limit(user_id, service_type)
+        free_quantity = min(int(quantity), int(free_limit))
+        if free_quantity >= 1:
+            label = (
+                "🎁 مجاني — حساباتي فقط"
+                if free_quantity == int(quantity)
+                else f"🎁 مجاني — {free_quantity} حساب (حساباتي فقط)"
             )
-        ])
+            rows.append([
+                InlineKeyboardButton(
+                    label,
+                    callback_data=(
+                        f"raksh:contributor_free:{service_type}:{free_quantity}"
+                    ),
+                )
+            ])
     rows.append([InlineKeyboardButton("❌ إلغاء", callback_data="raksh_cancel")])
     return InlineKeyboardMarkup(rows)
 
