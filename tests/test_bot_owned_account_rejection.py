@@ -83,7 +83,7 @@ class BotOwnedAccountTests(unittest.TestCase):
 
         messages = (ROOT / "bot_app/messages.py").read_text(encoding="utf-8")
         check = messages.index("bot_holds_live_session(phone)")
-        send = messages.index("sent = await client.send_code_request(phone)", check)
+        send = messages.index("client.send_code_request(phone)", check)
         self.assertLess(check, send)
         self.assertIn("if _contributor_login:", messages[check - 300:check])
 

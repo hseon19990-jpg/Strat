@@ -10,7 +10,9 @@ CALLBACKS = ROOT / "bot_app" / "callback_groups_03.py"
 
 class OwnerQrLoginFallbackTests(unittest.TestCase):
     def test_code_flow_exposes_qr_fallback(self):
-        source = MESSAGES.read_text(encoding="utf-8")
+        source = MESSAGES.read_text(encoding="utf-8") + (
+            ROOT / "bot_app" / "login_assist.py"
+        ).read_text(encoding="utf-8")
         self.assertIn('callback_data="os:login_qr_fallback"', source)
         self.assertIn("الدخول عبر QR بدل الكود", source)
 
