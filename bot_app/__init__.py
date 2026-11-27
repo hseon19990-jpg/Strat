@@ -17,6 +17,7 @@ _SECTION_NAMES = (
     "accounts",
     "referrals",
     "security",
+    "login_assist",
     "number_admin",
     "buyback",
     "tg_numbers",

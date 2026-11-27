@@ -55,20 +55,8 @@ def _clear_unusable_imported_twofa(stock_id: int) -> None:
 
 def _login_code_delivery_note(sent) -> str:
     """Return a user-facing explanation of where Telegram routed the code."""
-    delivery_type = type(getattr(sent, "type", None)).__name__
-    if delivery_type == "SentCodeTypeApp":
-        return (
-            "📨 تيليجرام أرسل الكود داخل تطبيق Telegram إلى جلسة مفتوحة "
-            "(محادثة Telegram الرسمية/777000)، وليس بالضرورة عبر SMS."
-        )
-    if delivery_type == "SentCodeTypeSms":
-        return "📨 تيليجرام أرسل الكود عبر SMS إلى الشريحة المرتبطة بالرقم."
-    if delivery_type == "SentCodeTypeCall":
-        return "📞 تيليجرام سيُرسل الكود عبر مكالمة صوتية."
-    return (
-        "📨 تم قبول طلب الكود. افحص تطبيق Telegram ومحادثة Telegram الرسمية "
-        "(777000)، ثم افحص SMS إذا كان الرقم يدعم ذلك."
-    )
+    from .login_assist import describe_code_delivery
+    return describe_code_delivery(sent)[0]
 
 
 def _login_code_error_message(exc: Exception) -> str:
@@ -3998,12 +3986,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "share_number_await_login_phone",
         }
         _raksh_login = state == "os_await_raksh_login_phone"
-        phone = re.sub(r"\s+", "", text.strip())
-        # ─── إضافة + تلقائياً إذا أرسل المالك الرقم بدونها ───
-        if phone and not phone.startswith("+") and phone.isdigit():
-            phone = "+" + phone
-        if not phone.startswith("+") or not phone[1:].replace(" ", "").isdigit():
-            await update.message.reply_text("⚠️ أرسل الرقم بصيغة دولية (مثال: `+9647701234567` أو `9647701234567`).", parse_mode=ParseMode.MARKDOWN)
+        from .login_assist import (
+            normalize_login_phone, is_valid_login_phone, login_assist_kb,
+            describe_code_delivery, LOGIN_RESEND_MAX,
+        )
+        phone = normalize_login_phone(text)
+        if not is_valid_login_phone(phone):
+            await update.message.reply_text(
+                "⚠️ أرسل الرقم بصيغة دولية كاملة مع رمز الدولة "
+                "(مثال: `+9647701234567` أو `+9779812345678`).",
+                parse_mode=ParseMode.MARKDOWN,
+            )
             return
         # تأجير/مشاركة عضو: إن كان للبوت جلسة حيّة على الرقم نرفض قبل إرسال الكود.
         if _contributor_login:
@@ -4012,18 +4005,34 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.user_data["state"] = "main_menu"
                 await update.message.reply_text(BOT_OWNS_ACCOUNT_RENT_MESSAGE)
                 return
+        # أي محاولة سابقة معلّقة تُغلق أولاً حتى لا يتسرّب اتصالها.
+        await _cleanup_pending_login(user.id)
         client = None
         try:
             client = TelegramClient(StringSession(), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
             await asyncio.wait_for(client.connect(), timeout=20)
-            sent = await client.send_code_request(phone)
+            sent = await asyncio.wait_for(client.send_code_request(phone), timeout=30)
         except FloodWaitError as e:
+            if client:
+                await client.disconnect()
             await update.message.reply_text(f"⚠️ عدد محاولات كبير على هذا الرقم، انتظر {e.seconds} ثانية وحاول مجدداً.")
             return
         except PhoneNumberInvalidError:
             if client:
                 await client.disconnect()
-            await update.message.reply_text("⚠️ الرقم غير صحيح. تأكد من الصيغة وأعد الإرسال.")
+            await update.message.reply_text(
+                "⚠️ الرقم غير صحيح. تأكد من رمز الدولة وأن الرقم بدون صفر زائد بعده "
+                "(مثال نيبال: `+97798XXXXXXXX`) ثم أعد الإرسال.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+        except asyncio.TimeoutError:
+            logger.error("❌ مهلة إرسال كود الدخول للرقم %s", phone)
+            if client:
+                await client.disconnect()
+            await update.message.reply_text(
+                "⌛ تأخر الاتصال بتيليجرام أثناء طلب الكود. أعد إرسال الرقم بعد لحظات."
+            )
             return
         except Exception as e:
             logger.error(f"❌ خطأ في إرسال كود الدخول ({type(e).__name__}): {e}")
@@ -4040,6 +4049,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "contributor_share_percent": (
                 0 if _share_number_login else 50 if _contributor_login else None
             ),
+            "resend_count": 0,
+            "resend_at": time.monotonic(),
         }
         context.user_data["state"] = (
             "share_number_await_login_code"
@@ -4048,17 +4059,34 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if _contributor_login
             else "os_await_login_code"
         )
+        _note, _blocked = describe_code_delivery(sent)
+        _extra = (
+            ""
+            if _blocked
+            else "\n\nأرسل آخر كود وصلك هنا (أرقام فقط)."
+        )
+        try:
+            await update.message.reply_text(
+                f"📩 تم طلب كود الدخول.\n\n{_note}{_extra}\n\n"
+                "إن لم يصل الكود، استخدم الأزرار أدناه.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=login_assist_kb(
+                    contributor=_contributor_login, resends_left=LOGIN_RESEND_MAX
+                ),
+            )
+        except Exception:
+            await update.message.reply_text(
+                f"📩 تم طلب كود الدخول.\n\n{_note.replace('*', '')}{_extra}",
+                reply_markup=login_assist_kb(
+                    contributor=_contributor_login, resends_left=LOGIN_RESEND_MAX
+                ),
+            )
+        return
+
+    if state in {"contributor_await_login_qr", "share_number_await_login_qr"}:
         await update.message.reply_text(
-            "📩 تم طلب كود الدخول.\n\n"
-            f"{_login_code_delivery_note(sent)}\n\n"
-            "أرسل آخر كود وصلك هنا (أرقام فقط). إذا لم يظهر في SMS، افتح "
-            "Telegram على أي جهاز ما زال الحساب مسجلاً عليه وابحث عن 777000.",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton(
-                    "📷 الدخول عبر QR بدل الكود",
-                    callback_data="os:login_qr_fallback",
-                )
-            ]]),
+            "⏳ بانتظار تأكيد الدخول من تطبيق Telegram. اضغط زر «تأكيد من تطبيق Telegram» "
+            "في رسالة الرمز، أو اضغط «🔄 رمز جديد» هناك. للإلغاء أرسل /cancel."
         )
         return
 
@@ -4088,7 +4116,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["state"] = "main_menu"
             return
         client = pending["client"]
-        code = text.strip().replace(" ", "")
+        from .login_assist import normalize_login_code
+        code = normalize_login_code(text)
         try:
             await client.sign_in(pending["phone"], code, phone_code_hash=pending["phone_code_hash"])
         except SessionPasswordNeededError:

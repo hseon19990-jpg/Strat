@@ -613,20 +613,23 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 "raksh_only": False,
                 "contributor_id": user.id,
                 "contributor_share_percent": share,
+                "resend_count": 0,
+                "resend_at": time.monotonic(),
             }
             context.user_data["state"] = (
                 "share_number_await_login_code" if share == 0
                 else "contributor_await_login_code"
             )
+            from .login_assist import login_assist_kb, LOGIN_RESEND_MAX
             await q.edit_message_text(
                 f"🔄 *إعادة تأجير* `{phone}`\n\n"
                 f"{_login_code_delivery_note(sent)}\n\n"
                 "أرسل آخر كود وصلك هنا (أرقام فقط). سيتم تحديث جلسة الحساب "
                 "نفسه دون إنشاء حساب جديد، وتبقى أرباحك السابقة محفوظة.",
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 إلغاء", callback_data="contributor_accounts")],
-                ]),
+                reply_markup=login_assist_kb(
+                    contributor=True, resends_left=LOGIN_RESEND_MAX
+                ),
             )
             return
 
