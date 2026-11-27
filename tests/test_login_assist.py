@@ -93,3 +93,17 @@ class LoginAssistTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CodelessFlowWiringTests(unittest.TestCase):
+    def test_entry_buttons_and_failure_fallback_exist(self):
+        groups = (ROOT / "bot_app" / "callback_groups_01.py").read_text(encoding="utf-8")
+        self.assertIn("ctlogin:nocode:share", groups)
+        self.assertIn("ctlogin:nocode:rent", groups)
+        messages = (ROOT / "bot_app" / "messages.py").read_text(encoding="utf-8")
+        self.assertIn("begin_codeless_login", messages)
+        self.assertGreaterEqual(messages.count("offer_codeless_login"), 4)
+        assist = (ROOT / "bot_app" / "login_assist.py").read_text(encoding="utf-8")
+        # لا يُطلب كود عند الدخول بدون كود، ويُسمح بالـ QR بلا عميل سابق.
+        self.assertIn('"client": None', assist)
+        self.assertIn('if not pending or not pending.get("phone"):', assist)
