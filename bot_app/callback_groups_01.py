@@ -526,6 +526,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 "استخدام الحسابات الأخرى يكون مدفوعاً.",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔗 لا يصلني الكود؟ ادخل بدون كود", callback_data="ctlogin:nocode:share")],
                     [InlineKeyboardButton("🔙 إلغاء", callback_data="share_number:menu")],
                 ]),
             )
@@ -649,6 +650,7 @@ async def _handle_callback_group_01(update, context, q, data, user, is_own, is_s
                 "لن أطرد أي جلسة ولن أغيّر إعدادات الحساب.",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔗 لا يصلني الكود؟ ادخل بدون كود", callback_data="ctlogin:nocode:rent")],
                     [InlineKeyboardButton("🔙 إلغاء", callback_data="contributor_accounts")],
                 ]),
             )

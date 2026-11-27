@@ -196,11 +196,20 @@ async def handle_login_assist_callback(update, context, q, data: str, user, is_o
             pass
         return True
 
-    if not pending or not pending.get("phone") or not pending.get("client"):
+    if action in {"nocode:share", "nocode:rent"}:
+        await _begin_nocode_entry(context, q, user, share=(action == "nocode:share"))
+        return True
+
+    if not pending or not pending.get("phone"):
         await q.answer("⚠️ انتهت جلسة الرقم. ابدأ من جديد.", show_alert=True)
         return True
 
     if action == "resend":
+        if not pending.get("client"):
+            await q.answer(
+                "⚠️ لا يوجد طلب كود نشط. استخدم «الدخول بدون كود».", show_alert=True
+            )
+            return True
         await _resend_login_code(context, q, user, pending, is_own)
         return True
 
@@ -533,3 +542,70 @@ async def _wait_member_qr_login(update, context, user_id: int, qr_login, is_own:
                 InlineKeyboardButton("🔙 رجوع", callback_data=back)
             ]]),
         )
+
+
+# ───────────────────────── دخول بدون كود من أول خطوة ─────────────────────────
+
+def _new_member_pending(user_id: int, phone: str, share: bool) -> dict:
+    return {
+        "client": None,
+        "phone": phone,
+        "phone_code_hash": None,
+        "raksh_only": False,
+        "contributor_id": user_id,
+        "contributor_share_percent": 0 if share else 50,
+        "resend_count": LOGIN_RESEND_MAX,   # لا إعادة إرسال: لم يُطلب كود أصلاً
+        "resend_at": _time.monotonic(),
+    }
+
+
+async def _begin_nocode_entry(context, q, user, share: bool) -> None:
+    """زر «الدخول بدون كود» من شاشة الإضافة: نطلب الرقم ثم ننتقل للتأكيد مباشرة."""
+    if is_user_banned(user.id):
+        await q.answer("🚫 لا يمكنك استخدام هذه الميزة.", show_alert=True)
+        return
+    if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
+        await q.answer("❌ إعدادات Telegram API غير مكتملة.", show_alert=True)
+        return
+    await _cleanup_pending_login(user.id)
+    context.user_data["state"] = (
+        "share_number_await_login_phone" if share else "contributor_await_login_phone"
+    )
+    context.user_data["login_nocode"] = True
+    back = "share_number:menu" if share else "contributor_accounts"
+    await q.edit_message_text(
+        "🔗 *الدخول بدون كود*\n\n"
+        "أرسل رقم حسابك بصيغة دولية، مثال:\n`+9647701234567`\n\n"
+        "لن يُرسَل أي كود. سأرسل لك رابط تأكيد تفتحه من تطبيق Telegram "
+        "على نفس الهاتف (أو رمز QR تمسحه من جهاز آخر).\n"
+        "لن يطرد البوت أي جلسة ولن يغيّر كلمة المرور أو إعدادات الحساب.",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔙 إلغاء", callback_data=back)
+        ]]),
+    )
+
+
+async def begin_codeless_login(update, context, user, phone: str, share: bool) -> None:
+    """يبدأ التأكيد برابط/QR مباشرة دون طلب كود."""
+    await _cleanup_pending_login(user.id)
+    _pending_number_logins[user.id] = _new_member_pending(user.id, phone, share)
+    context.user_data["state"] = (
+        "share_number_await_login_qr" if share else "contributor_await_login_qr"
+    )
+    await update.message.reply_text("⏳ جارٍ تجهيز رابط التأكيد بدون كود...")
+    asyncio.create_task(_run_member_qr_login(update, context, user.id, False))
+
+
+async def offer_codeless_login(update, context, user, phone: str, share: bool, error_text: str) -> None:
+    """طلب الكود فشل أو تأخر: لا نترك العضو في طريق مسدود، نعرض الدخول بدون كود."""
+    await _cleanup_pending_login(user.id)
+    _pending_number_logins[user.id] = _new_member_pending(user.id, phone, share)
+    context.user_data["state"] = (
+        "share_number_await_login_qr" if share else "contributor_await_login_qr"
+    )
+    await update.message.reply_text(
+        f"{error_text}\n\n"
+        "💡 لا تحتاج الكود: اضغط الزر أدناه لإكمال الإضافة برابط تأكيد من تطبيق Telegram.",
+        reply_markup=login_assist_kb(contributor=True, resends_left=0),
+    )

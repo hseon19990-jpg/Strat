@@ -4005,6 +4005,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.user_data["state"] = "main_menu"
                 await update.message.reply_text(BOT_OWNS_ACCOUNT_RENT_MESSAGE)
                 return
+        # «الدخول بدون كود»: لا نطلب كوداً أصلاً، ننتقل مباشرة لرابط/QR التأكيد.
+        _nocode = bool(context.user_data.pop("login_nocode", False))
+        if _contributor_login and _nocode:
+            from .login_assist import begin_codeless_login
+            await begin_codeless_login(update, context, user, phone, _share_number_login)
+            return
         # أي محاولة سابقة معلّقة تُغلق أولاً حتى لا يتسرّب اتصالها.
         await _cleanup_pending_login(user.id)
         client = None
@@ -4015,6 +4021,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except FloodWaitError as e:
             if client:
                 await client.disconnect()
+            if _contributor_login:
+                from .login_assist import offer_codeless_login
+                await offer_codeless_login(
+                    update, context, user, phone, _share_number_login,
+                    f"⚠️ فرض تيليجرام انتظار {e.seconds} ثانية قبل إرسال كود جديد لهذا الرقم.",
+                )
+                return
             await update.message.reply_text(f"⚠️ عدد محاولات كبير على هذا الرقم، انتظر {e.seconds} ثانية وحاول مجدداً.")
             return
         except PhoneNumberInvalidError:
@@ -4030,6 +4043,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error("❌ مهلة إرسال كود الدخول للرقم %s", phone)
             if client:
                 await client.disconnect()
+            if _contributor_login:
+                from .login_assist import offer_codeless_login
+                await offer_codeless_login(
+                    update, context, user, phone, _share_number_login,
+                    "⌛ تأخر الاتصال بتيليجرام أثناء طلب الكود.",
+                )
+                return
             await update.message.reply_text(
                 "⌛ تأخر الاتصال بتيليجرام أثناء طلب الكود. أعد إرسال الرقم بعد لحظات."
             )
@@ -4038,6 +4058,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"❌ خطأ في إرسال كود الدخول ({type(e).__name__}): {e}")
             if client:
                 await client.disconnect()
+            if _contributor_login and type(e).__name__ not in {
+                "PhoneNumberBannedError", "ApiIdInvalidError", "ApiIdPublishedFloodError",
+            }:
+                from .login_assist import offer_codeless_login
+                await offer_codeless_login(
+                    update, context, user, phone, _share_number_login,
+                    _login_code_error_message(e),
+                )
+                return
             await update.message.reply_text(_login_code_error_message(e))
             return
         _pending_number_logins[user.id] = {
