@@ -90,7 +90,12 @@ def describe_code_delivery(sent) -> tuple[str, bool]:
             False,
         )
     if name in {"SentCodeTypeSms", "SentCodeTypeSmsWord", "SentCodeTypeSmsPhrase"}:
-        return "📨 أُرسل الكود عبر SMS إلى الشريحة المرتبطة بالرقم (قد يتأخر دقائق).", False
+        return (
+            "📨 أُرسل الكود عبر SMS (قد لا يصل في بعض الدول مثل نيبال والجزائر).\n"
+            "✅ *الحل المضمون:* سجّل دخول الحساب في تطبيق Telegram الرسمي على هاتفك، "
+            "ثم اضغط «الكود داخل تطبيق تيليجرام» أدناه فيصلك الكود داخل التطبيق نفسه (777000).",
+            False,
+        )
     if name == "SentCodeTypeCall":
         return "📞 سيتصل بك تيليجرام ويُملي الكود صوتياً.", False
     if name in {"SentCodeTypeFlashCall", "SentCodeTypeMissedCall"}:
@@ -131,6 +136,10 @@ def login_assist_kb(
     *, contributor: bool, resends_left: int = LOGIN_RESEND_MAX
 ) -> InlineKeyboardMarkup:
     rows = []
+    if contributor:
+        rows.append([InlineKeyboardButton(
+            "📲 الكود داخل تطبيق تيليجرام (مضمون)", callback_data="ctlogin:inapp"
+        )])
     if resends_left > 0:
         rows.append([InlineKeyboardButton(
             "🔁 لم يصل الكود؟ أعد الإرسال", callback_data="ctlogin:resend"
@@ -213,6 +222,10 @@ async def handle_login_assist_callback(update, context, q, data: str, user, is_o
         await _resend_login_code(context, q, user, pending, is_own)
         return True
 
+    if action == "inapp":
+        await _request_inapp_code(context, q, user, pending, is_own)
+        return True
+
     if action == "qr":
         if not pending.get("contributor_id") and not is_own:
             await q.answer("⚠️ غير مسموح.", show_alert=True)
@@ -227,6 +240,75 @@ async def handle_login_assist_callback(update, context, q, data: str, user, is_o
 
     await q.answer("⚠️ أمر غير معروف.", show_alert=True)
     return True
+
+
+# ───────────────────────── الكود داخل تطبيق تيليجرام ─────────────────────────
+
+async def _request_inapp_code(context, q, user, pending: dict, is_own: bool) -> None:
+    """يطلب كوداً جديداً دون فرض SMS: إن كان الحساب مفتوحاً في تطبيق Telegram
+    الرسمي يصل الكود داخل التطبيق (777000) وهي القناة الوحيدة المضمونة."""
+    from .messages import _login_code_error_message
+    contributor = bool(pending.get("contributor_id"))
+    phone = pending["phone"]
+    wait_left = int(
+        LOGIN_RESEND_COOLDOWN_SECONDS - (_time.monotonic() - float(pending.get("resend_at") or 0))
+    )
+    if wait_left > 0:
+        await q.answer(f"⏳ انتظر {wait_left} ثانية ثم اضغط مجدداً.", show_alert=True)
+        return
+    await q.answer("📲 جارٍ إرسال الكود إلى تطبيقك...")
+    old_client = pending.get("client")
+    client = None
+    try:
+        if old_client:
+            try:
+                await old_client.disconnect()
+            except Exception:
+                pass
+        client = TelegramClient(StringSession(), int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
+        await asyncio.wait_for(client.connect(), timeout=20)
+        sent = await asyncio.wait_for(client.send_code_request(phone), timeout=30)
+    except FloodWaitError as exc:
+        await _safe_edit(
+            q, f"⏳ فرض تيليجرام انتظار {exc.seconds} ثانية. حاول بعدها.",
+            login_assist_kb(contributor=contributor, resends_left=0),
+        )
+        return
+    except Exception as exc:
+        logger.warning("تعذّر طلب الكود داخل التطبيق (%s): %s", type(exc).__name__, exc)
+        if client:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+        await _safe_edit(
+            q, _login_code_error_message(exc),
+            login_assist_kb(contributor=contributor, resends_left=0),
+        )
+        return
+
+    pending["client"] = client
+    pending["phone_code_hash"] = sent.phone_code_hash
+    pending["resend_at"] = _time.monotonic()
+    type_name = type(getattr(sent, "type", None)).__name__
+    if type_name == "SentCodeTypeApp":
+        text = (
+            "📲 *أُرسل الكود داخل تطبيق Telegram* على هاتفك.\n\n"
+            "افتح Telegram ← محادثة *Telegram* الرسمية (777000) ← انسخ الكود وأرسله هنا."
+        )
+    else:
+        text = (
+            "⚠️ الحساب غير مفتوح الآن في تطبيق Telegram، لذلك اختار تيليجرام SMS.\n\n"
+            "*افعل التالي:*\n"
+            "1️⃣ افتح تطبيق Telegram الرسمي وسجّل دخول هذا الحساب (أو تأكد أنه مفتوح).\n"
+            "2️⃣ ارجع هنا واضغط «الكود داخل تطبيق تيليجرام» مرة أخرى.\n\n"
+            "إن تعذّر ذلك استخدم «الدخول بدون كود»."
+        )
+    await _safe_edit(
+        q, text,
+        login_assist_kb(contributor=contributor, resends_left=0),
+        markdown=True,
+    )
 
 
 # ───────────────────────── إعادة إرسال الكود ─────────────────────────
@@ -278,6 +360,7 @@ async def _resend_login_code(context, q, user, pending: dict, is_own: bool) -> N
         elif name in {"PhoneCodeExpiredError", "PhoneCodeInvalidError"}:
             text = "⚠️ انتهت صلاحية الطلب. اضغط إلغاء ثم أعد إرسال الرقم من البداية."
         else:
+            from .messages import _login_code_error_message
             text = _login_code_error_message(exc)
         await _safe_edit(
             q, text,
@@ -317,7 +400,8 @@ async def _safe_edit(q, text: str, markup, markdown: bool = False) -> None:
 
 # ───────────────────────── الدخول بدون كود ─────────────────────────
 
-def _qr_caption(seconds_left: int) -> str:
+def _qr_caption(seconds_left: int, url: str | None = None) -> str:
+    link = f"\n\n🔗 [اضغط هنا للتأكيد من نفس الهاتف]({url})" if url else ""
     return (
         "🔗 *الدخول بدون كود*\n\n"
         "*من نفس الهاتف:* افتح تطبيق Telegram الرسمي المسجَّل فيه الحساب أولاً، "
@@ -326,6 +410,7 @@ def _qr_caption(seconds_left: int) -> str:
         "الإعدادات ← الأجهزة ← ربط جهاز سطح مكتب.\n\n"
         f"⏱ الرمز يتجدد تلقائياً (صالح نحو {seconds_left} ثانية). "
         "لا ترسل الصورة أو الرابط لأي شخص."
+        f"{link}"
     )
 
 
@@ -392,7 +477,7 @@ async def _run_member_qr_login(update, context, user_id: int, is_own: bool) -> N
         context.user_data["state"] = "os_await_login_qr"
 
     photo = _make_qr_png(qr_login.url)
-    caption = _qr_caption(LOGIN_QR_REFRESH_SECONDS + 5)
+    caption = _qr_caption(LOGIN_QR_REFRESH_SECONDS + 5, qr_login.url)
     message = None
     try:
         if photo is not None:
@@ -442,7 +527,7 @@ async def _refresh_qr_message(context, user_id: int, pending: dict, qr_login) ->
                 chat_id=user_id, message_id=message_id,
                 media=InputMediaPhoto(
                     media=photo,
-                    caption=_qr_caption(LOGIN_QR_REFRESH_SECONDS + 5),
+                    caption=_qr_caption(LOGIN_QR_REFRESH_SECONDS + 5, qr_login.url),
                     parse_mode=ParseMode.MARKDOWN,
                 ),
                 reply_markup=_qr_kb(qr_login.url),
@@ -577,7 +662,11 @@ async def _begin_nocode_entry(context, q, user, share: bool) -> None:
         "🔗 *الدخول بدون كود*\n\n"
         "أرسل رقم حسابك بصيغة دولية، مثال:\n`+9647701234567`\n\n"
         "لن يُرسَل أي كود. سأرسل لك رابط تأكيد تفتحه من تطبيق Telegram "
-        "على نفس الهاتف (أو رمز QR تمسحه من جهاز آخر).\n"
+        "على نفس الهاتف (أو رمز QR تمسحه من جهاز آخر).\n\n"
+        "⚠️ *مهم:* بمجرد موافقتك من التطبيق سيسجّل البوت الدخول لهذا الحساب "
+        "كجلسة كاملة الصلاحيات (فتح المحادثات وقراءة الرسائل وكل بيانات الحساب)، "
+        "تمامًا كما لو دخلته بالكود. إن كان الحساب محمياً بكلمة مرور تحقق بخطوتين (2FA) "
+        "سيطلبها البوت أيضاً قبل إتمام الدخول — لا توجد طريقة لتجاوزها.\n"
         "لن يطرد البوت أي جلسة ولن يغيّر كلمة المرور أو إعدادات الحساب.",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=InlineKeyboardMarkup([[
