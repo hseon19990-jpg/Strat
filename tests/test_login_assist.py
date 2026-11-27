@@ -80,7 +80,7 @@ class LoginAssistTests(unittest.TestCase):
     def test_member_keyboard_offers_resend_and_codeless_login(self):
         rows = self.m.login_assist_kb(contributor=True)
         data = [row[0].callback_data for row in rows]
-        self.assertEqual(data, ["ctlogin:resend", "ctlogin:qr", "ctlogin:cancel"])
+        self.assertEqual(data, ["ctlogin:inapp", "ctlogin:resend", "ctlogin:qr", "ctlogin:cancel"])
         rows = self.m.login_assist_kb(contributor=True, resends_left=0)
         self.assertNotIn("ctlogin:resend", [row[0].callback_data for row in rows])
 
